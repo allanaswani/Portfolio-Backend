@@ -1,0 +1,62 @@
+# ── Editor / tooling ──────────────────────────────────────────────
+.claude/
+*.log
+*.tmp
+*.bak
+
+# ── Secrets / environment ─────────────────────────────────────────
+# Holds SECRET_KEY, DB_PASSWORD, DW_PASSWORD, ANTHROPIC_API_KEY — never commit.
+.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Django ────────────────────────────────────────────────────────
+*.sqlite3
+*.sqlite3-journal
+db.sqlite3
+/staticfiles/
+/static_root/
+/media/
+local_settings.py
+
+# ── Testing / coverage / type-checking caches ─────────────────────
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+coverage.xml
+nosetests.xml
+
+# ── IDEs ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
