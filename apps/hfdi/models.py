@@ -5,6 +5,14 @@ from django.db import models
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
+# TODO - Missing Models
+# The following original models are missing, and their consequent implementations (serializers, views and urls):
+# 
+# AffordableHousingRegistrations
+# AffordableHousingProjectsPipeline
+# AFHSellerMapping
+# 
+
 
 class Project(models.Model):
     name = models.CharField(max_length=255, unique=True)

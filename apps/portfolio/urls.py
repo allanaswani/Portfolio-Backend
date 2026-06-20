@@ -3,6 +3,7 @@ from . import views
 
 urlpatterns = [
     path("customers/", views.CustomerListView.as_view()),
+    # TODO - check implementation of serach URL since initial implementation was to enable user search by any column presented in the interface UI
     path("customers/search/", views.DynamicFilterCustomerListPaginatedDetailView.as_view()),
     path("customers/<str:rm_code>", views.RmCustomerListView.as_view()),
     path("customers/<int:pk>/", views.CustomerDetailView.as_view()),

@@ -1,6 +1,14 @@
 from django.db import models
 from simple_history.models import HistoricalRecords
 
+# TODO - Missing Models
+# This app is to track the execution of strategic initiatives for the company. The order is from Strategic Thrust -> Strategic Initiative -> Milestone - for execution per initiative
+# Get more info from Allan on the execution of initiatives to guide the incrporation of initial models created and their relevance to the architecture of the module
+# 
+# Add the following models, and their consequent implementations (serializers, views and urls): 
+# StrategicExcoOwner
+# StrategicThrust
+# StrategicMilestone
 
 class ExcoInitiative(models.Model):
     STATUS_CHOICES = [

@@ -1,6 +1,16 @@
 from django.db import models
 from simple_history.models import HistoricalRecords
 
+# TODO - Missing models
+# Explain the intention of whta the below models are intended to achieve in the portfolio tool
+# 
+# The following original models are missing, and their consequent implementations (serializers, views and urls):
+# CustomerAllocationBase
+# RmAllocationList
+# TeamLeaderMovementApprovers
+# CustomerTransferHistory
+# 
+# This module is supposed to document the reallocation of customers relationship management in the bank. The above models record and help achieve it.
 
 class CustomerEnrichment(models.Model):
     cust_id = models.BigIntegerField(unique=True)

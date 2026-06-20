@@ -32,7 +32,7 @@ class BranchEmployeeData(models.Model):
         managed = False
         db_table = "employee_table"
 
-
+# TODO - We shall go through the implementation of Scorecard Automation since there are some models missing
 class ScorecardRole(models.Model):
     name = models.CharField(max_length=255, unique=True)
     description = models.TextField(blank=True, null=True)
@@ -97,6 +97,7 @@ class PerformanceActual(models.Model):
 
 
 class EmployeeMonthlyPerformance(models.Model):
+    # TODO - Explain use of the following model
     GRADE_CHOICES = [("A", "A"), ("B", "B"), ("C", "C"), ("D", "D"), ("E", "E")]
 
     sales_code = models.CharField(max_length=50)

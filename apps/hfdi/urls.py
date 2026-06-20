@@ -39,6 +39,7 @@ urlpatterns = [
     path("performance_targets/<int:pk>/", views.HfdiTargetsDetailView.as_view()),
 
     # Employees
+    # TODO - Missing following employees APIs: search, upload
     path("employees/", views.HfdiEmployeeDataListCreateView.as_view()),
     path("employees/<int:pk>/", views.HfdiEmployeeDataDetailView.as_view()),
     path("employee_sales/", views.HfdiEmployeeDataSalesRecordListCreateView.as_view()),
@@ -55,4 +56,13 @@ urlpatterns = [
     # Affordable housing
     path("affordable_housing/", views.AffordableHousingApplicationListCreateView.as_view()),
     path("affordable_housing/<int:pk>/", views.AffordableHousingApplicationDetailView.as_view()),
+
+    # TODO - Missing API Implementations
+    # Missing the following APIs implementations for the following models :
+    # WeightedDashboardManualSales
+    # HfdiCustomersHfcMortgages
+    # HfdiProjectsDailyCollectionsData
+    # HfdiProjectsInventorySalesData 
+    # 
+    # Implement the views if they are missing CRUD, search for paginated view, upload and trigger-script(check with old codebase it is in which APIs):
 ]
