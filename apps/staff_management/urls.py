@@ -1,8 +1,11 @@
-from django.urls import path
+from django.urls import include, path
 from . import views
 from . import legacy_views as lv
 
 urlpatterns = [
+    # ── Legacy scorecard automation engine (parallel subsystem, sc_* tables) ──
+    path("scorecard-automation/", include("apps.staff_management.scorecard_automation.urls")),
+
     # ── Existing staff endpoints ──────────────────────────────────────────────
     path("branch_managers/",  views.BranchManagersListView.as_view()),
     path("sales_staff/",      views.SalesStaffListView.as_view()),

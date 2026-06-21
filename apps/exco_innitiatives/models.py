@@ -1,14 +1,118 @@
 from django.db import models
+from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
-# TODO - Missing Models
-# This app is to track the execution of strategic initiatives for the company. The order is from Strategic Thrust -> Strategic Initiative -> Milestone - for execution per initiative
-# Get more info from Allan on the execution of initiatives to guide the incrporation of initial models created and their relevance to the architecture of the module
-# 
-# Add the following models, and their consequent implementations (serializers, views and urls): 
-# StrategicExcoOwner
-# StrategicThrust
-# StrategicMilestone
+# Strategic-execution hierarchy (ported from the legacy backend):
+#   Strategic Thrust -> Strategic Initiative -> Strategic Milestone,
+# with Strategic ExCo Owners as the people accountable for execution.
+# These live alongside the flat ``ExcoInitiative`` table (different db_tables),
+# so adding them is additive and does not disturb existing data.
+
+
+class StrategicExcoOwner(models.Model):
+    owner_id = models.BigAutoField(primary_key=True)
+    owner_name = models.CharField(max_length=255)
+    owner_division = models.CharField(max_length=255)
+    owner_designation = models.CharField(max_length=255)
+    sales_code = models.CharField(max_length=255, null=True, default="1")
+    owner_ranking = models.BigIntegerField(null=True, default=1)
+    email = models.EmailField(unique=True)
+    history = HistoricalRecords()
+
+    def __str__(self):
+        return self.owner_name
+
+    class Meta:
+        managed = True
+        db_table = "exco_owners"
+        ordering = ["owner_name"]
+
+
+class StrategicThrust(models.Model):
+    thrust_id = models.BigAutoField(primary_key=True)
+    thrust_name = models.CharField(max_length=255)
+    thrust_description = models.CharField(max_length=255)
+    thrust_start_date = models.DateField(blank=True, null=True)
+    thrust_end_date = models.DateField(blank=True, null=True)
+    recording_date = models.DateField(default=timezone.now)
+    history = HistoricalRecords()
+
+    def __str__(self):
+        return self.thrust_name
+
+    class Meta:
+        managed = True
+        db_table = "exco_strategic_thrust"
+        ordering = ["-recording_date"]
+
+
+class StrategicInitiative(models.Model):
+    initiative_id = models.BigAutoField(primary_key=True)
+    thrust = models.ForeignKey(StrategicThrust, on_delete=models.CASCADE)
+    initiative_name = models.CharField(max_length=255)
+    initiative_description = models.CharField(max_length=255, blank=True, null=True)
+    initiative_start_date = models.DateField(blank=True, null=True)
+    initiative_end_date = models.DateField(blank=True, null=True)
+    recording_date = models.DateField(default=timezone.now)
+    primary_owner = models.CharField(max_length=255, blank=True, null=True)
+    co_owners = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_1 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_2 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_3 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_4 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_5 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_6 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_7 = models.CharField(max_length=255, blank=True, null=True)
+    initiative_status = models.CharField(max_length=255)
+    user_comments = models.CharField(max_length=1000, blank=True, null=True)
+    admin_comments = models.CharField(max_length=1000, blank=True, null=True)
+    history = HistoricalRecords()
+
+    def __str__(self):
+        return f"{self.initiative_name} (Thrust: {self.thrust.thrust_name})"
+
+    class Meta:
+        managed = True
+        db_table = "exco_strategic_initiatives"
+        ordering = ["-recording_date"]
+
+
+class StrategicMilestone(models.Model):
+    milestone_id = models.BigAutoField(primary_key=True)
+    thrust = models.ForeignKey(StrategicThrust, on_delete=models.CASCADE)
+    initiative = models.ForeignKey(StrategicInitiative, on_delete=models.CASCADE)
+    milestone_name = models.CharField(max_length=255)
+    milestone_description = models.CharField(max_length=255)
+    milestone_start_date = models.DateField(blank=True, null=True)
+    milestone_end_date = models.DateField(blank=True, null=True)
+    recording_date = models.DateField(default=timezone.now)
+    primary_owner = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_1 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_2 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_3 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_4 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_5 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_6 = models.CharField(max_length=255, blank=True, null=True)
+    co_owner_7 = models.CharField(max_length=255, blank=True, null=True)
+    milestone_status = models.CharField(max_length=255)
+    review_status = models.CharField(max_length=255, default="", blank=True, null=True)
+    proportion_contribution = models.FloatField()
+    proportion_complete = models.FloatField()
+    approved_proportion_complete = models.FloatField()
+    user_comments = models.CharField(max_length=1000, blank=True, null=True)
+    admin_comments = models.CharField(max_length=1000, blank=True, null=True)
+    update_type = models.CharField(max_length=255, blank=True, null=True)
+    sensitivity = models.FloatField(blank=True, null=True)
+    history = HistoricalRecords()
+
+    def __str__(self):
+        return f"{self.milestone_name} (Thrust: {self.thrust.thrust_name})"
+
+    class Meta:
+        managed = True
+        db_table = "exco_strategic_milestones"
+        ordering = ["-recording_date"]
+
 
 class ExcoInitiative(models.Model):
     STATUS_CHOICES = [

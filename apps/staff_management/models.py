@@ -32,7 +32,22 @@ class BranchEmployeeData(models.Model):
         managed = False
         db_table = "employee_table"
 
-# TODO - We shall go through the implementation of Scorecard Automation since there are some models missing
+# ── Scorecard (redesigned) ─────────────────────────────────────────────────────
+# These four models (ScorecardRole/ScorecardKPI/RoleKPIMapping/PerformanceActual)
+# plus EmployeeMonthlyPerformance below are a SIMPLIFIED REDESIGN of the legacy
+# "Scorecard Automation" engine. The legacy engine instead used Role
+# (orgnization_roles), KPI (kpi_definitions), RoleKPIMapping (role_kpi_mappings),
+# EmployeePerformanceActual (employee_performance_actual_values) and a richer
+# EmployeeMonthlyPerformance — driven by per-KPI calculation strategies
+# (actual_over_target / growth_on_growth / inverse_growth / tiered_range), a
+# score_cap, proration for leave, and weighting.
+#
+# NOTE (full-automation port is BLOCKED on a reconciliation decision): the legacy
+# EmployeeMonthlyPerformance maps to the SAME db_table ("employee_monthly_performance")
+# as the redesigned model below but with incompatible columns, so the legacy
+# engine cannot simply be added alongside this one. Reconciling the two (parallel
+# tables under new names, or replacing the redesign) is a deliberate step — see
+# the [[model-gap-audit]] / scorecard reconciliation discussion.
 class ScorecardRole(models.Model):
     name = models.CharField(max_length=255, unique=True)
     description = models.TextField(blank=True, null=True)
@@ -97,7 +112,12 @@ class PerformanceActual(models.Model):
 
 
 class EmployeeMonthlyPerformance(models.Model):
-    # TODO - Explain use of the following model
+    # The generated monthly scorecard for one employee (one row per sales_code +
+    # month). For each pillar — deposits, loans, revenue, new customers — it
+    # stores the actual vs target, the per-pillar score, then the weighted
+    # total_score, the letter grade (A–E) and how many KPIs were met. It is the
+    # OUTPUT of the scorecard computation (actuals + targets in → scored row out),
+    # consumed by the scorecard dashboards and the AI agent's staff-performance tool.
     GRADE_CHOICES = [("A", "A"), ("B", "B"), ("C", "C"), ("D", "D"), ("E", "E")]
 
     sales_code = models.CharField(max_length=50)
@@ -733,3 +753,13 @@ class TelesalesDormantTillsAllocation(models.Model):
     class Meta:
         managed = True
         db_table = "telesales_dormant_tills_allocation"
+
+
+# ── Scorecard automation engine (parallel subsystem) ───────────────────────────
+# Imported here so Django discovers these models under the staff_management app.
+# Their tables are namespaced sc_* and do NOT collide with the redesigned
+# scorecard models above. See scorecard_automation/models.py.
+from apps.staff_management.scorecard_automation.models import (  # noqa: E402,F401
+    ScKpi, ScRole, ScRoleKpiMapping, ScEmployeePerformanceActual,
+    ScEmployeeMonthlyPerformance,
+)

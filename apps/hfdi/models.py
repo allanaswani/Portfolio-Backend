@@ -5,13 +5,6 @@ from django.db import models
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
-# TODO - Missing Models
-# The following original models are missing, and their consequent implementations (serializers, views and urls):
-# 
-# AffordableHousingRegistrations
-# AffordableHousingProjectsPipeline
-# AFHSellerMapping
-# 
 
 
 class Project(models.Model):
@@ -342,3 +335,67 @@ class AffordableHousingApplication(models.Model):
     class Meta:
         managed = True
         db_table = "affordable_housing_applications"
+
+
+class AffordableHousingRegistrations(models.Model):
+    """Affordable-housing prospect registrations (port of legacy model)."""
+    timestamp = models.DateTimeField(blank=True, null=True)
+    name = models.CharField(max_length=255, blank=True, null=True)
+    phone_number = models.BigIntegerField(unique=True)
+    email = models.CharField(max_length=255, blank=True, null=True)
+    assisted_by = models.CharField(max_length=255, blank=True, null=True)
+    user_deposits = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    typology = models.CharField(max_length=200, blank=True, null=True)
+    house_type = models.CharField(max_length=200, default="default")
+    project = models.CharField(max_length=200, blank=True, null=True)
+    unit_price = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "affordable_housing_registrations"
+        verbose_name = "Affordable Housing Registration"
+        verbose_name_plural = "Affordable Housing Registrations"
+
+    def __str__(self):
+        return f"{self.name} - {self.project} - {self.typology}"
+
+
+class AffordableHousingProjectsPipeline(models.Model):
+    """Pipeline of affordable-housing projects (port of legacy model)."""
+    project_name = models.CharField(max_length=255)
+    region = models.CharField(max_length=255)
+    county = models.CharField(max_length=255)
+    mapping = models.CharField(max_length=255, blank=True, null=True)
+    units = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    projected_completion_date = models.CharField(max_length=255, blank=True, null=True)
+    completion_date = models.DateField(blank=True, null=True)
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "affordable_housing_projects_pipeline"
+        verbose_name = "Affordable Housing Projects Pipeline"
+        verbose_name_plural = "Affordable Housing Projects Pipeline"
+
+    def __str__(self):
+        return f"{self.project_name} - {self.county}"
+
+
+class AFHSellerMapping(models.Model):
+    """Maps AFH sellers/staff to their org units (port of legacy model)."""
+    staff_id = models.CharField(max_length=255, blank=True, null=True)
+    afh_name = models.CharField(max_length=255, blank=True, null=True)
+    staff_subsidiary = models.CharField(max_length=255, blank=True, null=True)
+    staff_unit = models.CharField(max_length=255, blank=True, null=True)
+    org_unit = models.CharField(max_length=255, blank=True, null=True)
+    name = models.CharField(max_length=255, blank=True, null=True)
+
+    class Meta:
+        managed = True
+        db_table = "afh_seller_mapping"
+        verbose_name = "AFH Seller Mapping"
+        verbose_name_plural = "AFH Seller Mappings"
+
+    def __str__(self):
+        return f"{self.staff_id} - {self.name}"

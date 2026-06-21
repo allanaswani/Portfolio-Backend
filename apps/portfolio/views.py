@@ -49,12 +49,58 @@ class DynamicFilterCustomerListPaginatedDetailView(generics.ListAPIView):
     serializer_class = HfCustomerSerializer
     pagination_class = StandardPagination
 
+    # Params that steer the query/pagination rather than filter customer columns.
+    _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering"}
+    # Numeric columns that support min_<field> / max_<field> range filtering.
+    _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
+
     def get_queryset(self):
         profile = _get_profile(self.request.user)
         sales_code = self.request.query_params.get("sales_code", profile.sales_code)
         raw_qs = svc.customers(sales_code)
-        # Convert RawQuerySet to list for pagination compatibility
-        return list(raw_qs)
+        # RawQuerySet -> list so we can filter/paginate in Python.
+        customers = list(raw_qs)
+
+        params = self.request.query_params
+        if not params:
+            return customers
+
+        # Dynamic per-column search: any param matching a customer attribute is a
+        # case-insensitive partial match (mirrors the old backend's UI search by
+        # any visible column). Numeric range filters use min_/max_ prefixes.
+        filtered = []
+        for customer in customers:
+            match = True
+
+            for param, value in params.items():
+                if param in self._CONTROL_PARAMS or param.startswith(("min_", "max_")):
+                    continue
+                if hasattr(customer, param) and value != "":
+                    attr = getattr(customer, param, "")
+                    if str(attr if attr is not None else "").lower().find(value.lower()) == -1:
+                        match = False
+                        break
+
+            if match:
+                for field in self._NUMERIC_FIELDS:
+                    field_value = getattr(customer, field, 0) or 0
+                    min_value = params.get(f"min_{field}")
+                    max_value = params.get(f"max_{field}")
+                    try:
+                        if min_value not in (None, "") and float(field_value) < float(min_value):
+                            match = False
+                            break
+                        if max_value not in (None, "") and float(field_value) > float(max_value):
+                            match = False
+                            break
+                    except (TypeError, ValueError):
+                        # Non-numeric query value — ignore that range filter.
+                        continue
+
+            if match:
+                filtered.append(customer)
+
+        return filtered
 
 
 @extend_schema(tags=["Portfolio — Customers"])

@@ -5,7 +5,8 @@ from .models import (
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
-    AffordableHousingApplication,
+    AffordableHousingApplication, AffordableHousingRegistrations,
+    AffordableHousingProjectsPipeline, AFHSellerMapping,
 )
 
 
@@ -114,4 +115,22 @@ class HfdiProjectsInventorySalesDataSerializer(serializers.ModelSerializer):
 class AffordableHousingApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AffordableHousingApplication
+        fields = "__all__"
+
+
+class AffordableHousingRegistrationsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AffordableHousingRegistrations
+        fields = "__all__"
+
+
+class AffordableHousingProjectsPipelineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AffordableHousingProjectsPipeline
+        fields = "__all__"
+
+
+class AFHSellerMappingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AFHSellerMapping
         fields = "__all__"
