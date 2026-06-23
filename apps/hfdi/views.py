@@ -393,7 +393,7 @@ class AffordableHousingApplicationSearchAPIView(DynamicColumnSearchListView):
     serializer_class = AffordableHousingApplicationSerializer
     search_model = AffordableHousingApplication
 
-
+# TODO - Amend the below CSV upload as it has its own custom implementation for amendments on certain columns - reference the old codebase
 @extend_schema(tags=["HFDI — Affordable Housing"])
 class AffordableHousingApplicationCSVUploadView(BaseCsvUploadView):
     serializer_class = AffordableHousingApplicationSerializer
@@ -424,6 +424,7 @@ class AffordableHousingRegistrationsSearchAPIView(DynamicColumnSearchListView):
     search_model = AffordableHousingRegistrations
 
 
+# TODO - Amend the below CSV upload as it has its own custom implementation for amendments on certain columns - reference the old codebase
 @extend_schema(tags=["HFDI — Affordable Housing Registrations"])
 class AffordableHousingRegistrationsCSVUploadView(BaseCsvUploadView):
     serializer_class = AffordableHousingRegistrationsSerializer
