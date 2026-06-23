@@ -8,7 +8,11 @@ from .models import (
     DailyDormancyConvertedAccount, MerchantBankTillManualData, IapplyLoanApproval,
     Product, StaffEmployeeData, LeaveRecord, EmployeeRoleHistory, RmKPIBaseSummary,
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
+    # Managed mirror tables for manual uploads of warehouse datasets
+    DailySalesAccountsWithCtoUpload, DailyDormancyConvertedAccountUpload,
+    MerchantBankTillManualUpload,
 )
+from apps.portfolio.models import RetailAllocatedPortfolioUpload
 
 
 class BranchEmployeeDataSerializer(serializers.ModelSerializer):
@@ -187,4 +191,30 @@ class TelesalesStaffSerializer(serializers.ModelSerializer):
 class TelesalesDormantTillsAllocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = TelesalesDormantTillsAllocation
+        fields = "__all__"
+
+
+# ── Managed mirror serializers (manual uploads of warehouse datasets) ───────────
+
+class DailySalesAccountsWithCtoUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailySalesAccountsWithCtoUpload
+        fields = "__all__"
+
+
+class DailyDormancyConvertedAccountUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailyDormancyConvertedAccountUpload
+        fields = "__all__"
+
+
+class MerchantBankTillManualUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MerchantBankTillManualUpload
+        fields = "__all__"
+
+
+class RetailAllocatedPortfolioUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RetailAllocatedPortfolioUpload
         fields = "__all__"

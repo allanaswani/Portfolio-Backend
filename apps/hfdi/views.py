@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -5,6 +7,7 @@ from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 from core.pagination import StandardPagination, LargePagination
 from core.search import DynamicColumnSearchListView
+from core.csv_upload import AmendingCsvUploadView
 from apps.staff_management.views import BaseCsvUploadView
 import django_filters.rest_framework
 
@@ -261,9 +264,53 @@ class HfdiEmployeeDataSalesRecordSearchAPIView(DynamicColumnSearchListView):
     search_model = HfdiEmployeeDataSalesRecord
 
 
+def _first_of_month(raw):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").replace(day=1).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+class _ManualMonthlyUploadView(AmendingCsvUploadView):
+    """
+    Shared base for the two employee monthly uploads (sales & scorecard). Both:
+    stamp ``input_user`` from the request user, normalise the month column to the 1st,
+    reject rows whose staff_pf_number isn't a known employee, and skip duplicates for
+    the (staff_pf_number, month) pair. Ported from legacy. Insert-only (no upsert).
+    """
+
+    excluded_columns = ("id", "input_user")
+    month_field = None  # set by subclass
+
+    def _input_user(self):
+        u = self.request.user
+        return f"{u.first_name} {u.last_name}".strip()
+
+    def amend_row(self, row):
+        row["input_user"] = self._input_user()
+        row[self.month_field] = _first_of_month(row.get(self.month_field))
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        pf = data.get("staff_pf_number")
+        if not pf or not HfdiEmployeeData.objects.filter(staff_pf_number=pf).exists():
+            return "Invalid or non-existent staff_pf_number in employee table"
+        month = data.get(self.month_field)
+        if self.model.objects.filter(staff_pf_number=pf, **{self.month_field: month}).exists():
+            return f"Duplicate record: staff_pf_number and {self.month_field} combination already exists"
+        serializer.save()
+        return None
+
+
 @extend_schema(tags=["HFDI — Employee Sales"])
-class HfdiEmployeeDataSalesRecordCSVUploadView(BaseCsvUploadView):
+class HfdiEmployeeDataSalesRecordCSVUploadView(_ManualMonthlyUploadView):
+    model = HfdiEmployeeDataSalesRecord
     serializer_class = HfdiEmployeeDataSalesRecordSerializer
+    result_filename = "hfdi_manual_sales_upload_results"
+    month_field = "sale_month"
 
 
 @extend_schema(tags=["HFDI — Scorecard"])
@@ -273,8 +320,11 @@ class HfdiScorecardSearchAPIView(DynamicColumnSearchListView):
 
 
 @extend_schema(tags=["HFDI — Scorecard"])
-class HfdiScorecardCSVUploadView(BaseCsvUploadView):
+class HfdiScorecardCSVUploadView(_ManualMonthlyUploadView):
+    model = HfdiScorecardPerformanceRecord
     serializer_class = HfdiScorecardPerformanceRecordSerializer
+    result_filename = "hfdi_scorecard_performance_upload_results"
+    month_field = "scorecard_month"
 
 
 @extend_schema(tags=["HFDI — Weighted Dashboard"])
@@ -301,8 +351,22 @@ class WeightedDashboardManualSalesSearchAPIView(DynamicColumnSearchListView):
 
 
 @extend_schema(tags=["HFDI — Weighted Dashboard"])
-class WeightedDashboardManualSalesCSVUploadView(BaseCsvUploadView):
+class WeightedDashboardManualSalesCSVUploadView(AmendingCsvUploadView):
+    """Upsert on (project_name, unit_name, sale_month) — ported from legacy."""
+
+    model = WeightedDashboardManualSales
     serializer_class = WeightedDashboardManualSalesSerializer
+    result_filename = "weighted_dashboard_manual_sales_upload_results"
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        WeightedDashboardManualSales.objects.update_or_create(
+            project_name=data.get("project_name"),
+            unit_name=data.get("unit_name"),
+            sale_month=data.get("sale_month"),
+            defaults=data,
+        )
+        return None
 
 
 @extend_schema(tags=["HFDI — Mortgages"])
@@ -329,8 +393,21 @@ class HfdiCustomersHfcMortgagesSearchAPIView(DynamicColumnSearchListView):
 
 
 @extend_schema(tags=["HFDI — Mortgages"])
-class HfdiCustomersHfcMortgagesCSVUploadView(BaseCsvUploadView):
+class HfdiCustomersHfcMortgagesCSVUploadView(AmendingCsvUploadView):
+    """Upsert on (project, unit) — ported from legacy."""
+
+    model = HfdiCustomersHfcMortgages
     serializer_class = HfdiCustomersHfcMortgagesSerializer
+    result_filename = "hfdi_customers_hfc_mortgages_upload_results"
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        HfdiCustomersHfcMortgages.objects.update_or_create(
+            project=data.get("project"),
+            unit=data.get("unit"),
+            defaults=data,
+        )
+        return None
 
 
 # Daily Collections and Inventory Sales are unmanaged warehouse tables
@@ -393,10 +470,29 @@ class AffordableHousingApplicationSearchAPIView(DynamicColumnSearchListView):
     serializer_class = AffordableHousingApplicationSerializer
     search_model = AffordableHousingApplication
 
-# TODO - Amend the below CSV upload as it has its own custom implementation for amendments on certain columns - reference the old codebase
 @extend_schema(tags=["HFDI — Affordable Housing"])
-class AffordableHousingApplicationCSVUploadView(BaseCsvUploadView):
+class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
+    """Upsert by (phone_number, timestamp); house_type derived from preferred_typology."""
+
+    model = AffordableHousingApplication
     serializer_class = AffordableHousingApplicationSerializer
+    result_filename = "affordable_housing_applications_upload_results"
+    excluded_columns = ("id", "house_type")
+
+    def amend_row(self, row):
+        row["house_type"] = self.derive_parenthesised(row.get("preferred_typology"))
+        row["timestamp"] = self.parse_date(row.get("timestamp"), "%d, %B %Y %H:%M")
+        for field in ("unit_price", "deposits"):
+            row[field] = self.clean_number(row.get(field))
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        AffordableHousingApplication.objects.update_or_create(
+            phone_number=data.get("phone_number"),
+            timestamp=data.get("timestamp"),
+            defaults=data,
+        )
+        return None
 
 
 # ── Affordable Housing Registrations ───────────────────────────────────────────
@@ -424,10 +520,35 @@ class AffordableHousingRegistrationsSearchAPIView(DynamicColumnSearchListView):
     search_model = AffordableHousingRegistrations
 
 
-# TODO - Amend the below CSV upload as it has its own custom implementation for amendments on certain columns - reference the old codebase
 @extend_schema(tags=["HFDI — Affordable Housing Registrations"])
-class AffordableHousingRegistrationsCSVUploadView(BaseCsvUploadView):
+class AffordableHousingRegistrationsCSVUploadView(AmendingCsvUploadView):
+    """Upsert keyed on phone_number (instance-based); house_type derived from typology."""
+
+    model = AffordableHousingRegistrations
     serializer_class = AffordableHousingRegistrationsSerializer
+    result_filename = "affordable_housing_registrations_upload_results"
+    excluded_columns = ("id", "house_type")
+
+    def amend_row(self, row):
+        row["house_type"] = self.derive_parenthesised(row.get("typology"))
+        row["timestamp"] = self.parse_date(row.get("timestamp"), "%d, %B %Y %H:%M")
+        for field in ("unit_price", "user_deposits"):
+            row[field] = self.clean_number(row.get(field), dash_to_zero=True)
+
+    def build_serializer(self, row):
+        phone_number_raw = (row.get("phone_number") or "").strip()
+        existing = (
+            AffordableHousingRegistrations.objects.filter(phone_number=phone_number_raw).first()
+            if phone_number_raw
+            else None
+        )
+        return self.serializer_class(instance=existing, data=row)
+
+    def save_valid(self, row, serializer):
+        if not serializer.validated_data.get("phone_number"):
+            return {"phone_number": "This field is required for upsert."}
+        serializer.save()
+        return None
 
 
 # ── Affordable Housing Projects Pipeline ───────────────────────────────────────
@@ -456,8 +577,26 @@ class AffordableHousingProjectsPipelineSearchAPIView(DynamicColumnSearchListView
 
 
 @extend_schema(tags=["HFDI — Affordable Housing Pipeline"])
-class AffordableHousingProjectsPipelineCSVUploadView(BaseCsvUploadView):
+class AffordableHousingProjectsPipelineCSVUploadView(AmendingCsvUploadView):
+    """Upsert on project_name; cleans the comma-grouped ``units`` column. Ported from legacy."""
+
+    model = AffordableHousingProjectsPipeline
     serializer_class = AffordableHousingProjectsPipelineSerializer
+    result_filename = "affordable_housing_projects_pipeline_upload_results"
+
+    def amend_row(self, row):
+        row["units"] = self.clean_number(row.get("units"))
+        row["completion_date"] = (row.get("completion_date") or "").strip() or None
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        if not data.get("project_name"):
+            return {"project_name": "This field is required for upsert."}
+        AffordableHousingProjectsPipeline.objects.update_or_create(
+            project_name=data.get("project_name"),
+            defaults=data,
+        )
+        return None
 
 
 # ── AFH Seller Mapping ─────────────────────────────────────────────────────────
@@ -486,8 +625,20 @@ class AFHSellerMappingSearchAPIView(DynamicColumnSearchListView):
 
 
 @extend_schema(tags=["HFDI — AFH Seller Mapping"])
-class AFHSellerMappingCSVUploadView(BaseCsvUploadView):
+class AFHSellerMappingCSVUploadView(AmendingCsvUploadView):
+    """Upsert on staff_id — ported from legacy."""
+
+    model = AFHSellerMapping
     serializer_class = AFHSellerMappingSerializer
+    result_filename = "afh_seller_mapping_upload_results"
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        AFHSellerMapping.objects.update_or_create(
+            staff_id=data.get("staff_id"),
+            defaults=data,
+        )
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

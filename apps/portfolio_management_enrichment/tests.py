@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -133,3 +134,55 @@ class ReallocationWorkflowTests(TestCase):
         exco = _user("exco1", "exco", "EX001", "retail")
         r = _client(exco).post(f"{PME}api/update-portfolio-allocation/", {}, format="json")
         self.assertEqual(r.status_code, 501, r.content)
+
+
+# ── CustomerAllocationBase CSV upload (cust_id upsert + changed_fields + ZIP) ────
+
+def _alloc_csv(rows):
+    """CSV covering every editable column of CustomerAllocationBase with type-valid fills."""
+    import csv
+    import io
+    from django.db import models as dm
+
+    fields = [f for f in CustomerAllocationBase._meta.concrete_fields if f.editable and f.name != "id"]
+    cols = [f.name for f in fields]
+
+    def default_for(f):
+        if isinstance(f, dm.EmailField):
+            return "a@b.com"
+        if isinstance(f, (dm.IntegerField, dm.BigIntegerField, dm.DecimalField, dm.FloatField)):
+            return "0"
+        return "x"
+
+    by_name = {f.name: f for f in fields}
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols)
+    w.writeheader()
+    for r in rows:
+        w.writerow({c: r[c] if c in r else default_for(by_name[c]) for c in cols})
+    return SimpleUploadedFile("alloc.csv", buf.getvalue().encode("utf-8"), content_type="text/csv")
+
+
+class CustomerAllocationBaseUploadTests(TestCase):
+    def setUp(self):
+        self.client = _client(_user("up1", "portfolio_mgt", "PM1"))
+
+    def test_create_then_update_tracks_changed_fields(self):
+        url = f"{PME}api/csv-upload/"
+        r = self.client.post(url, {"file": _alloc_csv([{"cust_id": "C1", "customer_name": "Alpha", "rm_name": "RM A"}])}, format="multipart")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("application/zip", r["Content-Type"])
+        self.assertEqual(CustomerAllocationBase.objects.filter(cust_id="C1").count(), 1)
+        self.assertEqual(CustomerAllocationBase.objects.get(cust_id="C1").rm_name, "RM A")
+
+        # Re-upload with a changed rm_name → updates same row (no duplicate).
+        r = self.client.post(url, {"file": _alloc_csv([{"cust_id": "C1", "customer_name": "Alpha", "rm_name": "RM B"}])}, format="multipart")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(CustomerAllocationBase.objects.filter(cust_id="C1").count(), 1)
+        self.assertEqual(CustomerAllocationBase.objects.get(cust_id="C1").rm_name, "RM B")
+
+    def test_missing_columns_rejected(self):
+        bad = SimpleUploadedFile("bad.csv", b"cust_id\nC9\n", content_type="text/csv")
+        r = self.client.post(f"{PME}api/csv-upload/", {"file": bad}, format="multipart")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("missing", str(r.data).lower())

@@ -350,46 +350,125 @@ class TransferFeedbackHistoryView(APIView):
 
 @extend_schema(tags=[_TAG])
 class CustomerAllocationBaseCSVUploadView(APIView):
-    """Upsert CustomerAllocationBase rows from a CSV (keyed on cust_id)."""
+    """
+    Upsert CustomerAllocationBase rows from a CSV, keyed on ``cust_id`` (ported from
+    legacy). Existing customers are partially updated and the response reports which
+    columns CHANGED per row; new customers are created. Returns a ZIP of
+    successful_records.csv / failed_records.csv (the contract the frontend's
+    ``downloadUploadResults`` consumes) — NOT JSON.
+    """
     permission_classes = [IsAuthenticated]
+
+    # Defaults applied to optional columns absent from the CSV (legacy behaviour).
+    _OPTIONAL_DEFAULTS = {
+        "main_segment_prev": "", "proposed_segment": "", "aum_group": "0.00",
+        "aum_cust_id": "0.00", "rm_code_prev": "", "rm_name_prev": "", "rm_role_prev": "",
+        "rm_branch_prev": "", "rm_segment_prev": "", "rank_branch": "0", "rank_rm_code": "0",
+        "rm_role": "", "rm_branch_code": "", "rm_active_status": "Active", "source": "CSV Upload",
+        "interest_income": "0.00", "nfi": "0.00", "interest_expense": "0.00",
+        "net_after_expense": "0.00", "loan_loss": "0.00", "ftp": "0.00", "npl": "0.00",
+        "active_one_month": "0.00", "active_two_month": "0.00", "active_three_month": "0.00",
+        "deposit": None, "loans": None, "address": None, "telephone": None,
+        "home_telephone": None, "mobile_tel": None, "mobile_tel2": None, "telephone_1": None,
+        "id_no": None, "sex": None, "e_mail": None, "e_mail2": None,
+    }
+    # Columns the CSV must carry (the non-defaulted, required ones).
+    _REQUIRED = (
+        "group_id", "cust_id", "customer_name", "segment", "main_segment",
+        "customer_branch_name", "cust_branch", "rm_code", "rm_name", "rm_branch_name",
+    )
+
+    def _row_to_data(self, row):
+        data = {col: row[col] for col in self._REQUIRED}          # KeyError → row fails
+        for col, default in self._OPTIONAL_DEFAULTS.items():
+            data[col] = row.get(col, default)
+        return data
+
+    @staticmethod
+    def _out_row(data, **extra):
+        out = {
+            "cust_id": data.get("cust_id"), "customer_name": data.get("customer_name"),
+            "rm_code": data.get("rm_code"), "rm_name": data.get("rm_name"),
+            "rm_role": data.get("rm_role"), "rm_branch": data.get("rm_branch_name"),
+        }
+        out.update(extra)
+        return out
 
     def post(self, request):
         import csv
         import io
+        import zipfile
+
+        import chardet
+        from django.http import HttpResponse
 
         upload = request.FILES.get("file")
         if not upload:
-            return Response({"detail": "No file uploaded. Send a CSV in the 'file' field."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "No file uploaded"}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            text = upload.read().decode("utf-8-sig")
-        except UnicodeDecodeError:
-            return Response({"detail": "File must be UTF-8 encoded CSV."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            raw = upload.read()
+            encoding = chardet.detect(raw)["encoding"] or "utf-8"
+            reader = csv.DictReader(raw.decode(encoding).splitlines())
 
-        rows = list(csv.DictReader(io.StringIO(text)))
-        if not rows:
-            return Response({"detail": "CSV has no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+            required_columns = [
+                f.name for f in CustomerAllocationBase._meta.concrete_fields
+                if f.editable and f.name != "id"
+            ]
+            missing = [c for c in required_columns if c not in (reader.fieldnames or [])]
+            if missing:
+                return Response(
+                    {"error": f"The following columns are missing in the CSV: {missing}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        created, updated, errors = 0, 0, []
-        for idx, row in enumerate(rows):
-            cust_id = (row.get("cust_id") or "").strip()
-            if not cust_id:
-                errors.append({"row": idx + 2, "errors": "missing cust_id"})
-                continue
-            existing = CustomerAllocationBase.objects.filter(cust_id=cust_id).first()
-            ser = CustomerAllocationBaseSerializer(existing, data=row, partial=bool(existing))
-            if ser.is_valid():
-                ser.save()
-                updated += 1 if existing else 0
-                created += 0 if existing else 1
-            else:
-                errors.append({"row": idx + 2, "errors": ser.errors})
+            success_buffer, fail_buffer = io.StringIO(), io.StringIO()
+            success_fields = ["cust_id", "customer_name", "rm_code", "rm_name", "rm_role", "rm_branch", "changed_fields"]
+            error_fields = ["cust_id", "customer_name", "rm_code", "rm_name", "rm_role", "rm_branch", "error"]
+            success_writer = csv.DictWriter(success_buffer, fieldnames=success_fields)
+            fail_writer = csv.DictWriter(fail_buffer, fieldnames=error_fields)
+            success_writer.writeheader()
+            fail_writer.writeheader()
 
-        return Response(
-            {"created": created, "updated": updated, "errors": errors[:50], "error_count": len(errors)},
-            status=status.HTTP_201_CREATED if (created or updated) else status.HTTP_400_BAD_REQUEST,
-        )
+            for row in reader:
+                try:
+                    data = self._row_to_data(row)
+                    existing = CustomerAllocationBase.objects.filter(cust_id=data["cust_id"]).first()
+                    if existing:
+                        ser = CustomerAllocationBaseSerializer(existing, data=data, partial=True)
+                        if ser.is_valid():
+                            before = CustomerAllocationBaseSerializer(existing).data
+                            ser.save()
+                            after = ser.data
+                            changed = [f for f in data if str(before.get(f)) != str(after.get(f))]
+                            success_writer.writerow(self._out_row(
+                                data, changed_fields=", ".join(changed) if changed else "No changes"))
+                        else:
+                            fail_writer.writerow(self._out_row(data, error=self._fmt_errors(ser.errors)))
+                    else:
+                        ser = CustomerAllocationBaseSerializer(data=data)
+                        if ser.is_valid():
+                            ser.save()
+                            success_writer.writerow(self._out_row(data, changed_fields="New record"))
+                        else:
+                            fail_writer.writerow(self._out_row(data, error=self._fmt_errors(ser.errors)))
+                except Exception as exc:  # noqa: BLE001 — per-row failure (e.g. missing required column)
+                    fail_writer.writerow(self._out_row(row, error=str(exc)))
+
+            response = HttpResponse(content_type="application/zip")
+            response["Content-Disposition"] = 'attachment; filename="customer_allocation_upload_results.zip"'
+            success_buffer.seek(0)
+            fail_buffer.seek(0)
+            with zipfile.ZipFile(response, "w") as zf:
+                zf.writestr("successful_records.csv", success_buffer.getvalue())
+                zf.writestr("failed_records.csv", fail_buffer.getvalue())
+            return response
+        except Exception as exc:  # noqa: BLE001 — legacy contract: surface any parse error
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @staticmethod
+    def _fmt_errors(errors):
+        return "; ".join(f"{field}: {', '.join(map(str, errs))}" for field, errs in errors.items())
 
 
 @extend_schema(tags=[_TAG])

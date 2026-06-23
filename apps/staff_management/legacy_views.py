@@ -3,9 +3,11 @@ Views for the legacy staff_management tables ported from hf_group_project-master
 
 - managed=True tables → full CRUD (list/create, retrieve/update/destroy) + CSV upload.
 - managed=False tables → read-only (list/retrieve) because they live in the
-  datawarehouse and the DB router blocks writes to them. CSV upload for the
-  manual-entry warehouse tables (products, merchant tills, weighted-sales) is
-  intentionally NOT wired until a write-target is agreed (see MODEL-GAP-AUDIT.md).
+  datawarehouse and the DB router blocks writes to them. ETL populates them.
+- Manual CSV uploads of those warehouse datasets (merchant tills, weighted-sales
+  daily accounts/dormancy, retail-allocated-portfolio) write to MANAGED *_upload
+  mirror tables instead (same columns, default DB) — see the mirror views at the
+  bottom of this module. The warehouse read endpoints (ETL data) are untouched.
 """
 
 import django_filters.rest_framework
@@ -17,7 +19,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import StandardPagination
+from core.csv_upload import AmendingCsvUploadView
 
+from . import rm_kpi_base_summary_service
 from .views import BaseCsvUploadView
 from .models import (
     BranchEmployeeDmcData, BranchFinalEmployeeDmcData, Drawdown, DrawdownDaily,
@@ -25,7 +29,10 @@ from .models import (
     DailyDormancyConvertedAccount, MerchantBankTillManualData, IapplyLoanApproval,
     Product, StaffEmployeeData, LeaveRecord, EmployeeRoleHistory, RmKPIBaseSummary,
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
+    DailySalesAccountsWithCtoUpload, DailyDormancyConvertedAccountUpload,
+    MerchantBankTillManualUpload,
 )
+from apps.portfolio.models import RetailAllocatedPortfolioUpload
 from .serializers import (
     BranchEmployeeDmcDataSerializer, BranchFinalEmployeeDmcDataSerializer,
     DrawdownSerializer, DrawdownDailySerializer, InsurancePolicySerializer,
@@ -36,6 +43,8 @@ from .serializers import (
     EmployeeRoleHistorySerializer, RmKPIBaseSummarySerializer,
     MissingEmployeeActualSerializer, TelesalesStaffSerializer,
     TelesalesDormantTillsAllocationSerializer,
+    DailySalesAccountsWithCtoUploadSerializer, DailyDormancyConvertedAccountUploadSerializer,
+    MerchantBankTillManualUploadSerializer, RetailAllocatedPortfolioUploadSerializer,
 )
 
 TAG = ["Staff Management — Legacy Data"]
@@ -62,8 +71,23 @@ class BranchEmployeeDmcDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @extend_schema(tags=TAG)
-class BranchEmployeeDmcCsvUploadView(BaseCsvUploadView):
+class BranchEmployeeDmcCsvUploadView(AmendingCsvUploadView):
+    """Upsert on (staff_pf_number, sales_code, staff_role) — ported from legacy."""
+
+    model = BranchEmployeeDmcData
     serializer_class = BranchEmployeeDmcDataSerializer
+    result_filename = "branch_employee_dmc_data_upload_results"
+    excluded_columns = ("id", "updated_at")
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        BranchEmployeeDmcData.objects.update_or_create(
+            staff_pf_number=data.get("staff_pf_number"),
+            sales_code=data.get("sales_code"),
+            staff_role=data.get("staff_role"),
+            defaults=data,
+        )
+        return None
 
 
 @extend_schema(tags=TAG)
@@ -84,8 +108,21 @@ class BranchFinalEmployeeDmcDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @extend_schema(tags=TAG)
-class BranchFinalEmployeeDmcCsvUploadView(BaseCsvUploadView):
+class BranchFinalEmployeeDmcCsvUploadView(AmendingCsvUploadView):
+    """Upsert on staff_branch — ported from legacy."""
+
+    model = BranchFinalEmployeeDmcData
     serializer_class = BranchFinalEmployeeDmcDataSerializer
+    result_filename = "branch_final_employee_dmc_data_upload_results"
+    excluded_columns = ("id", "updated_at", "date_update_etl")
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        BranchFinalEmployeeDmcData.objects.update_or_create(
+            staff_branch=data.get("staff_branch"),
+            defaults=data,
+        )
+        return None
 
 
 # ── Drawdown (managed) + DrawdownDaily (warehouse, read-only) ──────────────────
@@ -149,8 +186,31 @@ class InsurancePolicyDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @extend_schema(tags=TAG)
-class InsurancePolicyCsvUploadView(BaseCsvUploadView):
+class InsurancePolicyCsvUploadView(AmendingCsvUploadView):
+    """
+    Replace-by-year load: delete existing rows for the upload's year, then insert.
+    Parses dd/mm/YYYY dates and coerces money columns (blank → 0). Ported from legacy.
+
+    Faithfulness note: the legacy view consumed the first data row via ``next(reader)``
+    just to read its year, silently dropping it. ``before_rows`` reads the year from
+    the full list, so every row is now imported.
+    """
+
+    model = InsurancePolicy
     serializer_class = InsurancePolicySerializer
+    result_filename = "insurance_policy_upload_results"
+    excluded_columns = ("id", "updated_at")
+    _MONEY = ("sum_insured", "premiums", "paid", "balance", "commission")
+
+    def before_rows(self, rows):
+        if rows and rows[0].get("year"):
+            InsurancePolicy.objects.filter(year=rows[0]["year"]).delete()
+
+    def amend_row(self, row):
+        row["starting_date"] = self.parse_date(row.get("starting_date"), "%d/%m/%Y", "%Y-%m-%d")
+        row["ending_date"] = self.parse_date(row.get("ending_date"), "%d/%m/%Y", "%Y-%m-%d")
+        for field in self._MONEY:
+            row[field] = self.to_float(row.get(field))
 
 
 # ── Trade finance (managed) ───────────────────────────────────────────────────
@@ -173,8 +233,27 @@ class TradeFinanceDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @extend_schema(tags=TAG)
-class TradeFinanceCsvUploadView(BaseCsvUploadView):
+class TradeFinanceCsvUploadView(AmendingCsvUploadView):
+    """
+    Replace-by-year load: delete rows for the upload's year, then insert. Coerces
+    money/rate columns (blank → 0, fx_rate blank → 1). Ported from legacy.
+    (Same first-row fix as InsurancePolicyCsvUploadView.)
+    """
+
+    model = TradeFinanceData
     serializer_class = TradeFinanceDataSerializer
+    result_filename = "trade_finance_data_upload_results"
+    excluded_columns = ("id", "updated_at")
+    _MONEY = ("amount_fcy", "commission_lcy", "cash_cover_amount", "cash_cover_percentage")
+
+    def before_rows(self, rows):
+        if rows and rows[0].get("year"):
+            TradeFinanceData.objects.filter(year=rows[0]["year"]).delete()
+
+    def amend_row(self, row):
+        for field in self._MONEY:
+            row[field] = self.to_float(row.get(field))
+        row["fx_rate"] = self.to_float(row.get("fx_rate"), default=1.0)
 
 
 # ── Customer monthly FTP (managed) ────────────────────────────────────────────
@@ -345,23 +424,37 @@ class RmKPIBaseSummaryDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @extend_schema(tags=TAG)
-class RmKPIBaseSummaryCsvUploadView(BaseCsvUploadView):
+class RmKPIBaseSummaryCsvUploadView(AmendingCsvUploadView):
+    """
+    Upsert RM KPIs from a long-form CSV (one row per KPI), keyed on
+    (sales_code, eom_date, kpi_code). Ported from the legacy upsert uploader.
+    """
+
+    model = RmKPIBaseSummary
     serializer_class = RmKPIBaseSummarySerializer
+    result_filename = "rm_kpi_base_summary_upload_results"
+
+    def save_valid(self, row, serializer):
+        rm_kpi_base_summary_service.upsert_rm_kpi_base_summary(serializer.validated_data)
+        return None
 
 
 @extend_schema(tags=TAG)
 class RmKPIBaseSummaryRefreshView(APIView):
     """
-    Placeholder refresh hook. The original ETL that repopulates
-    ``rm_kpi_base_summary`` lives outside this service; this endpoint
-    acknowledges the trigger so the frontend button works.
+    Recompute ``rm_kpi_base_summary`` from ``customer_allocation_base`` — the legacy
+    pivot that derives six RM KPIs per rm_code and upserts them as long-form rows.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        result = rm_kpi_base_summary_service.bulk_insert_from_kpi_query()
         return Response({
-            "status": "triggered",
-            "message": "RM KPI base summary refresh requested.",
+            "status": "completed",
+            "message": "RM KPI base summary recomputed from customer_allocation_base.",
+            "inserted": result["inserted"],
+            "error_count": len(result["errors"]),
+            "errors": result["errors"][:50],
             "rows": RmKPIBaseSummary.objects.count(),
             "triggered_at": timezone.now().isoformat(),
         })
@@ -492,3 +585,89 @@ class RetailAllocatedPortfolioDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         from apps.portfolio.models import RetailAllocatedPortfolio
         return RetailAllocatedPortfolio.objects.all()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Managed mirror tables for manual CSV uploads of warehouse datasets
+# ──────────────────────────────────────────────────────────────────────────────
+# The warehouse models (managed=False) are read-only via the router. These views
+# write/read the managed *_upload mirror tables so manual uploads persist. List +
+# CSV upload; the CSV upload returns the legacy results-ZIP via AmendingCsvUploadView.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@extend_schema(tags=TAG)
+class DailySalesAccountsWithCtoUploadListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = DailySalesAccountsWithCtoUploadSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["cust_cif", "brn_code", "sale_code", "customer_segment", "account_status"]
+    queryset = DailySalesAccountsWithCtoUpload.objects.all()
+
+
+@extend_schema(tags=TAG)
+class DailySalesAccountsWithCtoUploadCsvView(AmendingCsvUploadView):
+    model = DailySalesAccountsWithCtoUpload
+    serializer_class = DailySalesAccountsWithCtoUploadSerializer
+    result_filename = "weighted_sales_daily_accounts_upload_results"
+
+
+@extend_schema(tags=TAG)
+class DailyDormancyConvertedAccountUploadListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = DailyDormancyConvertedAccountUploadSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["cust_cif", "brn_code", "customer_segment", "current_status"]
+    queryset = DailyDormancyConvertedAccountUpload.objects.all()
+
+
+@extend_schema(tags=TAG)
+class DailyDormancyConvertedAccountUploadCsvView(AmendingCsvUploadView):
+    model = DailyDormancyConvertedAccountUpload
+    serializer_class = DailyDormancyConvertedAccountUploadSerializer
+    result_filename = "weighted_sales_dormancy_converted_upload_results"
+
+
+@extend_schema(tags=TAG)
+class MerchantBankTillManualUploadListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = MerchantBankTillManualUploadSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["seller_code", "sellercode", "current_branch", "brn_zone", "staff_role"]
+    queryset = MerchantBankTillManualUpload.objects.all()
+
+
+@extend_schema(tags=TAG)
+class MerchantBankTillManualUploadCsvView(AmendingCsvUploadView):
+    model = MerchantBankTillManualUpload
+    serializer_class = MerchantBankTillManualUploadSerializer
+    result_filename = "merchant_bank_till_manual_upload_results"
+
+
+@extend_schema(tags=TAG)
+class RetailAllocatedPortfolioUploadListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = RetailAllocatedPortfolioUploadSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["cust_id", "sales_code", "branch", "main_segment"]
+    queryset = RetailAllocatedPortfolioUpload.objects.all()
+
+
+@extend_schema(tags=TAG)
+class RetailAllocatedPortfolioUploadCsvView(AmendingCsvUploadView):
+    """Upsert on cust_id (ported from the legacy retail-allocated-portfolio uploader)."""
+
+    model = RetailAllocatedPortfolioUpload
+    serializer_class = RetailAllocatedPortfolioUploadSerializer
+    result_filename = "retail_allocated_portfolio_upload_results"
+    excluded_columns = ("id", "updated_at", "uploaded_at")
+
+    def save_valid(self, row, serializer):
+        RetailAllocatedPortfolioUpload.objects.update_or_create(
+            cust_id=serializer.validated_data.get("cust_id"),
+            defaults=serializer.validated_data,
+        )
+        return None

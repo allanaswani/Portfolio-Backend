@@ -116,6 +116,29 @@ class RetailAllocatedPortfolio(models.Model):
         db_table = "retail_allocated_portfolio"
 
 
+class RetailAllocatedPortfolioUpload(models.Model):
+    """
+    Managed mirror of ``retail_allocated_portfolio`` for manual CSV uploads. The
+    warehouse table above is managed=False (router blocks writes); this carries the
+    same columns, managed=True on the default DB, so the legacy cust_id-upsert upload
+    has a write target.
+    """
+    cust_id = models.IntegerField(blank=True, null=True)
+    customer_name = models.TextField(blank=True, null=True)
+    sales_code = models.TextField(blank=True, null=True)
+    rm_name = models.TextField(blank=True, null=True)
+    email = models.TextField(blank=True, null=True)
+    branch = models.IntegerField(blank=True, null=True)
+    main_segment = models.CharField(max_length=100, blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "retail_allocated_portfolio_upload"
+        ordering = ["-uploaded_at"]
+
+
 class HfCustomer(models.Model):
     cust_id = models.DecimalField(primary_key=True, max_digits=65535, decimal_places=65535)
     latin_surname = models.TextField(blank=True, null=True)

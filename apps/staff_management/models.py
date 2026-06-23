@@ -755,6 +755,85 @@ class TelesalesDormantTillsAllocation(models.Model):
         db_table = "telesales_dormant_tills_allocation"
 
 
+# ── Managed mirror tables for manual CSV uploads of warehouse datasets ──────────
+# The warehouse models above (DailySalesAccountsWithCto, DailyDormancyConvertedAccount,
+# MerchantBankTillManualData) are managed=False — the DB router routes them to the
+# read-only datawarehouse and BLOCKS writes, so CSV upload had no write target. These
+# mirror models carry the SAME columns but managed=True on the default DB (distinct
+# *_upload db_table) so manual uploads persist. ETL-populated reads keep using the
+# warehouse models; manual uploads read/write these.
+
+class DailySalesAccountsWithCtoUpload(models.Model):
+    cust_cif = models.BigIntegerField(blank=True, null=True)
+    cust_open_date = models.DateField(blank=True, null=True)
+    full_name = models.CharField(max_length=200, blank=True, null=True)
+    brn_code = models.IntegerField(blank=True, null=True)
+    acc_num = models.CharField(max_length=255, blank=True, null=True)
+    sale_code = models.CharField(max_length=255, blank=True, null=True)
+    prod_id = models.IntegerField(blank=True, null=True)
+    customer_segment = models.CharField(max_length=255, blank=True, null=True)
+    acc_open_date = models.DateField(blank=True, null=True)
+    bal = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    cust_cto = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    account_cto = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    dec_23_bal = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    curr_24_bal = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    total_account_before_2024 = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    account_status = models.CharField(max_length=255, blank=True, null=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "daily_sales_accounts_with_cto_upload"
+        ordering = ["-uploaded_at"]
+
+
+class DailyDormancyConvertedAccountUpload(models.Model):
+    acc_num = models.CharField(max_length=255, blank=True, null=True)
+    cust_cif = models.BigIntegerField(blank=True, null=True)
+    brn_code = models.IntegerField(blank=True, null=True)
+    prod_id = models.IntegerField(blank=True, null=True)
+    full_name = models.CharField(max_length=200, blank=True, null=True)
+    customer_segment = models.CharField(max_length=20, blank=True, null=True)
+    last_dormant_date = models.DateField(blank=True, null=True)
+    current_status = models.CharField(max_length=20, blank=True, null=True)
+    current_bal = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    reactivation_date = models.DateField(blank=True, null=True)
+    action_user = models.CharField(max_length=200, blank=True, null=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "daily_dormancy_converted_accounts_upload"
+        ordering = ["-uploaded_at"]
+
+
+class MerchantBankTillManualUpload(models.Model):
+    merchant_id = models.CharField(max_length=200, null=True, blank=True)
+    credit_account = models.CharField(max_length=200, null=True, blank=True)
+    account_no = models.CharField(max_length=200, null=True, blank=True)
+    account_name = models.CharField(max_length=255, null=True, blank=True)
+    creation_date = models.DateTimeField(null=True, blank=True)
+    sellercode = models.CharField(max_length=200, null=True, blank=True)
+    kra_pin = models.CharField(max_length=200, null=True, blank=True)
+    current_branch = models.CharField(max_length=200, null=True, blank=True)
+    brn_zone = models.CharField(max_length=200, null=True, blank=True)
+    seller_code = models.CharField(max_length=200, null=True, blank=True)
+    staff_role = models.CharField(max_length=200, null=True, blank=True)
+    staff_name = models.CharField(max_length=200, null=True, blank=True)
+    first_time_trx = models.DateTimeField(null=True, blank=True)
+    latest_time_trx = models.DateTimeField(null=True, blank=True)
+    number_trx_since_inception = models.IntegerField(null=True, blank=True)
+    amount_since_inception = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    current_balance = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "merchant_bank_till_manual_upload"
+        ordering = ["-uploaded_at"]
+
+
 # ── Scorecard automation engine (parallel subsystem) ───────────────────────────
 # Imported here so Django discovers these models under the staff_management app.
 # Their tables are namespaced sc_* and do NOT collide with the redesigned

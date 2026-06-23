@@ -124,4 +124,15 @@ urlpatterns = [
     path("iapply-loan-approvals/",               lv.IapplyLoanApprovalListView.as_view()),
     path("retail-allocated-portfolio/<int:pk>/", lv.RetailAllocatedPortfolioDetailView.as_view()),
     path("retail-allocated-portfolio/",          lv.RetailAllocatedPortfolioListView.as_view()),
+
+    # Manual CSV uploads of warehouse datasets → managed *_upload mirror tables.
+    # upload-csv/ = write target (legacy results-ZIP); uploads/ = read the mirror.
+    path("merchant-bank-tills-manual/upload-csv/",        lv.MerchantBankTillManualUploadCsvView.as_view()),
+    path("merchant-bank-tills-manual/uploads/",           lv.MerchantBankTillManualUploadListView.as_view()),
+    path("weighted-sales-daily-accounts/upload-csv/",     lv.DailySalesAccountsWithCtoUploadCsvView.as_view()),
+    path("weighted-sales-daily-accounts/uploads/",        lv.DailySalesAccountsWithCtoUploadListView.as_view()),
+    path("weighted-sales-dormancy-converted/upload-csv/", lv.DailyDormancyConvertedAccountUploadCsvView.as_view()),
+    path("weighted-sales-dormancy-converted/uploads/",    lv.DailyDormancyConvertedAccountUploadListView.as_view()),
+    path("retail-allocated-portfolio/upload-csv/",        lv.RetailAllocatedPortfolioUploadCsvView.as_view()),
+    path("retail-allocated-portfolio/uploads/",           lv.RetailAllocatedPortfolioUploadListView.as_view()),
 ]
