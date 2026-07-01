@@ -1,150 +1,158 @@
 # Model Gap Audit — Old Backend → New Backend
 
-_Generated: 2026-06-09. Source of truth: parsed every `models.py` in
-`hf_group_project-master` (old) vs `hf_group_backend/apps` (new), keyed by
-`db_table`, with field-level diffs on shared tables._
+_Last refreshed: **2026-07-01**. Source of truth: AST-parsed every `models.py` in
+`_old_codebase_ref/hf_group_project` (old) vs `hf_group_backend/apps` (new), keyed
+by `db_table`, with field-level diffs on shared tables._
 
-This is the **migration-safety** audit: which production tables and fields the
-new backend does **not** yet implement, so we don't lose data or break the
-frontend during cut-over.
+This is the **migration-safety** audit: which production tables and fields the new
+backend does **not** implement, so we don't lose data or break the frontend during
+cut-over.
 
----
-
-## Headline
-
-- Old backend models: **90** across 11 apps.
-- New backend models: **66** across 15 apps.
-- **36 old tables have no model in the new backend.**
-- **12 new tables did not exist in the old backend** (greenfield redesigns).
-- Field-level gaps on shared tables: **1** model (12 columns).
-
-The 36 missing tables fall into **5 categories** below. Not all are "port it
-verbatim" — three apps were *redesigned* into unrelated tables, which is the
-biggest migration risk because the **old production data has nowhere to land**.
+> History: the original audit (2026-06-09) reported **36 missing tables**. Nearly all
+> have since been ported (staff_management legacy models, scorecard engine, exco
+> hierarchy, enrichment reallocation, hfdi AFH tables, CSV uploaders). This refresh
+> reflects the **current** state after that work.
 
 ---
 
-## STATUS (2026-06-09)
+## Headline (2026-07-01)
 
-- **Category A — DONE.** All 19 legacy staff_management models ported to
-  `apps/staff_management/models.py` (exact `db_table`/`managed`/fields), with
-  serializers, views (`legacy_views.py`), URLs, migration
-  `0002_dailydormancyconvertedaccount_and_more`, and 9 new tests (30/30 project
-  tests pass). `managed=True` tables got full CRUD + CSV; `managed=False`
-  warehouse tables got read-only list/detail.
-- **Deferred — CSV upload to `managed=False` warehouse tables** (`products`,
-  `merchant-bank-tills-manual`, `weighted-sales-daily-accounts`,
-  `weighted-sales-dormancy-converted`, `retail-allocated-portfolio`): the DB
-  router **blocks writes** to unmanaged tables, so these uploads need a decided
-  write target (make the table app-managed, or write explicitly via the
-  warehouse connection). Not wired to avoid silent failures.
-- **Category B/D/E still pending:** legacy scorecard port (+ `employee_monthly_performance`
-  table conflict), exco/enrichment/rights divergent ports, hfdi 12-column fix.
-- **Agent → Claude:** pending (decision made, not yet implemented).
+- Old backend models: **87** (83 with an explicit `db_table`).
+- New backend models: **101** (100 with an explicit `db_table`).
+- **Missing tables: 6** — but only **2** are genuinely unported (see below).
+- **Column gaps on shared tables: 1** (intentional redesign; was 3, 2 now fixed).
+- **23 new tables** did not exist in the old backend (greenfield: mortgages,
+  agent, analytics, insights, client_briefs, slideshow, scorecard redesign,
+  `sc_*` engine, warehouse `*_upload` mirrors).
+
+**Bottom line: no data-loss gaps in any table the new backend *manages*.** The two
+remaining missing tables are the redesigned rights-issue app (product decision), and
+the one remaining column gap is a deliberate schema redesign.
 
 ---
 
-## Category A — Genuine unported tables (staff_management). DONE.
+## Missing tables — 6 (only 2 are real)
 
-These exist in the old backend, hold/serve real data, and the frontend calls
-them (see `frontend_endpoint_gap.md`: 44 missing `staff_management` endpoints).
-No equivalent in the new backend. `managed` flag must be copied **exactly**.
+| Old table | Old model | Status in new backend |
+|---|---|---|
+| `kpi_definitions` | KPI | ✅ Re-created as `sc_kpi_definitions` (ScKpi) + `scorecard_kpis` (ScorecardKPI) |
+| `orgnization_roles` | Role | ✅ Re-created as `sc_organization_roles` (ScRole) + `scorecard_roles` (ScorecardRole) |
+| `role_kpi_mappings` | RoleKPIMapping | ✅ Re-created as `sc_role_kpi_mappings` + `scorecard_role_kpi_mappings` |
+| `employee_performance_actual_values` | EmployeePerformanceActual | ✅ Re-created as `sc_employee_performance_actual_values` + `scorecard_performance_actuals` |
+| **`security_detail`** | SecurityDetail | ❌ **NOT ported** — rights-issue redesigned to `hf_rights_issue_applications` (incompatible schema) |
+| **`customer_feedback_rights_issue`** | CustomerFeedbackRightsIssue | ❌ **NOT ported** |
 
-| Old model | db_table | managed | Frontend resource |
-|---|---|---|---|
-| BranchEmployeeDmcData | `branch_employee_dmc_data` | True | `branch_employee_dmc_data` |
-| BranchFinalEmployeeDmcData | `branch_final_employee_dmc_data` | True | `branch_final_employee_dmc_data` |
-| Drawdown | `drawdown` | True | `drawdowns/upload-csv` |
-| DrawdownDaily | `drawdown_daily` | **False** (warehouse) | `drawdown-daily` |
-| InsurancePolicy | `insurance_policies` | True | `insurance-policy` (+upload) |
-| TradeFinanceData | `trade_finance_data` | True | `trade-finance` (+upload) |
-| CustMonthlyFtp | `cust_monthly_ftp` | True | (FTP cost basis for RM KPI) |
-| DailySalesAccountsWithCto | `daily_sales_accounts_with_cto` | **False** | `weighted-sales-daily-accounts` |
-| DailyDormancyConvertedAccount | `daily_dormancy_converted_accounts` | **False** | `weighted-sales-dormancy-converted` |
-| MerchantBankTillManualData | `weighted_sales_seller_bank_till_data_dump_manual` | **False** | `merchant-bank-tills-manual` (+upload) |
-| IapplyLoanApproval | `iapply_loan_approvals_data_dump` | **False** | (iApply approvals) |
-| Product | `product_mapping` | **False** | `products` (+upload) |
-| StaffEmployeeData | `staff_employee_data` | True | `employee-summary` |
-| LeaveRecord | `staff_leave_records` | True | `leave-records` (+upload) |
-| EmployeeRoleHistory | `employee_role_history` | True | `role-history` (+upload) |
-| RmKPIBaseSummary | `rm_kpi_base_summary` | True | `rm-kpi-base-summary` (+refresh/upload) |
-| MissingEmployeeActual | `missing_employee_actuals` | True | (missing-actuals support) |
-| TelesalesStaff | `telesales_staff_list` | True | (telesales) |
-| TelesalesDormantTillsAllocation | `telesales_dormant_tills_allocation` | True | (telesales) |
+**The 4 scorecard tables** aren't really missing — they were **deliberately renamed**
+(the old names collide with the redesigned scorecard, and again with the parallel
+`sc_*` engine). Structure is fully covered. ⚠️ **Caveat:** the new `sc_*`/`scorecard_*`
+tables **start empty** — if old prod held live KPI/role config, that **data** was not
+migrated. These are config tables (usually re-seeded, not migrated); confirm with the
+scorecard owner.
 
-> Also: `staff_management/retail-allocated-portfolio` (+upload) maps to
-> **portfolio.RetailAllocatedPortfolio** (`retail_allocated_portfolio`, managed=False),
-> which already exists in the new portfolio app — only the endpoint is missing.
+**The 2 rights-issue tables** are the only genuinely unported tables. See Category D.
 
-## Category B — OLD scorecard config replaced by NEW scorecard tables. DIVERGENT.
+---
 
-The new backend reimplemented the scorecard with **different table names**, so
-the old production scorecard config/data is orphaned:
+## Column gaps on shared tables — 1 remaining (was 3)
 
-| Old model → table | New model → table |
-|---|---|
-| Role → `orgnization_roles` | ScorecardRole → `scorecard_roles` |
-| KPI → `kpi_definitions` | ScorecardKPI → `scorecard_kpis` |
-| RoleKPIMapping → `role_kpi_mappings` | RoleKPIMapping → `scorecard_role_kpi_mappings` |
-| EmployeePerformanceActual → `employee_performance_actual_values` | PerformanceActual → `scorecard_performance_actuals` |
+All three original gaps were on `managed = False` **warehouse-read** tables — the
+physical columns still exist in the warehouse DB; the new ORM model simply didn't
+declare them (an **exposure** gap, **zero data loss**).
 
-**Risk:** if the org has live scorecard config/actuals in the old tables, the
-new empty tables won't show it. Decision needed: migrate old → new, or point the
-new models back at the old `db_table` names.
+| Table (managed=False) | Missing columns | Status |
+|---|---|---|
+| `hfdi_projects_inventory_sales_data` | 12 monthly `jan_paid_amount … dec_paid_amount` | ✅ **FIXED 2026-07-01** — added to `apps/hfdi/models.py` |
+| `employee_table` (gceo_dashboard) | `hfdi_erp_id`, `staff_exit_date`, `promotion_date` | ✅ **FIXED 2026-07-01** — added to `apps/gceo_dashboard/models.py` |
+| `employee_monthly_performance` | 18 cols (`kpi_code`, `kpi_name`, `ytd_*`, `eom_date`, …) | ⚠️ **Intentional** — see note |
 
-## Category C — Stub tables, likely never populated. LOW PRIORITY.
+Both fixes were safe: the tables are unmanaged, so `makemigrations` produces **no
+changes** (nothing touches the DB); both serializers are `fields = "__all__"`, so the
+columns auto-expose in the API. `manage.py check` clean.
 
-These old models had **no `db_table`** (Django default name) and no managed
-flag — almost certainly unused scaffolding:
+**`employee_monthly_performance` is by design.** The new backend reused this `db_table`
+for the **simplified redesigned** scorecard (fewer columns). The rich legacy schema
+(`kpi_code`, `ytd_*`, etc.) now lives in **`sc_employee_monthly_performance`** (the
+parallel `sc_*` engine). The two scorecard systems coexist until one is retired, so
+this is not a gap to "fix" — it's a decision already made.
 
-- `BranchAudit`, `BranchPerformanceScorecardData`, `BranchPerformanceMonthlyScorecard`
+All other shared models match field-for-field.
 
-Verify they're empty in prod, then skip.
+---
 
-## Category D — Domain rewrites: old production tables NOT ported. HIGHEST DATA RISK.
+## Category D — Domain rewrites (rights-issue is the only one still open)
 
-Three whole apps were rebuilt around **brand-new, unrelated tables**. The old
-tables (with real data + frontend endpoints) have **no model** in the new backend:
+Three apps were originally flagged as rebuilt around new tables. Two are now ported
+**additively** (old tables re-created alongside the redesign); one remains open.
 
-**exco_innitiatives** — old strategic-planning model (4 tables) → new single table:
-- `exco_owners` (StrategicExcoOwner)
-- `exco_strategic_thrust` (StrategicThrust)
-- `exco_strategic_initiatives` (StrategicInitiative — incl. `co_owner_1..7`, comments, status)
-- `exco_strategic_milestones` (StrategicMilestone — incl. proportion_complete, sensitivity, review_status)
-- NEW backend instead has: `exco_initiatives` (ExcoInitiative) — a flat, unrelated table.
+**exco_innitiatives** — ✅ **PORTED.** Old strategic hierarchy re-created:
+`exco_owners`, `exco_strategic_thrust`, `exco_strategic_initiatives`,
+`exco_strategic_milestones` (StrategicExcoOwner→Thrust→Initiative→Milestone). The flat
+`exco_initiatives` (ExcoInitiative) coexists.
 
-**portfolio_management_enrichment** — old allocation engine (4 tables) → new 2 tables:
-- `customer_allocation_base` (CustomerAllocationBase)
-- `rm_allocation_list` (RmAllocationList)
-- `customer_movment_approval_list` (TeamLeaderMovementApprovers)
-- `portfolio_customer_transfer_history` (CustomerTransferHistory)
-- NEW backend instead has: `portfolio_customer_enrichment`, `portfolio_rm_targets` — unrelated.
+**portfolio_management_enrichment** — ✅ **PORTED.** Old reallocation engine re-created:
+`customer_allocation_base`, `rm_allocation_list`, `customer_movment_approval_list`,
+`portfolio_customer_transfer_history` (all `managed=True`). The new
+`portfolio_customer_enrichment` / `portfolio_rm_targets` coexist.
 
-**hf_rights_issue** — old rights-issue model (2 tables) → new single table:
-- `security_detail` (SecurityDetail — ~100 fields of shareholder/security data)
+**hf_rights_issue** — ❌ **STILL OPEN (highest remaining risk).** The old app had:
+- `security_detail` (SecurityDetail — ~100 fields of shareholder/security data;
+  `pal_no`, `rights_taken`, `hf_customer`, …)
 - `customer_feedback_rights_issue` (CustomerFeedbackRightsIssue)
-- NEW backend instead has: `hf_rights_issue_applications` (RightsIssueApplication) — unrelated.
 
-## Category E — Field gaps on shared tables.
-
-Only one shared model lost columns:
-
-- **hfdi.HfdiProjectsInventorySalesData** (`hfdi_projects_inventory_sales_data`,
-  managed=False) — new model is missing the 12 monthly paid-amount columns:
-  `jan_paid_amount` … `dec_paid_amount` (DecimalField). Because the table is
-  unmanaged (warehouse), the columns exist in the DB but the new model can't
-  read them. Add them back.
-
-All other shared models (hfdi ×17, portfolio ×12, gceo_dashboard ×18,
-collections_team_leaders, hf_collections) match field-for-field.
+The new app was redesigned around **`hf_rights_issue_applications`**
+(RightsIssueApplication — `application_number`, `applicant_name`, `cds_account`,
+`rights_entitlement`, …) with **no overlapping keys**. A faithful port would require
+recreating the deprecated `security_detail` model. There is also **no rights-issue
+CSV-upload hook on the frontend**. **Decision needed:** recreate the legacy tables for
+data continuity, or treat the redesign as a clean break and migrate/park the old data.
 
 ---
 
-## The AI agent
+## Greenfield tables (new, no old equivalent) — informational
 
-`apps/agent` is an **OpenAI-backed** chat assistant (`gpt-4o-mini`,
-`AgentConversation` → `agent_conversations`, 3 endpoints: conversations
-list/create, detail, chat). It is generic (one system prompt), not yet wired to
-the portfolio data or per-role context. Open questions before frontend work:
-provider (OpenAI vs Claude), grounding (should it see portfolio/KPI data), and
-whether it's one assistant or role-specialised "agents".
+Mortgages (`mortgage_*` incl. `mortgage_repayment_schedule`), agent
+(`agent_conversations`), analytics (`analytics_snapshots`), insights
+(`portfolio_insights`), client_briefs (`client_briefs`), slideshow
+(`slideshow_slides`); the redesigned scorecard (`scorecard_*`); the parallel KPI
+engine (`sc_*`); enrichment (`portfolio_customer_enrichment`, `portfolio_rm_targets`);
+and the warehouse manual-upload mirrors (`daily_sales_accounts_with_cto_upload`,
+`daily_dormancy_converted_accounts_upload`, `merchant_bank_till_manual_upload`,
+`retail_allocated_portfolio_upload`).
+
+---
+
+## Remaining actions
+
+1. **hf_rights_issue** — product decision on `security_detail` +
+   `customer_feedback_rights_issue` (recreate vs. clean break).
+2. **Scorecard config data** — confirm whether old `kpi_definitions` /
+   `orgnization_roles` / `role_kpi_mappings` / `employee_performance_actual_values`
+   held live prod data needing migration into the new `sc_*` / `scorecard_*` tables
+   (vs. re-seeding).
+
+   **Checked 2026-07-01 — local is a dead end, must query PROD.** None of these old
+   tables exist in any locally reachable database: the local `postgres` DB (old app's
+   configured DB) is **completely empty (0 tables)**; `datawarehouse`/`datawarehouse1`
+   don't have them; and the new `sc_*`/`scorecard_*` tables are all **0 rows** (not
+   seeded locally). The old data lives **only on prod** (`ceo.hfgroup.co.ke`), not
+   reachable from a dev box. **Do NOT conclude "empty local = safe."** Run this on the
+   **prod** DB to settle it:
+
+   ```sql
+   SELECT 'kpi_definitions' t, count(*) FROM kpi_definitions
+   UNION ALL SELECT 'orgnization_roles', count(*) FROM orgnization_roles
+   UNION ALL SELECT 'role_kpi_mappings', count(*) FROM role_kpi_mappings
+   UNION ALL SELECT 'employee_performance_actual_values', count(*) FROM employee_performance_actual_values
+   UNION ALL SELECT 'security_detail', count(*) FROM security_detail
+   UNION ALL SELECT 'customer_feedback_rights_issue', count(*) FROM customer_feedback_rights_issue;
+   ```
+
+   Decision rule: config tables (`kpi_definitions`/`orgnization_roles`/`role_kpi_mappings`)
+   are **re-seedable** via `staff_management/setup-defaults/` (`SeedDefaultKPIConfigView`)
+   + the `seed_roles` command — re-seed rather than migrate. Only
+   `employee_performance_actual_values` (historical actuals, not config) is worth
+   migrating into `sc_employee_performance_actual_values` if that history matters.
+   `security_detail` / `customer_feedback_rights_issue` non-empty → folds into action #1.
+
+_All other tables/columns are accounted for. The AI agent app has been switched from
+OpenAI to Claude (see `apps/agent`)._

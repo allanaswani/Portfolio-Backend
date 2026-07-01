@@ -410,9 +410,12 @@ class EmployeeTable(models.Model):
     org_unit = models.TextField(blank=True, null=True)
     grade = models.TextField(blank=True, null=True)
     job_title = models.TextField(blank=True, null=True)
+    hfdi_erp_id = models.IntegerField(blank=True, null=True, default=0, verbose_name="HFDI ERP ID")
     exit = models.IntegerField(blank=True, null=True)
     promotion = models.IntegerField(blank=True, null=True)
     new = models.IntegerField(blank=True, null=True)
+    staff_exit_date = models.DateField(blank=True, null=True)
+    promotion_date = models.DateField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
