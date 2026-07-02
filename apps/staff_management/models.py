@@ -42,12 +42,14 @@ class BranchEmployeeData(models.Model):
 # (actual_over_target / growth_on_growth / inverse_growth / tiered_range), a
 # score_cap, proration for leave, and weighting.
 #
-# NOTE (full-automation port is BLOCKED on a reconciliation decision): the legacy
-# EmployeeMonthlyPerformance maps to the SAME db_table ("employee_monthly_performance")
-# as the redesigned model below but with incompatible columns, so the legacy
-# engine cannot simply be added alongside this one. Reconciling the two (parallel
-# tables under new names, or replacing the redesign) is a deliberate step — see
-# the [[model-gap-audit]] / scorecard reconciliation discussion.
+# NOTE (reconciled 2026-07-02 for the full-replace deploy): the legacy prod
+# "employee_monthly_performance" table has an INCOMPATIBLE column set to the
+# redesigned model below. To avoid a schema collision on the shared prod DB (which
+# would 500 the moment a scorecard view queried it), the redesigned model now owns
+# its own greenfield table "employee_monthly_performance_v2". The legacy prod
+# table is left untouched (its historical rows are preserved, just not read by this
+# ORM); the v2 table is created empty and repopulated by the scorecard recompute.
+# See [[model-gap-audit]] and docs/DEPLOY.md §"Full-replace".
 class ScorecardRole(models.Model):
     name = models.CharField(max_length=255, unique=True)
     description = models.TextField(blank=True, null=True)
@@ -149,7 +151,7 @@ class EmployeeMonthlyPerformance(models.Model):
 
     class Meta:
         managed = True
-        db_table = "employee_monthly_performance"
+        db_table = "employee_monthly_performance_v2"
         unique_together = (("sales_code", "month"),)
         ordering = ["-month", "-total_score"]
 
