@@ -481,6 +481,7 @@ class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
 
     def amend_row(self, row):
         row["house_type"] = self.derive_parenthesised(row.get("preferred_typology"))
+        row["project_name"] = self.derive_hyphenated(row.get("preferred_typology"))
         row["timestamp"] = self.parse_date(row.get("timestamp"), "%d, %B %Y %H:%M")
         for field in ("unit_price", "deposits"):
             row[field] = self.clean_number(row.get(field))

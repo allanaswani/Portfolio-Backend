@@ -46,7 +46,7 @@ class AmendingCsvUploadView(APIView):
     result_filename = "upload_results"
     # Concrete columns the missing-columns gate should NOT demand of the CSV
     # (the auto pk, server-managed timestamps, derived columns, …).
-    excluded_columns = ("id",)
+    excluded_columns = ("id", "house_type", "project_name")
 
     # ── reusable amendment helpers ──────────────────────────────────────────────
     @staticmethod
@@ -55,6 +55,13 @@ class AmendingCsvUploadView(APIView):
         value = value or ""
         matches = re.findall(r"\(([^)]+)\)", value)
         return matches[-1] if matches else value
+
+    @staticmethod
+    def derive_hyphenated(value):
+        """Return the LAST parenthesised group of ``value``, else ``value`` itself."""
+        value = value or ""
+        matches = value.rfind('-')
+        return value[:matches].strip() if matches != -1 else value.strip()
 
     @staticmethod
     def parse_date(raw, fmt, out_fmt=None):
