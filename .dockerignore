@@ -1,0 +1,31 @@
+# SECURITY: never copy live secrets into the image. Injected at runtime via --env-file.
+.env
+.env.*
+*.env
+
+# VCS / local venv / caches
+.git
+.gitignore
+.venv
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local dev artifacts
+*.sqlite3
+db.sqlite3
+staticfiles/
+media/
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Docs / node (not needed at runtime)
+node_modules/

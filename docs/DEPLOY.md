@@ -16,6 +16,77 @@ _Last updated: 2026-07-01._
 
 ---
 
+## ▶ DEPLOYER QUICK RUNBOOK (do these in order)
+
+For the person deploying. Run top to bottom. Each step links to the detailed section
+if you need the "why". **Do not skip steps 4–6.** Commands use `podman` (RHEL); it is a
+drop-in for `docker` — swap the name if that's what's installed.
+
+**Prereqs on the server:** `podman` installed; network access from the host to the prod
+PostgreSQL and Redis; the app code copied to the host (`git clone` or scp).
+
+```bash
+# ── 0. Get the code and cd into it ───────────────────────────────────────────
+git clone <repo-url> hf_group_backend && cd hf_group_backend
+#    (or scp the folder over; the point is manage.py + Dockerfile are in $PWD)
+
+# ── 1. Build the image (ships all apps + Python 3.13; host Python is irrelevant)
+podman build -t hf-backend:latest .
+#    Airgapped host? Build on a machine with internet, then:
+#      podman save -o hf-backend.tar hf-backend:latest   # on build machine
+#      podman load -i hf-backend.tar                      # on the server
+
+# ── 2. Create the prod env file (secrets live ONLY here, never in git) ────────
+sudo mkdir -p /etc/hf
+sudo cp .env.example /etc/hf/prod.env
+#    Generate a FRESH SECRET_KEY (never the old backend's, never the dev one):
+podman run --rm hf-backend:latest \
+  python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
+#    Edit /etc/hf/prod.env: paste that as SECRET_KEY, set DEBUG=False, real
+#    ALLOWED_HOSTS, and DB_*/DW_*/REDIS_URL/EMAIL_* for prod. Under --network=host
+#    all *_HOST values are 127.0.0.1.  Details + table: §5.1
+sudo chmod 600 /etc/hf/prod.env
+
+# ── 3. BACK UP the prod database (this is your rollback point) ────────────────
+#    Full details + restore-verify: §2. Do NOT proceed without a verified backup.
+pg_dump -Fc -h <DB_HOST> -U <DB_USER> <DB_NAME> -f hf_prod_$(date +%F).dump
+
+# ── 4. REHEARSE the migration on a clone of prod — NOT on prod ────────────────
+#    Restore the backup into a scratch DB, point prod.env at it, run step 5's
+#    commands there first, confirm no errors. Full recipe: §3.1
+#    THIS is what catches surprises safely. Skipping it risks a broken prod.
+
+# ── 5. Adopt existing tables + create only the new ones (the careful part) ────
+#    A plain `migrate` FAILS here. Run the adoption recipe in §C / §3.2 instead:
+#    fake-initial for already-existing tables, create only the genuinely-new ones
+#    (incl. employee_monthly_performance_v2). Every manage.py command is run as:
+podman run --rm --network=host --env-file /etc/hf/prod.env \
+  hf-backend:latest python manage.py showmigrations      # inspect first
+#    ...then the §C sequence. When done, showmigrations must be all [X].
+
+# ── 6. Re-seed scorecard config (roles/KPIs/mappings) ─────────────────────────
+#    So scorecard views work on the new v2 table. See §C final step.
+
+# ── 7. CUT OVER: stop the old backend, start the container on :9000 ───────────
+sudo systemctl stop <old-backend>.service && sudo systemctl disable <old-backend>.service
+#    (find the unit: systemctl list-units | grep -Ei 'gunicorn|django|portfolio')
+podman run -d --name hf-backend --restart=always \
+  --network=host --env-file /etc/hf/prod.env -e PORT=9000 \
+  hf-backend:latest
+
+# ── 8. VERIFY ─────────────────────────────────────────────────────────────────
+curl -s http://127.0.0.1:9000/api/docs/ >/dev/null && echo "backend up"
+#    Then in a browser: login -> OTP -> dashboards load -> Mortgages works. §8
+
+# ── 9. ROLLBACK (only if something is wrong) ──────────────────────────────────
+#    podman stop hf-backend && sudo systemctl enable --now <old-backend>.service   §F
+```
+
+**Create the mortgage/admin user accounts** after cutover: §D (superusers already see
+the frontend **Administration → Users & Roles** screen).
+
+---
+
 ## FULL-REPLACE CUTOVER (same-port, all users) — chosen strategy (2026-07-02)
 
 The decision is to **retire the old backend and put all users on the new one**,
@@ -105,18 +176,69 @@ accounts:
 > Creating users stays with `is_staff`/superuser accounts; the module admin manages
 > mortgages, not system users.
 
-### E. The same-port swap (real prod, after the clone succeeds)
-1. Deploy the new backend code + prod env (§1, §5); `collectstatic`.
-2. Run the §C adoption against **real prod**, using the statements recorded on the clone.
-3. Point the served **frontend** at this backend (§7) and rebuild it.
-4. **Flip the service:** stop the old backend service, start the new one **on the
-   same port** (systemd — see §E commands once you paste the server output).
-5. Verify (§8): login → OTP → dashboards; existing modules load; Mortgages works.
+### E. Running the new backend in a container (the Python 3.6 problem)
+
+**Why a container is required.** The prod host is RHEL (2019) with **system Python
+3.6**, which cannot be upgraded (RHEL's `yum`/`dnf` depend on it) and cannot run this
+app (**Django 6.0.5 needs Python ≥ 3.12**). A `venv` clones the 3.6 interpreter, so it
+does not help. The fix is to carry our own Python **inside a container** — the host
+Python becomes irrelevant. RHEL usually ships **`podman`** (drop-in for `docker`;
+substitute the command name below).
+
+The image is built from the repo `Dockerfile` (Python 3.13; `COPY . .` ships **all 18
+apps** incl. `mortgages`, `client_briefs`, `agent`, `analytics`, `insights`, `slideshow`,
+with every model + migration). `collectstatic` runs at build (WhiteNoise serves admin /
+DRF / Swagger CSS). **Secrets are never baked in** — `.env` is excluded via
+`.dockerignore` and the real `SECRET_KEY`/DB creds are injected at run time with
+`--env-file`. The build-time `SECRET_KEY` is a throwaway used only so settings import.
+
+**We serve on port 9000** (same port the old backend uses → no new firewall rule, no
+Security ticket). `--network=host` makes the container share the host network, so
+gunicorn binds host **:9000** directly **and** `DB_HOST=127.0.0.1` in the env-file
+reaches the host's Postgres/Redis unchanged.
+
+```bash
+# 1. Build (needs internet for python:3.13-slim + pip). Airgapped? build elsewhere,
+#    then: podman save -o hf-backend.tar hf-backend:latest  ->  podman load -i hf-backend.tar
+podman build -t hf-backend:latest .
+
+# 2. Migrations = a deliberate one-off (NEVER auto in the entrypoint). Inspect first:
+podman run --rm --network=host --env-file /etc/hf/prod.env \
+  hf-backend:latest python manage.py showmigrations
+#    then apply the §C adoption recipe, each command as:
+#    podman run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py <cmd>
+
+# 3. Start the service on :9000
+podman run -d --name hf-backend --restart=always \
+  --network=host \
+  --env-file /etc/hf/prod.env \
+  -e PORT=9000 \
+  hf-backend:latest
+```
+`/etc/hf/prod.env` lives only on the server (holds the **new** `SECRET_KEY`, DB creds,
+`ALLOWED_HOSTS`, `REDIS_URL`, email creds). Never in git, never in the image.
+
+**The same-port swap:**
+1. Build image (E.1) and run §C adoption against real prod (E.2), using the statements
+   rehearsed on the clone. Point the served **frontend** at this backend (§7), rebuild it.
+2. **Flip:** stop + disable the old backend service, then start the container (E.3):
+   ```bash
+   sudo systemctl stop <old-backend>.service && sudo systemctl disable <old-backend>.service
+   ```
+   *(exact unit name TBD from `systemctl list-units | grep -Ei 'gunicorn|django|portfolio'`)*
+3. Verify: `curl -s http://127.0.0.1:9000/api/docs/ >/dev/null && echo OK`, then login →
+   OTP → dashboards; existing modules load; Mortgages works.
+
+> **Rootless podman** binds :9000 fine (≥1024). Only ports <1024 need extra config.
 
 ### F. Rollback (full replace)
-Because the migration only **added** tables and never touched legacy data, rollback
-is: **stop the new service, start the old one back on the same port.** The old
-backend still works against the same DB. Only if a shared table was corrupted
+Because the migration only **added** tables and never touched legacy data, rollback is
+fast: **stop the container, restart the old service on :9000.**
+```bash
+podman stop hf-backend
+sudo systemctl enable --now <old-backend>.service
+```
+The old backend still works against the same DB. Only if a shared table was corrupted
 (shouldn't happen) do you restore from the §2 backup.
 
 ---
@@ -262,6 +384,34 @@ as `SECRET_KEY=...`. **Do not** commit it or put it in any tracked file.
 
 > A fresh `SECRET_KEY` invalidates all existing JWTs (it's the `SIGNING_KEY`), so
 > every logged-in user is forced to log in once after cutover. Expected, harmless.
+
+### 5.1 The prod env file (`/etc/hf/prod.env`)
+
+Secrets live in a file **on the server only**, injected into the container via
+`--env-file /etc/hf/prod.env` (§E). It is **never** committed. The repo carries a
+placeholder template (`.env.example`); the repo `.env` is dev-only and stays gitignored.
+Do **not** untrack `.env` — that would write live DB/email passwords and the reusable
+JWT signing key into git history permanently (irreversible, private repo or not).
+
+Build the prod file from the template (or copy the dev `.env`) and change these:
+
+| Key | Prod value |
+|---|---|
+| `DEBUG` | `False` |
+| `SECRET_KEY` | a **fresh** value (below) — never the old backend key, never the dev key |
+| `DB_*` | the prod app DB (`hf_group_app`). With `--network=host`, `DB_HOST=127.0.0.1` |
+| `DW_*` | the prod warehouse DB (`datawarehouse`). `DW_HOST=127.0.0.1` under host networking |
+| `ALLOWED_HOSTS` | the real host/domain (not `*`) |
+| `EMAIL_*`, `REDIS_URL`, `ANTHROPIC_API_KEY` | real prod values |
+
+Generate the fresh `SECRET_KEY` **on the server** (so it never transits chat/git/logs)
+and paste it into `/etc/hf/prod.env` only:
+```bash
+podman run --rm hf-backend:latest \
+  python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
+```
+Lock the file down: `sudo install -o root -g root -m 600 /etc/hf/prod.env /etc/hf/prod.env`
+(or `chmod 600`) so only root reads it.
 
 ---
 

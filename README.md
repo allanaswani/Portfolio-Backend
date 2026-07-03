@@ -1,28 +1,44 @@
 # HF Group Backend — Setup & Deployment Guide
 
+> ## 🚀 Deploying to production? Read **[`docs/DEPLOY.md`](docs/DEPLOY.md)** first.
+> The prod server runs **RHEL with Python 3.6** (cannot run this app directly) and the
+> new backend shares the **existing production database**. Deployment is **containerized
+> (podman/Docker)** with a careful migration-adoption step — a plain `manage.py migrate`
+> will break prod. Follow the **▶ DEPLOYER QUICK RUNBOOK** at the top of `docs/DEPLOY.md`
+> top to bottom. The sections below (§1–§12) are for **local development** only.
+
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Framework | Django 5.1 + Django REST Framework |
-| Database | PostgreSQL (psycopg3) |
+| Framework | Django 6.0.5 + Django REST Framework |
+| Runtime | Python 3.13 (containerized for prod — see `Dockerfile`) |
+| Database | PostgreSQL (psycopg3) — two aliases: app DB + read-only warehouse |
 | Auth | JWT via `djangorestframework-simplejwt` |
 | Async / WebSockets | Django Channels + Daphne + Redis |
 | Task queue | Celery + Redis |
+| Static files | WhiteNoise (served by the app process) |
 | API docs | drf-spectacular (Swagger at `/api/docs/`) |
-| Server | Gunicorn (WSGI) or Daphne (ASGI) |
+| Server | Gunicorn (WSGI) or Daphne (ASGI); prod runs in a container on port 9000 |
 
 ---
 
-## 1. Prerequisites
+## 1. Prerequisites (local development)
 
-- Python 3.11 or 3.13
+- Python 3.12 or 3.13 (Django 6 requires ≥ 3.12)
 - PostgreSQL running and accessible
 - Redis running on `localhost:6379` (used by Celery, Channels, and cache)
+
+> **Production prerequisites are different** (podman, prod env file, DB backup) — see
+> the runbook in `docs/DEPLOY.md`, not this list.
 
 ---
 
 ## 2. Environment File
+
+> For **local dev** create a `.env` here by copying the template: `cp .env.example .env`
+> and filling in values. **Never commit `.env`** (it's gitignored). Production secrets
+> live in `/etc/hf/prod.env` on the server — see `docs/DEPLOY.md` §5.1.
 
 Create `.env` in the project root (next to `manage.py`). Required keys:
 
@@ -58,6 +74,10 @@ pip install drf-spectacular celery channels channels-redis daphne structlog djan
 ---
 
 ## 4. Apply Migrations
+
+> ⚠️ **Local/dev only.** Never run a plain `migrate` against the **production**
+> database — it shares tables with the old system and will fail on "relation already
+> exists". Production uses the migration-**adoption** procedure in `docs/DEPLOY.md` §3/§C.
 
 Run this **every time new models are added** (including after pulling new code):
 
@@ -233,7 +253,7 @@ grade          = A (≥90) / B (≥80) / C (≥60) / D (≥50) / E (<50)
 kpis_met       = count of KPIs where achievement ≥ 80%
 ```
 
-Results are saved to `employee_monthly_performance` table using `update_or_create` (safe to re-run).
+Results are saved to the `employee_monthly_performance_v2` table using `update_or_create` (safe to re-run). *(The redesigned model owns a greenfield `_v2` table so it never collides with the legacy prod table of the old name — see `docs/DEPLOY.md` §0.)*
 
 ---
 
@@ -245,7 +265,7 @@ Results are saved to `employee_monthly_performance` table using `update_or_creat
 | `scorecard_kpis` | KPI definitions (Deposits, Loans, Revenue, etc.) |
 | `scorecard_role_kpi_mappings` | Which KPIs apply to which role and at what weight |
 | `scorecard_performance_actuals` | Per-RM per-KPI actual vs target values per month |
-| `employee_monthly_performance` | Computed monthly score card per RM |
+| `employee_monthly_performance_v2` | Computed monthly score card per RM (greenfield; avoids the legacy prod table) |
 
 The `employee_table` is an **unmanaged** table (Django reads it, does not create/alter it).
 
