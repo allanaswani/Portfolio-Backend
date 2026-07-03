@@ -1,342 +1,246 @@
-# Deployment Runbook — hf_group_backend (shared prod DB, side-by-side pilot)
+# Deployment Guide — hf_group_backend
 
-_Last updated: 2026-07-01._
+_Last updated: 2026-07-03._
 
-**Scenario this runbook is written for** (confirmed with the team):
-- The new backend will run against the **same production database** the current
-  (old) system uses — **not** a fresh DB.
-- Rollout is **side-by-side / pilot**: the new backend runs in parallel; only a
-  subset of users/routes (recommended: the **Mortgages module**) move over first.
-  The current frontend + old backend keep serving everyone else.
+This is the **single, authoritative** guide for deploying the new backend to production.
+Read the two boxes below, then run **Part 2 (The Runbook)** top to bottom.
 
-> ⚠️ **The golden rule:** on a shared prod DB you do **NOT** run a plain
-> `python manage.py migrate`. It will fail on "relation already exists" because
-> 46 of the new backend's tables reuse names that already exist in prod. Follow
-> the adoption procedure in §3. **Always take a backup first (§2).**
+## What this deployment is
+
+- **Full replace.** The old backend is **retired**; **all** users move to the new backend.
+- **Same database.** The new backend runs against the **same production database** the old
+  system already uses — so no user or business data is copied or lost (see Part 1).
+- **Same port (9000).** The new backend starts on the **exact port the old one used**, so
+  there is **no new firewall port and nothing to request from Security**.
+- **Containerized.** The prod host is **RHEL with system Python 3.6**, which cannot run this
+  app (Django 6 needs Python ≥ 3.12) and cannot be upgraded. We run the app in a **container**
+  (Python 3.13 inside); the host's Python is irrelevant. Commands use **`podman`** (ships with
+  RHEL; it's a drop-in for `docker` — swap the name if you use Docker).
+
+> ### ⛔ The two rules you must not break
+> 1. **Never run a plain `python manage.py migrate` against prod.** 46 of the new tables
+>    already exist in the prod DB; a plain migrate dies on *"relation already exists"*. Use
+>    the **adoption** procedure in Step 6. **Rehearse it on a clone first (Step 5).**
+> 2. **Secrets live only on the server**, in `/etc/hf/prod.env` (Step 3). Never commit them,
+>    never put them in the image, and **never reuse the old backend's `SECRET_KEY`** (it's
+>    exposed in the old code and is the JWT signing key — reusing it lets anyone forge logins).
+
+> ### ✍️ Fill in these two server-specific values before you start
+> Everything below uses these placeholders — confirm the real values on the server once:
+>
+> | Placeholder | What it is | How to find it |
+> |---|---|---|
+> | `<PROD_DB>` | The existing prod database that holds the old system's tables (auth, business data). The old backend named it **`datawarehouse`** — confirm. | `sudo -u postgres psql -c "\l"` — pick the DB that contains `auth_user`. |
+> | `<old-backend>.service` | The systemd unit currently running the old backend on :9000. | `systemctl list-units \| grep -Ei 'gunicorn\|django\|portfolio'` |
 
 ---
 
-## ▶ DEPLOYER QUICK RUNBOOK (do these in order)
+## Part 1 — Why no users or data are lost (read once, for confidence)
 
-For the person deploying. Run top to bottom. Each step links to the detailed section
-if you need the "why". **Do not skip steps 4–6.** Commands use `podman` (RHEL); it is a
-drop-in for `docker` — swap the name if that's what's installed.
+The new backend points `default` at **`<PROD_DB>`** — the *same* physical database the old
+backend uses. Therefore:
 
-**Prereqs on the server:** `podman` installed; network access from the host to the prod
-PostgreSQL and Redis; the app code copied to the host (`git clone` or scp).
+- **Every existing row stays put.** `auth_user`, `auth_group`, and all business tables are the
+  *same* tables. The migrations only ever **CREATE new tables** — there is not a single
+  drop/rename/delete-column op in the entire migration set (verified).
+- **Users keep their passwords.** Django stores PBKDF2 hashes; the new backend reads the same
+  `auth_user` rows, so existing logins just work. The only visible effect of the fresh
+  `SECRET_KEY` is that everyone logs in **once** after cutover (old JWTs stop validating).
+- **Nothing to "copy".** Because it's the same DB, users are already present — the
+  `migrate_legacy_auth` command (for a *different*-DB scenario) is **not** used here.
+- **The scorecard table is safe.** The legacy `employee_monthly_performance` table is left
+  untouched; the redesigned model uses a new `employee_monthly_performance_v2` table
+  (see Appendix B), so historical rows are preserved.
 
+---
+
+## Part 2 — The Runbook (do these in order)
+
+### Step 1 — Prerequisites on the server
+- `podman` installed (`podman --version`).
+- Network access from the host to the prod **PostgreSQL** and **Redis**.
+- The app code on the host and the `<PROD_DB>` / `<old-backend>.service` values confirmed above.
+
+### Step 2 — Get the code and build the image
 ```bash
-# ── 0. Get the code and cd into it ───────────────────────────────────────────
-git clone <repo-url> hf_group_backend && cd hf_group_backend
-#    (or scp the folder over; the point is manage.py + Dockerfile are in $PWD)
-
-# ── 1. Build the image (ships all apps + Python 3.13; host Python is irrelevant)
+git clone <repo-url> hf_group_backend && cd hf_group_backend   # or scp the folder over
 podman build -t hf-backend:latest .
-#    Airgapped host? Build on a machine with internet, then:
-#      podman save -o hf-backend.tar hf-backend:latest   # on build machine
-#      podman load -i hf-backend.tar                      # on the server
+```
+The image ships **all 18 apps** (incl. `mortgages`, `client_briefs`, `agent`, `analytics`,
+`insights`, `slideshow`) with every model + migration, runs `collectstatic` at build (WhiteNoise
+serves admin/DRF/Swagger CSS), and contains **no secrets**.
 
-# ── 2. Create the prod env file (secrets live ONLY here, never in git) ────────
+> **Airgapped host?** Build on a machine with internet, then move the image:
+> ```bash
+> podman save -o hf-backend.tar hf-backend:latest   # on the build machine
+> podman load -i hf-backend.tar                      # on the server
+> ```
+
+### Step 3 — Create the prod env file `/etc/hf/prod.env`
+```bash
 sudo mkdir -p /etc/hf
 sudo cp .env.example /etc/hf/prod.env
-#    Generate a FRESH SECRET_KEY (never the old backend's, never the dev one):
+
+# Generate a FRESH SECRET_KEY (on the server, so it never transits chat/git/logs):
 podman run --rm hf-backend:latest \
   python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
-#    Edit /etc/hf/prod.env: paste that as SECRET_KEY, set DEBUG=False, real
-#    ALLOWED_HOSTS, and DB_*/DW_*/REDIS_URL/EMAIL_* for prod. Under --network=host
-#    all *_HOST values are 127.0.0.1.  Details + table: §5.1
+
+sudo nano /etc/hf/prod.env     # edit the values per the table below
 sudo chmod 600 /etc/hf/prod.env
-
-# ── 3. BACK UP the prod database (this is your rollback point) ────────────────
-#    Full details + restore-verify: §2. Do NOT proceed without a verified backup.
-pg_dump -Fc -h <DB_HOST> -U <DB_USER> <DB_NAME> -f hf_prod_$(date +%F).dump
-
-# ── 4. REHEARSE the migration on a clone of prod — NOT on prod ────────────────
-#    Restore the backup into a scratch DB, point prod.env at it, run step 5's
-#    commands there first, confirm no errors. Full recipe: §3.1
-#    THIS is what catches surprises safely. Skipping it risks a broken prod.
-
-# ── 5. Adopt existing tables + create only the new ones (the careful part) ────
-#    A plain `migrate` FAILS here. Run the adoption recipe in §C / §3.2 instead:
-#    fake-initial for already-existing tables, create only the genuinely-new ones
-#    (incl. employee_monthly_performance_v2). Every manage.py command is run as:
-podman run --rm --network=host --env-file /etc/hf/prod.env \
-  hf-backend:latest python manage.py showmigrations      # inspect first
-#    ...then the §C sequence. When done, showmigrations must be all [X].
-
-# ── 6. Re-seed scorecard config (roles/KPIs/mappings) ─────────────────────────
-#    So scorecard views work on the new v2 table. See §C final step.
-
-# ── 7. CUT OVER: stop the old backend, start the container on :9000 ───────────
-sudo systemctl stop <old-backend>.service && sudo systemctl disable <old-backend>.service
-#    (find the unit: systemctl list-units | grep -Ei 'gunicorn|django|portfolio')
-podman run -d --name hf-backend --restart=always \
-  --network=host --env-file /etc/hf/prod.env -e PORT=9000 \
-  hf-backend:latest
-
-# ── 8. VERIFY ─────────────────────────────────────────────────────────────────
-curl -s http://127.0.0.1:9000/api/docs/ >/dev/null && echo "backend up"
-#    Then in a browser: login -> OTP -> dashboards load -> Mortgages works. §8
-
-# ── 9. ROLLBACK (only if something is wrong) ──────────────────────────────────
-#    podman stop hf-backend && sudo systemctl enable --now <old-backend>.service   §F
 ```
+Set these values (everything else can keep template defaults):
 
-**Create the mortgage/admin user accounts** after cutover: §D (superusers already see
-the frontend **Administration → Users & Roles** screen).
+| Key | Prod value |
+|---|---|
+| `SECRET_KEY` | the fresh value you just generated — **never** the old backend key |
+| `DEBUG` | `False` |
+| `ALLOWED_HOSTS` | the real host/domain (e.g. `ceo.hfgroup.co.ke`), not `*` |
+| `DB_ENGINE` / `DB_HOST` / `DB_PORT` | `django.db.backends.postgresql` / `127.0.0.1` / `5432` |
+| `DB_NAME` / `DB_USER` / `DB_PASSWORD` | **`<PROD_DB>`** and its prod credentials — this is the existing prod DB |
+| `DW_HOST` / `DW_PORT` | `127.0.0.1` / `5432` |
+| `DW_NAME` / `DW_USER` / `DW_PASSWORD` | **`<PROD_DB>`** and its credentials — **same physical DB** (the read-only warehouse tables live there too) |
+| `REDIS_URL` | `redis://127.0.0.1:6379/0` |
+| `EMAIL_*` | real Office365 SMTP creds — **OTP login depends on this** (Appendix C) |
+| `ANTHROPIC_API_KEY` | real key if the AI agent is used, else blank |
 
----
+> `--network=host` (Step 8) makes the container share the host network, so `127.0.0.1`
+> reaches the host's Postgres/Redis. **Both** `DB_*` and `DW_*` point at `<PROD_DB>` — the
+> router sends managed-table traffic and read-only warehouse traffic to the same database.
 
-## FULL-REPLACE CUTOVER (same-port, all users) — chosen strategy (2026-07-02)
-
-The decision is to **retire the old backend and put all users on the new one**,
-on the **same server port the old backend already uses**. Read this section first;
-§§1–9 below are the detailed steps it references.
-
-### A. The port is a non-issue — no Security ticket needed
-A full replace runs **one** backend at a time. You **stop** the old service and
-**start** the new one on the **exact same port** (the one already open in the
-firewall). You are not opening a second port, so **there is nothing to request
-from Security**. Rollback is symmetric: stop new, start old (§F).
-
-### B. You do NOT lose users or their data — here's why
-The new backend connects to the **same production database** the old one uses, so:
-- **Every existing row stays put** — `auth_user`, `auth_group`, and all business
-  tables are the *same* tables. The migrations only ever **CREATE new tables**;
-  there is **not a single** drop/rename-column/delete op in the whole set (verified).
-- **Users keep their passwords.** Django stores PBKDF2 hashes; the new backend
-  reads the same `auth_user` rows, so existing credentials just work. The only
-  visible effect of the new `SECRET_KEY` (§5) is that everyone logs in **once**
-  after cutover (old JWTs stop validating). Harmless.
-- **Nothing to "migrate" for users** when it's the *same* DB — they are already
-  there. (The `migrate_legacy_auth` command is only for the *different-DB* case;
-  not this one.)
-
-> The historical `employee_monthly_performance` rows are also preserved — the
-> redesigned scorecard now uses a separate `employee_monthly_performance_v2` table
-> (see §0 landmine, resolved), so the legacy table is left fully intact.
-
-### C. The migration for a full replace (rehearse on a clone — §3.1)
-A plain `migrate` fails (§ golden rule). And `--fake-initial` alone is **not
-enough** here because some apps are **mixed** — their initial migration creates
-*both* tables that already exist in prod *and* brand-new ones (e.g.
-`staff_management`: existing `employee_monthly_performance` + new `scorecard_*`,
-`employee_monthly_performance_v2`). Django won't auto-fake a mixed initial, so it
-tries to `CREATE` the existing table and errors "relation already exists".
-
-Procedure (run on a **restored clone** first, §3.1, then repeat on real prod):
-1. **Backup** (§2) — mandatory rollback point.
-2. `python manage.py migrate --fake-initial` — adopts apps whose initial tables
-   **all** already exist, and fully creates apps that are **all-new** (mortgages,
-   client_briefs, agent, etc.).
-3. For each app that errors **"relation already exists"** (the mixed apps, e.g.
-   `staff_management`):
-   - `python manage.py migrate <app> 0001 --fake` (adopt into state, **no DDL**).
-   - Create only the **genuinely-new** tables from that app: run
-     `python manage.py sqlmigrate <app> 0001` and execute **only** the
-     `CREATE TABLE` statements for tables that don't yet exist — for
-     `staff_management` those are `scorecard_roles`, `scorecard_kpis`,
-     `scorecard_role_kpi_mappings`, `scorecard_performance_actuals`, and
-     `employee_monthly_performance_v2`. **Do not** run the CREATE for tables that
-     already exist.
-   - `python manage.py migrate <app> --fake` for later migrations that only touch
-     already-adopted tables (incl. `0006` — the v2 rename — since you created v2
-     directly). Run non-fake for any later migration that adds *new* columns/tables.
-   - **Write down exactly which statements you ran** so real-prod matches the clone.
-4. `python manage.py showmigrations` → everything `[X]`.
-5. **Spot-check existing tables' row counts are unchanged** vs a pre-migration
-   snapshot. `employee_monthly_performance` (legacy) untouched; `_v2` exists & empty.
-6. **Re-seed scorecard config** (the new `scorecard_*` tables are empty): load
-   roles / KPIs / mappings, then run the scorecard recompute to fill
-   `employee_monthly_performance_v2`.
-
-### D. Creating the Mortgages accounts (including the admin)
-The four role groups — `mortgage_officer`, `mortgage_manager`, `mortgage_finance`,
-`mortgage_admin` — are **auto-created** by migration `mortgages.0002_seed_mortgage_groups`
-(idempotent). Frontend nav lights up purely by **group membership**. To make the
-accounts:
-1. **Bootstrap a system admin** (needed to call the admin API): either reuse an
-   existing superuser already in the shared DB, or
-   `python manage.py createsuperuser`.
-2. **Create each mortgage user** via the admin Users API (or the frontend Users
-   screen, which calls it) — `POST /auth/users/` as that admin:
-   ```json
-   { "username": "jane.doe", "email": "jane@hfgroup.co.ke",
-     "first_name": "Jane", "last_name": "Doe", "groups": ["mortgage_admin"] }
-   ```
-   - `groups` are written **by role name** — use `mortgage_admin` for the module
-     admin, `mortgage_officer` / `mortgage_manager` / `mortgage_finance` for the rest.
-   - **Omit `password`** and the API generates a strong one and returns it **once**
-     as `generated_password` — share it with the user, who changes it on first login.
-   - `GET /auth/roles/` lists all assignable groups for the dropdown.
-3. **Existing staff** who should get mortgage access: just PATCH their user to add
-   the mortgage group — no new account needed.
-
-> Note: `mortgage_admin` is a **navigation/role** group, *not* Django `is_staff`.
-> Creating users stays with `is_staff`/superuser accounts; the module admin manages
-> mortgages, not system users.
-
-### E. Running the new backend in a container (the Python 3.6 problem)
-
-**Why a container is required.** The prod host is RHEL (2019) with **system Python
-3.6**, which cannot be upgraded (RHEL's `yum`/`dnf` depend on it) and cannot run this
-app (**Django 6.0.5 needs Python ≥ 3.12**). A `venv` clones the 3.6 interpreter, so it
-does not help. The fix is to carry our own Python **inside a container** — the host
-Python becomes irrelevant. RHEL usually ships **`podman`** (drop-in for `docker`;
-substitute the command name below).
-
-The image is built from the repo `Dockerfile` (Python 3.13; `COPY . .` ships **all 18
-apps** incl. `mortgages`, `client_briefs`, `agent`, `analytics`, `insights`, `slideshow`,
-with every model + migration). `collectstatic` runs at build (WhiteNoise serves admin /
-DRF / Swagger CSS). **Secrets are never baked in** — `.env` is excluded via
-`.dockerignore` and the real `SECRET_KEY`/DB creds are injected at run time with
-`--env-file`. The build-time `SECRET_KEY` is a throwaway used only so settings import.
-
-**We serve on port 9000** (same port the old backend uses → no new firewall rule, no
-Security ticket). `--network=host` makes the container share the host network, so
-gunicorn binds host **:9000** directly **and** `DB_HOST=127.0.0.1` in the env-file
-reaches the host's Postgres/Redis unchanged.
-
+### Step 4 — Back up the prod database (mandatory rollback point)
 ```bash
-# 1. Build (needs internet for python:3.13-slim + pip). Airgapped? build elsewhere,
-#    then: podman save -o hf-backend.tar hf-backend:latest  ->  podman load -i hf-backend.tar
-podman build -t hf-backend:latest .
+pg_dump -Fc -h 127.0.0.1 -U <db_user> <PROD_DB> -f hf_prod_$(date +%F_%H%M).dump
 
-# 2. Migrations = a deliberate one-off (NEVER auto in the entrypoint). Inspect first:
-podman run --rm --network=host --env-file /etc/hf/prod.env \
-  hf-backend:latest python manage.py showmigrations
-#    then apply the §C adoption recipe, each command as:
-#    podman run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py <cmd>
+# Verify the backup actually restores before going further:
+createdb -U <db_user> hf_restore_test
+pg_restore -U <db_user> -d hf_restore_test hf_prod_YYYY-MM-DD_HHMM.dump
+dropdb -U <db_user> hf_restore_test
+```
+**Do not proceed until a restore has actually succeeded.**
 
-# 3. Start the service on :9000
+### Step 5 — Rehearse the migration on a clone (NOT on prod)
+This is what catches surprises safely. Restore the backup into a scratch DB and run Step 6
+against **it** first:
+```bash
+createdb -U <db_user> hf_stage
+pg_restore -U <db_user> -d hf_stage hf_prod_YYYY-MM-DD_HHMM.dump
+```
+Temporarily point a copy of the env file at the clone (`DB_NAME=hf_stage`, `DW_NAME=hf_stage`)
+and run Step 6 with `--env-file /etc/hf/stage.env`. **Write down exactly which statements you
+run** so real prod matches the clone. Only when the clone is clean do you touch prod.
+
+### Step 6 — Adopt existing tables, create only the new ones
+Every command runs inside the container. Substitute the clone env file in Step 5.
+```bash
+# helper: run any manage.py command in the container
+alias hf='podman run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py'
+
+hf showmigrations                     # inspect current state
+hf migrate --fake-initial             # see below
+```
+`--fake-initial` does two things automatically:
+- **All-new apps** (`mortgages`, `client_briefs`, `agent`, `analytics`, `insights`, `slideshow`):
+  none of their tables exist yet → it **creates** them normally.
+- **All-existing apps** (their `0001` tables are all already in prod): it marks them applied
+  **without** running any DDL — i.e. it *adopts* them.
+
+**Mixed apps error** with *"relation already exists"* — their `0001` creates *both* tables that
+already exist *and* brand-new ones, so Django can't auto-fake it. `staff_management` is the known
+case (existing `employee_monthly_performance` + new `scorecard_*` and `_v2`). Fix each such app
+like this:
+```bash
+# 1. Adopt the app's initial into migration state WITHOUT running DDL:
+hf migrate staff_management 0001 --fake
+
+# 2. Create ONLY the genuinely-new tables from that app. Dump its SQL and apply
+#    just the CREATE statements for tables that don't exist yet:
+hf sqlmigrate staff_management 0001 > /tmp/sm.sql
+#    From /tmp/sm.sql copy the CREATE TABLE/INDEX blocks for ONLY these five:
+#      scorecard_roles, scorecard_kpis, scorecard_role_kpi_mappings,
+#      scorecard_performance_actuals, employee_monthly_performance_v2
+#    into /tmp/new_tables.sql  (do NOT include employee_monthly_performance — it exists)
+psql -h 127.0.0.1 -U <db_user> -d <PROD_DB> -f /tmp/new_tables.sql
+
+# 3. Fake the app's remaining migrations (they only touch already-adopted tables,
+#    incl. 0006 which "renames" to _v2 — you already created _v2 directly):
+hf migrate staff_management --fake
+```
+Repeat that pattern for **any** other app the clone flags with *"relation already exists"*.
+Idempotent data seeds (`mortgages.0002_seed_mortgage_groups`, role seeds) use `get_or_create` and
+are safe to run/re-run.
+
+Finish and confirm:
+```bash
+hf showmigrations        # every migration must show [X]
+```
+Then spot-check in psql that existing tables' **row counts are unchanged**, the legacy
+`employee_monthly_performance` is intact, and `employee_monthly_performance_v2` exists and is empty.
+
+### Step 7 — Re-seed scorecard config
+The new `scorecard_*` tables are empty. Load roles / KPIs / mappings, then run the scorecard
+recompute so `employee_monthly_performance_v2` fills in. (Use the scorecard config screens in the
+frontend, or the seed endpoints under `staff_management/`.)
+
+### Step 8 — Cut over: stop the old backend, start the container on :9000
+```bash
+# Point the frontend at this backend first (Appendix D), then flip:
+sudo systemctl stop <old-backend>.service
+sudo systemctl disable <old-backend>.service
+
 podman run -d --name hf-backend --restart=always \
   --network=host \
   --env-file /etc/hf/prod.env \
   -e PORT=9000 \
   hf-backend:latest
 ```
-`/etc/hf/prod.env` lives only on the server (holds the **new** `SECRET_KEY`, DB creds,
-`ALLOWED_HOSTS`, `REDIS_URL`, email creds). Never in git, never in the image.
+> Rootless podman binds :9000 fine (≥1024). Only ports <1024 need extra config.
 
-**The same-port swap:**
-1. Build image (E.1) and run §C adoption against real prod (E.2), using the statements
-   rehearsed on the clone. Point the served **frontend** at this backend (§7), rebuild it.
-2. **Flip:** stop + disable the old backend service, then start the container (E.3):
-   ```bash
-   sudo systemctl stop <old-backend>.service && sudo systemctl disable <old-backend>.service
+### Step 9 — Create the Mortgages + admin accounts
+The four role groups (`mortgage_officer`, `mortgage_manager`, `mortgage_finance`,
+`mortgage_admin`) are **auto-created** by migration `mortgages.0002_seed_mortgage_groups`.
+Frontend nav appears purely by **group membership**.
+1. **Bootstrap a system admin** if you don't already have one in the DB:
+   `hf createsuperuser`. A superuser automatically sees **Administration → Users & Roles** in the
+   frontend.
+2. **Create each user** from that screen (it calls `POST /auth/users/`):
+   ```json
+   { "username": "jane.doe", "email": "jane@hfgroup.co.ke",
+     "first_name": "Jane", "last_name": "Doe", "groups": ["mortgage_admin"] }
    ```
-   *(exact unit name TBD from `systemctl list-units | grep -Ei 'gunicorn|django|portfolio'`)*
-3. Verify: `curl -s http://127.0.0.1:9000/api/docs/ >/dev/null && echo OK`, then login →
-   OTP → dashboards; existing modules load; Mortgages works.
+   - `groups` are by **role name** (`mortgage_admin` / `_officer` / `_manager` / `_finance`).
+   - **Leave `password` blank** → the API generates one and returns it **once** as
+     `generated_password`; share it, the user changes it on first login.
+3. **Existing staff** who need mortgage access: just edit their user to add the group.
 
-> **Rootless podman** binds :9000 fine (≥1024). Only ports <1024 need extra config.
+### Step 10 — Verify
+```bash
+curl -s http://127.0.0.1:9000/api/docs/ >/dev/null && echo "backend up"
+hf check --deploy         # review security warnings
+hf showmigrations         # all [X]
+```
+In a browser: log in → OTP email arrives → dashboards load → existing modules work →
+Mortgages: create a Product, upload a CSV, create a Lead, approve → disburse → schedule
+renders → record a payment. Confirm existing tables' row counts match the pre-deploy snapshot.
 
-### F. Rollback (full replace)
-Because the migration only **added** tables and never touched legacy data, rollback is
-fast: **stop the container, restart the old service on :9000.**
+### Step 11 — Rollback (only if something is wrong)
+Because the migration only **added** tables and never touched legacy data, rollback is fast:
 ```bash
 podman stop hf-backend
 sudo systemctl enable --now <old-backend>.service
 ```
-The old backend still works against the same DB. Only if a shared table was corrupted
-(shouldn't happen) do you restore from the §2 backup.
+The old backend still works against the same DB. Only if a shared table was somehow corrupted
+(shouldn't happen — the new backend never rewrites legacy schema) do you restore the Step 4 backup
+into a scratch DB, diff, and repair the affected rows — **never** blanket-restore over the live DB.
 
 ---
 
-## 0. What is safe vs risky (read first)
-
-| Category | Count | On `migrate` | Risk |
-|---|---|---|---|
-| **Greenfield managed tables** (all `mortgage_*`, `sc_*`, `scorecard_*`, `*_upload` mirrors, `agent_conversations`, `analytics_snapshots`, `client_briefs`, `portfolio_insights`, `portfolio_rm_targets`, `portfolio_customer_enrichment`, `exco_initiatives`, `hf_rights_issue_applications`, `slideshow_slides`,
-`employee_monthly_performance_v2`) | 24 | **Created cleanly** — additive, invisible to old backend | 🟢 Low |
-| **Colliding managed tables** (names already in prod — see §3.4) | 46 | `CreateModel` **errors** → must be **adopted** via `--fake-initial` | 🔴 High |
-| **Unmanaged tables** (`managed=False`, warehouse reads) | 31 | **No DDL emitted** | 🟢 None |
-
-**Special landmine — `employee_monthly_performance` (RESOLVED 2026-07-02):** it
-collided, **and the new schema diverged** from the prod table, which would have
-500'd the moment a scorecard view queried the adopted table. **Fixed:** the
-redesigned model now owns its own greenfield table
-**`employee_monthly_performance_v2`** (`apps/staff_management/models.py`, migration
-`0006_alter_employeemonthlyperformance_table`). On the shared DB the legacy
-`employee_monthly_performance` table is **left untouched** (its historical rows are
-preserved, just not read by the new ORM); `_v2` is created empty and repopulated by
-the scorecard recompute. So on a full replace this table is no longer a blocker —
-it just moves into the "genuinely-new tables to create" set (see Full-replace §C).
-
----
-
-## 1. Pre-flight checklist (all must be ✅ before touching prod)
-
-- [ ] **Secrets/settings** on the prod host (NOT the repo `.env`, which is dev):
-  - [ ] `DJANGO_SETTINGS_MODULE=config.settings.production`
-  - [ ] `SECRET_KEY` = a **new** strong value (see §5). **Never** reuse the old
-        exposed key from the legacy `settings.py`.
-  - [ ] `DEBUG=False`
-  - [ ] `ALLOWED_HOSTS` = the real host(s), e.g. `ceo.hfgroup.co.ke`
-  - [ ] `CORS_ORIGIN_ALLOW_ALL=False` + explicit allowed origins / `CSRF_TRUSTED_ORIGINS`
-  - [ ] DB + DW credentials point at the intended prod databases
-  - [ ] `EMAIL_*` (office365 SMTP) correct — **OTP login depends on it (§6)**
-- [ ] **Full DB backup taken** (§2) and its restore verified.
-- [ ] **Migration adoption rehearsed on a prod clone** (§3) with zero errors.
-- [ ] **Pilot frontend build** points at the **new backend URL** (§7), not
-      localhost and not the old prod URL.
-- [ ] **OTP send-test** passed against prod SMTP (§6).
-- [ ] `python manage.py check --deploy` reviewed (§8).
-- [ ] Rollback steps understood (§9).
-
----
-
-## 2. Backup (mandatory — this is the rollback point)
-
-```bash
-# On the prod DB host, before ANY migration:
-pg_dump -U <db_user> -h <db_host> -Fc hf_group_app > hf_group_app_$(date +%F_%H%M).dump
-# Verify it restores into a scratch DB before proceeding:
-createdb -U <db_user> hf_group_app_restore_test
-pg_restore -U <db_user> -d hf_group_app_restore_test hf_group_app_YYYY-MM-DD_HHMM.dump
-# (drop the scratch DB once verified)
-```
-
-Do not proceed to §3 until a restore has actually succeeded.
-
----
-
-## 3. Migration adoption (the careful part)
-
-### 3.1 Rehearse on a clone first
-```bash
-# Clone prod into a staging DB and run the adoption there FIRST.
-createdb -U <db_user> hf_group_stage
-pg_restore -U <db_user> -d hf_group_stage hf_group_app_YYYY-MM-DD_HHMM.dump
-# Point the new backend at hf_group_stage (env DB_NAME=hf_group_stage) and run 3.2.
-```
-
-### 3.2 Adopt existing tables, create only the new ones
-```bash
-export DJANGO_SETTINGS_MODULE=config.settings.production
-python manage.py migrate --fake-initial
-```
-`--fake-initial` marks an app's `0001_initial` as applied **without** running its
-`CreateModel`s **when those tables already exist**, and actually creates the ones
-that don't. It then runs all later migrations normally (seed groups, etc.).
-
-### 3.3 Watch for these failure modes on the clone
-- **"relation already exists"** → an initial migration **mixes** existing + new
-  tables, so `--fake-initial` won't fake it. Resolve by splitting/faking that app
-  explicitly: `python manage.py migrate <app> 0001 --fake`, then
-  `python manage.py migrate <app>` for the rest. Record which apps needed this.
-- **Idempotent seeds** (`mortgages.0002_seed_mortgage_groups`, `seed_roles`) are
-  `get_or_create` — safe to re-run.
-- After it completes: `python manage.py showmigrations` → everything `[X]`, and
-  **spot-check that existing tables' row counts are unchanged**.
-
-### 3.4 The 46 tables that must be adopted (already in prod)
+## Appendix A — The 46 tables that already exist in prod (adopted, never re-created)
 ```
 affordable_housing_applications, affordable_housing_projects_pipeline,
 affordable_housing_registrations, afh_seller_mapping, auth_otp,
 branch_employee_dmc_data, branch_final_employee_dmc_data, cust_monthly_ftp,
 customer_allocation_base, customer_movment_approval_list, drawdown,
-employee_monthly_performance (⚠ diverged — see §0), employee_role_history,
+employee_monthly_performance (⚠ diverged — see Appendix B), employee_role_history,
 exco_owners, exco_strategic_initiatives, exco_strategic_milestones,
 exco_strategic_thrust, hf_collections_feedback, hfdi_crm_projects,
 hfdi_crm_sales_data, hfdi_customers_hfc_mortgages, hfdi_employee_data,
@@ -350,119 +254,31 @@ rm_allocation_list, rm_kpi_base_summary, staff_employee_data,
 staff_leave_records, telesales_dormant_tills_allocation, telesales_staff_list,
 trade_finance_data, weighted_dashboard_manual_sales_table
 ```
-(Regenerate this list anytime with `scratchpad/model_diff.py` logic — new managed
-tables whose `db_table` also exists in the old codebase.)
 
-### 3.5 Apply to real prod
-Only after §3.2 succeeds cleanly on the clone, repeat the exact same steps
-(with the resolutions recorded in §3.3) against the real prod DB, inside a
-maintenance-safe window.
+## Appendix B — What each table category does on migrate
 
----
+| Category | Count | On migrate | Risk |
+|---|---|---|---|
+| **Greenfield managed** (all `mortgage_*`, `sc_*`, `scorecard_*`, `*_upload` mirrors, `agent_conversations`, `analytics_snapshots`, `client_briefs`, `portfolio_insights`, `portfolio_rm_targets`, `portfolio_customer_enrichment`, `exco_initiatives`, `hf_rights_issue_applications`, `slideshow_slides`, `employee_monthly_performance_v2`) | 24 | **Created cleanly** — additive | 🟢 Low |
+| **Colliding managed** (Appendix A — names already in prod) | 46 | Must be **adopted** (Step 6) | 🔴 handled by Step 6 |
+| **Unmanaged** (`managed=False`, warehouse reads) | 31 | **No DDL emitted** | 🟢 None |
 
-## 4. Shared-DB write safety (pilot scope)
+**The `employee_monthly_performance` landmine (resolved).** The legacy prod table has an
+*incompatible* column set to the redesigned scorecard model, which would 500 the first scorecard
+query if adopted directly. Fixed: the redesigned model owns a **new** `employee_monthly_performance_v2`
+table (migration `0006`). The legacy table is left untouched (rows preserved, just not read by the
+new ORM); `_v2` is created empty in Step 6 and filled by the Step 7 recompute.
 
-On a shared DB, when the new backend **writes** to a colliding table (e.g. via a
-CRUD endpoint on `portfolio_management_feedback`), it changes the **same rows**
-the live users see. For the pilot, keep writes limited to **greenfield tables**:
+## Appendix C — OTP / email (login depends on it)
+Login is `POST /auth/api/token/` then an OTP flow that emails a 6-digit code via Office365 SMTP.
+Dev uses the console backend, so **email has never run end-to-end**. Before cutover, send a real
+OTP to a test user on prod and confirm it arrives. With `DEBUG=False`, **SMTP must work** or users
+cannot log in (the OTP is also stored in `auth_otp`, but users rely on the email).
 
-- ✅ **Mortgages module** — every table is greenfield (`mortgage_*`). Fully additive,
-  no shared-data write risk. **Recommended pilot surface.**
-- ⚠️ Legacy/ported CRUD + CSV-upload write paths touch shared prod tables — keep
-  these **read-only or dark** during the pilot until validated.
-
----
-
-## 5. SECRET_KEY
-
-Generate with:
-```bash
-python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
-```
-Place the value in the **prod environment only** (secrets manager / server env),
-as `SECRET_KEY=...`. **Do not** commit it or put it in any tracked file.
-
-> A fresh `SECRET_KEY` invalidates all existing JWTs (it's the `SIGNING_KEY`), so
-> every logged-in user is forced to log in once after cutover. Expected, harmless.
-
-### 5.1 The prod env file (`/etc/hf/prod.env`)
-
-Secrets live in a file **on the server only**, injected into the container via
-`--env-file /etc/hf/prod.env` (§E). It is **never** committed. The repo carries a
-placeholder template (`.env.example`); the repo `.env` is dev-only and stays gitignored.
-Do **not** untrack `.env` — that would write live DB/email passwords and the reusable
-JWT signing key into git history permanently (irreversible, private repo or not).
-
-Build the prod file from the template (or copy the dev `.env`) and change these:
-
-| Key | Prod value |
-|---|---|
-| `DEBUG` | `False` |
-| `SECRET_KEY` | a **fresh** value (below) — never the old backend key, never the dev key |
-| `DB_*` | the prod app DB (`hf_group_app`). With `--network=host`, `DB_HOST=127.0.0.1` |
-| `DW_*` | the prod warehouse DB (`datawarehouse`). `DW_HOST=127.0.0.1` under host networking |
-| `ALLOWED_HOSTS` | the real host/domain (not `*`) |
-| `EMAIL_*`, `REDIS_URL`, `ANTHROPIC_API_KEY` | real prod values |
-
-Generate the fresh `SECRET_KEY` **on the server** (so it never transits chat/git/logs)
-and paste it into `/etc/hf/prod.env` only:
-```bash
-podman run --rm hf-backend:latest \
-  python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
-```
-Lock the file down: `sudo install -o root -g root -m 600 /etc/hf/prod.env /etc/hf/prod.env`
-(or `chmod 600`) so only root reads it.
-
----
-
-## 6. OTP / email (login depends on it)
-
-Login calls `POST /auth/api/token/` then the OTP flow (`/auth/generate-otp/`),
-which emails a 6-digit code via office365 SMTP. In dev the console backend is used,
-so **email delivery has never run end-to-end**. Before the pilot:
-
-- [ ] Send a real OTP to a test user on prod and confirm it arrives.
-- [ ] If it fails, the send is wrapped in `except: pass` — check server logs; the
-      OTP is also stored in the `auth_otp` table and (when `DEBUG`) printed. In
-      prod `DEBUG=False`, so **SMTP must actually work** or users can't log in.
-
----
-
-## 7. Frontend (pilot)
-
-`portfolio-management-frontend/.env.local` currently points at
-`http://127.0.0.1:9000/` (set for local training). For the pilot build it must be
-the **new backend's hosted URL**, with a trailing slash and no leading space:
+## Appendix D — Point the frontend at this backend
+In `portfolio-management-frontend`, set the API URL to the new backend and rebuild (Next.js reads
+env at build time):
 ```
 NEXT_PUBLIC_API_URL=https://<new-backend-host>/
 ```
-Rebuild/redeploy the pilot frontend after changing it (Next.js reads env at build).
-
----
-
-## 8. Post-deploy verification
-
-```bash
-python manage.py check --deploy          # security warnings
-python manage.py showmigrations          # all [X]
-```
-- [ ] Existing tables' row counts unchanged (compare against a pre-deploy snapshot).
-- [ ] `GET /api/docs/` loads; Mortgages endpoints listed.
-- [ ] Log in as a pilot user (token → OTP → dashboard).
-- [ ] Mortgages: create a Product, upload a CSV (template), create a Lead,
-      approve → disburse → schedule renders, record a payment.
-- [ ] Old backend + current users **unaffected** (sanity-check a couple of their
-      operations).
-
----
-
-## 9. Rollback
-
-The new backend runs side-by-side, so rollback = **stop routing pilot users to it**
-(revert the pilot frontend URL / take the new app-server out of rotation). The
-greenfield tables it created are additive and harmless if left in place.
-
-If a shared table was unexpectedly altered (should not happen — see §0), restore
-from the §2 backup into a scratch DB, diff, and repair the affected rows. Do **not**
-blanket-restore the whole prod DB unless the old backend is also down, or you'll
-lose everything both systems wrote since the backup.
+(Trailing slash, no leading space.)

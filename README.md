@@ -4,8 +4,9 @@
 > The prod server runs **RHEL with Python 3.6** (cannot run this app directly) and the
 > new backend shares the **existing production database**. Deployment is **containerized
 > (podman/Docker)** with a careful migration-adoption step — a plain `manage.py migrate`
-> will break prod. Follow the **▶ DEPLOYER QUICK RUNBOOK** at the top of `docs/DEPLOY.md`
-> top to bottom. The sections below (§1–§12) are for **local development** only.
+> will break prod. Follow **Part 2 — The Runbook** in `docs/DEPLOY.md` top to bottom
+> (fill in the two server-specific values it lists first). The sections below (§1–§12)
+> are for **local development** only.
 
 ## Stack
 

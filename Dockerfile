@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 #
-# Runtime image for hf_group_backend (Django 6.0.5 / Python 3.13).
+# Runtime image for hf_group_backend (Django 4.2 LTS / Python 3.12).
+# Django 4.2 is used (not 6.x) because prod PostgreSQL is 12.1 and Django 6 requires PG >= 14.
 # Purpose: run the new backend on a host whose SYSTEM Python is 3.6 and CANNOT
 # be upgraded (RHEL uses it for yum/dnf). The container carries its own 3.13,
 # so the host Python is irrelevant. See docs/DEPLOY.md.
@@ -9,7 +10,7 @@
 # runtime with `--env-file`. Migrations are NOT run here — they are a deliberate
 # manual step on the shared prod DB (see DEPLOY.md "Full-replace" recipe).
 
-FROM python:3.13.1-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,11 +20,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# libpq5 for Postgres client libs; curl for container healthchecks.
-# (psycopg[binary]/psycopg2-binary ship wheels, so no compiler is needed.)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 curl \
-    && rm -rf /var/lib/apt/lists/*
+# No apt packages are needed: psycopg[binary]/psycopg2-binary bundle their own
+# libpq inside the wheel, so there is nothing to compile or install from the OS.
+# (Skipping apt also means the build never touches the Debian repos — which fail
+# if the host clock is skewed. Fix the host clock anyway; see docs/DEPLOY.md.)
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

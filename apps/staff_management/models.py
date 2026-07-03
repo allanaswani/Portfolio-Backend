@@ -632,8 +632,8 @@ class StaffEmployeeData(models.Model):
         db_table = "staff_employee_data"
         verbose_name = "Staff Employee Data"
         constraints = [
-            models.CheckConstraint(condition=Q(exit_date__gt=F("employment_date")), name="exit_after_hire"),
-            models.CheckConstraint(condition=Q(is_active=True) | Q(exit_date__isnull=False), name="inactive_requires_exit_date"),
+            models.CheckConstraint(check=Q(exit_date__gt=F("employment_date")), name="exit_after_hire"),
+            models.CheckConstraint(check=Q(is_active=True) | Q(exit_date__isnull=False), name="inactive_requires_exit_date"),
         ]
         indexes = [
             models.Index(fields=["employment_date", "is_active"]),
@@ -662,7 +662,7 @@ class LeaveRecord(models.Model):
         db_table = "staff_leave_records"
         verbose_name = "Staff Leave Records"
         constraints = [
-            models.CheckConstraint(condition=Q(end_date__gt=F("start_date")), name="leave_end_after_start"),
+            models.CheckConstraint(check=Q(end_date__gt=F("start_date")), name="leave_end_after_start"),
         ]
         indexes = [models.Index(fields=["start_date", "end_date"])]
         ordering = ["start_date"]
@@ -690,7 +690,7 @@ class EmployeeRoleHistory(models.Model):
         verbose_name_plural = "Role Histories"
         constraints = [
             models.UniqueConstraint(fields=["sales_code", "role_code", "start_date"], name="unique_role_start_per_employee"),
-            models.CheckConstraint(condition=Q(end_date__gt=F("start_date")), name="end_after_start"),
+            models.CheckConstraint(check=Q(end_date__gt=F("start_date")), name="end_after_start"),
         ]
         ordering = ["-start_date"]
         indexes = [models.Index(fields=["sales_code", "start_date"])]

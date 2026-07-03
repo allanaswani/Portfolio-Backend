@@ -12,8 +12,8 @@ StaffEmployeeData, EmployeeRoleHistory, LeaveRecord, RmKPIBaseSummary and
 MissingEmployeeActual (imported in services), and writes its computed results to
 ``sc_employee_monthly_performance``.
 
-Two legacy definitions are corrected for Django 6:
-  * CheckConstraint uses ``condition=`` (not ``check=``).
+Constraint note (Django 4.2 LTS):
+  * CheckConstraint uses ``check=`` (the ``condition=`` spelling is Django 5.1+).
 """
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -140,7 +140,7 @@ class ScRoleKpiMapping(models.Model):
                 name="sc_unique_role_kpi_effective_dates",
             ),
             models.CheckConstraint(
-                condition=Q(effective_to__gt=F("effective_from")),
+                check=Q(effective_to__gt=F("effective_from")),
                 name="sc_effective_to_after_from",
             ),
         ]

@@ -216,7 +216,7 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'Scorecard Role-KPI Assignments',
                 'db_table': 'sc_role_kpi_mappings',
                 'indexes': [models.Index(fields=['effective_from', 'effective_to'], name='sc_role_kpi_effecti_6f68a2_idx')],
-                'constraints': [models.UniqueConstraint(fields=('role_code', 'kpi_code', 'effective_from', 'effective_to', 'plan_category', 'is_bonus'), name='sc_unique_role_kpi_effective_dates'), models.CheckConstraint(condition=models.Q(('effective_to__gt', models.F('effective_from'))), name='sc_effective_to_after_from')],
+                'constraints': [models.UniqueConstraint(fields=('role_code', 'kpi_code', 'effective_from', 'effective_to', 'plan_category', 'is_bonus'), name='sc_unique_role_kpi_effective_dates'), models.CheckConstraint(check=models.Q(('effective_to__gt', models.F('effective_from'))), name='sc_effective_to_after_from')],
             },
         ),
     ]

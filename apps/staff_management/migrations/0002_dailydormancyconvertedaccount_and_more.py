@@ -518,7 +518,7 @@ class Migration(migrations.Migration):
                 'ordering': ['-start_date'],
                 'managed': True,
                 'indexes': [models.Index(fields=['sales_code', 'start_date'], name='employee_ro_sales_c_e7959c_idx')],
-                'constraints': [models.UniqueConstraint(fields=('sales_code', 'role_code', 'start_date'), name='unique_role_start_per_employee'), models.CheckConstraint(condition=models.Q(('end_date__gt', models.F('start_date'))), name='end_after_start')],
+                'constraints': [models.UniqueConstraint(fields=('sales_code', 'role_code', 'start_date'), name='unique_role_start_per_employee'), models.CheckConstraint(check=models.Q(('end_date__gt', models.F('start_date'))), name='end_after_start')],
             },
         ),
         migrations.CreateModel(
@@ -800,7 +800,7 @@ class Migration(migrations.Migration):
                 'ordering': ['start_date'],
                 'managed': True,
                 'indexes': [models.Index(fields=['start_date', 'end_date'], name='staff_leave_start_d_f3c207_idx')],
-                'constraints': [models.CheckConstraint(condition=models.Q(('end_date__gt', models.F('start_date'))), name='leave_end_after_start')],
+                'constraints': [models.CheckConstraint(check=models.Q(('end_date__gt', models.F('start_date'))), name='leave_end_after_start')],
             },
         ),
         migrations.CreateModel(
@@ -865,7 +865,7 @@ class Migration(migrations.Migration):
                 'ordering': ['-employment_date'],
                 'managed': True,
                 'indexes': [models.Index(fields=['employment_date', 'is_active'], name='staff_emplo_employm_19f114_idx'), models.Index(fields=['staff_org_unit', 'is_active'], name='staff_emplo_staff_o_108582_idx')],
-                'constraints': [models.CheckConstraint(condition=models.Q(('exit_date__gt', models.F('employment_date'))), name='exit_after_hire'), models.CheckConstraint(condition=models.Q(('is_active', True), ('exit_date__isnull', False), _connector='OR'), name='inactive_requires_exit_date')],
+                'constraints': [models.CheckConstraint(check=models.Q(('exit_date__gt', models.F('employment_date'))), name='exit_after_hire'), models.CheckConstraint(check=models.Q(('is_active', True), ('exit_date__isnull', False), _connector='OR'), name='inactive_requires_exit_date')],
             },
         ),
     ]
