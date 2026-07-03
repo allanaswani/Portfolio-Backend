@@ -479,12 +479,20 @@ class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
     result_filename = "affordable_housing_applications_upload_results"
     excluded_columns = ("id", "house_type")
 
+    # Per-application assisted_by corrections (ported from legacy, which hardcoded
+    # this as a one-off `if application_id == ...` in amend_row). Add entries here
+    # to reassign assisted_by for a specific application_id on the next upload.
+    ASSISTED_BY_OVERRIDES = {
+        "AH-6JNXXXV6": "Stephen Mwenda Mitabari",
+    }
+
     def amend_row(self, row):
         row["house_type"] = self.derive_parenthesised(row.get("preferred_typology"))
         row["project_name"] = self.derive_hyphenated(row.get("preferred_typology"))
         row["timestamp"] = self.parse_date(row.get("timestamp"), "%d, %B %Y %H:%M")
         for field in ("unit_price", "deposits"):
             row[field] = self.clean_number(row.get(field))
+        row["assisted_by"] = self.ASSISTED_BY_OVERRIDES.get(row.get("application_id"), row.get("assisted_by"))
 
     def save_valid(self, row, serializer):
         data = serializer.validated_data
