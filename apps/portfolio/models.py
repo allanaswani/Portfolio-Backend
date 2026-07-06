@@ -70,18 +70,27 @@ class Profile(models.Model):
 def create_user_profile(sender, instance, created, **kwargs):
     if created:
         p = Profile.objects.create(user=instance)
+        # SECURITY: never email a password. New users set their own via the
+        # "Forgot password?" reset flow on the login page. (The old backend
+        # emailed a hardcoded placeholder string here — misleading and unsafe.)
+        if not p.user.email:
+            return
+        login_url = "http://128.2.1.25:5400/login"
         message = (
-            f"Hi {p.user.first_name},\n\nBelow are the login details:\n\n"
+            f"Hi {p.user.first_name},\n\n"
+            f"An account has been created for you on the HF Portfolio Tool.\n\n"
             f"\t Username: {p.user.username}\n\n"
-            f"\t Password: NenosirI@39HATAri\n\n"
-            f"To access the site click http://128.2.1.25:5400/login."
+            f"For security, no password is sent by email. To set your password, "
+            f'open the login page and use the "Forgot password?" link, then sign in.\n\n'
+            f"To access the site click {login_url}."
         )
         html_message = f"""
         <p>Hi {p.user.first_name},</p>
-        <p>Below are the login details:</p>
+        <p>An account has been created for you on the HF Portfolio Tool.</p>
         <p><strong>Username</strong>: {p.user.username}</p>
-        <p><strong>Password</strong>: NenosirI@39HATAri</p>
-        <p>To access the site click <a href="http://128.2.1.25:5400/login">Portfolio Tool</a></p>
+        <p>For security, no password is sent by email. To set your password, open the
+        login page and use the <strong>Forgot password?</strong> link, then sign in.</p>
+        <p>To access the site click <a href="{login_url}">Portfolio Tool</a></p>
         """
         try:
             send_mail(

@@ -16,7 +16,11 @@ from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 
 from .models import AgentConversation
-from .serializers import AgentConversationSerializer
+from .serializers import (
+    AgentConversationSerializer,
+    AgentChatRequestSerializer,
+    AgentChatResponseSerializer,
+)
 from .agent_tools import TOOL_DEFINITIONS, run_tool
 
 MODEL = "claude-opus-4-8"
@@ -83,9 +87,14 @@ class ConversationDetailView(generics.RetrieveUpdateDestroyAPIView):
         return AgentConversation.objects.filter(user=self.request.user)
 
 
-@extend_schema(tags=["AI Agent — Chat"])
+@extend_schema(
+    tags=["AI Agent — Chat"],
+    request=AgentChatRequestSerializer,
+    responses=AgentChatResponseSerializer,
+)
 class AgentChatView(APIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = AgentChatRequestSerializer
 
     def post(self, request, conversation_id):
         user_message = (request.data.get("message") or "").strip()
