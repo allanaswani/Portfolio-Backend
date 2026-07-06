@@ -129,9 +129,23 @@ CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": REDIS_URL,
-        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            # A Redis outage must NOT take the whole API down. DRF throttling is
+            # backed by this cache, so an unreachable Redis would otherwise raise
+            # on every request and 500 the entire API. IGNORE_EXCEPTIONS makes
+            # cache ops return None on failure (throttling silently degrades to
+            # "off"), and the short socket timeouts fail fast instead of blocking
+            # until the gunicorn worker hits its timeout.
+            "IGNORE_EXCEPTIONS": True,
+            "SOCKET_CONNECT_TIMEOUT": 2,
+            "SOCKET_TIMEOUT": 2,
+        },
     }
 }
+
+# Log (rather than raise) whenever a cache op is skipped due to a Redis error.
+DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS = True
 
 CHANNEL_LAYERS = {
     "default": {

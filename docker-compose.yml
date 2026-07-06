@@ -1,0 +1,40 @@
+# One-command runtime for hf_group_backend: Redis + the Django/gunicorn app.
+#
+# This file "captures" the whole deployment — image build, Redis, restart policy,
+# host networking, and the env-file wiring — so bring-up is a single command.
+#
+# Secrets are DELIBERATELY not in here and not in the image (.dockerignore
+# excludes .env). They live ONLY in the server-side file referenced by env_file
+# below, created from .env.example. Never in git, never inside the image tar.
+#
+#   Bring everything up:   docker compose up -d --build
+#   Tail app logs:         docker compose logs -f web
+#   Restart just the app:  docker compose restart web
+#   Stop everything:       docker compose down
+#
+# Host networking is used so gunicorn binds the host's :9000 (same-port cutover,
+# no new firewall rule) and the app reaches host-local Postgres (127.0.0.1:5432)
+# and Redis (127.0.0.1:6379).
+
+services:
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    restart: unless-stopped
+    # Light persistence so a restart doesn't wipe throttle counters; append-only
+    # off keeps it cheap (this is a cache/broker, not a system of record).
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+
+  web:
+    build: .
+    image: hf-backend:latest
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - redis
+    # Secrets come from this file on the SERVER ONLY. Create it from
+    # .env.example (cp .env.example /etc/hf/prod.env, then fill it in). If it is
+    # missing, compose fails fast with a clear error instead of starting a
+    # misconfigured app — that is the safe behaviour.
+    env_file:
+      - /etc/hf/prod.env
