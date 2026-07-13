@@ -19,6 +19,8 @@ from apps.gceo_dashboard.models import (
 from core.pagination import StandardPagination
 from core.date_utils import cy, py, _yester_case, _prev_month_case
 
+import django_filters.rest_framework
+
 
 def _get_profile(user):
     return get_object_or_404(Profile, user_id=user.id)
@@ -557,6 +559,14 @@ class BranchLoansArrearsListView(generics.ListAPIView):
     def get_serializer_class(self):
         from apps.gceo_dashboard.serializers import LoansHistorySerializer
         return LoansHistorySerializer
+
+
+@extend_schema(tags=["Branch Portfolio — Arrears"])
+class BranchLoansArrearsListSearchView(BranchLoansArrearsListView):
+    """Server-paginated + filterable arrears list (mirrors the RM app's
+    SearchLoansArrearsAccountsListByRmView). Unknown query params are ignored."""
+    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
+    filterset_fields = ["loan_product", "status", "sector", "currency"]
 
 
 @extend_schema(tags=["Branch Portfolio — Arrears"])

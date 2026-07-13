@@ -22,6 +22,8 @@ from apps.gceo_dashboard.models import (
 from core.pagination import StandardPagination
 from core.date_utils import cy, py, current_year, _yester_case, _prev_month_case
 
+import django_filters.rest_framework
+
 
 def _get_profile(user):
     return get_object_or_404(Profile, user_id=user.id)
@@ -29,6 +31,58 @@ def _get_profile(user):
 
 def _segment(profile):
     return profile.segment or ""
+
+
+class _DynamicCustomerFilterMixin:
+    """Applies the old frontend's per-column search + min_/max_ numeric range
+    filters to a customer queryset before pagination — mirrors the RM app's
+    ``DynamicFilterCustomerListPaginatedDetailView``. Unknown params are ignored,
+    and numeric range filters only apply to attributes the row actually carries
+    (so a filter on a computed column absent from the ORM row is a no-op rather
+    than excluding every row)."""
+
+    _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering"}
+    _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
+
+    def _apply_filters(self, customers):
+        params = self.request.query_params
+        if not params:
+            return customers
+
+        filtered = []
+        for customer in customers:
+            match = True
+
+            for param, value in params.items():
+                if param in self._CONTROL_PARAMS or param.startswith(("min_", "max_")):
+                    continue
+                if hasattr(customer, param) and value != "":
+                    attr = getattr(customer, param, "")
+                    if str(attr if attr is not None else "").lower().find(value.lower()) == -1:
+                        match = False
+                        break
+
+            if match:
+                for field in self._NUMERIC_FIELDS:
+                    if not hasattr(customer, field):
+                        continue
+                    field_value = getattr(customer, field, 0) or 0
+                    min_value = params.get(f"min_{field}")
+                    max_value = params.get(f"max_{field}")
+                    try:
+                        if min_value not in (None, "") and float(field_value) < float(min_value):
+                            match = False
+                            break
+                        if max_value not in (None, "") and float(field_value) > float(max_value):
+                            match = False
+                            break
+                    except (TypeError, ValueError):
+                        continue
+
+            if match:
+                filtered.append(customer)
+
+        return filtered
 
 
 # ── Customers ──────────────────────────────────────────────────────────────
@@ -127,6 +181,40 @@ class TlUnallocatedCustomersView(generics.ListAPIView):
         profile = _get_profile(self.request.user)
         allocated_ids = RetailAllocatedPortfolio.objects.values_list("cust_id", flat=True)
         return HfCustomer.objects.filter(banking_segment=_segment(profile)).exclude(cust_id__in=allocated_ids)
+
+
+@extend_schema(tags=["TL Portfolio — Customers"])
+class TlAllocatedCustomersSearchView(_DynamicCustomerFilterMixin, TlAllocatedCustomersView):
+    """Server-paginated + dynamically filtered variant of the allocated list."""
+
+    def get_queryset(self):
+        return self._apply_filters(list(super().get_queryset()))
+
+
+@extend_schema(tags=["TL Portfolio — Customers"])
+class TlUnallocatedCustomersSearchView(_DynamicCustomerFilterMixin, TlUnallocatedCustomersView):
+    """Server-paginated + dynamically filtered variant of the unallocated list."""
+
+    def get_queryset(self):
+        return self._apply_filters(list(super().get_queryset()))
+
+
+@extend_schema(tags=["TL Portfolio — Customers"])
+class TlCustomerPerSegmentView(APIView):
+    """Allocated customers grouped by main segment across the TL's segment RMs
+    (mirrors the RM app's CustomerPerSegmentView, scoped to the whole segment)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rm_codes = Profile.objects.filter(segment=_segment(profile)).values_list("sales_code", flat=True)
+        data = (
+            RetailAllocatedPortfolio.objects.filter(sales_code__in=rm_codes)
+            .values("main_segment")
+            .annotate(count=Count("cust_id"))
+            .order_by("-count")
+        )
+        return Response(list(data))
 
 
 # ── RM list ────────────────────────────────────────────────────────────────
@@ -454,6 +542,14 @@ class TlLoansArrearsListView(generics.ListAPIView):
 
 
 @extend_schema(tags=["TL Portfolio — Arrears"])
+class TlLoansArrearsListSearchView(TlLoansArrearsListView):
+    """Server-paginated + filterable arrears list (mirrors the RM app's
+    SearchLoansArrearsAccountsListByRmView)."""
+    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
+    filterset_fields = ["loan_product", "status", "sector", "currency"]
+
+
+@extend_schema(tags=["TL Portfolio — Arrears"])
 class TlLoansArrearsDPDView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -558,10 +654,11 @@ class TlFeedbackByLeadView(APIView):
         segment_customer_ids = HfCustomer.objects.filter(
             banking_segment=_segment(profile)
         ).values_list("cust_id", flat=True)
+        # `total_leads` mirrors the RM app's field name; `count` kept for back-compat.
         data = (
             Feedback.objects.filter(cust_id__in=segment_customer_ids)
             .values("lead")
-            .annotate(count=Count("id"))
+            .annotate(count=Count("id"), total_leads=Count("id"))
         )
         return Response(list(data))
 
@@ -575,12 +672,47 @@ class TlContactabilityView(APIView):
         total_cust = HfCustomer.objects.filter(banking_segment=_segment(profile)).count()
         rm_codes = Profile.objects.filter(segment=_segment(profile)).values_list("sales_code", flat=True)
         contacted = Feedback.objects.filter(sales_code__in=rm_codes).values("cust_id").distinct().count()
+        not_contacted = max(0, total_cust - contacted)
+        # `allocation` + `percent_contacted` (a fraction) match the field names the
+        # frontend reads; the original keys are kept for back-compat.
         return Response({
             "total_customers": total_cust,
+            "allocation": total_cust,
             "contacted": contacted,
-            "not_contacted": max(0, total_cust - contacted),
+            "not_contacted": not_contacted,
+            "percent_contacted": round(contacted / total_cust, 4) if total_cust else 0,
             "contactability_pct": round(contacted / total_cust * 100, 2) if total_cust else 0,
         })
+
+
+@extend_schema(tags=["TL Portfolio — Feedback"])
+class TlFeedbackSummaryView(APIView):
+    """Per-RM contactability call counts over 1/7/30 days and YTD — powers the
+    'RM Summary' table on the TL feedback page."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import date, timedelta
+        profile = _get_profile(request.user)
+        today = date.today()
+        rms = (
+            Profile.objects.filter(segment=_segment(profile))
+            .select_related("user")
+            .values("sales_code", "user__first_name", "user__last_name")
+        )
+        rows = []
+        for r in rms:
+            code = r["sales_code"]
+            fb = Feedback.objects.filter(sales_code=code)
+            rows.append({
+                "sales_code": code,
+                "rm_name": f"{r['user__first_name']} {r['user__last_name']}".strip(),
+                "call_day_1":   fb.filter(date__gte=today - timedelta(days=1)).count(),
+                "call_day_7":   fb.filter(date__gte=today - timedelta(days=7)).count(),
+                "call_day_30":  fb.filter(date__gte=today - timedelta(days=30)).count(),
+                "call_day_ytd": fb.filter(date__year=today.year).count(),
+            })
+        return Response(rows)
 
 
 # ── Prospects ──────────────────────────────────────────────────────────────

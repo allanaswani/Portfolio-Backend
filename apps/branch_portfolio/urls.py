@@ -41,6 +41,7 @@ urlpatterns = [
     path("npl_summary/",                  views.BranchNPLSummaryView.as_view()),
     path("loans-arrears/summary/",        views.BranchLoansArrearsSummaryView.as_view()),
     path("loans-arrears/list/",           views.BranchLoansArrearsListView.as_view()),
+    path("loans-arrears/list/search/",    views.BranchLoansArrearsListSearchView.as_view()),
     path("loans-arrears/dpd_bucket/",     views.BranchLoansArrearsDPDView.as_view()),
     path("loans-arrears/loan_products/",  views.BranchLoansArrearsProductsView.as_view()),
 

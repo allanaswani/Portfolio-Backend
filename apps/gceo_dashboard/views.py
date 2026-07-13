@@ -701,6 +701,50 @@ class CeoFixedDepositRateBandsView(APIView):
 
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
+class CeoFixedDepositProductSummaryView(APIView):
+    """FD balances by product/type + currency (Products table). Mirrors the old
+    backend's FixedDepositOverallSummary.product_summary() — FD is identified via
+    the product_mapping table (product_map = 'FD'), not a name pattern."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        with connection.cursor() as cur:
+            cur.execute("""
+                SELECT accs.type, accs.currency, SUM(accs.current_balance) AS amount
+                FROM accounts accs
+                INNER JOIN product_mapping pm ON accs.type = pm.product_description
+                WHERE pm.product_map = 'FD'
+                GROUP BY accs.type, accs.currency
+                ORDER BY amount DESC
+            """)
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
+
+
+@extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
+class CeoFixedDepositSegmentSummaryView(APIView):
+    """FD balances by the customer's banking segment (Segment table). Mirrors the
+    old backend's FixedDepositOverallSummary.segment_summary()."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        with connection.cursor() as cur:
+            cur.execute("""
+                SELECT c.banking_segment, SUM(accs.current_balance) AS amount
+                FROM accounts accs
+                INNER JOIN product_mapping pm ON accs.type = pm.product_description
+                INNER JOIN hf_customer c ON c.cust_id = accs.cust_id
+                WHERE pm.product_map = 'FD'
+                GROUP BY c.banking_segment
+                ORDER BY amount DESC
+            """)
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
+
+
+@extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
 class CeoFixedDepositExpiryView(APIView):
     permission_classes = [IsAuthenticated]
 

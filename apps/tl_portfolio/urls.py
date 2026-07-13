@@ -9,7 +9,12 @@ urlpatterns = [
     path("new_customers/",                      views.TlNewCustomersView.as_view()),
     path("new_customers_list/",                 views.TlNewCustomerListView.as_view()),
     path("customers_allocated/",                views.TlAllocatedCustomersView.as_view()),
+    path("customers_allocated/search/",         views.TlAllocatedCustomersSearchView.as_view()),
     path("customers_unallocated/",              views.TlUnallocatedCustomersView.as_view()),
+    # Frontend uses `not_allocated` naming; alias to the same unallocated view.
+    path("customers_not_allocated/",            views.TlUnallocatedCustomersView.as_view()),
+    path("customers_not_allocated/search/",     views.TlUnallocatedCustomersSearchView.as_view()),
+    path("customer_per_segment/",               views.TlCustomerPerSegmentView.as_view()),
 
     # Summary
     path("customer_totals/",                    views.TlTotalCustomersView.as_view()),
@@ -40,6 +45,7 @@ urlpatterns = [
     # Arrears
     path("loans-arrears/summary/",              views.TlLoansArrearsSummaryView.as_view()),
     path("loans-arrears/list/",                 views.TlLoansArrearsListView.as_view()),
+    path("loans-arrears/list/search/",          views.TlLoansArrearsListSearchView.as_view()),
     path("loans-arrears/dpd_bucket/",           views.TlLoansArrearsDPDView.as_view()),
     path("loans-arrears/loan_products/",        views.TlLoansArrearsProductsView.as_view()),
 
@@ -51,6 +57,10 @@ urlpatterns = [
     path("feedback_by_segment/",                views.TlSegmentFeedbackView.as_view()),
     path("feedback_by_lead/",                   views.TlFeedbackByLeadView.as_view()),
     path("contactability/",                     views.TlContactabilityView.as_view()),
+    # Frontend uses the RM app's `feedback_summ_*` / `feedback_summary` names.
+    path("feedback_summ_by_lead/",              views.TlFeedbackByLeadView.as_view()),
+    path("feedback_summ_contactability/",       views.TlContactabilityView.as_view()),
+    path("feedback_summary/",                   views.TlFeedbackSummaryView.as_view()),
 
     # Prospects
     path("prospects/",                          views.TlSegmentProspectsView.as_view()),

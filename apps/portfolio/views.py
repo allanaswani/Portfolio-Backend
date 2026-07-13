@@ -1,3 +1,4 @@
+from django.db import connection
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
@@ -383,14 +384,51 @@ class RmRevenueByCodeView(APIView):
 
 @extend_schema(tags=["Portfolio — Summary"])
 class TotalSummaryView(APIView):
+    """RM revenue / deposit / loan totals. Ports the old backend's
+    core.rM_total_summary() and returns its exact shape:
+    ``[{sales_code, total_revenue, total_deposit_balance, total_loans}]``.
+
+    revenue = SUM(portfolio_rm_revenue.value) + YTD FTP + YTD loan-loss. The
+    revenue SUM is wrapped in COALESCE so a user with no portfolio_rm_revenue
+    row yields total_revenue = 0 (not NULL) — the old backend omitted this,
+    which returned null and crashed the legacy frontend's .toFixed()."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
-        totals = svc.rM_total_customers(profile.sales_code)
-        deposits = svc.rm_deposit_trends(profile.sales_code)
-        revenue = svc.rm_revenue(profile.sales_code)
-        return Response({"totals": totals, "deposit_count": len(deposits), "revenue_count": len(revenue)})
+        sql = """
+            WITH valid_portfolio AS (
+                SELECT cust_id FROM retail_allocated_portfolio WHERE sales_code = %s
+            ), rm_revenue AS (
+                SELECT * FROM portfolio_rm_revenue WHERE sales_code = %s
+            ), ftp AS (
+                SELECT COALESCE(SUM(ftp.total_ftp), 0) AS ftp_value
+                FROM cust_monthly_ftp ftp
+                JOIN valid_portfolio vp ON ftp.cust_cif = vp.cust_id
+                WHERE ftp.current_year = EXTRACT(YEAR FROM CURRENT_DATE)
+            ), loan_loss AS (
+                SELECT -SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)) AS loan_loss_value
+                FROM loans_mom_ifrs_movement l
+                JOIN valid_portfolio vp ON l.cust_code_strategy::int = vp.cust_id
+                WHERE EXTRACT(YEAR FROM eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+                  AND l.cust_code_strategy ~ '^[0-9]+$'
+            )
+            SELECT
+                %s AS sales_code,
+                COALESCE((SELECT SUM(value) FROM rm_revenue), 0)
+                    + COALESCE((SELECT ftp_value FROM ftp), 0)
+                    + COALESCE((SELECT loan_loss_value FROM loan_loss), 0) AS total_revenue,
+                SUM(total_depost_balance) AS total_deposit_balance,
+                SUM(total_loans) AS total_loans
+            FROM hf_customer
+            JOIN valid_portfolio vp ON hf_customer.cust_id = vp.cust_id
+        """
+        sales_code = profile.sales_code
+        with connection.cursor() as cur:
+            cur.execute(sql, [sales_code, sales_code, sales_code])
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
 
 
 @extend_schema(tags=["Portfolio — Customers"])

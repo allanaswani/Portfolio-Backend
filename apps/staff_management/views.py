@@ -644,6 +644,52 @@ class PerfSummaryOrgUnitView(APIView):
         return Response(list(qs))
 
 
+@extend_schema(tags=["Scorecard — RM Self"])
+class RMScorecardSelfDetailView(APIView):
+    """Per-KPI scorecard detail for the logged-in RM — powers the individual
+    'Scorecard Performance' page (monthly-performance-detail/self/). Reads the
+    scorecard_automation per-KPI output (sc_employee_monthly_performance), the
+    same structure the old backend served via EmployeeMonthlyPerformanceService."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.portfolio.models import Profile
+        from .scorecard_automation.models import ScEmployeeMonthlyPerformance
+        from .scorecard_automation.serializers import ScEmployeeMonthlyPerformanceSerializer
+        profile = Profile.objects.filter(user_id=request.user.id).first()
+        if not profile or not profile.sales_code:
+            return Response([])
+        qs = ScEmployeeMonthlyPerformance.objects.filter(sales_code=profile.sales_code)
+        eom_date = request.query_params.get("eom_date")
+        if eom_date:
+            qs = qs.filter(eom_date=eom_date)
+        qs = qs.order_by("eom_date", "kpi_order")
+        return Response(ScEmployeeMonthlyPerformanceSerializer(qs, many=True).data)
+
+
+@extend_schema(tags=["Scorecard — RM Self"])
+class RMScorecardSummaryView(APIView):
+    """Monthly weighted-score series for the logged-in RM — powers the gauge and
+    trend on the individual scorecard page (monthly-performance-summary/rm/).
+    Rolls the per-KPI ytd_weighted_score up to one total per month."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.portfolio.models import Profile
+        from .scorecard_automation.models import ScEmployeeMonthlyPerformance
+        profile = Profile.objects.filter(user_id=request.user.id).first()
+        if not profile or not profile.sales_code:
+            return Response([])
+        rows = (
+            ScEmployeeMonthlyPerformance.objects
+            .filter(sales_code=profile.sales_code)
+            .values("eom_date")
+            .annotate(total_weighted_score=Sum("ytd_weighted_score"))
+            .order_by("eom_date")
+        )
+        return Response(list(rows))
+
+
 @extend_schema(tags=["Scorecard — Summaries"])
 class RMKPIBaseSummaryView(APIView):
     permission_classes = [IsAuthenticated]

@@ -42,6 +42,9 @@ urlpatterns = [
     path("monthly-performance-summary/department/",  views.PerfSummaryDeptView.as_view()),
     path("monthly-performance-summary/role/",        views.PerfSummaryRoleView.as_view()),
     path("monthly-performance-summary/org-unit/",    views.PerfSummaryOrgUnitView.as_view()),
+    # Individual RM scorecard (self) — per-KPI detail + monthly score series.
+    path("monthly-performance-summary/rm/",          views.RMScorecardSummaryView.as_view()),
+    path("monthly-performance-detail/self/",         views.RMScorecardSelfDetailView.as_view()),
     path("rm-kpi-base-summary/",                     views.RMKPIBaseSummaryView.as_view()),
 
     # ── Scorecard setup ───────────────────────────────────────────────────────

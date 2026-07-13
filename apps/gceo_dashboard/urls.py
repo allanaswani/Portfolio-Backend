@@ -64,6 +64,8 @@ urlpatterns = [
     # Fixed Deposits
     path("fixed_deposits/list/",         views.CeoFixedDepositListView.as_view()),
     path("fixed_deposits/rate_bands/",   views.CeoFixedDepositRateBandsView.as_view()),
+    path("fixed_deposits/product_summary/", views.CeoFixedDepositProductSummaryView.as_view()),
+    path("fixed_deposits/segment_summary/", views.CeoFixedDepositSegmentSummaryView.as_view()),
     path("fixed_deposits/expiry_timeline/", views.CeoFixedDepositExpiryView.as_view()),
 
     # Loan Arrears
