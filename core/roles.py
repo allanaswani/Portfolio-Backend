@@ -75,6 +75,12 @@ NEW_ROLES = (
     "exco_initiatives",
     "exco_initiatives_admin",
     "hfdi_officer",
+    # Mortgage module — also seeded by apps/mortgages migration 0002; registered
+    # here so they carry descriptions/tiers and are seeded like every other role.
+    "mortgage_officer",
+    "mortgage_manager",
+    "mortgage_finance",
+    "mortgage_admin",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -82,6 +88,10 @@ NEW_ROLE_DESCRIPTIONS = {
     "exco_initiatives": "EXCO initiatives — regular user.",
     "exco_initiatives_admin": "EXCO initiatives — administrator.",
     "hfdi_officer": "HFDI module — officer (read-only dashboard).",
+    "mortgage_officer": "Mortgage module — front-line officer.",
+    "mortgage_manager": "Mortgage module — manager / approver.",
+    "mortgage_finance": "Mortgage module — finance (disbursement).",
+    "mortgage_admin": "Mortgage module — administrator.",
 }
 
 # Every role the system knows about (legacy + new).
@@ -110,6 +120,11 @@ ROLE_TO_TIER = {
     "staff_mgt": ROLE_MANAGER,
     "exco_initiatives": ROLE_OFFICER,
     "hfdi_officer": ROLE_OFFICER,
+    # mortgage
+    "mortgage_admin": ROLE_ADMIN,
+    "mortgage_manager": ROLE_MANAGER,
+    "mortgage_finance": ROLE_MANAGER,
+    "mortgage_officer": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).

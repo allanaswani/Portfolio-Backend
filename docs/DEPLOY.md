@@ -1,6 +1,6 @@
 # Deployment Guide — hf_group_backend
 
-_Last updated: 2026-07-03._
+_Last updated: 2026-07-13._
 
 This is the **single, authoritative** guide for deploying the new backend to production.
 Read the two boxes below, then run **Part 2 (The Runbook)** top to bottom.
@@ -12,10 +12,21 @@ Read the two boxes below, then run **Part 2 (The Runbook)** top to bottom.
   system already uses — so no user or business data is copied or lost (see Part 1).
 - **Same port (9000).** The new backend starts on the **exact port the old one used**, so
   there is **no new firewall port and nothing to request from Security**.
+- **Stack.** **Django 4.2.20 LTS** on **Python 3.12**. We are *not* on Django 6: prod
+  PostgreSQL is **12.1**, and Django 6 requires PostgreSQL ≥ 14, so the app is pinned to the
+  4.2 LTS line (supported into 2028) which fully supports PG 12. `requirements.txt` and the
+  `Dockerfile` (`FROM python:3.12-slim`) are the source of truth for these versions.
 - **Containerized.** The prod host is **RHEL with system Python 3.6**, which cannot run this
-  app (Django 6 needs Python ≥ 3.12) and cannot be upgraded. We run the app in a **container**
-  (Python 3.13 inside); the host's Python is irrelevant. Commands use **`podman`** (ships with
-  RHEL; it's a drop-in for `docker` — swap the name if you use Docker).
+  app and cannot be upgraded. We run the app in a **container** (Python 3.12 inside); the
+  host's Python is irrelevant. **Commands use `docker`.** Podman was tried first (it ships with
+  RHEL) but did not work on this older RHEL server, so **Docker is the container runtime for
+  this deployment** — every command below is `docker`.
+- **Redis is required at runtime.** DRF throttling hits the cache (Redis) on **every**
+  request, so if Redis is down the whole API — including login and `/api/docs/` — returns 500s
+  and gunicorn workers time out. Bring Redis up alongside the app with its own `docker run`
+  (Step 1 / Step 8). As a safety net the cache is configured with
+  `IGNORE_EXCEPTIONS` (Step 1), so a *transient* Redis blip degrades throttling to off instead
+  of 500ing — but Redis must still be running for normal operation.
 
 > ### ⛔ The two rules you must not break
 > 1. **Never run a plain `python manage.py migrate` against prod.** 46 of the new tables
@@ -57,14 +68,19 @@ backend uses. Therefore:
 ## Part 2 — The Runbook (do these in order)
 
 ### Step 1 — Prerequisites on the server
-- `podman` installed (`podman --version`).
-- Network access from the host to the prod **PostgreSQL** and **Redis**.
+- `docker` installed and the daemon running (`docker --version`, `docker info`). Podman was
+  tried on this old RHEL box and did not work, so this deployment uses **Docker**.
+- **A running Redis** the container can reach (see the runtime note in "What this deployment
+  is"). Start it with `docker run -d --name redis --restart=unless-stopped --network=host
+  redis:7-alpine`, or point `REDIS_URL` at an existing Redis. The cache uses `IGNORE_EXCEPTIONS`
+  so a brief outage won't 500 the API, but Redis must be up for normal operation.
+- Network access from the host to the prod **PostgreSQL**.
 - The app code on the host and the `<PROD_DB>` / `<old-backend>.service` values confirmed above.
 
 ### Step 2 — Get the code and build the image
 ```bash
 git clone <repo-url> hf_group_backend && cd hf_group_backend   # or scp the folder over
-podman build -t hf-backend:latest .
+docker build -t hf-backend:latest .
 ```
 The image ships **all 18 apps** (incl. `mortgages`, `client_briefs`, `agent`, `analytics`,
 `insights`, `slideshow`) with every model + migration, runs `collectstatic` at build (WhiteNoise
@@ -72,8 +88,8 @@ serves admin/DRF/Swagger CSS), and contains **no secrets**.
 
 > **Airgapped host?** Build on a machine with internet, then move the image:
 > ```bash
-> podman save -o hf-backend.tar hf-backend:latest   # on the build machine
-> podman load -i hf-backend.tar                      # on the server
+> docker save -o hf-backend.tar hf-backend:latest   # on the build machine
+> docker load -i hf-backend.tar                      # on the server
 > ```
 
 ### Step 3 — Create the prod env file `/etc/hf/prod.env`
@@ -82,7 +98,7 @@ sudo mkdir -p /etc/hf
 sudo cp .env.example /etc/hf/prod.env
 
 # Generate a FRESH SECRET_KEY (on the server, so it never transits chat/git/logs):
-podman run --rm hf-backend:latest \
+docker run --rm hf-backend:latest \
   python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
 
 sudo nano /etc/hf/prod.env     # edit the values per the table below
@@ -106,6 +122,12 @@ Set these values (everything else can keep template defaults):
 > `--network=host` (Step 8) makes the container share the host network, so `127.0.0.1`
 > reaches the host's Postgres/Redis. **Both** `DB_*` and `DW_*` point at `<PROD_DB>` — the
 > router sends managed-table traffic and read-only warehouse traffic to the same database.
+
+> ⚠️ **`DEBUG` must be `False` in prod.** With `DEBUG=True`, any unhandled error renders
+> Django's technical-500 page, which dumps the **entire settings object** (DB names, hosts,
+> partial secrets) to the browser. `config.settings.production` forces `False`; just make sure
+> you launch with `DJANGO_SETTINGS_MODULE=config.settings.production` and don't override `DEBUG`
+> in the env file.
 
 ### Step 4 — Back up the prod database (mandatory rollback point)
 ```bash
@@ -133,7 +155,7 @@ run** so real prod matches the clone. Only when the clone is clean do you touch 
 Every command runs inside the container. Substitute the clone env file in Step 5.
 ```bash
 # helper: run any manage.py command in the container
-alias hf='podman run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py'
+alias hf='docker run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py'
 
 hf showmigrations                     # inspect current state
 hf migrate --fake-initial             # see below
@@ -145,9 +167,13 @@ hf migrate --fake-initial             # see below
   **without** running any DDL — i.e. it *adopts* them.
 
 **Mixed apps error** with *"relation already exists"* — their `0001` creates *both* tables that
-already exist *and* brand-new ones, so Django can't auto-fake it. `staff_management` is the known
-case (existing `employee_monthly_performance` + new `scorecard_*` and `_v2`). Fix each such app
-like this:
+already exist *and* brand-new ones, so Django can't auto-fake it. **Two known cases** (adoption
+stalled on both during rehearsal — expect and handle each):
+- `staff_management` — existing `employee_monthly_performance` + new `scorecard_*` and `_v2`.
+- `exco` — existing `exco_owners` / `exco_strategic_*` + new `exco_initiatives`.
+
+Fix each such app like this (example uses `staff_management`; apply the same three steps to
+`exco`, substituting its own new-table list — for `exco` that's just `exco_initiatives`):
 ```bash
 # 1. Adopt the app's initial into migration state WITHOUT running DDL:
 hf migrate staff_management 0001 --fake
@@ -181,19 +207,37 @@ The new `scorecard_*` tables are empty. Load roles / KPIs / mappings, then run t
 recompute so `employee_monthly_performance_v2` fills in. (Use the scorecard config screens in the
 frontend, or the seed endpoints under `staff_management/`.)
 
-### Step 8 — Cut over: stop the old backend, start the container on :9000
+### Step 8 — Cut over: stop the old backend, start the app + Redis on :9000
 ```bash
 # Point the frontend at this backend first (Appendix D), then flip:
 sudo systemctl stop <old-backend>.service
 sudo systemctl disable <old-backend>.service
+```
 
-podman run -d --name hf-backend --restart=always \
+Bring up the two containers with **Docker** (podman was tried on this old RHEL box and did not
+work — Docker is the runtime for this deployment):
+```bash
+# 1. Redis (the app 500s without it — see Step 1):
+docker run -d --name redis --restart=unless-stopped --network=host redis:7-alpine
+
+# 2. The app on :9000, secrets injected at runtime (never baked into the image):
+docker run -d --name hf-backend --restart=unless-stopped \
   --network=host \
   --env-file /etc/hf/prod.env \
   -e PORT=9000 \
   hf-backend:latest
+
+docker logs -f hf-backend      # watch it boot
 ```
-> Rootless podman binds :9000 fine (≥1024). Only ports <1024 need extra config.
+> **Code/config changes need a rebuild** — the image is a frozen snapshot. To pick up new
+> commits: `docker stop hf-backend && docker rm hf-backend`, `docker build -t hf-backend:latest .`,
+> then re-run the `docker run … hf-backend` command above.
+
+**Optional — compose.** A `docker-compose.yml` exists in the repo root that defines both services
+(`network_mode: host`, `restart: unless-stopped`, `env_file: /etc/hf/prod.env`) so
+`docker compose up -d --build` brings up Redis + web in one command — **only if the Compose plugin
+is installed** on the host (`docker compose version`). On this offline box it often isn't, so the
+plain `docker run` commands above are the reliable path.
 
 ### Step 9 — Create the Mortgages + admin accounts
 The four role groups (`mortgage_officer`, `mortgage_manager`, `mortgage_finance`,
@@ -225,7 +269,7 @@ renders → record a payment. Confirm existing tables' row counts match the pre-
 ### Step 11 — Rollback (only if something is wrong)
 Because the migration only **added** tables and never touched legacy data, rollback is fast:
 ```bash
-podman stop hf-backend
+docker stop hf-backend
 sudo systemctl enable --now <old-backend>.service
 ```
 The old backend still works against the same DB. Only if a shared table was somehow corrupted
