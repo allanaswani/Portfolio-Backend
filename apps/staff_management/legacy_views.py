@@ -346,6 +346,84 @@ class ProductDetailView(generics.RetrieveAPIView):
     queryset = Product.objects.all()
 
 
+@extend_schema(tags=TAG)
+class ProductMappingCsvUploadView(APIView):
+    """Upsert product_mapping rows from a CSV (keyed on ``code``). Ports the old
+    backend's ProductCSVUploadView.
+
+    Unlike the ETL warehouse datasets (which upload to managed *_upload mirrors),
+    product_mapping is app-owned reference/config data — the FD product
+    classification and the CEO fixed-deposit summaries read it live — so the
+    upload writes straight to it. Each row runs in its own savepoint so one bad
+    row doesn't abort the batch, and a results ZIP (successful/failed) is returned.
+    """
+
+    permission_classes = [IsAuthenticated]
+    REQUIRED = ["code", "product_description", "product_map", "focus", "sme_pb"]
+
+    def post(self, request, *args, **kwargs):
+        import csv, io, zipfile
+        from django.db import connection, transaction
+        from django.http import HttpResponse
+
+        f = request.FILES.get("file")
+        if not f:
+            return Response({"error": "No file uploaded"}, status=status.HTTP_400_BAD_REQUEST)
+        if not f.name.lower().endswith(".csv"):
+            return Response({"error": "File must be a CSV"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            decoded = f.read().decode("utf-8-sig", errors="replace").splitlines()
+        except Exception as e:
+            return Response({"error": f"Could not read file: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        reader = csv.DictReader(decoded)
+        fieldnames = reader.fieldnames or []
+        missing = [c for c in self.REQUIRED if c not in fieldnames]
+        if missing:
+            return Response({"error": f"Missing columns in CSV: {missing}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        success_buf, fail_buf = io.StringIO(), io.StringIO()
+        sw = csv.DictWriter(success_buf, fieldnames=fieldnames)
+        fw = csv.DictWriter(fail_buf, fieldnames=list(fieldnames) + ["error"])
+        sw.writeheader(); fw.writeheader()
+        created = updated = 0
+
+        for row in reader:
+            code = (row.get("code") or "").strip()
+            if not code:
+                row["error"] = "Missing 'code'"; fw.writerow(row); continue
+            vals = [row.get("product_description"), row.get("product_map"),
+                    row.get("focus"), row.get("sme_pb")]
+            try:
+                with transaction.atomic(), connection.cursor() as cur:
+                    cur.execute(
+                        "UPDATE product_mapping SET product_description=%s, product_map=%s, "
+                        "focus=%s, sme_pb=%s WHERE code=%s",
+                        vals + [code],
+                    )
+                    if cur.rowcount == 0:
+                        cur.execute(
+                            "INSERT INTO product_mapping (code, product_description, product_map, "
+                            "focus, sme_pb, date_created) VALUES (%s,%s,%s,%s,%s, now())",
+                            [code] + vals,
+                        )
+                        created += 1
+                    else:
+                        updated += 1
+                sw.writerow(row)
+            except Exception as e:
+                row["error"] = str(e); fw.writerow(row)
+
+        resp = HttpResponse(content_type="application/zip")
+        resp["Content-Disposition"] = 'attachment; filename="product_mapping_upload_results.zip"'
+        with zipfile.ZipFile(resp, "w") as zf:
+            zf.writestr("successful_records.csv", success_buf.getvalue())
+            zf.writestr("failed_records.csv", fail_buf.getvalue())
+        resp["X-Records-Created"] = str(created)
+        resp["X-Records-Updated"] = str(updated)
+        return resp
+
+
 # ── Staff master / leave / role history (managed) ─────────────────────────────
 
 @extend_schema(tags=TAG)

@@ -118,6 +118,7 @@ urlpatterns = [
     path("telesales-dormant-tills/",            lv.TelesalesDormantTillsListCreateView.as_view()),
 
     # Warehouse reads (read-only — writes blocked by the DB router)
+    path("products/upload-csv/",                lv.ProductMappingCsvUploadView.as_view()),
     path("products/<int:pk>/",                  lv.ProductDetailView.as_view()),
     path("products/",                           lv.ProductListView.as_view()),
     path("merchant-bank-tills-manual/<int:pk>/", lv.MerchantBankTillManualDetailView.as_view()),

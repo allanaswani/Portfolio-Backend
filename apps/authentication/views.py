@@ -159,12 +159,48 @@ class IsAdministrator(BasePermission):
         return bool(u and u.is_authenticated and u.is_active and (u.is_staff or u.is_superuser))
 
 
+def _email_temp_password(email, username, password, *, is_reset=False):
+    """Send an auto-generated / reset password to a user so they can log in and
+    change it. Best-effort — never blocks the admin action if mail fails."""
+    if not email:
+        return
+    action = "reset" if is_reset else "created"
+    try:
+        send_mail(
+            subject="Your HF Group account password",
+            message=(
+                f"Hello {username},\n\n"
+                f"Your HF Group analytics account has been {action}.\n\n"
+                f"Username: {username}\n"
+                f"Temporary password: {password}\n\n"
+                "Please sign in with this temporary password and update it "
+                "immediately from your profile settings.\n\n"
+                "If you did not expect this email, contact your administrator."
+            ),
+            from_email="reports.analytics@hfgroup.co.ke",
+            recipient_list=[email],
+            fail_silently=True,
+        )
+    except Exception:
+        pass
+
+
 @extend_schema(tags=["Admin — Users"])
 class AdminUserListCreateView(ListCreateAPIView):
     """GET: list users (with roles + profile). POST: create a user and assign roles."""
 
     permission_classes = [IsAuthenticated, IsAdministrator]
     serializer_class = AdminUserSerializer
+
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        # When no password was supplied the serializer auto-generates one and
+        # surfaces it as `generated_password`; email it so the new user can log
+        # in and update it. (If the admin set a password, they share it directly.)
+        gen = response.data.get("generated_password")
+        if gen:
+            _email_temp_password(response.data.get("email"), response.data.get("username"), gen)
+        return response
 
     def get_queryset(self):
         qs = (
@@ -216,6 +252,9 @@ class AdminSetPasswordView(APIView):
         serializer = SetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         raw = serializer.save(user)
+        # Email the (possibly auto-generated) password so the user can log in and
+        # change it. Returned to the admin too, for out-of-band sharing.
+        _email_temp_password(user.email, user.username, raw, is_reset=True)
         return Response(
             {"detail": "Password updated.", "password": raw},
             status=status.HTTP_200_OK,
