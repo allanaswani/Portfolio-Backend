@@ -229,6 +229,14 @@ SPECTACULAR_SETTINGS = {
 
 # CORS — mirrors old backend
 CORS_ORIGIN_ALLOW_ALL = env.bool("CORS_ORIGIN_ALLOW_ALL", default=True)
+# When ALLOW_ALL is off (production), the frontend origin(s) must be allowlisted
+# here or the browser blocks the real request after the preflight. Comma-separated,
+# full scheme+host, e.g. CORS_ALLOWED_ORIGINS=https://ceo.hfgroup.co.ke
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+CORS_ALLOW_CREDENTIALS = env.bool("CORS_ALLOW_CREDENTIALS", default=True)
+# CSRF trusts these origins for unsafe methods (needed for the Django admin / any
+# cookie-auth POST from the frontend domain).
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
