@@ -184,11 +184,12 @@ class AdminUserManagementAPITests(TestCase):
         self.assertEqual(resp.status_code, 200)
         rows = resp.data["results"] if isinstance(resp.data, dict) else resp.data
         names = {r["name"] for r in rows}
-        # 14 baseline roles + 4 mortgage-module roles seeded by apps.mortgages.
-        self.assertEqual(len(names), 18)
+        # 14 baseline + 4 mortgage-module + 3 registry-module roles.
+        self.assertEqual(len(names), 21)
         self.assertIn("ceo", names)
         self.assertIn("staff_mgt", names)
         self.assertIn("mortgage_officer", names)
+        self.assertIn("registry_officer", names)
 
 
 class MigrateLegacyAuthCommandTests(TestCase):

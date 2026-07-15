@@ -7,6 +7,8 @@ urlpatterns = [
     path("customers_allocated/",          views.BranchCustomerListAllocatedView.as_view()),
     path("customer_totals/",              views.BranchTotalCustomersView.as_view()),
     path("customer_per_segment/",         views.BranchCustomerPerSegmentView.as_view()),
+    # EXCO/CEO drill-down into ANY branch by name (legacy BranchDash parity).
+    path("customer_per_segment/<str:branch>", views.BranchCustomerPerSegmentView.as_view()),
     path("new_customers/",                views.BranchNewCustomersView.as_view()),
 
     # RM
@@ -28,8 +30,11 @@ urlpatterns = [
 
     # Movements
     path("rm_deposit_movement_ytd/",      views.BranchRMDepositMovementYTDView.as_view()),
+    path("rm_deposit_movement_ytd/<str:branch>", views.BranchRMDepositMovementYTDView.as_view()),
     path("top_customers_inflow_dtd/",     views.BranchTopInflowDTDView.as_view()),
+    path("top_customers_inflow_dtd/<str:branch>",  views.BranchTopInflowDTDView.as_view()),
     path("top_customers_outflow_dtd/",    views.BranchTopOutflowDTDView.as_view()),
+    path("top_customers_outflow_dtd/<str:branch>", views.BranchTopOutflowDTDView.as_view()),
     path("top_customers_inflow_ytd/",     views.BranchTopInflowYTDView.as_view()),
     path("top_customers_outflow_ytd/",    views.BranchTopOutflowYTDView.as_view()),
 

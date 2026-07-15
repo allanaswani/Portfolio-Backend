@@ -1001,17 +1001,36 @@ class TopCustomerInflowView(APIView):
     def get(self, request):
         sql = f"""
             SELECT
-                cust_cif,
-                full_name,
-                customer_segment,
-                rm_code,
-                yester_1_bal,
-                yester_2_bal,
-                yester_1_bal - yester_2_bal AS movement
-            FROM daily_balance_movement
-            WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND yester_1_bal > yester_2_bal
-            ORDER BY (yester_1_bal - yester_2_bal) DESC NULLS LAST
+                dbm.cust_cif,
+                dbm.full_name,
+                dbm.customer_segment,
+                CASE
+                    WHEN dbm.customer_segment IN ('FINANCIAL INSTITUTIONS') THEN 'FINANCIAL INSTITUTIONS'
+                    WHEN dbm.customer_segment IN ('INSTITUTIONAL BANKING') THEN 'INSTITUTIONAL BANKING'
+                    WHEN dbm.customer_segment IN ('INTERNAL ACCOUNTS') THEN 'INTERNAL ACCOUNTS'
+                    WHEN dbm.customer_segment IN ('PROJECT FINANCE') THEN 'PROJECT FINANCE'
+                    WHEN dbm.customer_segment IN ('SCHEME') THEN 'SCHEME'
+                    WHEN dbm.customer_segment IN ('VIRTUAL') THEN 'VIRTUAL'
+                    WHEN dbm.customer_segment IN ('LARGE ENTERPRISES') THEN 'COMMERCIAL BANKING'
+                    WHEN dbm.customer_segment IN ('MEDIUM ENTERPRISES', 'SMALL ENTERPRISES') THEN 'SME'
+                    WHEN dbm.customer_segment IN ('ULTIMATE') THEN 'ULTIMATE BANKING'
+                    WHEN dbm.customer_segment IN ('MASS', 'STANDARD') THEN 'PB'
+                    ELSE 'New-Unsegmented'
+                END AS banking_segment,
+                dbm.rm_code,
+                rap.rm_name,
+                dbm.yester_1_bal,
+                dbm.yester_2_bal,
+                dbm.yester_1_bal - dbm.yester_2_bal AS movement
+            FROM daily_balance_movement dbm
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) cust_id, rm_name
+                FROM retail_allocated_portfolio
+                ORDER BY cust_id
+            ) rap ON dbm.cust_cif = rap.cust_id
+            WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
+              AND dbm.yester_1_bal > dbm.yester_2_bal
+            ORDER BY (dbm.yester_1_bal - dbm.yester_2_bal) DESC NULLS LAST
             LIMIT 50
         """
         with connection.cursor() as cur:
@@ -1028,17 +1047,36 @@ class TopCustomerOutflowView(APIView):
     def get(self, request):
         sql = f"""
             SELECT
-                cust_cif,
-                full_name,
-                customer_segment,
-                rm_code,
-                yester_1_bal,
-                yester_2_bal,
-                yester_2_bal - yester_1_bal AS outflow
-            FROM daily_balance_movement
-            WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND yester_2_bal > yester_1_bal
-            ORDER BY (yester_2_bal - yester_1_bal) DESC NULLS LAST
+                dbm.cust_cif,
+                dbm.full_name,
+                dbm.customer_segment,
+                CASE
+                    WHEN dbm.customer_segment IN ('FINANCIAL INSTITUTIONS') THEN 'FINANCIAL INSTITUTIONS'
+                    WHEN dbm.customer_segment IN ('INSTITUTIONAL BANKING') THEN 'INSTITUTIONAL BANKING'
+                    WHEN dbm.customer_segment IN ('INTERNAL ACCOUNTS') THEN 'INTERNAL ACCOUNTS'
+                    WHEN dbm.customer_segment IN ('PROJECT FINANCE') THEN 'PROJECT FINANCE'
+                    WHEN dbm.customer_segment IN ('SCHEME') THEN 'SCHEME'
+                    WHEN dbm.customer_segment IN ('VIRTUAL') THEN 'VIRTUAL'
+                    WHEN dbm.customer_segment IN ('LARGE ENTERPRISES') THEN 'COMMERCIAL BANKING'
+                    WHEN dbm.customer_segment IN ('MEDIUM ENTERPRISES', 'SMALL ENTERPRISES') THEN 'SME'
+                    WHEN dbm.customer_segment IN ('ULTIMATE') THEN 'ULTIMATE BANKING'
+                    WHEN dbm.customer_segment IN ('MASS', 'STANDARD') THEN 'PB'
+                    ELSE 'New-Unsegmented'
+                END AS banking_segment,
+                dbm.rm_code,
+                rap.rm_name,
+                dbm.yester_1_bal,
+                dbm.yester_2_bal,
+                dbm.yester_1_bal - dbm.yester_2_bal AS movement
+            FROM daily_balance_movement dbm
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) cust_id, rm_name
+                FROM retail_allocated_portfolio
+                ORDER BY cust_id
+            ) rap ON dbm.cust_cif = rap.cust_id
+            WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
+              AND dbm.yester_1_bal < dbm.yester_2_bal
+            ORDER BY (dbm.yester_1_bal - dbm.yester_2_bal) ASC NULLS LAST
             LIMIT 50
         """
         with connection.cursor() as cur:

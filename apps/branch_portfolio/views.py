@@ -26,8 +26,11 @@ def _get_profile(user):
     return get_object_or_404(Profile, user_id=user.id)
 
 
-def _branch_filter(profile):
-    return profile.branch or ""
+def _branch_filter(profile, branch=None):
+    """Effective branch name to filter on. An explicit `branch` — supplied by the
+    /<branch> drill-down routes used by EXCO/CEO to inspect ANY branch — overrides
+    the caller's own profile branch. Read-only, mirrors the legacy BranchDash."""
+    return (branch or (profile.branch if profile else None) or "").strip()
 
 
 # ── Customers ──────────────────────────────────────────────────────────────
@@ -71,11 +74,11 @@ class BranchTotalCustomersView(APIView):
 class BranchCustomerPerSegmentView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def get(self, request, branch=None):
         profile = _get_profile(request.user)
         data = (
             HfCustomer.objects
-            .filter(branch__icontains=_branch_filter(profile))
+            .filter(branch__icontains=_branch_filter(profile, branch))
             .values("segment")
             .annotate(count=Count("cust_id"))
             .order_by("-count")
@@ -326,7 +329,7 @@ class BranchYTDRevenuePerformanceView(APIView):
 class BranchRMDepositMovementYTDView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def get(self, request, branch=None):
         profile = _get_profile(request.user)
         yester1 = _yester_case("", "yester_1_bal", cy, py)
         sql = f"""
@@ -347,7 +350,7 @@ class BranchRMDepositMovementYTDView(APIView):
             ORDER BY ytd_movement DESC NULLS LAST
         """
         with connection.cursor() as cur:
-            cur.execute(sql, [f"%{_branch_filter(profile)}%"])
+            cur.execute(sql, [f"%{_branch_filter(profile, branch)}%"])
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return Response(rows)
@@ -357,7 +360,7 @@ class BranchRMDepositMovementYTDView(APIView):
 class BranchTopInflowDTDView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def get(self, request, branch=None):
         profile = _get_profile(request.user)
         with connection.cursor() as cur:
             cur.execute("""
@@ -373,7 +376,7 @@ class BranchTopInflowDTDView(APIView):
                   )
                 ORDER BY movement DESC NULLS LAST
                 LIMIT 50
-            """, [f"%{_branch_filter(profile)}%"])
+            """, [f"%{_branch_filter(profile, branch)}%"])
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return Response(rows)
@@ -383,7 +386,7 @@ class BranchTopInflowDTDView(APIView):
 class BranchTopOutflowDTDView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def get(self, request, branch=None):
         profile = _get_profile(request.user)
         with connection.cursor() as cur:
             cur.execute("""
@@ -399,7 +402,7 @@ class BranchTopOutflowDTDView(APIView):
                   )
                 ORDER BY outflow DESC NULLS LAST
                 LIMIT 50
-            """, [f"%{_branch_filter(profile)}%"])
+            """, [f"%{_branch_filter(profile, branch)}%"])
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return Response(rows)

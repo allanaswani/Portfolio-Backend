@@ -7,6 +7,11 @@ urlpatterns = [
     path("loan_monthly_movement/",       views.LoanMonthlyMovementView.as_view()),
     path("latest-monthly/",              views.LatestMonthlyView.as_view()),
     path("latest-daily/",                views.LatestDailyView.as_view()),
+    # No-slash aliases: the redesigned frontend calls these WITHOUT a trailing
+    # slash (matching the OLD live backend). Registering both means the frontend
+    # is a drop-in against either backend with no APPEND_SLASH redirect hop.
+    path("latest-monthly",               views.LatestMonthlyView.as_view()),
+    path("latest-daily",                 views.LatestDailyView.as_view()),
     path("deposit_movement/",            views.DepositMovementView.as_view()),
     path("deposit_movement_daily/",      views.DepositMovementDailyView.as_view()),
     path("segment_daily_movement",       views.SegmentDailyMovementView.as_view()),
