@@ -11,8 +11,9 @@ from django.shortcuts import get_object_or_404
 from apps.portfolio.models import HfCustomer, Accounts, Loans, Feedback, Profile, Prospects
 from apps.portfolio.serializers import (
     HfCustomerSerializer, AccountsSerializer, LoansSerializer, FeedbackSerializer,
-    ProspectsSerializer, ProfileSerializer,
+    ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
 )
+from . import legacy_queries as lq
 from apps.gceo_dashboard.models import (
     DailyBalanceMovement, LoanDailyBalanceMovement, Revenue, LoansHistory,
 )
@@ -35,25 +36,102 @@ def _branch_filter(profile, branch=None):
 
 # ── Customers ──────────────────────────────────────────────────────────────
 
+def _apply_customer_filters(customer_list, query_params):
+    """Port of the old DynamicFilterCustomerList*PaginatedDetailView filtering:
+    partial (case-insensitive substring) match for any attribute that matches a
+    query param name, plus numeric range filters on the three money fields. Unknown
+    params (page, min_/max_ keys) are skipped by the hasattr guard, exactly as old."""
+    if not query_params:
+        return customer_list
+    numeric_fields = ['total_revenue', 'total_depost_balance', 'total_loans']
+    filtered = []
+    for customer in customer_list:
+        match = True
+        for param, value in query_params.items():
+            if hasattr(customer, param):
+                if str(getattr(customer, param, "") or "").lower().find(value.lower()) == -1:
+                    match = False
+                    break
+        if not match:
+            continue
+        for field in numeric_fields:
+            min_value = query_params.get(f'min_{field}')
+            max_value = query_params.get(f'max_{field}')
+            if hasattr(customer, field):
+                try:
+                    field_value = float(getattr(customer, field, 0) or 0)
+                    if min_value is not None and field_value < float(min_value):
+                        match = False; break
+                    if max_value is not None and field_value > float(max_value):
+                        match = False; break
+                except (TypeError, ValueError):
+                    pass
+        if match:
+            filtered.append(customer)
+    return filtered
+
+
 @extend_schema(tags=["Branch Portfolio — Customers"])
 class BranchCustomerListView(APIView):
+    """customers/ — full branch base with computed deposits/loans/revenue/segment
+    (old: customer_list → branch_customers + SegmentCustomerSerializer)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
-        qs = HfCustomer.objects.filter(branch__icontains=_branch_filter(profile))
-        return Response(HfCustomerSerializer(qs, many=True).data)
+        rows = lq.branch_customers(_branch_filter(profile))
+        return Response(SegmentCustomerSerializer(rows, many=True).data)
 
 
 @extend_schema(tags=["Branch Portfolio — Customers"])
-class BranchCustomerListAllocatedView(generics.ListAPIView):
+class BranchCustomerListAllocatedView(APIView):
+    """customers_allocated/ — full allocated list (old: customer_list_allocated)."""
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
+
+    def get(self, request, branch=None):
+        profile = _get_profile(request.user)
+        rows = lq.branch_customers_allocated(_branch_filter(profile, branch))
+        return Response(SegmentCustomerSerializer(list(rows), many=True).data)
+
+
+@extend_schema(tags=["Branch Portfolio — Customers"])
+class BranchCustomerListNotAllocatedView(APIView):
+    """customers_not_allocated/ — full unallocated list."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        profile = _get_profile(request.user)
+        rows = lq.branch_customers_not_allocated(_branch_filter(profile, branch))
+        return Response(SegmentCustomerSerializer(list(rows), many=True).data)
+
+
+@extend_schema(tags=["Branch Portfolio — Customers"])
+class BranchCustomerListAllocatedSearchView(generics.ListAPIView):
+    """customers_allocated/search/ — server-paginated + filterable (10/page).
+    Old: DynamicFilterCustomerListAllocatedPaginatedDetailView."""
+    permission_classes = [IsAuthenticated]
+    serializer_class = SegmentCustomerSerializer
     pagination_class = StandardPagination
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
-        return HfCustomer.objects.filter(branch__icontains=_branch_filter(profile))
+        branch = _branch_filter(profile, self.kwargs.get("branch"))
+        rows = list(lq.branch_customers_allocated(branch))
+        return _apply_customer_filters(rows, self.request.query_params)
+
+
+@extend_schema(tags=["Branch Portfolio — Customers"])
+class BranchCustomerListNotAllocatedSearchView(generics.ListAPIView):
+    """customers_not_allocated/search/ — server-paginated + filterable (10/page)."""
+    permission_classes = [IsAuthenticated]
+    serializer_class = SegmentCustomerSerializer
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        profile = _get_profile(self.request.user)
+        branch = _branch_filter(profile, self.kwargs.get("branch"))
+        rows = list(lq.branch_customers_not_allocated(branch))
+        return _apply_customer_filters(rows, self.request.query_params)
 
 
 @extend_schema(tags=["Branch Portfolio — Summary"])
@@ -76,14 +154,14 @@ class BranchCustomerPerSegmentView(APIView):
 
     def get(self, request, branch=None):
         profile = _get_profile(request.user)
-        data = (
-            HfCustomer.objects
-            .filter(branch__icontains=_branch_filter(profile, branch))
-            .values("segment")
-            .annotate(count=Count("cust_id"))
-            .order_by("-count")
-        )
-        return Response(list(data))
+        rows = lq.branch_customer_per_segment(_branch_filter(profile, branch))
+        return Response([{
+            "banking_segment":  r.banking_segment,
+            "main_segment":     r.main_segment,
+            "segment":          r.segment,
+            "total_customers":  r.total_customers,
+            "active_customers": r.active_customers,
+        } for r in rows])
 
 
 @extend_schema(tags=["Branch Portfolio — Customers"])
@@ -286,18 +364,18 @@ class BranchLoanPortfolioView(APIView):
 
 @extend_schema(tags=["Branch Portfolio — Revenue"])
 class BranchRevenueView(APIView):
+    """branch_revenue/ — YTD revenue rows by income category (old: branch_Revenue →
+    branch_revenues_query). Returns [{income_category, value}], NOT a single total;
+    the frontend sums `value` for the KPI and charts them by category."""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def get(self, request, branch=None):
         profile = _get_profile(request.user)
-        qs = HfCustomer.objects.filter(branch__icontains=_branch_filter(profile))
-        agg = qs.aggregate(
-            total_revenue=Sum("total_revenue"),
-            total_deposits=Sum("total_depost_balance"),
-            total_loans=Sum("total_loans"),
-            customer_count=Count("cust_id"),
-        )
-        return Response(agg)
+        rows = lq.branch_revenues_query(_branch_filter(profile, branch))
+        return Response([{
+            "income_category": r.income_category,
+            "value":           r.value,
+        } for r in rows])
 
 
 @extend_schema(tags=["Branch Portfolio — Revenue"])
@@ -365,13 +443,14 @@ class BranchTopInflowDTDView(APIView):
         with connection.cursor() as cur:
             cur.execute("""
                 SELECT
-                    cust_cif, full_name, rm_code, customer_segment,
-                    yester_1_bal, yester_2_bal,
-                    yester_1_bal - yester_2_bal AS movement
-                FROM daily_balance_movement
-                WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-                  AND yester_1_bal > yester_2_bal
-                  AND brn_code::text IN (
+                    dbm.cust_cif, dbm.full_name, dbm.rm_code, rap.rm_name, dbm.customer_segment,
+                    dbm.yester_1_bal, dbm.yester_2_bal,
+                    dbm.yester_1_bal - dbm.yester_2_bal AS movement
+                FROM daily_balance_movement dbm
+                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = dbm.cust_cif
+                WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
+                  AND dbm.yester_1_bal > dbm.yester_2_bal
+                  AND dbm.brn_code::text IN (
                       SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
                   )
                 ORDER BY movement DESC NULLS LAST
@@ -391,16 +470,17 @@ class BranchTopOutflowDTDView(APIView):
         with connection.cursor() as cur:
             cur.execute("""
                 SELECT
-                    cust_cif, full_name, rm_code, customer_segment,
-                    yester_1_bal, yester_2_bal,
-                    yester_2_bal - yester_1_bal AS outflow
-                FROM daily_balance_movement
-                WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-                  AND yester_2_bal > yester_1_bal
-                  AND brn_code::text IN (
+                    dbm.cust_cif, dbm.full_name, dbm.rm_code, rap.rm_name, dbm.customer_segment,
+                    dbm.yester_1_bal, dbm.yester_2_bal,
+                    dbm.yester_1_bal - dbm.yester_2_bal AS movement
+                FROM daily_balance_movement dbm
+                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = dbm.cust_cif
+                WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
+                  AND dbm.yester_2_bal > dbm.yester_1_bal
+                  AND dbm.brn_code::text IN (
                       SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
                   )
-                ORDER BY outflow DESC NULLS LAST
+                ORDER BY movement ASC NULLS LAST
                 LIMIT 50
             """, [f"%{_branch_filter(profile, branch)}%"])
             cols = [c[0] for c in cur.description]

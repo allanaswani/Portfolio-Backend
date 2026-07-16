@@ -23,6 +23,8 @@ urlpatterns = [
     path("loan_movement_by_segment/",    views.LoanMovementBySegmentView.as_view()),
     path("loans_movement_by_segment_trend", views.LoansBySegmentTrendView.as_view()),
     path("mobile_loans/",                views.MobileLoansView.as_view()),
+    # Old backend registers this WITHOUT a slash; the frontend calls it that way.
+    path("mobile_loans",                 views.MobileLoansView.as_view()),
 
     # Balance
     path("daily_balance_movement/",      views.DailyBalanceMovementView.as_view()),

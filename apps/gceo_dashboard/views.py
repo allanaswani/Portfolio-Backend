@@ -19,6 +19,7 @@ from .models import (
     CeoDepositMovementMonthlyBySegment, DailyBalanceMovement, LoanDailyBalanceMovement,
     EmployeeTable, LoansHistory, Accounts,
 )
+from . import gceo_legacy as gl
 from .serializers import (
     CeoDepositMovementMonthlySerializer, CustomersSerializer, CeoChannelReportSerializer,
     TransactionDiarySerializer, CeoDepositMovementSerializer, CeoDepositMovementDailySerializer,
@@ -122,9 +123,8 @@ class CustomerTotalView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        total = Customers.objects.count()
-        active = Customers.objects.filter(status="Active").count()
-        return Response({"total_customers": total, "active_customers": active})
+        # Old shape: {total, percentage_change}. Frontend reads `total`.
+        return Response(gl.customer_total())
 
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
@@ -132,13 +132,8 @@ class ActiveCustomersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = (
-            Customers.objects.filter(status="Active")
-            .values("segment")
-            .annotate(count=Count("id"))
-            .order_by("-count")
-        )
-        return Response(list(qs))
+        # bank_customers_active → {number_of_active, percentage_change} (30-day active).
+        return Response(gl.bank_customers_active())
 
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
@@ -146,12 +141,9 @@ class NewCustomerBaseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = (
-            Customers.objects.filter(open_date__year=current_year)
-            .values("segment")
-            .annotate(count=Count("id"))
-        )
-        return Response(list(qs))
+        # Old shape: per-segment month-over-month DELTAS keyed by date strings
+        # from ceo_customers_base_segment_report.
+        return Response(gl.new_customer_base())
 
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
@@ -159,8 +151,8 @@ class YtdCustomerBaseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        count = Customers.objects.filter(open_date__year=current_year).count()
-        return Response({"ytd_new_customers": count, "year": current_year})
+        # Old shape: per-segment monthly customer counts (Customer Base table).
+        return Response(gl.ytd_customer_base())
 
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
@@ -168,19 +160,8 @@ class NewCustomerTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT
-                    TO_CHAR(open_date, 'YYYY-MM') AS month,
-                    COUNT(*) AS count
-                FROM customers
-                WHERE EXTRACT(year FROM open_date) = {current_year}
-                GROUP BY TO_CHAR(open_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{yesterday/ytd/mtd + jan_volume..december_volume}] (Target vs Actual table).
+        return Response(gl.new_customers_trends())
 
 
 @extend_schema(tags=["CEO Dashboard — Channels"])
@@ -196,11 +177,8 @@ class DigitalCustomersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        data = (
-            CeoChannelReport.objects.values("trx_channel")
-            .annotate(count=Count("cust_id"))
-        )
-        return Response(list(data))
+        # Old shape: {number_of_digital, percentage_change}. Frontend reads number_of_digital.
+        return Response(gl.digital_customers())
 
 
 @extend_schema(tags=["CEO Dashboard — Channels"])
@@ -208,17 +186,8 @@ class DigitalActive30View(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT trx_channel, COUNT(DISTINCT cust_id) AS count
-                FROM ceo_channel_report
-                WHERE trx_date >= current_date - INTERVAL '30 days'
-                GROUP BY trx_channel
-                ORDER BY count DESC
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: {number_of_active, percentage_change}.
+        return Response(gl.digital_active_30())
 
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
@@ -315,21 +284,9 @@ class NFIIncomeMovementView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT
-                    income_category,
-                    SUM(sum_dc) AS total,
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month
-                FROM revenue
-                WHERE income_category ILIKE '%NFI%'
-                  AND EXTRACT(year FROM trx_date) = {current_year}
-                GROUP BY income_category, TO_CHAR(trx_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{dates_months, rev_sum, cumulative_revenue}]. The ILIKE
+        # '%NFI%' filter matched nothing — the category value is exactly 'nfi'.
+        return Response(gl.nfi_income_movement())
 
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
@@ -337,21 +294,9 @@ class InterestIncomeMovementView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT
-                    income_category,
-                    SUM(sum_dc) AS total,
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month
-                FROM revenue
-                WHERE income_category ILIKE '%INTEREST INCOME%'
-                   OR income_category ILIKE '%INT INCOME%'
-                GROUP BY income_category, TO_CHAR(trx_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{date_months, rev_sum, cumulative_revenue}]; category is
+        # exactly 'interest_income' (the ILIKE patterns matched nothing).
+        return Response(gl.intrest_income_movement())
 
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
@@ -359,21 +304,8 @@ class InterestExpenseMovementView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT
-                    income_category,
-                    SUM(sum_dc) AS total,
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month
-                FROM revenue
-                WHERE income_category ILIKE '%INTEREST EXPENSE%'
-                   OR income_category ILIKE '%INT EXPENSE%'
-                GROUP BY income_category, TO_CHAR(trx_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{date_months, intrest_expense, cumulative_intrest_expense}].
+        return Response(gl.intrest_expense_income_movement())
 
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
@@ -381,19 +313,8 @@ class NFITrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month,
-                    SUM(sum_dc) AS total
-                FROM revenue
-                WHERE income_category ILIKE '%NFI%'
-                GROUP BY TO_CHAR(trx_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{date_months, sum_rev_nfi}] — 12 months, current month excluded.
+        return Response(gl.nfi_income_movement_trend())
 
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
@@ -401,20 +322,8 @@ class InterestExpenseTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month,
-                    SUM(sum_dc) AS total
-                FROM revenue
-                WHERE income_category ILIKE '%INTEREST EXPENSE%'
-                   OR income_category ILIKE '%INT EXPENSE%'
-                GROUP BY TO_CHAR(trx_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{date_months, sum_intrest_expense}].
+        return Response(gl.intrest_expense_income_movement_trends())
 
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
@@ -422,20 +331,8 @@ class InterestIncomeTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month,
-                    SUM(sum_dc) AS total
-                FROM revenue
-                WHERE income_category ILIKE '%INTEREST INCOME%'
-                   OR income_category ILIKE '%INT INCOME%'
-                GROUP BY TO_CHAR(trx_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{date_months, sum_intrest_income}].
+        return Response(gl.intrest_income_movement_trends())
 
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
@@ -443,19 +340,9 @@ class TargetTrackerNFIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT
-                    income_category,
-                    SUM(sum_dc) AS actual_total
-                FROM revenue
-                WHERE EXTRACT(year FROM trx_date) = {current_year}
-                GROUP BY income_category
-                ORDER BY actual_total DESC NULLS LAST
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: scalar {interest_income_actual, nfi_actual, interest_expenses_actual,
+        # ytd_*_target, *_gap}. Frontend Revenue Summary + Target Tracker read these keys.
+        return Response(gl.target_tracker())
 
 
 # ── Customer analytics ────────────────────────────────────────────────────
@@ -465,23 +352,9 @@ class ProductPerCustomerView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    segment,
-                    AVG(CASE WHEN fd > 0    THEN 1 ELSE 0 END +
-                        CASE WHEN ca > 0    THEN 1 ELSE 0 END +
-                        CASE WHEN sa > 0    THEN 1 ELSE 0 END +
-                        CASE WHEN mobile > 0 THEN 1 ELSE 0 END +
-                        CASE WHEN mortagage > 0 THEN 1 ELSE 0 END)::numeric AS avg_products
-                FROM hf_customer
-                WHERE segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-                GROUP BY segment
-                ORDER BY avg_products DESC NULLS LAST
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        # Old shape: [{banking_segment, number_of_customers, number_of_products,
+        # ppc}] + ROLLUP 'Total' row — the frontend PPC tables read these keys.
+        return Response(gl.product_per_customer_by_segment())
 
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
@@ -560,11 +433,13 @@ class LoansBySegmentTrendView(generics.ListAPIView):
 
 
 @extend_schema(tags=["CEO Dashboard — Loans"])
-class MobileLoansView(generics.ListAPIView):
+class MobileLoansView(APIView):
+    # Old shape: 9-month aggregate [{date_months, number_of_loans, total_disbused}]
+    # — NOT the raw disbursement rows (which the frontend can't chart).
     permission_classes = [IsAuthenticated]
-    serializer_class = MobileLoanDisbusementsSerializer
-    queryset = MobileLoanDisbusements.objects.all()
-    pagination_class = StandardPagination
+
+    def get(self, request):
+        return Response(gl.mobile_loans())
 
 
 # ── Staff analytics ───────────────────────────────────────────────────────
@@ -879,7 +754,7 @@ class BranchListView(APIView):
     def get(self, request):
         sql = f"""
             SELECT
-                {BRN_CASE} AS branch_name,
+                {BRN_CASE} AS branch_code,
                 SUM(total_depost_balance) AS total_deposit_balance,
                 SUM(total_loans) AS total_loans,
                 SUM(total_revenue) AS total_revenue,
@@ -937,7 +812,7 @@ class BranchDepositTrendsView(APIView):
                 GROUP BY {BRN_CASE}
             )
             SELECT
-                brn_name,
+                brn_name AS brn_code,
                 dec_bal,
                 prev_month_bal,
                 yester_2_bal,
@@ -976,7 +851,7 @@ class BranchLoanTrendsView(APIView):
                 GROUP BY {BRN_CASE}
             )
             SELECT
-                brn_name,
+                brn_name AS brn_code,
                 dec_bal,
                 prev_month_bal,
                 yester_2_bal,

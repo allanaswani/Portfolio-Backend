@@ -5,6 +5,9 @@ urlpatterns = [
     # Customers
     path("customers/",                    views.BranchCustomerListView.as_view()),
     path("customers_allocated/",          views.BranchCustomerListAllocatedView.as_view()),
+    path("customers_allocated/search/",   views.BranchCustomerListAllocatedSearchView.as_view()),
+    path("customers_not_allocated/",      views.BranchCustomerListNotAllocatedView.as_view()),
+    path("customers_not_allocated/search/", views.BranchCustomerListNotAllocatedSearchView.as_view()),
     path("customer_totals/",              views.BranchTotalCustomersView.as_view()),
     path("customer_per_segment/",         views.BranchCustomerPerSegmentView.as_view()),
     # EXCO/CEO drill-down into ANY branch by name (legacy BranchDash parity).

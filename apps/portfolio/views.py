@@ -339,8 +339,11 @@ class RmDepositTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old deposit_trends_data — per-account rows with month-end balance columns;
+        # the frontend aggregates mon_YY_bal keys (PortfolioRmDepositTrends rows
+        # lack them and chart empty).
         profile = _get_profile(request.user)
-        data = svc.rm_deposit_trends(profile.sales_code)
+        data = svc.deposit_trends_data(profile.sales_code)
         return Response(data)
 
 
@@ -358,9 +361,10 @@ class RmLoanTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # loan_trends/ — RM's per-account loan balance rows (old rm_loan_trends_data →
+        # loan_trends_data). Was returning customer_loans(None) = always empty.
         profile = _get_profile(request.user)
-        loans = svc.customer_loans(None)
-        return Response(LoansSerializer(loans, many=True).data)
+        return Response(svc.loan_trends_data(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Revenue"])
@@ -555,11 +559,10 @@ class RmPpcView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # ppc/ — RM products-per-customer {ppc} (old rm_ppc → core.ppc). Was returning
+        # global product_type counts, not RM-scoped PPC.
         profile = _get_profile(request.user)
-        accounts = Accounts.objects.filter()  # filtered by sales_code via join in real DB
-        from django.db.models import Count
-        ppc = accounts.values("product_type").annotate(count=Count("id"))
-        return Response(list(ppc))
+        return Response(svc.ppc(profile.sales_code))
 
 
 # ---------------------------------------------------------------------------
@@ -763,15 +766,9 @@ class RmTopFtpCustomersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from apps.gceo_dashboard.models import Revenue
+        # rm_top_ftp_customers/ → [{cust_cif, customer_name, revenue_value}] (old top_ftp_customers_for_rm).
         profile = _get_profile(request.user)
-        # Top 10 customers by FTP
-        data = (
-            Revenue.objects.filter(sales_code=profile.sales_code)
-            .order_by("-ftp")[:10]
-        ) if hasattr(Revenue, "sales_code") else []
-        from apps.gceo_dashboard.serializers import RevenueSerializer
-        return Response(RevenueSerializer(data, many=True).data if data else [])
+        return Response(svc.top_ftp_customers_for_rm(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Revenue"])
@@ -779,14 +776,9 @@ class RmTopLoanLossCustomersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from apps.gceo_dashboard.models import Revenue
+        # rm_top_loan_loss_customers/ → [{cust_code_strategy, customer_name, revenue_value}].
         profile = _get_profile(request.user)
-        data = (
-            Revenue.objects.filter(sales_code=profile.sales_code)
-            .order_by("-loan_loss")[:10]
-        ) if hasattr(Revenue, "sales_code") else []
-        from apps.gceo_dashboard.serializers import RevenueSerializer
-        return Response(RevenueSerializer(data, many=True).data if data else [])
+        return Response(svc.top_loan_loss_customers_for_rm(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Revenue"])
@@ -794,11 +786,9 @@ class RmTop10CustomersPerIncomeCategoryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from apps.gceo_dashboard.models import Revenue
+        # rm_top_10_customers_per_income_category/ → {category: [{cust_id, customer_name, revenue_value}]}.
         profile = _get_profile(request.user)
-        data = Revenue.objects.filter(sales_code=profile.sales_code) if hasattr(Revenue, "sales_code") else Revenue.objects.none()
-        from apps.gceo_dashboard.serializers import RevenueSerializer
-        return Response(RevenueSerializer(data[:50], many=True).data)
+        return Response(svc.top_10_customers_per_income_category_for_rm(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Revenue"])

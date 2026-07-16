@@ -12,8 +12,11 @@ urlpatterns = [
     path("all_staff/",        views.AllStaffListView.as_view()),
     path("staff/<int:pk>/",   views.StaffDetailView.as_view()),
 
-    # ── All staff (frontend calls this "employees/") ──────────────────────────
-    path("employees/",        views.AllStaffListView.as_view()),
+    # ── Staff master (old employees/ = staff_employee_data, NOT the DMC table) ─
+    path("employees/upload-csv/", lv.StaffEmployeeCsvUploadView.as_view()),
+    path("employees/search/",     lv.StaffEmployeeListCreateView.as_view()),
+    path("employees/<int:pk>",    lv.StaffEmployeeDetailView.as_view()),
+    path("employees/",            lv.StaffEmployeeListCreateView.as_view()),
 
     # ── Scorecard config: list/create, CSV upload, then detail ────────────────
     path("roles/",                       views.ScorecardRoleListCreateView.as_view()),
@@ -45,7 +48,10 @@ urlpatterns = [
     # Individual RM scorecard (self) — per-KPI detail + monthly score series.
     path("monthly-performance-summary/rm/",          views.RMScorecardSummaryView.as_view()),
     path("monthly-performance-detail/self/",         views.RMScorecardSelfDetailView.as_view()),
-    path("rm-kpi-base-summary/",                     views.RMKPIBaseSummaryView.as_view()),
+    # Old shape: rows of rm_kpi_base_summary (list + create). The computed
+    # deposit-trends aggregate remains available at rm-kpi-base-summary/computed/.
+    path("rm-kpi-base-summary/",                     lv.RmKPIBaseSummaryListCreateView.as_view()),
+    path("rm-kpi-base-summary/computed/",            views.RMKPIBaseSummaryView.as_view()),
 
     # ── Scorecard setup ───────────────────────────────────────────────────────
     path("setup-defaults/",                          views.SeedDefaultKPIConfigView.as_view()),
@@ -129,14 +135,10 @@ urlpatterns = [
     path("retail-allocated-portfolio/<int:pk>/", lv.RetailAllocatedPortfolioDetailView.as_view()),
     path("retail-allocated-portfolio/",          lv.RetailAllocatedPortfolioListView.as_view()),
 
-    # Manual CSV uploads of warehouse datasets → managed *_upload mirror tables.
-    # upload-csv/ = write target (legacy results-ZIP); uploads/ = read the mirror.
+    # Manual CSV uploads of warehouse datasets → write the REAL warehouse tables
+    # (old backend behaviour: uploads must show in the list endpoints above).
     path("merchant-bank-tills-manual/upload-csv/",        lv.MerchantBankTillManualUploadCsvView.as_view()),
-    path("merchant-bank-tills-manual/uploads/",           lv.MerchantBankTillManualUploadListView.as_view()),
     path("weighted-sales-daily-accounts/upload-csv/",     lv.DailySalesAccountsWithCtoUploadCsvView.as_view()),
-    path("weighted-sales-daily-accounts/uploads/",        lv.DailySalesAccountsWithCtoUploadListView.as_view()),
     path("weighted-sales-dormancy-converted/upload-csv/", lv.DailyDormancyConvertedAccountUploadCsvView.as_view()),
-    path("weighted-sales-dormancy-converted/uploads/",    lv.DailyDormancyConvertedAccountUploadListView.as_view()),
     path("retail-allocated-portfolio/upload-csv/",        lv.RetailAllocatedPortfolioUploadCsvView.as_view()),
-    path("retail-allocated-portfolio/uploads/",           lv.RetailAllocatedPortfolioUploadListView.as_view()),
 ]

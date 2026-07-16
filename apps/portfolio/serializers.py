@@ -64,6 +64,74 @@ class HfCustomerSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class SegmentCustomerSerializer(serializers.ModelSerializer):
+    """Ported verbatim from the OLD backend (tl_portfolio.serializers). Consumes the
+    branch/RM customer RawQuerySets (legacy_queries) whose SELECT supplies the
+    computed columns (total_depost_balance, total_loans, total_revenue, rm_name,
+    sales_code); the remaining fields are HfCustomer model columns. The frontend is
+    built against this exact shape — do not change field names/types."""
+    cust_id = serializers.SerializerMethodField('get_cust_id')
+    fd = serializers.SerializerMethodField('get_fd')
+    ca = serializers.SerializerMethodField('get_ca')
+    internal = serializers.SerializerMethodField('get_internal')
+    mobile = serializers.SerializerMethodField('get_mobile')
+    mortagage = serializers.SerializerMethodField('get_mortagage')
+    sa = serializers.SerializerMethodField('get_sa')
+
+    product_map = serializers.SerializerMethodField('get_product_map')
+    asset_finance = serializers.SerializerMethodField('get_asset_finance')
+    cash_cover = serializers.SerializerMethodField('get_cash_cover')
+    ipf = serializers.SerializerMethodField('get_ipf')
+    overdraft = serializers.SerializerMethodField('get_overdraft')
+
+    project = serializers.SerializerMethodField('get_project')
+    staff = serializers.SerializerMethodField('get_staff')
+    trade = serializers.SerializerMethodField('get_trade')
+    unsecured = serializers.SerializerMethodField('get_unsecured')
+
+    total_depost_balance = serializers.SerializerMethodField('get_total_depost_balance')
+    total_loans = serializers.SerializerMethodField('get_total_loans')
+    total_revenue = serializers.SerializerMethodField('get_total_revenue')
+    branch = serializers.SerializerMethodField('get_branch')
+    banking_segment = serializers.SerializerMethodField('get_banking_segment')
+    active = serializers.BooleanField()
+    sales_code = serializers.SerializerMethodField('get_sales_code')
+    rm_name = serializers.SerializerMethodField('get_rm_name')
+
+    class Meta:
+        model = HfCustomer
+        fields = ['cust_id', 'latin_surname', 'mobile_tel', 'id_no', 'e_mail',
+                  'fd', 'ca', 'internal', 'mobile', 'mortagage', 'sa',
+                  'product_map', 'asset_finance', 'cash_cover', 'ipf', 'overdraft',
+                  'project', 'staff', 'trade', 'unsecured',
+                  'registered_mobile', 'total_depost_balance', 'total_loans', 'total_revenue',
+                  'active', 'branch', 'banking_segment', 'sales_code', 'rm_name']
+
+    def get_cust_id(self, obj):        return str(obj.cust_id)
+    def get_fd(self, obj):             return str(obj.fd)
+    def get_ca(self, obj):             return str(obj.ca)
+    def get_internal(self, obj):       return str(obj.internal)
+    def get_mobile(self, obj):         return str(obj.mobile)
+    def get_mortagage(self, obj):      return str(obj.mortagage)
+    def get_sa(self, obj):             return str(obj.sa)
+    def get_total_depost_balance(self, obj): return str(obj.total_depost_balance)
+    def get_total_loans(self, obj):    return str(obj.total_loans)
+    def get_total_revenue(self, obj):  return str(obj.total_revenue)
+    def get_branch(self, obj):         return str(obj.branch)
+    def get_banking_segment(self, obj): return str(obj.banking_segment)
+    def get_sales_code(self, obj):     return str(obj.sales_code)
+    def get_rm_name(self, obj):        return str(obj.rm_name)
+    def get_product_map(self, obj):    return str(obj.product_map)
+    def get_asset_finance(self, obj):  return str(obj.asset_finance)
+    def get_cash_cover(self, obj):     return str(obj.cash_cover)
+    def get_ipf(self, obj):            return str(obj.ipf)
+    def get_overdraft(self, obj):      return str(obj.overdraft)
+    def get_project(self, obj):        return str(obj.project)
+    def get_staff(self, obj):          return str(obj.staff)
+    def get_trade(self, obj):          return str(obj.trade)
+    def get_unsecured(self, obj):      return str(obj.unsecured)
+
+
 class ProspectsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Prospects

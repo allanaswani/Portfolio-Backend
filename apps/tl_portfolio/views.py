@@ -9,18 +9,18 @@ from django.db import connection
 from django.shortcuts import get_object_or_404
 
 from apps.portfolio.models import (
-    HfCustomer, RetailAllocatedPortfolio, Prospects, Feedback,
-    Accounts, Loans, Profile,
+    HfCustomer, Prospects, Feedback,
+    Accounts, Profile,
 )
 from apps.portfolio.serializers import (
     HfCustomerSerializer, ProspectsSerializer, FeedbackSerializer,
-    AccountsSerializer, LoansSerializer, ProfileSerializer,
+    AccountsSerializer, ProfileSerializer,
+    SegmentCustomerSerializer,
 )
-from apps.gceo_dashboard.models import (
-    DailyBalanceMovement, LoanDailyBalanceMovement, LoansHistory,
-)
+from . import legacy_queries as lq
+from apps.gceo_dashboard.models import LoansHistory
 from core.pagination import StandardPagination
-from core.date_utils import cy, py, current_year, _yester_case, _prev_month_case
+from core.date_utils import current_year
 
 import django_filters.rest_framework
 
@@ -92,20 +92,22 @@ class TlCustomerListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old segment_customers query — supplies the computed allocation columns
+        # (rm_name, total_depost_balance, ...) the frontend tables render.
         profile = _get_profile(request.user)
-        qs = HfCustomer.objects.filter(banking_segment=_segment(profile))
-        return Response(HfCustomerSerializer(qs, many=True).data)
+        qs = lq.segment_customers(_segment(profile))
+        return Response(SegmentCustomerSerializer(qs, many=True).data)
 
 
 @extend_schema(tags=["TL Portfolio — Customers"])
 class TlCustomerListPaginatedView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
+    serializer_class = SegmentCustomerSerializer
     pagination_class = StandardPagination
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
-        return HfCustomer.objects.filter(banking_segment=_segment(profile))
+        return list(lq.segment_customers(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Customers"])
@@ -159,28 +161,23 @@ class TlNewCustomerListView(generics.ListAPIView):
 @extend_schema(tags=["TL Portfolio — Customers"])
 class TlAllocatedCustomersView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
+    serializer_class = SegmentCustomerSerializer
     pagination_class = StandardPagination
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
-        allocated_ids = RetailAllocatedPortfolio.objects.values_list("cust_id", flat=True)
-        return HfCustomer.objects.filter(
-            banking_segment=_segment(profile),
-            cust_id__in=allocated_ids,
-        )
+        return list(lq.segment_customers_allocated(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Customers"])
 class TlUnallocatedCustomersView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
+    serializer_class = SegmentCustomerSerializer
     pagination_class = StandardPagination
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
-        allocated_ids = RetailAllocatedPortfolio.objects.values_list("cust_id", flat=True)
-        return HfCustomer.objects.filter(banking_segment=_segment(profile)).exclude(cust_id__in=allocated_ids)
+        return list(lq.segment_customers_not_allocated(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Customers"])
@@ -201,20 +198,14 @@ class TlUnallocatedCustomersSearchView(_DynamicCustomerFilterMixin, TlUnallocate
 
 @extend_schema(tags=["TL Portfolio — Customers"])
 class TlCustomerPerSegmentView(APIView):
-    """Allocated customers grouped by main segment across the TL's segment RMs
-    (mirrors the RM app's CustomerPerSegmentView, scoped to the whole segment)."""
+    """Old segment_customer_per_segment — per (main_segment, segment) counts.
+    The frontend table reads main_segment / segment / total_customers /
+    active_cusomers (old API typo)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
-        rm_codes = Profile.objects.filter(segment=_segment(profile)).values_list("sales_code", flat=True)
-        data = (
-            RetailAllocatedPortfolio.objects.filter(sales_code__in=rm_codes)
-            .values("main_segment")
-            .annotate(count=Count("cust_id"))
-            .order_by("-count")
-        )
-        return Response(list(data))
+        return Response(lq.segment_customer_per_segment(_segment(profile)))
 
 
 # ── RM list ────────────────────────────────────────────────────────────────
@@ -281,7 +272,8 @@ class TlPPCView(APIView):
                 WHERE banking_segment = %s
             """, [_segment(profile)])
             row = cur.fetchone()
-        return Response({"avg_products_per_customer": row[0], "total_customers": row[1]})
+        # Frontend reads `ppc` (old segment_ppc shape), not avg_products_per_customer.
+        return Response({"ppc": row[0] if row else 0, "total_customers": row[1] if row else 0})
 
 
 # ── Revenue ────────────────────────────────────────────────────────────────
@@ -291,14 +283,22 @@ class TlSegmentRevenueView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # segment_revenue/ — YTD income by category for the TL's segment, as
+        # [{income_category, value}] (old segment_revenues_query). Frontend charts
+        # these rows; a scalar aggregate left the revenue-by-category view empty.
         profile = _get_profile(request.user)
-        qs = HfCustomer.objects.filter(banking_segment=_segment(profile))
-        agg = qs.aggregate(
-            total_revenue=Sum("total_revenue"),
-            total_deposits=Sum("total_depost_balance"),
-            total_loans=Sum("total_loans"),
-        )
-        return Response(agg)
+        with connection.cursor() as cur:
+            cur.execute("""
+                SELECT income_category, SUM(sum_dc) AS value
+                FROM revenue r
+                LEFT JOIN hf_customer hf ON hf.cust_id = r.cust_id
+                WHERE date_trunc('year', tmstamp) = date_trunc('year', now())
+                  AND banking_segment = %s
+                GROUP BY income_category
+            """, [_segment(profile)])
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
 
 
 # ── Deposit trends ─────────────────────────────────────────────────────────
@@ -308,28 +308,12 @@ class TlDepositTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old segment_deposit_trends_data — per-account rows with every month-end
+        # balance column; the frontend aggregates the mon_YY_bal keys into the
+        # portfolio trend chart. (A raw customer_segment = segment filter matches
+        # nothing — profile.segment is a banking segment name.)
         profile = _get_profile(request.user)
-        yester2 = _yester_case("", "yester_2_bal", cy, py)
-        yester1 = _yester_case("", "yester_1_bal", cy, py)
-        sql = f"""
-            SELECT customer_segment,
-                   {yester2} AS yester_2_bal,
-                   {yester1} AS yester_1_bal
-            FROM daily_balance_movement
-            WHERE customer_segment = %s
-            GROUP BY customer_segment
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        if not rows:
-            accounts = Accounts.objects.filter(opening_branch__icontains=_segment(profile) or "")
-            data = accounts.values("product_type").annotate(
-                count=Count("id"), total_balance=Sum("current_balance")
-            )
-            return Response(list(data))
-        return Response(rows)
+        return Response(lq.segment_deposit_trends(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Deposits"])
@@ -337,23 +321,10 @@ class TlMonthlyDepositTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old segment_monthly_deposit_trends_data — one aggregated row; the
+        # frontend reads [0].yester_1_bal as the segment's current deposit book.
         profile = _get_profile(request.user)
-        yester2 = _yester_case("", "yester_2_bal", cy, py)
-        yester1 = _yester_case("", "yester_1_bal", cy, py)
-        sql = f"""
-            SELECT customer_segment,
-                   {yester2} AS yester_2_bal,
-                   {yester1} AS yester_1_bal,
-                   SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal
-            FROM daily_balance_movement
-            WHERE customer_segment = %s
-            GROUP BY customer_segment
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_monthly_deposit_trends(_segment(profile)))
 
 
 # ── Loan trends ────────────────────────────────────────────────────────────
@@ -363,15 +334,10 @@ class TlLoanTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old segment_loan_trends_data_queryset — per-account loan rows with the
+        # month-end balance columns (same aggregation contract as deposits).
         profile = _get_profile(request.user)
-        segment_cust_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
-        ).values_list("cust_id", flat=True)
-        loans = Loans.objects.filter(cust_id__in=segment_cust_ids)
-        data = loans.values("loan_product").annotate(
-            count=Count("id"), total_balance=Sum("euro_book_balance")
-        )
-        return Response(list(data))
+        return Response(lq.segment_loan_trends(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Loans"])
@@ -379,23 +345,9 @@ class TlMonthlyLoanTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old segment_monthly_loan_trends_data — frontend reads [0].yester_1_bal.
         profile = _get_profile(request.user)
-        yester2 = _yester_case("", "yester_2_bal", cy, py)
-        yester1 = _yester_case("", "yester_1_bal", cy, py)
-        sql = f"""
-            SELECT customer_segment,
-                   {yester2} AS yester_2_bal,
-                   {yester1} AS yester_1_bal,
-                   SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal
-            FROM loan_daily_balance_movement
-            WHERE customer_segment = %s
-            GROUP BY customer_segment
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_monthly_loan_trends(_segment(profile)))
 
 
 # ── Movement ───────────────────────────────────────────────────────────────
@@ -405,25 +357,10 @@ class TlRMDepositMovementYTDView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old segment_rm_deposit_movement_ytd_data — the frontend reads
+        # rm_code / rm_name / dec_bal / yester_1_bal / movement.
         profile = _get_profile(request.user)
-        sql = f"""
-            SELECT
-                rm_code,
-                MAX(full_name) AS rm_name,
-                SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0) AS yester_1_bal,
-                SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal,
-                SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0)
-                    - SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS ytd_movement
-            FROM daily_balance_movement
-            WHERE customer_segment = %s AND rm_code IS NOT NULL
-            GROUP BY rm_code
-            ORDER BY ytd_movement DESC NULLS LAST
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_rm_deposit_movement_ytd(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Movement"])
@@ -432,18 +369,7 @@ class TlTopInflowDTDView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT cust_cif, full_name, rm_code,
-                       yester_1_bal, yester_2_bal,
-                       yester_1_bal - yester_2_bal AS movement
-                FROM daily_balance_movement
-                WHERE customer_segment = %s AND yester_1_bal > yester_2_bal
-                ORDER BY movement DESC NULLS LAST LIMIT 50
-            """, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_top_inflow_dtd(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Movement"])
@@ -452,18 +378,7 @@ class TlTopOutflowDTDView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT cust_cif, full_name, rm_code,
-                       yester_1_bal, yester_2_bal,
-                       yester_2_bal - yester_1_bal AS outflow
-                FROM daily_balance_movement
-                WHERE customer_segment = %s AND yester_2_bal > yester_1_bal
-                ORDER BY outflow DESC NULLS LAST LIMIT 50
-            """, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_top_outflow_dtd(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Movement"])
@@ -471,19 +386,9 @@ class TlTopInflowYTDView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # YTD movers: frontend reads dec_bal (opening) / yester_1_bal / movement.
         profile = _get_profile(request.user)
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT cust_cif, full_name, rm_code,
-                       yester_1_bal, dec_{py}_bal AS ytd_start,
-                       yester_1_bal - dec_{py}_bal AS ytd_movement
-                FROM daily_balance_movement
-                WHERE customer_segment = %s AND yester_1_bal > dec_{py}_bal
-                ORDER BY ytd_movement DESC NULLS LAST LIMIT 50
-            """, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_top_inflow_ytd(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Movement"])
@@ -492,18 +397,7 @@ class TlTopOutflowYTDView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                SELECT cust_cif, full_name, rm_code,
-                       yester_1_bal, dec_{py}_bal AS ytd_start,
-                       dec_{py}_bal - yester_1_bal AS ytd_outflow
-                FROM daily_balance_movement
-                WHERE customer_segment = %s AND dec_{py}_bal > yester_1_bal
-                ORDER BY ytd_outflow DESC NULLS LAST LIMIT 50
-            """, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(lq.segment_top_outflow_ytd(_segment(profile)))
 
 
 # ── Arrears ────────────────────────────────────────────────────────────────
