@@ -22,4 +22,13 @@ urlpatterns = [
     path("destructions/<int:pk>/approve/", v.ApproveDestructionView.as_view()),
     path("destructions/<int:pk>/destroy/", v.DestroyBatchView.as_view()),
     path("destructions/<int:pk>/certify/", v.CertifyDestructionView.as_view()),
+
+    # Phase 3 — stock-take & missing files (§3.7)
+    path("stock-takes/",                v.StockTakeListCreateView.as_view()),
+    path("stock-takes/<int:pk>/",       v.StockTakeDetailView.as_view()),
+    path("stock-takes/<int:pk>/sight/", v.SightItemView.as_view()),
+    path("stock-takes/<int:pk>/close/", v.CloseStockTakeView.as_view()),
+    path("incidents/",                  v.IncidentListCreateView.as_view()),
+    path("incidents/<int:pk>/",         v.IncidentDetailView.as_view()),
+    path("incidents/<int:pk>/resolve/", v.ResolveIncidentView.as_view()),
 ]

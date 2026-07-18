@@ -8,7 +8,8 @@ from rest_framework.test import APITestCase
 
 from .models import (
     ArchiveBox, ArchiveConsignment, DestructionBatch,
-    FileRecord, MovementCard, MAX_OPEN_FILES_PER_BORROWER, _add_years,
+    FileRecord, MissingFileIncident, MovementCard, StockTake, StockTakeItem,
+    MAX_OPEN_FILES_PER_BORROWER, _add_years,
 )
 
 
@@ -260,3 +261,214 @@ class RegistryPhase2Tests(APITestCase):
         self.assertEqual(self.client.get("/registry/consignments/").status_code, 403)
         self.assertEqual(self.client.get("/registry/destructions/").status_code, 403)
         self.assertEqual(self.client.get("/registry/retention-due/").status_code, 403)
+
+
+class RegistryPhase3Tests(APITestCase):
+    """Stock-take & missing-file incidents (§3.7)."""
+
+    def setUp(self):
+        self.officer = User.objects.create_user("reg3", password="x")
+        self.officer.groups.add(Group.objects.get_or_create(name="registry_officer")[0])
+        self.outsider = User.objects.create_user("rm3", password="x")
+
+    def _file(self, no, status=FileRecord.STATUS_ACTIVE, pocket=""):
+        return FileRecord.objects.create(
+            file_no=no, customer_name="Acme", file_type=FileRecord.TYPE_LOAN,
+            status=status, pocket=pocket,
+        )
+
+    # stock-take scope + snapshot ------------------------------------------
+    def test_open_stock_take_snapshots_shelf_and_issued_files(self):
+        """§3.7 counts issued files too — they're verified with the officer."""
+        self._file("S-1")
+        self._file("S-2")
+        self._file("S-ONLOAN", status=FileRecord.STATUS_ON_LOAN)
+        self._file("S-ARCHIVED", status=FileRecord.STATUS_ARCHIVED)  # left registry
+        self.client.force_authenticate(self.officer)
+
+        r = self.client.post("/registry/stock-takes/", {"title": "Q3 count"}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        st = StockTake.objects.get(pk=r.data["id"])
+        self.assertEqual(
+            sorted(i.file.file_no for i in st.items.all()),
+            ["S-1", "S-2", "S-ONLOAN"],
+        )
+
+    def test_snapshot_records_the_officer_holding_the_file(self):
+        """§3.7 step 3 needs to know who a file was marked to."""
+        borrower = User.objects.create_user("holder", password="x")
+        shelf = self._file("M-SHELF")
+        issued = self._file("M-ISSUED")
+        MovementCard.objects.create(
+            file=issued, borrower=borrower, borrower_ack=True,
+            due_at=timezone.now() + timedelta(days=28),
+        )
+        issued.status = FileRecord.STATUS_ON_LOAN
+        issued.save()
+
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/stock-takes/", {"title": "count"}, format="json")
+        st = StockTake.objects.get(pk=r.data["id"])
+        self.assertEqual(st.items.get(file=issued).marked_to, borrower)
+        self.assertIsNone(st.items.get(file=shelf).marked_to)
+
+    def test_location_scoped_stock_take(self):
+        self._file("L-A", pocket="A1")
+        self._file("L-B", pocket="B2")
+        self.client.force_authenticate(self.officer)
+        r = self.client.post(
+            "/registry/stock-takes/", {"title": "Aisle A", "location": "A1"}, format="json"
+        )
+        st = StockTake.objects.get(pk=r.data["id"])
+        self.assertEqual([i.file.file_no for i in st.items.all()], ["L-A"])
+
+    # sight + close raises incidents ---------------------------------------
+    def test_close_flags_unsighted_as_missing(self):
+        found = self._file("C-FOUND")
+        lost = self._file("C-LOST")
+        self.client.force_authenticate(self.officer)
+
+        r = self.client.post("/registry/stock-takes/", {"title": "count"}, format="json")
+        stid = r.data["id"]
+        st = StockTake.objects.get(pk=stid)
+        found_item = st.items.get(file=found)
+
+        # sight one of the two
+        s = self.client.post(
+            f"/registry/stock-takes/{stid}/sight/",
+            {"item": found_item.pk, "sighted": True}, format="json",
+        )
+        self.assertEqual(s.status_code, 200, s.content)
+
+        c = self.client.post(f"/registry/stock-takes/{stid}/close/")
+        self.assertEqual(c.status_code, 200, c.content)
+
+        found.refresh_from_db()
+        lost.refresh_from_db()
+        self.assertEqual(found.status, FileRecord.STATUS_ACTIVE)
+        self.assertEqual(lost.status, FileRecord.STATUS_MISSING)
+        # incident raised for the lost file only
+        self.assertEqual(MissingFileIncident.objects.filter(file=lost).count(), 1)
+        self.assertEqual(MissingFileIncident.objects.filter(file=found).count(), 0)
+
+        st.refresh_from_db()
+        self.assertEqual(st.status, StockTake.STATUS_CLOSED)
+
+    def test_close_splits_untraced_by_marked_to_officer(self):
+        """§3.7 step 3/4: a file marked to an officer has a trace — chase the
+        officer per the overdue procedure; don't flag it untraced/missing."""
+        borrower = User.objects.create_user("holder2", password="x")
+        unmarked = self._file("K-SHELF")
+        issued = self._file("K-ISSUED")
+        MovementCard.objects.create(
+            file=issued, borrower=borrower, borrower_ack=True,
+            due_at=timezone.now() + timedelta(days=28),
+        )
+        issued.status = FileRecord.STATUS_ON_LOAN
+        issued.save()
+
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/stock-takes/", {"title": "count"}, format="json")
+        stid = r.data["id"]
+        # Neither is sighted.
+        c = self.client.post(f"/registry/stock-takes/{stid}/close/")
+        self.assertEqual(c.status_code, 200, c.content)
+
+        # Marked to an officer: incident records the holder, file stays on loan.
+        issued.refresh_from_db()
+        self.assertEqual(issued.status, FileRecord.STATUS_ON_LOAN)
+        marked_inc = MissingFileIncident.objects.get(file=issued)
+        self.assertEqual(marked_inc.marked_to, borrower)
+
+        # Marked to nobody: genuinely untraced.
+        unmarked.refresh_from_db()
+        self.assertEqual(unmarked.status, FileRecord.STATUS_MISSING)
+        self.assertIsNone(MissingFileIncident.objects.get(file=unmarked).marked_to)
+
+        # The status report splits the two (§3.7 step 3).
+        self.assertEqual(c.data["missing_marked"], 1)
+        self.assertEqual(c.data["missing_unmarked"], 1)
+
+    def test_file_issued_mid_count_is_traceable_not_missing(self):
+        """Issued after the snapshot: the open card is still a trace to follow."""
+        borrower = User.objects.create_user("holder3", password="x")
+        f = self._file("MID-1")
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/stock-takes/", {"title": "count"}, format="json")
+
+        # Issued out after the count opened, so never sighted on the shelf.
+        MovementCard.objects.create(
+            file=f, borrower=borrower, borrower_ack=True,
+            due_at=timezone.now() + timedelta(days=28),
+        )
+        f.status = FileRecord.STATUS_ON_LOAN
+        f.save()
+
+        self.client.post(f"/registry/stock-takes/{r.data['id']}/close/")
+        f.refresh_from_db()
+        self.assertEqual(f.status, FileRecord.STATUS_ON_LOAN)
+        self.assertEqual(MissingFileIncident.objects.get(file=f).marked_to, borrower)
+
+    def test_cannot_sight_closed_stock_take(self):
+        self._file("Z-1")
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/stock-takes/", {"title": "x"}, format="json")
+        stid = r.data["id"]
+        item = StockTake.objects.get(pk=stid).items.first()
+        self.client.post(f"/registry/stock-takes/{stid}/close/")
+        s = self.client.post(
+            f"/registry/stock-takes/{stid}/sight/",
+            {"item": item.pk, "sighted": True}, format="json",
+        )
+        self.assertEqual(s.status_code, 400)
+
+    # incident resolution ---------------------------------------------------
+    def test_incident_found_returns_file_to_active(self):
+        f = self._file("I-1")
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/incidents/", {"file": f.pk}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        f.refresh_from_db()
+        self.assertEqual(f.status, FileRecord.STATUS_MISSING)
+
+        res = self.client.post(
+            f"/registry/incidents/{r.data['id']}/resolve/",
+            {"outcome": "found", "resolution_note": "in RM's drawer"}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data["status"], "found")
+        f.refresh_from_db()
+        self.assertEqual(f.status, FileRecord.STATUS_ACTIVE)
+
+    def test_incident_skeleton_creates_replacement(self):
+        f = self._file("I-2", pocket="P9")
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/incidents/", {"file": f.pk}, format="json")
+        res = self.client.post(
+            f"/registry/incidents/{r.data['id']}/resolve/",
+            {"outcome": "skeleton"}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data["status"], "skeleton")
+
+        skeleton = FileRecord.objects.get(file_no="I-2-SKEL")
+        self.assertTrue(skeleton.is_skeleton)
+        self.assertEqual(skeleton.pocket, "P9")
+        f.refresh_from_db()
+        self.assertEqual(f.status, FileRecord.STATUS_MISSING)  # original stays lost
+
+    def test_cannot_resolve_twice(self):
+        f = self._file("I-3")
+        self.client.force_authenticate(self.officer)
+        r = self.client.post("/registry/incidents/", {"file": f.pk}, format="json")
+        iid = r.data["id"]
+        self.client.post(f"/registry/incidents/{iid}/resolve/", {"outcome": "found"}, format="json")
+        again = self.client.post(
+            f"/registry/incidents/{iid}/resolve/", {"outcome": "found"}, format="json"
+        )
+        self.assertEqual(again.status_code, 400)
+
+    def test_phase3_endpoints_require_registry_staff(self):
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(self.client.get("/registry/stock-takes/").status_code, 403)
+        self.assertEqual(self.client.get("/registry/incidents/").status_code, 403)

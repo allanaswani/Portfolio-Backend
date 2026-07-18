@@ -5,7 +5,10 @@ from .models import (
     ArchiveConsignment,
     DestructionBatch,
     FileRecord,
+    MissingFileIncident,
     MovementCard,
+    StockTake,
+    StockTakeItem,
 )
 
 
@@ -190,3 +193,128 @@ class DestroySerializer(serializers.Serializer):
 class CertifySerializer(serializers.Serializer):
     certificate_ref = serializers.CharField()
     certificate_note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+# ── Stock-take & missing files (§3.7) ────────────────────────────────────────
+
+class StockTakeItemSerializer(serializers.ModelSerializer):
+    file_no = serializers.CharField(source="file.file_no", read_only=True)
+    customer_name = serializers.CharField(source="file.customer_name", read_only=True)
+    pocket = serializers.CharField(source="file.pocket", read_only=True)
+    sighted_by_name = serializers.SerializerMethodField()
+    marked_to_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockTakeItem
+        fields = [
+            "id", "file", "file_no", "customer_name", "pocket",
+            "sighted", "sighted_by", "sighted_by_name", "sighted_at", "remark",
+            "marked_to", "marked_to_name",
+        ]
+        read_only_fields = ["file", "sighted_by", "sighted_at", "marked_to"]
+
+    def get_sighted_by_name(self, obj):
+        return _user_name(obj.sighted_by)
+
+    def get_marked_to_name(self, obj):
+        return _user_name(obj.marked_to)
+
+
+class StockTakeSerializer(serializers.ModelSerializer):
+    opened_by_name = serializers.SerializerMethodField()
+    closed_by_name = serializers.SerializerMethodField()
+    total = serializers.SerializerMethodField()
+    sighted = serializers.SerializerMethodField()
+    missing = serializers.SerializerMethodField()
+    missing_marked = serializers.SerializerMethodField()
+    missing_unmarked = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockTake
+        fields = [
+            "id", "title", "location", "status", "notes",
+            "opened_by", "opened_by_name", "opened_at",
+            "closed_by", "closed_by_name", "closed_at",
+            "total", "sighted", "missing", "missing_marked", "missing_unmarked",
+        ]
+        read_only_fields = [
+            "status", "opened_by", "opened_at", "closed_by", "closed_at",
+        ]
+
+    def get_opened_by_name(self, obj):
+        return _user_name(obj.opened_by)
+
+    def get_closed_by_name(self, obj):
+        return _user_name(obj.closed_by)
+
+    def get_total(self, obj):
+        return obj.items.count()
+
+    def get_sighted(self, obj):
+        return obj.items.filter(sighted=True).count()
+
+    def get_missing(self, obj):
+        # Meaningful once closed; while open it's just "not yet sighted".
+        return obj.items.filter(sighted=False).count()
+
+    # §3.7 step 3 splits the untraced files for the stock-take status report:
+    # those marked to an officer (chase per the overdue procedure) and those
+    # marked to nobody (no trace — the skeleton path).
+    def get_missing_marked(self, obj):
+        return obj.items.filter(sighted=False, marked_to__isnull=False).count()
+
+    def get_missing_unmarked(self, obj):
+        return obj.items.filter(sighted=False, marked_to__isnull=True).count()
+
+
+class StockTakeDetailSerializer(StockTakeSerializer):
+    items = StockTakeItemSerializer(many=True, read_only=True)
+
+    class Meta(StockTakeSerializer.Meta):
+        fields = StockTakeSerializer.Meta.fields + ["items"]
+
+
+class SightSerializer(serializers.Serializer):
+    """Mark one stock-take line as sighted (or not) (§3.7)."""
+
+    item = serializers.PrimaryKeyRelatedField(queryset=StockTakeItem.objects.all())
+    sighted = serializers.BooleanField(default=True)
+    remark = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class MissingFileIncidentSerializer(serializers.ModelSerializer):
+    file_no = serializers.CharField(source="file.file_no", read_only=True)
+    customer_name = serializers.CharField(source="file.customer_name", read_only=True)
+    reported_by_name = serializers.SerializerMethodField()
+    resolved_by_name = serializers.SerializerMethodField()
+    marked_to_name = serializers.SerializerMethodField()
+    skeleton_file_no = serializers.CharField(source="skeleton_file.file_no", read_only=True)
+
+    class Meta:
+        model = MissingFileIncident
+        fields = "__all__"
+        read_only_fields = [
+            "status", "reported_by", "created_at",
+            "resolution_note", "skeleton_file", "resolved_by", "resolved_at",
+        ]
+
+    def get_reported_by_name(self, obj):
+        return _user_name(obj.reported_by)
+
+    def get_resolved_by_name(self, obj):
+        return _user_name(obj.resolved_by)
+
+    def get_marked_to_name(self, obj):
+        return _user_name(obj.marked_to)
+
+
+class ResolveIncidentSerializer(serializers.Serializer):
+    """Close a missing-file incident (§3.7).
+
+    ``found``   — the original turned up; file returns to active.
+    ``skeleton``— reconstruct a skeleton file to stand in for the lost original.
+    ``written_off`` — file is written off; stays missing.
+    """
+
+    outcome = serializers.ChoiceField(choices=["found", "skeleton", "written_off"])
+    resolution_note = serializers.CharField(required=False, allow_blank=True, default="")

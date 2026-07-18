@@ -110,6 +110,10 @@ class FileRecord(models.Model):
     )
     archived_at = models.DateTimeField(null=True, blank=True)
 
+    # §3.7: set when the original could not be traced and a skeleton file was
+    # reconstructed from copies to stand in for it.
+    is_skeleton = models.BooleanField(default=False)
+
     created_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="registry_files_created",
@@ -380,3 +384,180 @@ class DestructionBatch(models.Model):
     @property
     def is_fully_approved(self):
         return bool(self.unit_ack_at and self.head_ops_at and self.coo_at)
+
+
+# ── Stock-take & missing files (§3.7) ────────────────────────────────────────
+
+class StockTake(models.Model):
+    """A physical count of the registry against the register (§3.7).
+
+    The registry periodically verifies that every file the register says it
+    holds is physically present. A stock-take opens with a scope (which files
+    should be on the shelf), officers mark each as sighted, and on close any
+    file never sighted is flagged missing and raises an incident.
+    """
+
+    STATUS_OPEN = "open"
+    STATUS_CLOSED = "closed"
+    STATUS_CHOICES = [
+        (STATUS_OPEN, "In progress"),
+        (STATUS_CLOSED, "Closed"),
+    ]
+
+    title = models.CharField(max_length=128)
+    location = models.CharField(
+        max_length=128, blank=True,
+        help_text="Optional pocket/shelf filter — blank counts the whole registry.",
+    )
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN, db_index=True,
+    )
+    notes = models.TextField(blank=True)
+
+    opened_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="registry_stocktakes_opened",
+    )
+    opened_at = models.DateTimeField(auto_now_add=True)
+    closed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="registry_stocktakes_closed",
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = True
+        db_table = "registry_stock_take"
+        ordering = ["-opened_at"]
+
+    def __str__(self):
+        return f"{self.title} ({self.get_status_display()})"
+
+    # Scope: every file the register still accounts for — on the shelf (active
+    # or redeemed) *and* issued out. §3.7 counts issued files too ("the exercise
+    # to start with the files being issued on the day the exercise begins"), so
+    # a file marked to an officer is verified with that officer rather than
+    # assumed present. Archived/destroyed/missing are excluded: they have
+    # legitimately left the registry.
+    def scope_queryset(self):
+        qs = FileRecord.objects.filter(
+            status__in=[
+                FileRecord.STATUS_ACTIVE,
+                FileRecord.STATUS_REDEEMED,
+                FileRecord.STATUS_ON_LOAN,
+            ],
+        )
+        if self.location:
+            qs = qs.filter(pocket=self.location)
+        return qs
+
+
+class StockTakeItem(models.Model):
+    """One file's line in a stock-take — sighted or not (§3.7)."""
+
+    stock_take = models.ForeignKey(
+        StockTake, on_delete=models.CASCADE, related_name="items",
+    )
+    file = models.ForeignKey(
+        FileRecord, on_delete=models.CASCADE, related_name="stock_take_items",
+    )
+    sighted = models.BooleanField(default=False)
+    sighted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    sighted_at = models.DateTimeField(null=True, blank=True)
+    remark = models.CharField(max_length=255, blank=True)
+    # Custody at the moment the count opened. §3.7 step 3 splits untraced files
+    # into "marked to officers" vs "not marked to any officer", so the holder is
+    # snapshotted here rather than read back later (the card may be returned
+    # mid-count). Null = it should have been on the shelf.
+    marked_to = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+        help_text="Officer holding the file when the count opened, if issued out.",
+    )
+
+    class Meta:
+        managed = True
+        db_table = "registry_stock_take_item"
+        ordering = ["file__file_no"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["stock_take", "file"], name="uniq_stocktake_file",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.file.file_no} — {'seen' if self.sighted else 'unseen'}"
+
+
+class MissingFileIncident(models.Model):
+    """A file that could not be traced — raised, investigated, resolved (§3.7).
+
+    Opened when a file is found missing (at stock-take or when an issue/return
+    can't locate it). Tracks the search, escalation, and outcome: the file is
+    either found or a skeleton file is reconstructed to stand in for it.
+    """
+
+    STATUS_OPEN = "open"
+    STATUS_FOUND = "found"
+    STATUS_SKELETON = "skeleton"     # reconstructed from copies (§3.7)
+    STATUS_WRITTEN_OFF = "written_off"
+    STATUS_CHOICES = [
+        (STATUS_OPEN, "Open — under search"),
+        (STATUS_FOUND, "Found"),
+        (STATUS_SKELETON, "Skeleton reconstructed"),
+        (STATUS_WRITTEN_OFF, "Written off"),
+    ]
+
+    file = models.ForeignKey(
+        FileRecord, on_delete=models.CASCADE, related_name="missing_incidents",
+    )
+    stock_take = models.ForeignKey(
+        StockTake, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="incidents",
+    )
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN, db_index=True,
+    )
+    # Where the file was last accounted for — helps the search (§3.7).
+    last_seen = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    # §3.7 step 3: untraced files split into those "marked to officers" and
+    # those "not marked to any officer". Null = nobody held it, so it should
+    # have been on the shelf and there is no trace to follow — the skeleton
+    # path. Set = chase the officer per the overdue follow-up procedure (step 4).
+    marked_to = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="registry_incidents_marked_to",
+        help_text="Officer the file was issued to, if it was out at the count.",
+    )
+
+    reported_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="registry_incidents_reported",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Resolution.
+    resolution_note = models.TextField(blank=True)
+    skeleton_file = models.ForeignKey(
+        FileRecord, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="skeleton_for_incidents",
+        help_text="The reconstructed file created when the original is lost.",
+    )
+    resolved_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = True
+        db_table = "registry_missing_incident"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Missing {self.file.file_no} ({self.get_status_display()})"
+
+    @property
+    def is_open(self):
+        return self.status == self.STATUS_OPEN
