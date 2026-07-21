@@ -279,9 +279,68 @@ class ProjectTitanDailyCollections(models.Model):
     narration = models.CharField(max_length=500, blank=True, null=True)
     plot_number = models.IntegerField(blank=True, null=True)
 
+    history=HistoricalRecords()
+
     class Meta:
         managed = True
         db_table = "project_titan_daily_collections"
+
+
+class ProjectTitanPlotsAllocation(models.Model):
+    serial_number = models.IntegerField(blank=True, null=True)
+    plot_number = models.IntegerField(blank=True, null=True)
+    parcel_lr_number = models.BigIntegerField(blank=True, null=True)
+    plot_area = models.DecimalField(max_digits=12, decimal_places=4, blank=True, null=True)
+    plot_value = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    plot_squatter_name = models.CharField(max_length=300, blank=True, null=True)
+    surveyor_allocation = models.CharField(max_length=300, blank=True, null=True)
+    administration_fees = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    eurobond_employee_allocaiton = models.CharField(max_length=300, blank=True, null=True)
+    deed_of_settlment_allocation = models.CharField(max_length=300, blank=True, null=True)
+    gratuity_allocation = models.CharField(max_length=300, blank=True, null=True)
+    allocation_collection_agent = models.CharField(max_length=300, blank=True, null=True)
+    allocation_collection_group = models.CharField(max_length=300, blank=True, null=True)
+    national_id = models.BigIntegerField(blank=True, null=True)
+    phone_number = models.BigIntegerField(blank=True, null=True)
+    alternative_phone_number = models.BigIntegerField(blank=True, null=True)
+    amount_paid = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    plot_status = models.CharField(max_length=200, blank=True, null=True)
+    plot_title_number = models.CharField(max_length=200, blank=True, null=True)
+    plot_balance = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "project_titan_plots_allocation"
+
+
+class ProjectTitanPlotsAllocationFieldChange(models.Model):
+    """
+    Audit trail for ProjectTitanPlotsAllocation records, written on every CSV
+    upload. Unlike HistoricalRecords (which snapshots the whole row on every
+    save), this only fires when a row is actually amended by an upload, and
+    records one entry per plot per upload with a JSON diff of exactly which
+    fields changed: {"field_name": [old_value, new_value], ...}.
+
+    Deliberately not a ForeignKey to ProjectTitanPlotsAllocation: plot_number is
+    stored directly so this table can be queried on its own (and survives even
+    if the referenced plot row is later deleted or reallocated).
+    """
+    plot_number = models.IntegerField(db_index=True)
+    changes = models.JSONField()
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "project_titan_plots_allocation_field_changes"
+        ordering = ["-changed_at"]
+
+    def __str__(self):
+        return f"{self.plot_number} - {list(self.changes.keys())} - {self.changed_at}"
 
 
 class HfdiProjectsDailyCollectionsData(models.Model):

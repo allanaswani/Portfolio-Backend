@@ -4,7 +4,7 @@ from .models import (
     LegacyProject, LegacySalesRecord, HfdiManualFinanceEntry, HfdiTargets,
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
-    ProjectTitanDailyCollections,
+    ProjectTitanDailyCollections, ProjectTitanPlotsAllocation, ProjectTitanPlotsAllocationFieldChange,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
@@ -104,6 +104,19 @@ class HfdiCustomersHfcMortgagesSerializer(serializers.ModelSerializer):
 class ProjectTitanDailyCollectionsSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProjectTitanDailyCollections
+        fields = "__all__"
+
+
+class ProjectTitanPlotsAllocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectTitanPlotsAllocation
+        fields = "__all__"
+        read_only_fields = ("created_at", "updated_at")
+
+
+class ProjectTitanPlotsAllocationFieldChangeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectTitanPlotsAllocationFieldChange
         fields = "__all__"
 
 

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from rest_framework import generics
@@ -18,7 +19,7 @@ from .models import (
     LegacyProject, LegacySalesRecord, HfdiManualFinanceEntry, HfdiTargets,
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
-    ProjectTitanDailyCollections,
+    ProjectTitanDailyCollections, ProjectTitanPlotsAllocation, ProjectTitanPlotsAllocationFieldChange,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
@@ -30,6 +31,7 @@ from .serializers import (
     HfdiEmployeeDataSerializer, HfdiEmployeeDataSalesRecordSerializer,
     HfdiScorecardPerformanceRecordSerializer, WeightedDashboardManualSalesSerializer,
     HfdiCustomersHfcMortgagesSerializer, ProjectTitanDailyCollectionsSerializer,
+    ProjectTitanPlotsAllocationSerializer, ProjectTitanPlotsAllocationFieldChangeSerializer,
     HfdiProjectsDailyCollectionsDataSerializer,
     HfdiProjectsInventorySalesDataSerializer, AffordableHousingApplicationSerializer,
     AffordableHousingRegistrationsSerializer, AffordableHousingProjectsPipelineSerializer,
@@ -444,10 +446,91 @@ class ProjectTitanDailyCollectionsCSVUploadView(AmendingCsvUploadView):
     def save_valid(self, row, serializer):
         data = serializer.validated_data
         ProjectTitanDailyCollections.objects.update_or_create(
+            trx_date=data.get('trx_date'),
+            value_date=data.get('value_date'),
+            trx_unit=data.get('trx_unit'),
+            trx_user=data.get('trx_user'),
             trx_s_n=data.get("trx_s_n"),
             defaults=data,
         )
         return None
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
+class ProjectTitanPlotsAllocationListView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanPlotsAllocationSerializer
+    pagination_class = StandardPagination
+    queryset = ProjectTitanPlotsAllocation.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
+class ProjectTitanPlotsAllocationDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanPlotsAllocationSerializer
+    queryset = ProjectTitanPlotsAllocation.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
+class ProjectTitanPlotsAllocationSearchAPIView(DynamicColumnSearchListView):
+    serializer_class = ProjectTitanPlotsAllocationSerializer
+    search_model = ProjectTitanPlotsAllocation
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
+class ProjectTitanPlotsAllocationCSVUploadView(AmendingCsvUploadView):
+    """Upsert on plot_number; alternative_phone_number derived by splitting phone_number."""
+
+    model = ProjectTitanPlotsAllocation
+    serializer_class = ProjectTitanPlotsAllocationSerializer
+    result_filename = "project_titan_plots_allocation_upload_results"
+    excluded_columns = ("id", "alternative_phone_number", "allocation_collection_agent", "allocation_collection_group")
+
+    def amend_row(self, row):
+        phone_parts = [part.strip() for part in re.split(r"[/,&]", row.get("phone_number") or "") if part.strip()]
+        row["phone_number"] = phone_parts[0] if phone_parts else None
+        row["alternative_phone_number"] = phone_parts[1] if len(phone_parts) > 1 else row.get("alternative_phone_number") or None
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        existing = ProjectTitanPlotsAllocation.objects.filter(plot_number=data.get("plot_number")).first()
+        old_values = {field_name: getattr(existing, field_name) for field_name in data.keys()} if existing else {}
+        obj, created = ProjectTitanPlotsAllocation.objects.update_or_create(
+            plot_number=data.get("plot_number"),
+            defaults=data,
+        )
+        if not created:
+            diff = {
+                field_name: [
+                    None if old_values.get(field_name) is None else str(old_values.get(field_name)),
+                    None if new_value is None else str(new_value),
+                ]
+                for field_name, new_value in data.items()
+                if field_name != "plot_number" and old_values.get(field_name) != new_value
+            }
+            if diff:
+                ProjectTitanPlotsAllocationFieldChange.objects.create(plot_number=obj.plot_number, changes=diff)
+        return None
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
+class ProjectTitanPlotsAllocationFieldChangeListView(generics.ListAPIView):
+    """
+    Read-only change history for ProjectTitanPlotsAllocation records — one entry
+    per plot per upload, with a ``changes`` JSON diff of exactly which fields
+    were amended. Filter to a single plot with ?plot_number=<value>.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanPlotsAllocationFieldChangeSerializer
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        queryset = ProjectTitanPlotsAllocationFieldChange.objects.all().order_by("-changed_at")
+        plot_number = self.request.query_params.get("plot_number")
+        if plot_number:
+            queryset = queryset.filter(plot_number=plot_number)
+        return queryset
 
 
 # Daily Collections and Inventory Sales are unmanaged warehouse tables

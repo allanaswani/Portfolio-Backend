@@ -71,6 +71,13 @@ urlpatterns = [
     path("project_titan_daily_collections/upload-csv/", views.ProjectTitanDailyCollectionsCSVUploadView.as_view()),
     path("project_titan_daily_collections/<int:pk>/", views.ProjectTitanDailyCollectionsDetailView.as_view()),
 
+    # Project Titan Plots Allocation (managed: full CRUD + search + upload)
+    path("project_titan_plots_allocation/", views.ProjectTitanPlotsAllocationListView.as_view()),
+    path("project_titan_plots_allocation/search/", views.ProjectTitanPlotsAllocationSearchAPIView.as_view()),
+    path("project_titan_plots_allocation/upload-csv/", views.ProjectTitanPlotsAllocationCSVUploadView.as_view()),
+    path("project_titan_plots_allocation/changes/", views.ProjectTitanPlotsAllocationFieldChangeListView.as_view()),
+    path("project_titan_plots_allocation/<int:pk>/", views.ProjectTitanPlotsAllocationDetailView.as_view()),
+
     # Daily Collections + Inventory Sales (warehouse, read-only: list + search)
     path("daily_collections/", views.HfdiProjectsDailyCollectionsDataListView.as_view()),
     path("daily_collections/search/", views.HfdiProjectsDailyCollectionsDataSearchAPIView.as_view()),
