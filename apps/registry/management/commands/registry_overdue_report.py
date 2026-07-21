@@ -1,6 +1,6 @@
 """Fortnightly overdue-files report + escalation (§3.4).
 
-Run every two weeks (cron / Celery beat). It emails the current overdue list to
+Run every two weeks from host cron. It emails the current overdue list to
 Head of Operations, and — for any file that has been overdue past a second
 two-week grace window without being returned — escalates to the same recipients
 and stamps ``escalated_at`` so it is not re-escalated on the next run.

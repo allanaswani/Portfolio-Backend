@@ -27,38 +27,9 @@ django-cors-headers==4.4.0
 django-environ==0.11.2
 python-dotenv==1.2.2
 
-# ── Async / Celery / Redis ────────────────────────────────────────────────────
-celery[redis]==5.4.0
-redis==5.1.1
-django-redis==5.4.0
-kombu==5.6.2
-billiard==4.2.4
-vine==5.1.0
-amqp==5.3.1
-click-didyoumean==0.3.1
-click-plugins==1.1.1.2
-click-repl==0.3.0
-
-# ── Real-time (WebSocket / Channels) ─────────────────────────────────────────
-channels==4.1.0
-channels-redis==4.2.0
-daphne==4.1.2
-autobahn==25.12.2
-Automat==25.4.16
-Twisted==26.4.0
-txaio==25.12.2
-constantly==23.10.4
-hyperlink==21.0.0
-Incremental==24.11.0
-service-identity==24.2.0
-pyOpenSSL==26.2.0
-zope.interface==8.4
-cbor2==6.1.1
-py-ubjson==0.16.1
-ormsgpack==1.12.2
-msgpack==1.1.2
-orjson==3.11.9
-ujson==5.12.1
+# Celery, Redis and Channels were removed: scheduled jobs run from host cron
+# (manage.py precompute_slides / run_insights_pipeline), the cache uses Django's
+# DatabaseCache, and the app is WSGI-only. No broker, worker, or websocket layer.
 
 # ── AI / LLM ─────────────────────────────────────────────────────────────────
 anthropic==0.75.0

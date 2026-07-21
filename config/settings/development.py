@@ -5,16 +5,9 @@ ALLOWED_HOSTS = ["*"]
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
-# Use in-memory cache in development (no Redis required)
+# In-memory cache in development/tests — avoids needing the DatabaseCache table.
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-    }
-}
-
-# Disable channel layers in development (no Redis required)
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer",
     }
 }

@@ -35,11 +35,9 @@ class TriggerSlideRefreshView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from tasks.slideshow_tasks import precompute_all_slides
-        try:
-            precompute_all_slides.delay()
-            return Response({"detail": "Slide refresh triggered."})
-        except Exception:
-            # Celery broker unavailable — run synchronously
-            count = precompute_all_slides()
-            return Response({"detail": f"Slides refreshed synchronously ({count} slides)."})
+        # Runs synchronously — the slide precompute is a handful of aggregate
+        # queries. The scheduled refresh is handled by host cron
+        # (`manage.py precompute_slides`); this endpoint forces one on demand.
+        from apps.slideshow.services import precompute_all_slides
+        count = precompute_all_slides()
+        return Response({"detail": f"Slides refreshed ({count} slides)."})

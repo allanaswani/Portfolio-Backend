@@ -1,6 +1,6 @@
-# One-command runtime for hf_group_backend: Redis + the Django/gunicorn app.
+# One-command runtime for hf_group_backend: the Django/gunicorn app.
 #
-# This file "captures" the whole deployment — image build, Redis, restart policy,
+# This file "captures" the whole deployment — image build, restart policy,
 # host networking, and the env-file wiring — so bring-up is a single command.
 #
 # Secrets are DELIBERATELY not in here and not in the image (.dockerignore
@@ -12,26 +12,20 @@
 #   Restart just the app:  docker compose restart web
 #   Stop everything:       docker compose down
 #
+# No Redis/Celery: the cache is Django's DatabaseCache (Postgres), and the two
+# scheduled jobs run from host cron (see docs/DEPLOY.md):
+#   */5 * * * *  docker compose exec -T web python manage.py precompute_slides
+#   0 */6 * * *  docker compose exec -T web python manage.py run_insights_pipeline
+#
 # Host networking is used so gunicorn binds the host's :9000 (same-port cutover,
-# no new firewall rule) and the app reaches host-local Postgres (127.0.0.1:5432)
-# and Redis (127.0.0.1:6379).
+# no new firewall rule) and the app reaches host-local Postgres (127.0.0.1:5432).
 
 services:
-  redis:
-    image: redis:7-alpine
-    network_mode: host
-    restart: unless-stopped
-    # Light persistence so a restart doesn't wipe throttle counters; append-only
-    # off keeps it cheap (this is a cache/broker, not a system of record).
-    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
-
   web:
     build: .
     image: hf-backend:latest
     network_mode: host
     restart: unless-stopped
-    depends_on:
-      - redis
     # Secrets come from this file on the SERVER ONLY. Create it from
     # .env.example (cp .env.example /etc/hf/prod.env, then fill it in). If it is
     # missing, compose fails fast with a clear error instead of starting a

@@ -1,17 +1,21 @@
-from celery import shared_task
+"""Portfolio insights pipeline.
+
+Formerly a Celery task (``tasks/insights_tasks.py``). Celery was never wired, so
+this now runs synchronously — invoked by the ``run_insights_pipeline``
+management command (host cron).
+"""
+
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
-@shared_task(name="tasks.insights_tasks.run_pipeline")
 def run_pipeline():
     """Generate portfolio insights and persist them to the Insight table."""
     from django.utils import timezone
     from datetime import timedelta
     from apps.insights.models import Insight
     from apps.portfolio.models import Loans, HfCustomer
-    from django.db.models import Sum, Count, Avg
 
     now = timezone.now()
     expires_at = now + timedelta(hours=6)

@@ -367,6 +367,18 @@ class RmLoanTrendsView(APIView):
         return Response(svc.loan_trends_data(profile.sales_code))
 
 
+@extend_schema(tags=["Portfolio — Trends"])
+class RmLoanTrendsByCodeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, rm_code):
+        # loan_trends/<rm_code> — old RM_rm_loan_trends_data: the same rows as
+        # loan_trends/ but for an explicitly-supplied sales_code (exco/TL viewing a
+        # specific RM's book) instead of the caller's own profile. Mirrors the
+        # deposit_trends/<rm_code> → RmDepositsView pairing.
+        return Response(svc.loan_trends_data(rm_code))
+
+
 @extend_schema(tags=["Portfolio — Revenue"])
 class RmRevenueView(APIView):
     permission_classes = [IsAuthenticated]

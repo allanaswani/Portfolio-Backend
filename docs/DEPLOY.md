@@ -21,12 +21,11 @@ Read the two boxes below, then run **Part 2 (The Runbook)** top to bottom.
   host's Python is irrelevant. **Commands use `docker`.** Podman was tried first (it ships with
   RHEL) but did not work on this older RHEL server, so **Docker is the container runtime for
   this deployment** — every command below is `docker`.
-- **Redis is required at runtime.** DRF throttling hits the cache (Redis) on **every**
-  request, so if Redis is down the whole API — including login and `/api/docs/` — returns 500s
-  and gunicorn workers time out. Bring Redis up alongside the app with its own `docker run`
-  (Step 1 / Step 8). As a safety net the cache is configured with
-  `IGNORE_EXCEPTIONS` (Step 1), so a *transient* Redis blip degrades throttling to off instead
-  of 500ing — but Redis must still be running for normal operation.
+- **No Redis, no Celery.** The cache uses Django's **DatabaseCache** (a table in the app DB,
+  created automatically by the `slideshow.0002` migration), so there is no separate cache
+  service to run. The two former Celery jobs run from **host cron** (see Step 8):
+  `manage.py precompute_slides` (every 5 min) and `manage.py run_insights_pipeline` (every 6 h).
+  DRF throttling still works — it just counts in the DB table, shared across all gunicorn workers.
 
 > ### ⛔ The two rules you must not break
 > 1. **Never run a plain `python manage.py migrate` against prod.** 46 of the new tables
@@ -70,10 +69,8 @@ backend uses. Therefore:
 ### Step 1 — Prerequisites on the server
 - `docker` installed and the daemon running (`docker --version`, `docker info`). Podman was
   tried on this old RHEL box and did not work, so this deployment uses **Docker**.
-- **A running Redis** the container can reach (see the runtime note in "What this deployment
-  is"). Start it with `docker run -d --name redis --restart=unless-stopped --network=host
-  redis:7-alpine`, or point `REDIS_URL` at an existing Redis. The cache uses `IGNORE_EXCEPTIONS`
-  so a brief outage won't 500 the API, but Redis must be up for normal operation.
+- **No Redis needed.** The cache is DatabaseCache (app DB); the `slideshow.0002` migration
+  creates the table during Step 6, so there is nothing extra to start.
 - Network access from the host to the prod **PostgreSQL**.
 - The app code on the host and the `<PROD_DB>` / `<old-backend>.service` values confirmed above.
 
@@ -115,12 +112,11 @@ Set these values (everything else can keep template defaults):
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` | **`<PROD_DB>`** and its prod credentials — this is the existing prod DB |
 | `DW_HOST` / `DW_PORT` | `127.0.0.1` / `5432` |
 | `DW_NAME` / `DW_USER` / `DW_PASSWORD` | **`<PROD_DB>`** and its credentials — **same physical DB** (the read-only warehouse tables live there too) |
-| `REDIS_URL` | `redis://127.0.0.1:6379/0` |
 | `EMAIL_*` | real Office365 SMTP creds — **OTP login depends on this** (Appendix C) |
 | `ANTHROPIC_API_KEY` | real key if the AI agent is used, else blank |
 
 > `--network=host` (Step 8) makes the container share the host network, so `127.0.0.1`
-> reaches the host's Postgres/Redis. **Both** `DB_*` and `DW_*` point at `<PROD_DB>` — the
+> reaches the host's Postgres. **Both** `DB_*` and `DW_*` point at `<PROD_DB>` — the
 > router sends managed-table traffic and read-only warehouse traffic to the same database.
 
 > ⚠️ **`DEBUG` must be `False` in prod.** With `DEBUG=True`, any unhandled error renders
@@ -207,24 +203,22 @@ The new `scorecard_*` tables are empty. Load roles / KPIs / mappings, then run t
 recompute so `employee_monthly_performance_v2` fills in. (Use the scorecard config screens in the
 frontend, or the seed endpoints under `staff_management/`.)
 
-### Step 8 — Cut over: stop the old backend, start the app + Redis on :9000
+### Step 8 — Cut over: stop the old backend, start the app on :9000
 ```bash
 # Point the frontend at this backend first (Appendix D), then flip:
 sudo systemctl stop <old-backend>.service
 sudo systemctl disable <old-backend>.service
 ```
 
-Bring up the two containers with **Docker** (podman was tried on this old RHEL box and did not
+Bring up the app with **Docker** (podman was tried on this old RHEL box and did not
 work — Docker is the runtime for this deployment):
 ```bash
-# 1. Redis (the app 500s without it — see Step 1):
-docker run -d --name redis --restart=unless-stopped --network=host redis:7-alpine
-
-# 2. The app on :9000, secrets injected at runtime (never baked into the image):
-docker run -d --name hf-backend --restart=unless-stopped \
+# The app on :9000, secrets injected at runtime (never baked into the image).
+# PORT defaults to 9000 in the image (Dockerfile `ENV PORT=9000`), so no -e PORT
+# is needed; pass `-e PORT=<n>` only to bind a different port.
+docker run -d --name hf-backend --restart unless-stopped \
   --network=host \
   --env-file /etc/hf/prod.env \
-  -e PORT=9000 \
   hf-backend:latest
 
 docker logs -f hf-backend      # watch it boot
@@ -233,11 +227,18 @@ docker logs -f hf-backend      # watch it boot
 > commits: `docker stop hf-backend && docker rm hf-backend`, `docker build -t hf-backend:latest .`,
 > then re-run the `docker run … hf-backend` command above.
 
-**Optional — compose.** A `docker-compose.yml` exists in the repo root that defines both services
+**Scheduled jobs — host cron.** Add these so the slides and insights stay fresh (they were the
+former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):
+```cron
+*/5 * * * *  docker exec hf-backend python manage.py precompute_slides
+0  */6 * * *  docker exec hf-backend python manage.py run_insights_pipeline
+```
+
+**Optional — compose.** A `docker-compose.yml` exists in the repo root defining the `web` service
 (`network_mode: host`, `restart: unless-stopped`, `env_file: /etc/hf/prod.env`) so
-`docker compose up -d --build` brings up Redis + web in one command — **only if the Compose plugin
+`docker compose up -d --build` brings the app up in one command — **only if the Compose plugin
 is installed** on the host (`docker compose version`). On this offline box it often isn't, so the
-plain `docker run` commands above are the reliable path.
+plain `docker run` command above is the reliable path.
 
 ### Step 9 — Create the Mortgages + admin accounts
 The four role groups (`mortgage_officer`, `mortgage_manager`, `mortgage_finance`,

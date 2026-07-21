@@ -30,7 +30,12 @@ urlpatterns = [
     path("customer_totals/<str:rm_code>", views.RmTotalCustomersView.as_view()),
     path("deposit_trends/", views.RmDepositTrendsView.as_view()),
     path("deposit_trends/<str:rm_code>", views.RmDepositsView.as_view()),
+    # Frontend-contract alias: useRMDeposits calls portfolio/deposits/<cust_id>.
+    # Same per-customer deposit accounts as customers/<pk>/deposits (old
+    # customerDepositTrends); cust_id is a customer pk, so reuse that view.
+    path("deposits/<int:pk>", views.CustomerDepositTrendsView.as_view()),
     path("loan_trends/", views.RmLoanTrendsView.as_view()),
+    path("loan_trends/<str:rm_code>", views.RmLoanTrendsByCodeView.as_view()),
     path("rm_revenue/", views.RmRevenueView.as_view()),
     path("rm_revenue/<str:rm_code>", views.RmRevenueByCodeView.as_view()),
     path("total_summary/", views.TotalSummaryView.as_view()),

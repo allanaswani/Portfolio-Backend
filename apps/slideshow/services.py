@@ -1,4 +1,11 @@
-from celery import shared_task
+"""Slideshow precompute logic.
+
+Formerly a Celery task (``tasks/slideshow_tasks.py``). Celery was never wired
+(no app instance, no worker/beat), so this now runs synchronously — invoked by
+the ``precompute_slides`` management command (host cron) and by the
+``TriggerSlideRefreshView`` endpoint.
+"""
+
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -12,7 +19,6 @@ def _safe_query(fn, fallback):
         return fallback
 
 
-@shared_task(name="tasks.slideshow_tasks.precompute_all_slides")
 def precompute_all_slides():
     """Precompute all dashboard slides and store them in the Slide table."""
     from datetime import timedelta

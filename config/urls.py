@@ -15,6 +15,7 @@ urlpatterns = [
     # Mirrored app URLs — exact same prefixes as old backend
     path("portfolio/", include("apps.portfolio.urls")),
     path("ceo/", include("apps.gceo_dashboard.urls")),
+    path("exco/", include("apps.exco_portfolio.urls")),
     path("auth/", include("apps.authentication.urls")),
     path("tl_portfolio/", include("apps.tl_portfolio.urls")),
     path("branch_portfolio/", include("apps.branch_portfolio.urls")),

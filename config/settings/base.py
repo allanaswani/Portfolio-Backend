@@ -29,7 +29,6 @@ THIRD_PARTY_APPS = [
     "django_filters",
     "simple_history",
     "django_rest_passwordreset",
-    "channels",
 ]
 
 LOCAL_APPS = [
@@ -123,59 +122,20 @@ DATABASES = {
 
 DATABASE_ROUTERS = ["core.db_router.HFGroupRouter"]
 
-# Redis
-REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
-
+# Cache — DatabaseCache (no Redis). Backs DRF throttling; a DB table shared by
+# all gunicorn workers keeps throttle counts consistent. Create the table with
+# `manage.py createcachetable` (also created automatically by the
+# slideshow.0002 migration on deploy).
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-            # A Redis outage must NOT take the whole API down. DRF throttling is
-            # backed by this cache, so an unreachable Redis would otherwise raise
-            # on every request and 500 the entire API. IGNORE_EXCEPTIONS makes
-            # cache ops return None on failure (throttling silently degrades to
-            # "off"), and the short socket timeouts fail fast instead of blocking
-            # until the gunicorn worker hits its timeout.
-            "IGNORE_EXCEPTIONS": True,
-            "SOCKET_CONNECT_TIMEOUT": 2,
-            "SOCKET_TIMEOUT": 2,
-        },
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache",
     }
 }
 
-# Log (rather than raise) whenever a cache op is skipped due to a Redis error.
-DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS = True
-
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [REDIS_URL]},
-    }
-}
-
-# Celery
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
-CELERY_TIMEZONE = "Africa/Nairobi"
-CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_ACCEPT_CONTENT = ["json"]
-
-from celery.schedules import crontab
-
-CELERY_BEAT_SCHEDULE = {
-    "precompute-slides": {
-        "task": "tasks.slideshow_tasks.precompute_all_slides",
-        "schedule": crontab(minute="*/5"),
-    },
-    "run-insight-pipeline": {
-        "task": "tasks.insights_tasks.run_pipeline",
-        "schedule": crontab(minute=0, hour="*/6"),
-    },
-}
+# Scheduled jobs (formerly Celery beat) now run from host cron:
+#   */5 * * * *  manage.py precompute_slides
+#   0 */6 * * *  manage.py run_insights_pipeline
 
 # REST Framework
 REST_FRAMEWORK = {
