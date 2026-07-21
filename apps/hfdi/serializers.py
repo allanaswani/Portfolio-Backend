@@ -4,6 +4,7 @@ from .models import (
     LegacyProject, LegacySalesRecord, HfdiManualFinanceEntry, HfdiTargets,
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
+    ProjectTitanDailyCollections,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
@@ -97,6 +98,12 @@ class WeightedDashboardManualSalesSerializer(serializers.ModelSerializer):
 class HfdiCustomersHfcMortgagesSerializer(serializers.ModelSerializer):
     class Meta:
         model = HfdiCustomersHfcMortgages
+        fields = "__all__"
+
+
+class ProjectTitanDailyCollectionsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectTitanDailyCollections
         fields = "__all__"
 
 

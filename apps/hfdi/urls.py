@@ -65,6 +65,12 @@ urlpatterns = [
     path("mortgages/upload-csv/", views.HfdiCustomersHfcMortgagesCSVUploadView.as_view()),
     path("mortgages/<int:pk>/", views.HfdiCustomersHfcMortgagesDetailView.as_view()),
 
+    # Project Titan Daily Collections (managed: full CRUD + search + upload)
+    path("project_titan_daily_collections/", views.ProjectTitanDailyCollectionsListView.as_view()),
+    path("project_titan_daily_collections/search/", views.ProjectTitanDailyCollectionsSearchAPIView.as_view()),
+    path("project_titan_daily_collections/upload-csv/", views.ProjectTitanDailyCollectionsCSVUploadView.as_view()),
+    path("project_titan_daily_collections/<int:pk>/", views.ProjectTitanDailyCollectionsDetailView.as_view()),
+
     # Daily Collections + Inventory Sales (warehouse, read-only: list + search)
     path("daily_collections/", views.HfdiProjectsDailyCollectionsDataListView.as_view()),
     path("daily_collections/search/", views.HfdiProjectsDailyCollectionsDataSearchAPIView.as_view()),

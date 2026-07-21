@@ -18,6 +18,7 @@ from .models import (
     LegacyProject, LegacySalesRecord, HfdiManualFinanceEntry, HfdiTargets,
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
+    ProjectTitanDailyCollections,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
@@ -28,7 +29,8 @@ from .serializers import (
     LegacySalesRecordSerializer, HfdiManualFinanceEntrySerializer, HfdiTargetsSerializer,
     HfdiEmployeeDataSerializer, HfdiEmployeeDataSalesRecordSerializer,
     HfdiScorecardPerformanceRecordSerializer, WeightedDashboardManualSalesSerializer,
-    HfdiCustomersHfcMortgagesSerializer, HfdiProjectsDailyCollectionsDataSerializer,
+    HfdiCustomersHfcMortgagesSerializer, ProjectTitanDailyCollectionsSerializer,
+    HfdiProjectsDailyCollectionsDataSerializer,
     HfdiProjectsInventorySalesDataSerializer, AffordableHousingApplicationSerializer,
     AffordableHousingRegistrationsSerializer, AffordableHousingProjectsPipelineSerializer,
     AFHSellerMappingSerializer,
@@ -405,6 +407,44 @@ class HfdiCustomersHfcMortgagesCSVUploadView(AmendingCsvUploadView):
         HfdiCustomersHfcMortgages.objects.update_or_create(
             project=data.get("project"),
             unit=data.get("unit"),
+            defaults=data,
+        )
+        return None
+
+
+@extend_schema(tags=["HFDI — Project Titan Daily Collections"])
+class ProjectTitanDailyCollectionsListView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanDailyCollectionsSerializer
+    pagination_class = StandardPagination
+    queryset = ProjectTitanDailyCollections.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Daily Collections"])
+class ProjectTitanDailyCollectionsDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanDailyCollectionsSerializer
+    queryset = ProjectTitanDailyCollections.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Daily Collections"])
+class ProjectTitanDailyCollectionsSearchAPIView(DynamicColumnSearchListView):
+    serializer_class = ProjectTitanDailyCollectionsSerializer
+    search_model = ProjectTitanDailyCollections
+
+
+@extend_schema(tags=["HFDI — Project Titan Daily Collections"])
+class ProjectTitanDailyCollectionsCSVUploadView(AmendingCsvUploadView):
+    """Upsert on trx_s_n."""
+
+    model = ProjectTitanDailyCollections
+    serializer_class = ProjectTitanDailyCollectionsSerializer
+    result_filename = "project_titan_daily_collections_upload_results"
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        ProjectTitanDailyCollections.objects.update_or_create(
+            trx_s_n=data.get("trx_s_n"),
             defaults=data,
         )
         return None

@@ -267,6 +267,23 @@ class HfdiCustomersHfcMortgages(models.Model):
         db_table = "hfdi_customers_hfc_mortgages"
 
 
+class ProjectTitanDailyCollections(models.Model):
+    trx_date = models.DateField(blank=True, null=True)
+    value_date = models.DateField(blank=True, null=True)
+    trx_unit = models.IntegerField(blank=True, null=True)
+    trx_user = models.CharField(max_length=200, blank=True, null=True)
+    trx_s_n = models.BigIntegerField(blank=True, null=True)
+    dr_cr = models.CharField(max_length=10, blank=True, null=True)
+    trx_amount = models.DecimalField(max_digits=20, decimal_places=2, blank=True, null=True)
+    comments = models.CharField(max_length=1000, blank=True, null=True)
+    narration = models.CharField(max_length=500, blank=True, null=True)
+    plot_number = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        managed = True
+        db_table = "project_titan_daily_collections"
+
+
 class HfdiProjectsDailyCollectionsData(models.Model):
     project_name = models.CharField(max_length=200, null=False, blank=False, verbose_name="Project Name")
     unit_name = models.CharField(max_length=200, null=False, blank=False, verbose_name="Unit Name")
