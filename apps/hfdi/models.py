@@ -305,7 +305,7 @@ class ProjectTitanPlotsAllocation(models.Model):
     plot_status = models.CharField(max_length=200, null=True, blank=True, verbose_name="Plot Status")
     plot_title_number = models.CharField(max_length=200, null=True, blank=True, verbose_name="Plot Title Number")
     plot_balance = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Plot Balance")
-    allocation_collection_code = models.CharField(max_length=300, null=True, blank=True, verbose_name="Staff Collection Code")
+    allocation_collection_code = models.IntegerField(null=True, blank=True, verbose_name="Staff Collection Code")
     allocation_collection_agent = models.CharField(max_length=300, null=True, blank=True, verbose_name="Staff Collection Name")
     allocation_collection_group = models.CharField(max_length=300, null=True, blank=True, verbose_name="Staff Collection Group")
 
