@@ -322,16 +322,40 @@ class ProjectTitanPlotsAllocation(models.Model):
 class ProjectTitanPlotsAllocationFieldChange(models.Model):
     """
     Audit trail for ProjectTitanPlotsAllocation records, written on every CSV
-    upload. Unlike HistoricalRecords (which snapshots the whole row on every
-    save), this only fires when a row is actually amended by an upload, and
-    records one entry per plot per upload with a JSON diff of exactly which
-    fields changed: {"field_name": [old_value, new_value], ...}.
+    upload that amends an existing plot. One row per plot per upload:
+
+    - a boolean per tracked field (``<field>_changed``) so summary/reporting
+      views can do plain ``COUNT(*) FILTER (WHERE x_changed)`` / ``GROUP BY``
+      aggregation without unpacking JSON;
+    - a ``changes`` JSON diff ({"field": [old_value, new_value], ...}) for
+      drill-down into exactly what a flagged field changed from/to.
 
     Deliberately not a ForeignKey to ProjectTitanPlotsAllocation: plot_number is
     stored directly so this table can be queried on its own (and survives even
     if the referenced plot row is later deleted or reallocated).
     """
     plot_number = models.IntegerField(db_index=True)
+
+    serial_number_changed = models.BooleanField(default=False)
+    parcel_lr_number_changed = models.BooleanField(default=False)
+    plot_area_changed = models.BooleanField(default=False)
+    plot_value_changed = models.BooleanField(default=False)
+    plot_squatter_name_changed = models.BooleanField(default=False)
+    surveyor_allocation_changed = models.BooleanField(default=False)
+    administration_fees_changed = models.BooleanField(default=False)
+    eurobond_employee_allocaiton_changed = models.BooleanField(default=False)
+    deed_of_settlment_allocation_changed = models.BooleanField(default=False)
+    gratuity_allocation_changed = models.BooleanField(default=False)
+    allocation_collection_agent_changed = models.BooleanField(default=False)
+    allocation_collection_group_changed = models.BooleanField(default=False)
+    national_id_changed = models.BooleanField(default=False)
+    phone_number_changed = models.BooleanField(default=False)
+    alternative_phone_number_changed = models.BooleanField(default=False)
+    amount_paid_changed = models.BooleanField(default=False)
+    plot_status_changed = models.BooleanField(default=False)
+    plot_title_number_changed = models.BooleanField(default=False)
+    plot_balance_changed = models.BooleanField(default=False)
+
     changes = models.JSONField()
     changed_at = models.DateTimeField(auto_now_add=True)
 

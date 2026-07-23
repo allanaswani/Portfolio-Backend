@@ -509,7 +509,11 @@ class ProjectTitanPlotsAllocationCSVUploadView(AmendingCsvUploadView):
                 if field_name != "plot_number" and old_values.get(field_name) != new_value
             }
             if diff:
-                ProjectTitanPlotsAllocationFieldChange.objects.create(plot_number=obj.plot_number, changes=diff)
+                ProjectTitanPlotsAllocationFieldChange.objects.create(
+                    plot_number=obj.plot_number,
+                    changes=diff,
+                    **{f"{field_name}_changed": True for field_name in diff.keys()}
+                )
         return None
 
 
