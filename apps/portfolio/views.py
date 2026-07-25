@@ -56,6 +56,8 @@ class DynamicFilterCustomerListPaginatedDetailView(generics.ListAPIView):
     _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return HfCustomer.objects.none()
         profile = _get_profile(self.request.user)
         sales_code = self.request.query_params.get("sales_code", profile.sales_code)
         raw_qs = svc.customers(sales_code)
@@ -659,6 +661,8 @@ class LoansMomIfrsMovementByCustCodeView(generics.ListAPIView):
     serializer_class = LoansMomIFRSMovementSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return LoansMomIFRSMovement.objects.none()
         return LoansMomIFRSMovement.objects.filter(
             cust_code_strategy=self.kwargs["cust_code_strategy"]
         )
@@ -670,6 +674,8 @@ class LoansMomIfrsMovementByLnsAccountView(generics.ListAPIView):
     serializer_class = LoansMomIFRSMovementSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return LoansMomIFRSMovement.objects.none()
         return LoansMomIFRSMovement.objects.filter(lns_account=self.kwargs["lns_account"])
 
 
@@ -679,6 +685,8 @@ class LoansMomIfrsMovementByBranchView(generics.ListAPIView):
     serializer_class = LoansMomIFRSMovementSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return LoansMomIFRSMovement.objects.none()
         return LoansMomIFRSMovement.objects.filter(branch=self.kwargs["branch"])
 
 
@@ -810,6 +818,8 @@ class CustomersRevenueListView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return HfCustomer.objects.none()
         profile = _get_profile(self.request.user)
         return list(svc.customers(profile.sales_code))
 
@@ -822,5 +832,7 @@ class DynamicFilterCustomersRevenueListPaginatedView(generics.ListAPIView):
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return HfCustomer.objects.none()
         profile = _get_profile(self.request.user)
         return list(svc.customers(profile.sales_code))

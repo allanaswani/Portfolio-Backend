@@ -114,6 +114,8 @@ class BranchCustomerListAllocatedSearchView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return HfCustomer.objects.none()
         profile = _get_profile(self.request.user)
         branch = _branch_filter(profile, self.kwargs.get("branch"))
         rows = list(lq.branch_customers_allocated(branch))
@@ -128,6 +130,8 @@ class BranchCustomerListNotAllocatedSearchView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return HfCustomer.objects.none()
         profile = _get_profile(self.request.user)
         branch = _branch_filter(profile, self.kwargs.get("branch"))
         rows = list(lq.branch_customers_not_allocated(branch))
