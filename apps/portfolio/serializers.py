@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.db import models
 from .models import (
     Profile, RetailAllocatedPortfolio, HfCustomer, Prospects, Feedback,
     PortfolioRmDepositTrends, PortfolioRmRevenue, Accounts, AccountsHistory,
@@ -58,10 +59,43 @@ class RetailAllocatedPortfolioSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class SafeDecimalField(serializers.Field):
+    """Represents the unmanaged warehouse numeric columns that inspectdb captured
+    as ``DecimalField(max_digits=65535, decimal_places=65535)``. DRF's DecimalField
+    quantizes every value to those params, which raises ``decimal.InvalidOperation``
+    on ordinary values (any nonzero integer part overflows the 65535-digit context)
+    and on ``NaN``. We emit a plain string instead (``NaN``/None -> None), the same
+    approach SegmentCustomerSerializer already uses for these columns."""
+
+    def to_representation(self, value):
+        if value is None:
+            return None
+        try:
+            if value.is_nan():
+                return None
+        except (AttributeError, TypeError):
+            pass
+        return str(value)
+
+    def to_internal_value(self, data):
+        return data
+
+
 class HfCustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = HfCustomer
         fields = "__all__"
+
+    def build_standard_field(self, field_name, model_field):
+        # HfCustomer's numeric columns are DecimalField(65535, 65535) from inspectdb.
+        # DRF's default DecimalField quantizes to that scale and 500s (InvalidOperation),
+        # so represent every decimal column via SafeDecimalField (string / NaN->null).
+        field_class, field_kwargs = super().build_standard_field(field_name, model_field)
+        if isinstance(model_field, models.DecimalField):
+            for k in ("max_digits", "decimal_places", "coerce_to_string"):
+                field_kwargs.pop(k, None)
+            return SafeDecimalField, field_kwargs
+        return field_class, field_kwargs
 
 
 class SegmentCustomerSerializer(serializers.ModelSerializer):

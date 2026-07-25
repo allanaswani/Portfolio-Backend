@@ -3,6 +3,7 @@ Portfolio service layer — encapsulates all raw SQL queries from old backend's 
 Views call these functions; no logic lives in views.
 """
 from datetime import datetime
+from decimal import Decimal
 
 from django.db import connection
 from apps.portfolio.models import (
@@ -109,8 +110,21 @@ def deposit_trends_data(sales_code):
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def _json_safe(row):
+    # portfolio_rm_revenue.value is DecimalField(65535, 65535); a NaN/inf in that
+    # warehouse column makes DRF's strict JSON renderer raise ValueError. Null those
+    # out so the response serialises; finite decimals pass through untouched.
+    return {
+        k: (None if isinstance(v, Decimal) and not v.is_finite() else v)
+        for k, v in row.items()
+    }
+
+
 def rm_revenue(sales_code):
-    return list(PortfolioRmRevenue.objects.filter(sales_code=sales_code).values())
+    return [
+        _json_safe(row)
+        for row in PortfolioRmRevenue.objects.filter(sales_code=sales_code).values()
+    ]
 
 
 def loan_trends_data(sales_code):
