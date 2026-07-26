@@ -22,6 +22,12 @@ staticfiles/
 media/
 *.log
 
+# Saved docker images (e.g. `docker save -o hf-backend.tar`) must never be
+# copied back into the build context — they bloat the image and fill disk.
+*.tar
+*.tar.gz
+*.tgz
+
 # Editor / OS
 .idea/
 .vscode/
