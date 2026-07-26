@@ -133,29 +133,25 @@ class TlTotalCustomersView(APIView):
 
 @extend_schema(tags=["TL Portfolio — Customers"])
 class TlNewCustomersView(APIView):
+    # new_customers/ → {segment, new_customers}: customers who OPENED an account
+    # this year (old segment_new_customers_ytd). Previously counted
+    # hf_customer.date_time_created, which is the wrong signal.
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
-        count = HfCustomer.objects.filter(
-            banking_segment=_segment(profile),
-            date_time_created__year=current_year,
-        ).count()
-        return Response({"new_customers": count})
+        return Response(lq.segment_new_customers_ytd(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Customers"])
-class TlNewCustomerListView(generics.ListAPIView):
+class TlNewCustomerListView(APIView):
+    # new_customers_list/ → plain list of {cust_id, account_name, current_balance,
+    # open_date, opening_branch} (old segment_new_customers_ytd_list).
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        profile = _get_profile(self.request.user)
-        return HfCustomer.objects.filter(
-            banking_segment=_segment(profile),
-            date_time_created__year=current_year,
-        )
+    def get(self, request):
+        profile = _get_profile(request.user)
+        return Response(lq.segment_new_customers_ytd_list(_segment(profile)))
 
 
 @extend_schema(tags=["TL Portfolio — Customers"])

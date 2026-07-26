@@ -173,13 +173,11 @@ class BranchNewCustomersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # new_customers/ → {branch, new_customers}: customers who OPENED an account
+        # this year (old branch_new_customers_ytd). Previously counted
+        # hf_customer.date_time_created, which is the wrong signal.
         profile = _get_profile(request.user)
-        from core.date_utils import current_year
-        count = HfCustomer.objects.filter(
-            branch__icontains=_branch_filter(profile),
-            date_time_created__year=current_year,
-        ).count()
-        return Response({"new_customers": count})
+        return Response(lq.branch_new_customers_ytd(_branch_filter(profile)))
 
 
 @extend_schema(tags=["Branch Portfolio — RM"])

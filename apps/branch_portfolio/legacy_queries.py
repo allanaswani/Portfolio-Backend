@@ -6,8 +6,34 @@ They run against the same physical tables (hf_customer, retail_allocated_portfol
 revenue), so the SQL is copied unchanged. See apps/branch_portfolio/views.py for the
 views that consume them and serialize with SegmentCustomerSerializer.
 """
+from django.db import connection
+
 from apps.portfolio.models import HfCustomer, RetailAllocatedPortfolio
 from apps.gceo_dashboard.models import Revenue
+
+
+def branch_new_customers_ytd(branch):
+    """Count of a branch's customers who OPENED an account this year →
+    {branch, new_customers}. Verbatim port of old core.branch_new_customers_ytd
+    (accounts + customers.open_date; NOT hf_customer.date_time_created, which the
+    view previously used and got wrong counts / zeros)."""
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT current_branch AS branch,
+                   COUNT(DISTINCT hc.cust_id) AS new_customers
+            FROM accounts a
+            LEFT JOIN hf_customer hc ON a.cust_id = hc.cust_id
+            LEFT JOIN customers c ON a.cust_id = c.cust_id
+            WHERE current_branch = %s
+              AND date_trunc('year', c.open_date) = date_trunc('year', now())
+            GROUP BY current_branch
+            """,
+            [branch],
+        )
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    return rows[0] if rows else {"branch": branch, "new_customers": 0}
 
 
 def branch_customers(branch):

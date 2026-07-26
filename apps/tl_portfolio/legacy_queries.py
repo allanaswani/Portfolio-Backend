@@ -91,6 +91,50 @@ def _rows(sql, params):
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+# ── New customers YTD (accounts opened this year) ───────────────────────────
+# Verbatim ports of old core.segment_new_customers_ytd / _list. "New this year"
+# means the customer OPENED AN ACCOUNT this year (accounts JOIN customers.open_date),
+# NOT hf_customer.date_time_created (which the view previously used and got wrong
+# counts / zeros).
+
+def segment_new_customers_ytd(banking_segment):
+    """→ {segment, new_customers} for a banking segment."""
+    rows = _rows(
+        """
+        SELECT hc.segment,
+               COUNT(DISTINCT hc.cust_id) AS new_customers
+        FROM accounts a
+        LEFT JOIN hf_customer hc ON a.cust_id = hc.cust_id
+        LEFT JOIN customers c ON a.cust_id = c.cust_id
+        WHERE hc.banking_segment = %s
+          AND date_trunc('year', c.open_date) = date_trunc('year', now())
+        GROUP BY hc.segment
+        """,
+        [banking_segment],
+    )
+    return rows[0] if rows else {"segment": banking_segment, "new_customers": 0}
+
+
+def segment_new_customers_ytd_list(banking_segment):
+    """→ [{cust_id, account_name, current_balance, open_date, opening_branch}]."""
+    return _rows(
+        """
+        SELECT a.cust_id,
+               a.account_name,
+               SUM(a.current_balance) AS current_balance,
+               MIN(a.open_date) AS open_date,
+               a.opening_branch
+        FROM accounts a
+        LEFT JOIN hf_customer hc ON a.cust_id = hc.cust_id
+        LEFT JOIN customers c ON a.cust_id = c.cust_id
+        WHERE hc.banking_segment = %s
+          AND date_trunc('year', c.open_date) = date_trunc('year', now())
+        GROUP BY a.cust_id, a.account_name, a.opening_branch
+        """,
+        [banking_segment],
+    )
+
+
 # ── Customers (RawQuerySets for SegmentCustomerSerializer) ──────────────────
 
 def segment_customers(banking_segment):
