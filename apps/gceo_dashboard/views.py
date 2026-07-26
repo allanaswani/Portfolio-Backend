@@ -537,14 +537,21 @@ class StaffServiceTypeView(APIView):
 
 # ── Fixed Deposits ────────────────────────────────────────────────────────
 
-@extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
-class CeoFixedDepositListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = AccountsSerializer
-    pagination_class = StandardPagination
+# Fixed deposits — old backend FD managers (whole-bank/CEO scope). FD is
+# identified via product_mapping.product_map = 'FD', not product_type ILIKE '%FD%'
+# (which matched nothing -> zeros).
+from services import fixed_deposit_managers as fdm
 
-    def get_queryset(self):
-        return Accounts.objects.filter(product_type__icontains="FD")
+
+@extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
+class CeoFixedDepositListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        rows = fdm.FixedDepositListManager().fixed_deposits_list_overall()
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
@@ -552,27 +559,7 @@ class CeoFixedDepositRateBandsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    CASE
-                        WHEN interest_rate < 5  THEN '0-5%'
-                        WHEN interest_rate < 8  THEN '5-8%'
-                        WHEN interest_rate < 10 THEN '8-10%'
-                        WHEN interest_rate < 12 THEN '10-12%'
-                        ELSE '12%+'
-                    END AS rate_band,
-                    COUNT(*) AS count,
-                    SUM(current_balance) AS total_balance
-                FROM accounts
-                WHERE product_type ILIKE '%FD%'
-                  AND account_status NOT ILIKE '%CLOSE%'
-                GROUP BY rate_band
-                ORDER BY rate_band
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(fdm.FixedDepositRateBandManager().rate_bands_by_overall())
 
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
@@ -624,21 +611,7 @@ class CeoFixedDepositExpiryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    TO_CHAR(expiry_date, 'YYYY-MM') AS expiry_month,
-                    COUNT(*) AS count,
-                    SUM(current_balance) AS total_balance
-                FROM accounts
-                WHERE product_type ILIKE '%FD%'
-                  AND expiry_date >= current_date
-                GROUP BY TO_CHAR(expiry_date, 'YYYY-MM')
-                ORDER BY expiry_month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(fdm.expiry_timeline_band_overall())
 
 
 # ── Loan arrears ──────────────────────────────────────────────────────────

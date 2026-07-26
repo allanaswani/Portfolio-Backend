@@ -18,6 +18,7 @@ from services.arrears_managers import (
     LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
     LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
 )
+from services import fixed_deposit_managers as fdm
 from apps.gceo_dashboard.models import (
     DailyBalanceMovement, LoanDailyBalanceMovement, Revenue, LoansHistory,
 )
@@ -676,17 +677,17 @@ class BranchLoansArrearsProductsView(APIView):
 # ── Fixed Deposits ─────────────────────────────────────────────────────────
 
 @extend_schema(tags=["Branch Portfolio — Fixed Deposits"])
-class BranchFixedDepositListView(generics.ListAPIView):
+class BranchFixedDepositListView(APIView):
+    # FD via product_mapping.product_map='FD' (old fixed_deposits_list_by_branch_name),
+    # not product_type ILIKE '%FD%' which matched nothing -> zeros.
     permission_classes = [IsAuthenticated]
-    serializer_class = AccountsSerializer
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        profile = _get_profile(self.request.user)
-        return Accounts.objects.filter(
-            product_type__icontains="FD",
-            opening_branch__icontains=_branch_filter(profile),
-        )
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rows = fdm.FixedDepositListManager().fixed_deposits_list_by_branch_name(_branch_filter(profile))
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 # ── Feedback / Prospects ───────────────────────────────────────────────────

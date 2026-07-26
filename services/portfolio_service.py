@@ -23,7 +23,11 @@ def customers(sales_code):
     return HfCustomer.objects.raw(
         """
         WITH retail_allocation AS (
-            SELECT rap.cust_id, customer_name, sales_code, total_revenue,
+            -- pn.latin_surname is selected EXPLICITLY (not left to Django deferred
+            -- loading): the frontend customer tables read latin_surname, and under
+            -- the multi-DB router a deferred load on this RawQuerySet comes back
+            -- null, which the UI renders as "-". Selecting it keeps the name present.
+            SELECT rap.cust_id, pn.latin_surname, customer_name, sales_code, total_revenue,
                    total_depost_balance, total_loans, active,
                    ROW_NUMBER() OVER (PARTITION BY rap.cust_id ORDER BY rap.cust_id ASC) AS rn
             FROM retail_allocated_portfolio AS rap

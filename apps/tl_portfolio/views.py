@@ -23,6 +23,7 @@ from services.arrears_managers import (
     LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
     LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
 )
+from services import fixed_deposit_managers as fdm
 from core.pagination import StandardPagination
 from core.date_utils import current_year
 
@@ -460,17 +461,17 @@ class TlLoansArrearsProductsView(APIView):
 # ── Fixed Deposits ─────────────────────────────────────────────────────────
 
 @extend_schema(tags=["TL Portfolio — Fixed Deposits"])
-class TlFixedDepositListView(generics.ListAPIView):
+class TlFixedDepositListView(APIView):
+    # FD via product_mapping.product_map='FD' (old fixed_deposits_list_by_segment),
+    # not product_type ILIKE '%FD%' which matched nothing -> zeros.
     permission_classes = [IsAuthenticated]
-    serializer_class = AccountsSerializer
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        profile = _get_profile(self.request.user)
-        segment_cust_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
-        ).values_list("cust_id", flat=True)
-        return Accounts.objects.filter(product_type__icontains="FD", cust_id__in=segment_cust_ids)
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rows = fdm.FixedDepositListManager().fixed_deposits_list_by_segment(_segment(profile))
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 # ── Feedback ───────────────────────────────────────────────────────────────

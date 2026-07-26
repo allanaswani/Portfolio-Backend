@@ -22,6 +22,7 @@ from .serializers import (
     CustomerRevenueListSerializer,
 )
 from services import portfolio_service as svc
+from services import fixed_deposit_managers as fdm
 from services.arrears_managers import (
     LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
     LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
@@ -584,26 +585,27 @@ class RmPpcView(APIView):
 # Fixed Deposits
 # ---------------------------------------------------------------------------
 
-@extend_schema(tags=["Portfolio — Fixed Deposits"])
-class FixedDepositListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = AccountsSerializer
-    pagination_class = StandardPagination
-
-    def get_queryset(self):
-        return Accounts.objects.filter(product_type__icontains="FD")
-
+# Fixed deposits — old backend FD managers, RM scope. FD is identified by the
+# product_mapping.product_map = 'FD' join (NOT product_type ILIKE '%FD%', which
+# matched nothing -> zeros), and scoped to the RM.
 
 @extend_schema(tags=["Portfolio — Fixed Deposits"])
-class SearchFixedDepositListView(generics.ListAPIView):
+class FixedDepositListView(APIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = AccountsSerializer
-    pagination_class = StandardPagination
-    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
-    filterset_fields = ["cust_id", "account_no", "currency", "account_status"]
 
-    def get_queryset(self):
-        return Accounts.objects.filter(product_type__icontains="FD")
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rows = fdm.FixedDepositListManager().fixed_deposits_list_by_rm_code(profile.sales_code)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
+
+
+@extend_schema(tags=["Portfolio — Fixed Deposits"])
+class SearchFixedDepositListView(FixedDepositListView):
+    """Same RM fixed-deposit list; the old backend applied no server-side field
+    filter beyond the RM scope, so this mirrors the list endpoint."""
+    pass
 
 
 @extend_schema(tags=["Portfolio — Fixed Deposits"])
@@ -611,13 +613,10 @@ class FixedDepositRateBandsByRmView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count, Avg
-        bands = (
-            Accounts.objects.filter(product_type__icontains="FD")
-            .values("interest_rate")
-            .annotate(count=Count("id"), avg_balance=Avg("current_balance"))
+        profile = _get_profile(request.user)
+        return Response(
+            fdm.FixedDepositRateBandManager().rate_bands_by_rm_code(profile.sales_code)
         )
-        return Response(list(bands))
 
 
 @extend_schema(tags=["Portfolio — Fixed Deposits"])
@@ -625,13 +624,8 @@ class FixedDepositExpiryTimelineByRmView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count
-        timeline = (
-            Accounts.objects.filter(product_type__icontains="FD", expiry_date__isnull=False)
-            .values("expiry_date__year", "expiry_date__month")
-            .annotate(count=Count("id"))
-        )
-        return Response(list(timeline))
+        profile = _get_profile(request.user)
+        return Response(fdm.expiry_timeline_band_by_rm_code(profile.sales_code))
 
 
 # ---------------------------------------------------------------------------
