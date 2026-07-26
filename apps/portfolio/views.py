@@ -21,6 +21,7 @@ from .serializers import (
     LoansMomIFRSMovementSerializer, ChangePasswordSerializer, LogoutSerializer,
     CustomerRevenueListSerializer,
 )
+from core.permissions import PortfolioMgtPermissions
 from services import portfolio_service as svc
 from services import fixed_deposit_managers as fdm
 from services.arrears_managers import (
@@ -599,7 +600,10 @@ class RmPpcView(APIView):
 
 @extend_schema(tags=["Portfolio — Fixed Deposits"])
 class FixedDepositListView(APIView):
-    permission_classes = [IsAuthenticated]
+    # Old backend gated FD with RMPermissions (portfolio_mgt group); non-RMs got
+    # 403, not an empty table. Preserve that so collections/other roles don't see
+    # an empty RM page and mistake it for broken data.
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
@@ -618,7 +622,7 @@ class SearchFixedDepositListView(FixedDepositListView):
 
 @extend_schema(tags=["Portfolio — Fixed Deposits"])
 class FixedDepositRateBandsByRmView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
@@ -629,7 +633,7 @@ class FixedDepositRateBandsByRmView(APIView):
 
 @extend_schema(tags=["Portfolio — Fixed Deposits"])
 class FixedDepositExpiryTimelineByRmView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
@@ -699,7 +703,7 @@ class LoansMomIfrsMovementByBranchView(generics.ListAPIView):
 
 @extend_schema(tags=["Portfolio — Arrears"])
 class LoansArrearsSummaryByRmView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
@@ -710,7 +714,7 @@ class LoansArrearsSummaryByRmView(APIView):
 
 @extend_schema(tags=["Portfolio — Arrears"])
 class LoansArrearsAccountsListByRmView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
@@ -729,7 +733,7 @@ class SearchLoansArrearsAccountsListByRmView(LoansArrearsAccountsListByRmView):
 
 @extend_schema(tags=["Portfolio — Arrears"])
 class LoansArrearsDpdBucketSummaryByRmView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
@@ -740,7 +744,7 @@ class LoansArrearsDpdBucketSummaryByRmView(APIView):
 
 @extend_schema(tags=["Portfolio — Arrears"])
 class LoansProductArrearsSummaryByRmView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [PortfolioMgtPermissions]
 
     def get(self, request):
         profile = _get_profile(request.user)
