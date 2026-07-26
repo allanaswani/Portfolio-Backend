@@ -14,6 +14,10 @@ from apps.portfolio.serializers import (
     ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
 )
 from . import legacy_queries as lq
+from services.arrears_managers import (
+    LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
+    LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
+)
 from apps.gceo_dashboard.models import (
     DailyBalanceMovement, LoanDailyBalanceMovement, Revenue, LoansHistory,
 )
@@ -601,7 +605,9 @@ class BranchNPLSummaryView(APIView):
         branch_cust_ids = HfCustomer.objects.filter(
             branch__icontains=_branch_filter(profile)
         ).values_list("cust_id", flat=True)
-        qs = LoansHistory.objects.filter(cust_id__in=branch_cust_ids, days_in_arrears__gt=90)
+        # Live `loans` table (not loans_history, which is multi-month and would
+        # count each loan once per snapshot).
+        qs = Loans.objects.filter(cust_id__in=branch_cust_ids, days_in_arrears__gt=90)
         agg = qs.aggregate(
             npl_count=Count("id"),
             npl_value=Sum("euro_book_balance"),
@@ -612,46 +618,37 @@ class BranchNPLSummaryView(APIView):
 
 # ── Arrears ────────────────────────────────────────────────────────────────
 
+# Arrears — old backend LoansArrears* managers, branch scope, live `loans` table
+# (NOT loans_history). Shapes match the old backend that the frontend targets.
+
 @extend_schema(tags=["Branch Portfolio — Arrears"])
 class BranchLoansArrearsSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
-        branch_cust_ids = HfCustomer.objects.filter(
-            branch__icontains=_branch_filter(profile)
-        ).values_list("cust_id", flat=True)
-        qs = LoansHistory.objects.filter(cust_id__in=branch_cust_ids, days_in_arrears__gt=0)
-        return Response({
-            "total_accounts": qs.count(),
-            "total_arrears": qs.aggregate(total=Sum("total_arrears"))["total"] or 0,
-        })
+        return Response(
+            LoansArrearsSummaryManager().high_level_summary_by_branch(_branch_filter(profile))
+        )
 
 
 @extend_schema(tags=["Branch Portfolio — Arrears"])
-class BranchLoansArrearsListView(generics.ListAPIView):
+class BranchLoansArrearsListView(APIView):
     permission_classes = [IsAuthenticated]
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        from apps.gceo_dashboard.serializers import LoansHistorySerializer
-        profile = _get_profile(self.request.user)
-        branch_cust_ids = HfCustomer.objects.filter(
-            branch__icontains=_branch_filter(profile)
-        ).values_list("cust_id", flat=True)
-        return LoansHistory.objects.filter(cust_id__in=branch_cust_ids, days_in_arrears__gt=0)
-
-    def get_serializer_class(self):
-        from apps.gceo_dashboard.serializers import LoansHistorySerializer
-        return LoansHistorySerializer
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rows = LoansArrearsAccountsListManager().accounts_in_arrears_by_branch(_branch_filter(profile))
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 @extend_schema(tags=["Branch Portfolio — Arrears"])
 class BranchLoansArrearsListSearchView(BranchLoansArrearsListView):
-    """Server-paginated + filterable arrears list (mirrors the RM app's
-    SearchLoansArrearsAccountsListByRmView). Unknown query params are ignored."""
-    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
-    filterset_fields = ["loan_product", "status", "sector", "currency"]
+    """Same branch arrears list; the old backend applied no server-side field
+    filter here beyond the scope, so this mirrors the list endpoint."""
+    pass
 
 
 @extend_schema(tags=["Branch Portfolio — Arrears"])
@@ -660,29 +657,9 @@ class BranchLoansArrearsDPDView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    CASE
-                        WHEN lh.days_in_arrears BETWEEN 1 AND 30   THEN '1-30 days'
-                        WHEN lh.days_in_arrears BETWEEN 31 AND 60  THEN '31-60 days'
-                        WHEN lh.days_in_arrears BETWEEN 61 AND 90  THEN '61-90 days'
-                        WHEN lh.days_in_arrears BETWEEN 91 AND 180 THEN '91-180 days'
-                        WHEN lh.days_in_arrears > 180              THEN '180+ days'
-                        ELSE 'Unknown'
-                    END AS dpd_bucket,
-                    COUNT(*) AS count,
-                    SUM(lh.total_arrears) AS total_arrears
-                FROM loans_history lh
-                JOIN hf_customer hfc ON hfc.cust_id::bigint = lh.cust_id
-                WHERE lh.days_in_arrears > 0
-                  AND hfc.branch ILIKE %s
-                GROUP BY dpd_bucket
-                ORDER BY dpd_bucket
-            """, [f"%{_branch_filter(profile)}%"])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(
+            LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary_by_branch(_branch_filter(profile))
+        )
 
 
 @extend_schema(tags=["Branch Portfolio — Arrears"])
@@ -691,16 +668,9 @@ class BranchLoansArrearsProductsView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        branch_cust_ids = HfCustomer.objects.filter(
-            branch__icontains=_branch_filter(profile)
-        ).values_list("cust_id", flat=True)
-        data = (
-            LoansHistory.objects.filter(cust_id__in=branch_cust_ids, days_in_arrears__gt=0)
-            .values("loan_product")
-            .annotate(count=Count("id"), total_arrears=Sum("total_arrears"))
-            .order_by("-total_arrears")
+        return Response(
+            LoansProductArrearsSummaryManager().product_arrears_summary_by_branch(_branch_filter(profile))
         )
-        return Response(list(data))
 
 
 # ── Fixed Deposits ─────────────────────────────────────────────────────────

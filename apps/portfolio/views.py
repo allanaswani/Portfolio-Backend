@@ -22,6 +22,10 @@ from .serializers import (
     CustomerRevenueListSerializer,
 )
 from services import portfolio_service as svc
+from services.arrears_managers import (
+    LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
+    LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
+)
 
 import django_filters.rest_framework
 
@@ -696,38 +700,29 @@ class LoansArrearsSummaryByRmView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count, Sum
         profile = _get_profile(request.user)
-        qs = svc.loans_arrears_by_sales_code(profile.sales_code)
-        return Response({
-            "total_accounts": qs.count(),
-            "total_arrears": qs.aggregate(total=Sum("total_arrears"))["total"] or 0,
-            "total_capital": qs.aggregate(total=Sum("capital_balance"))["total"] or 0,
-        })
+        return Response(
+            LoansArrearsSummaryManager().high_level_summary_by_rm_code(profile.sales_code)
+        )
 
 
 @extend_schema(tags=["Portfolio — Arrears"])
-class LoansArrearsAccountsListByRmView(generics.ListAPIView):
+class LoansArrearsAccountsListByRmView(APIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = LoansSerializer
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        profile = _get_profile(self.request.user)
-        return svc.loans_arrears_by_sales_code(profile.sales_code)
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rows = LoansArrearsAccountsListManager().accounts_in_arrears_by_rm_code(profile.sales_code)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 @extend_schema(tags=["Portfolio — Arrears"])
-class SearchLoansArrearsAccountsListByRmView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = LoansSerializer
-    pagination_class = StandardPagination
-    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
-    filterset_fields = ["loan_product", "status", "sector", "currency"]
-
-    def get_queryset(self):
-        profile = _get_profile(self.request.user)
-        return svc.loans_arrears_by_sales_code(profile.sales_code)
+class SearchLoansArrearsAccountsListByRmView(LoansArrearsAccountsListByRmView):
+    """Same RM arrears list; the old backend applied no server-side field filter
+    here beyond the RM scope, so this mirrors the list endpoint."""
+    pass
 
 
 @extend_schema(tags=["Portfolio — Arrears"])
@@ -735,28 +730,10 @@ class LoansArrearsDpdBucketSummaryByRmView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count, Sum
         profile = _get_profile(request.user)
-        qs = svc.loans_arrears_by_sales_code(profile.sales_code)
-
-        def bucket(days):
-            if days <= 30:
-                return "1-30"
-            elif days <= 60:
-                return "31-60"
-            elif days <= 90:
-                return "61-90"
-            return "90+"
-
-        buckets: dict = {}
-        for loan in qs:
-            b = bucket(loan.days_in_arrears or 0)
-            if b not in buckets:
-                buckets[b] = {"count": 0, "total_arrears": 0}
-            buckets[b]["count"] += 1
-            buckets[b]["total_arrears"] += loan.total_arrears or 0
-
-        return Response(buckets)
+        return Response(
+            LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary_by_rm_code(profile.sales_code)
+        )
 
 
 @extend_schema(tags=["Portfolio — Arrears"])
@@ -764,15 +741,10 @@ class LoansProductArrearsSummaryByRmView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count, Sum
         profile = _get_profile(request.user)
-        data = (
-            svc.loans_arrears_by_sales_code(profile.sales_code)
-            .order_by()  # drop the service-level ordering so it doesn't leak into GROUP BY
-            .values("loan_product")
-            .annotate(count=Count("id"), total_arrears=Sum("total_arrears"))
+        return Response(
+            LoansProductArrearsSummaryManager().product_arrears_summary_by_rm_code(profile.sales_code)
         )
-        return Response(list(data))
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,10 @@ from apps.portfolio.serializers import (
 )
 from . import legacy_queries as lq
 from apps.gceo_dashboard.models import LoansHistory
+from services.arrears_managers import (
+    LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
+    LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
+)
 from core.pagination import StandardPagination
 from core.date_utils import current_year
 
@@ -398,45 +402,37 @@ class TlTopOutflowYTDView(APIView):
 
 # ── Arrears ────────────────────────────────────────────────────────────────
 
+# Arrears — old backend LoansArrears* managers, segment scope, live `loans` table
+# (NOT loans_history). Shapes match the old backend that the frontend targets.
+
 @extend_schema(tags=["TL Portfolio — Arrears"])
 class TlLoansArrearsSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
-        segment_cust_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
-        ).values_list("cust_id", flat=True)
-        qs = LoansHistory.objects.filter(cust_id__in=segment_cust_ids, days_in_arrears__gt=0)
-        return Response({
-            "total_accounts": qs.count(),
-            "total_arrears": qs.aggregate(total=Sum("total_arrears"))["total"] or 0,
-        })
+        return Response(
+            LoansArrearsSummaryManager().high_level_summary_by_segment(_segment(profile))
+        )
 
 
 @extend_schema(tags=["TL Portfolio — Arrears"])
-class TlLoansArrearsListView(generics.ListAPIView):
+class TlLoansArrearsListView(APIView):
     permission_classes = [IsAuthenticated]
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        profile = _get_profile(self.request.user)
-        segment_cust_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
-        ).values_list("cust_id", flat=True)
-        return LoansHistory.objects.filter(cust_id__in=segment_cust_ids, days_in_arrears__gt=0)
-
-    def get_serializer_class(self):
-        from apps.gceo_dashboard.serializers import LoansHistorySerializer
-        return LoansHistorySerializer
+    def get(self, request):
+        profile = _get_profile(request.user)
+        rows = LoansArrearsAccountsListManager().accounts_in_arrears_by_segment(_segment(profile))
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 @extend_schema(tags=["TL Portfolio — Arrears"])
 class TlLoansArrearsListSearchView(TlLoansArrearsListView):
-    """Server-paginated + filterable arrears list (mirrors the RM app's
-    SearchLoansArrearsAccountsListByRmView)."""
-    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
-    filterset_fields = ["loan_product", "status", "sector", "currency"]
+    """Same segment arrears list; the old backend applied no server-side field
+    filter here beyond the scope, so this mirrors the list endpoint."""
+    pass
 
 
 @extend_schema(tags=["TL Portfolio — Arrears"])
@@ -445,27 +441,9 @@ class TlLoansArrearsDPDView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    CASE
-                        WHEN lh.days_in_arrears BETWEEN 1 AND 30   THEN '1-30 days'
-                        WHEN lh.days_in_arrears BETWEEN 31 AND 60  THEN '31-60 days'
-                        WHEN lh.days_in_arrears BETWEEN 61 AND 90  THEN '61-90 days'
-                        WHEN lh.days_in_arrears BETWEEN 91 AND 180 THEN '91-180 days'
-                        WHEN lh.days_in_arrears > 180              THEN '180+ days'
-                        ELSE 'Unknown'
-                    END AS dpd_bucket,
-                    COUNT(*) AS count,
-                    SUM(lh.total_arrears) AS total_arrears
-                FROM loans_history lh
-                JOIN hf_customer hfc ON hfc.cust_id::bigint = lh.cust_id
-                WHERE lh.days_in_arrears > 0 AND hfc.banking_segment = %s
-                GROUP BY dpd_bucket ORDER BY dpd_bucket
-            """, [_segment(profile)])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(
+            LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary_by_segment(_segment(profile))
+        )
 
 
 @extend_schema(tags=["TL Portfolio — Arrears"])
@@ -474,16 +452,9 @@ class TlLoansArrearsProductsView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        segment_cust_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
-        ).values_list("cust_id", flat=True)
-        data = (
-            LoansHistory.objects.filter(cust_id__in=segment_cust_ids, days_in_arrears__gt=0)
-            .values("loan_product")
-            .annotate(count=Count("id"), total_arrears=Sum("total_arrears"))
-            .order_by("-total_arrears")
+        return Response(
+            LoansProductArrearsSummaryManager().product_arrears_summary_by_segment(_segment(profile))
         )
-        return Response(list(data))
 
 
 # ── Fixed Deposits ─────────────────────────────────────────────────────────

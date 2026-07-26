@@ -643,12 +643,23 @@ class CeoFixedDepositExpiryView(APIView):
 
 # ── Loan arrears ──────────────────────────────────────────────────────────
 
+# Arrears — old backend LoansArrears* managers, whole-bank (CEO) scope, live
+# `loans` table (NOT loans_history). Shapes match the old backend.
+from services.arrears_managers import (
+    LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
+    LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
+)
+
+
 @extend_schema(tags=["CEO Dashboard — Arrears"])
-class CeoLoansArrearsView(generics.ListAPIView):
+class CeoLoansArrearsView(APIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = LoansHistorySerializer
-    pagination_class = StandardPagination
-    queryset = LoansHistory.objects.filter(days_in_arrears__gt=0)
+
+    def get(self, request):
+        rows = LoansArrearsAccountsListManager().accounts_in_arrears()
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 @extend_schema(tags=["CEO Dashboard — Arrears"])
@@ -656,13 +667,7 @@ class CeoLoansArrearsSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = LoansHistory.objects.filter(days_in_arrears__gt=0)
-        agg = qs.aggregate(
-            total_accounts=Count("id"),
-            total_arrears=Sum("total_arrears"),
-            total_capital=Sum("capital_balance"),
-        )
-        return Response(agg)
+        return Response(LoansArrearsSummaryManager().high_level_summary())
 
 
 @extend_schema(tags=["CEO Dashboard — Arrears"])
@@ -670,27 +675,7 @@ class CeoLoansArrearsDPDView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    CASE
-                        WHEN days_in_arrears BETWEEN 1 AND 30   THEN '1-30 days'
-                        WHEN days_in_arrears BETWEEN 31 AND 60  THEN '31-60 days'
-                        WHEN days_in_arrears BETWEEN 61 AND 90  THEN '61-90 days'
-                        WHEN days_in_arrears BETWEEN 91 AND 180 THEN '91-180 days'
-                        WHEN days_in_arrears > 180              THEN '180+ days'
-                        ELSE 'Unknown'
-                    END AS dpd_bucket,
-                    COUNT(*) AS count,
-                    SUM(total_arrears) AS total_arrears
-                FROM loans_history
-                WHERE days_in_arrears > 0
-                GROUP BY dpd_bucket
-                ORDER BY dpd_bucket
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary())
 
 
 @extend_schema(tags=["CEO Dashboard — Arrears"])
@@ -698,13 +683,7 @@ class CeoLoansArrearsProductsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        data = (
-            LoansHistory.objects.filter(days_in_arrears__gt=0)
-            .values("loan_product")
-            .annotate(count=Count("id"), total_arrears=Sum("total_arrears"))
-            .order_by("-total_arrears")
-        )
-        return Response(list(data))
+        return Response(LoansProductArrearsSummaryManager().product_arrears_summary())
 
 
 # ── Movement by segment ───────────────────────────────────────────────────
