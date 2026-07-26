@@ -452,42 +452,38 @@ class TotalSummaryView(APIView):
 
 @extend_schema(tags=["Portfolio — Customers"])
 class CustomersYtdView(APIView):
+    # current_customers/ → {sales_code, current_customers} (old rm_customers_ytd):
+    # total distinct customers allocated to the RM. Previously returned a list of
+    # customer objects filtered by date_time_created, so the frontend's
+    # current_customers count read as zero.
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.utils import timezone
-        year = timezone.now().year
         profile = _get_profile(request.user)
-        qs = svc.customers(profile.sales_code)
-        ytd = [c for c in qs if c.date_time_created and c.date_time_created.year == year]
-        return Response(HfCustomerSerializer(ytd, many=True).data)
+        return Response(svc.rm_customers_ytd(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Customers"])
 class NewCustomersYtdView(APIView):
+    # new_customers/ → {sales_code, new_customers} (old rm_new_customers_ytd):
+    # customers who opened an account this year (accounts.opened_by + customers.open_date).
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.utils import timezone
-        year = timezone.now().year
         profile = _get_profile(request.user)
-        qs = svc.customers(profile.sales_code)
-        new = [c for c in qs if c.date_time_created and c.date_time_created.year == year]
-        return Response({"count": len(new)})
+        return Response(svc.rm_new_customers_ytd(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Customers"])
-class NewCustomersYtdListView(generics.ListAPIView):
+class NewCustomersYtdListView(APIView):
+    # new_customers_list/ → plain list of {cust_id, account_name, current_balance,
+    # open_date, opening_branch} (old rm_new_customers_ytd_list). The old endpoint
+    # returned a bare JSON array (not paginated, not HfCustomer objects).
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
-    pagination_class = StandardPagination
 
-    def get_queryset(self):
-        from django.utils import timezone
-        year = timezone.now().year
-        profile = _get_profile(self.request.user)
-        qs = svc.customers(profile.sales_code)
-        return [c for c in qs if c.date_time_created and c.date_time_created.year == year]
+    def get(self, request):
+        profile = _get_profile(request.user)
+        return Response(svc.rm_new_customers_ytd_list(profile.sales_code))
 
 
 @extend_schema(tags=["Portfolio — Customers"])

@@ -133,6 +133,74 @@ def rM_total_customers(sales_code):
     }
 
 
+def rm_customers_ytd(sales_code):
+    """Total distinct customers ALLOCATED to an RM → {sales_code, current_customers}.
+    Verbatim port of old core.rm_customers_ytd (feeds current_customers/). The old
+    endpoint returned this single dict, NOT a list of customer objects."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT sales_code, COUNT(DISTINCT cust_id) AS current_customers
+            FROM retail_allocated_portfolio
+            WHERE sales_code = %s
+            GROUP BY sales_code
+            """,
+            [sales_code],
+        )
+        row = cursor.fetchone()
+    # Old backend indexed [0] and would 500 for an RM with no customers; return 0 instead.
+    if not row:
+        return {"sales_code": sales_code, "current_customers": 0}
+    return {"sales_code": row[0], "current_customers": row[1]}
+
+
+def rm_new_customers_ytd(sales_code):
+    """Count of the RM's customers who OPENED an account this year →
+    {sales_code, new_customers}. Verbatim port of old core.rm_new_customers_ytd
+    (accounts.opened_by joined to customers.open_date). NOT hf_customer.date_time_created."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT a.opened_by, COUNT(DISTINCT a.cust_id) AS new_customers_ytd
+            FROM accounts a
+            LEFT JOIN customers c ON a.cust_id = c.cust_id
+            WHERE a.opened_by = %s
+              AND date_trunc('year', c.open_date) = date_trunc('year', now())
+            GROUP BY a.opened_by
+            """,
+            [sales_code],
+        )
+        row = cursor.fetchone()
+    if not row:
+        return {"sales_code": sales_code, "new_customers": 0}
+    return {"sales_code": row[0], "new_customers": row[1]}
+
+
+def rm_new_customers_ytd_list(sales_code):
+    """List of the RM's customers who opened an account this year →
+    [{cust_id, account_name, current_balance, open_date, opening_branch}].
+    Verbatim port of old core.rm_new_customers_ytd_list."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT a.cust_id,
+                   a.account_name,
+                   SUM(a.current_balance) AS current_balance,
+                   MIN(a.open_date) AS open_date,
+                   a.opening_branch
+            FROM accounts a
+            LEFT JOIN hf_customer hc ON a.cust_id = hc.cust_id
+            LEFT JOIN customers c ON a.cust_id = c.cust_id
+            WHERE a.opened_by = %s
+              AND date_trunc('year', c.open_date) = date_trunc('year', now())
+            GROUP BY a.cust_id, a.account_name, a.opening_branch
+            """,
+            [sales_code],
+        )
+        cols = [c[0] for c in cursor.description]
+        return [_json_safe(dict(zip(cols, row))) for row in cursor.fetchall()]
+
+
 def rm_deposit_trends(sales_code):
     return list(PortfolioRmDepositTrends.objects.filter(sales_code=sales_code).values())
 
@@ -175,10 +243,52 @@ def _json_safe(row):
 
 
 def rm_revenue(sales_code):
-    return [
-        _json_safe(row)
-        for row in PortfolioRmRevenue.objects.filter(sales_code=sales_code).values()
-    ]
+    """RM revenue breakdown by income_category — verbatim port of old core.revenue().
+    Rows are (sales_code, income_category, value): the STORED portfolio_rm_revenue
+    categories (interest_income / interest_expenses / nfi) UNION the COMPUTED ftp
+    (cust_monthly_ftp) and loan_loss (loans_mom_ifrs_movement) rows.
+
+    The previous version returned only portfolio_rm_revenue.values(), so the ftp and
+    loan_loss categories were absent and rendered as zeros on the frontend."""
+    query = """
+        WITH valid_portfolio AS (
+            SELECT cust_id
+            FROM retail_allocated_portfolio
+            WHERE sales_code = %s
+        ),
+        valid_loans AS (
+            SELECT *
+            FROM loans_mom_ifrs_movement l
+            WHERE EXTRACT(YEAR FROM eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+            AND cust_code_strategy ~ '^[0-9]+$'
+        )
+        SELECT *
+        FROM portfolio_rm_revenue
+        WHERE sales_code = %s
+
+        UNION ALL
+
+        SELECT
+            %s AS sales_code,
+            'ftp' AS income_category,
+            COALESCE(SUM(ftp.total_ftp), 0) AS value
+        FROM cust_monthly_ftp ftp
+        JOIN valid_portfolio vp ON ftp.cust_cif = vp.cust_id
+        WHERE ftp.current_year = EXTRACT(YEAR FROM CURRENT_DATE)
+
+        UNION ALL
+
+        SELECT
+            %s AS sales_code,
+            'loan_loss' AS income_category,
+            -SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)) AS value
+        FROM valid_loans l
+        JOIN valid_portfolio vp ON l.cust_code_strategy::int = vp.cust_id
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(query, [sales_code, sales_code, sales_code, sales_code])
+        columns = [col[0] for col in cursor.description]
+        return [_json_safe(dict(zip(columns, row))) for row in cursor.fetchall()]
 
 
 def loan_trends_data(sales_code):
