@@ -445,11 +445,26 @@ class MobileLoansView(APIView):
 # ── Staff analytics ───────────────────────────────────────────────────────
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
-class StaffInformationView(generics.ListAPIView):
+class StaffInformationView(APIView):
+    # Staff Analytics card → [{total_staff, new_hires, new_promotion, total_exit}]
+    # (old gceo staff_information). The frontend reads staffInformation[0].total_staff
+    # etc.; the previous version returned a paginated EmployeeTable list, so those
+    # keys were absent and the card showed 0/0/0/0.
     permission_classes = [IsAuthenticated]
-    serializer_class = EmployeeTableSerializer
-    queryset = EmployeeTable.objects.all()
-    pagination_class = StandardPagination
+
+    def get(self, request):
+        with connection.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    count(distinct staff_id) FILTER (WHERE exit = 0) AS total_staff,
+                    count(distinct staff_id) FILTER (WHERE new = 1 AND date_trunc('year', date_of_employment) = date_trunc('year', now())) AS new_hires,
+                    count(distinct staff_id) FILTER (WHERE promotion = 1 AND date_trunc('year', promotion_date) = date_trunc('year', now())) AS new_promotion,
+                    count(distinct staff_id) FILTER (WHERE exit = 1 AND date_trunc('year', staff_exit_date) = date_trunc('year', now())) AS total_exit
+                FROM employee_table
+            """)
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
@@ -512,13 +527,62 @@ class StaffProjectionsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        agg = EmployeeTable.objects.aggregate(
-            total=Count("id"),
-            exits=Sum("exit"),
-            promotions=Sum("promotion"),
-            new_hires=Sum("new"),
-        )
-        return Response(agg)
+        # Monthly staff waterfall (old gceo staff_staff_projections):
+        # [{employment_date, total_staff, new_hires, total_exit, new_promotion}].
+        with connection.cursor() as cur:
+            cur.execute("""
+                WITH MonthlyData AS (
+                    SELECT
+                        CASE WHEN date_of_employment < date_trunc('year', current_date)
+                             THEN date_trunc('year', current_date) - INTERVAL '1 months'
+                             ELSE date_trunc('month', date_of_employment) END AS employment_date,
+                        count(*) AS new_hires, 0 AS total_exit, 0 AS new_promotion
+                    FROM employee_table
+                    WHERE date_of_employment >= date_trunc('year', CURRENT_DATE) - INTERVAL '1 year'
+                    GROUP BY 1
+                    UNION ALL
+                    SELECT
+                        CASE WHEN staff_exit_date < date_trunc('year', current_date)
+                             THEN date_trunc('year', current_date) - INTERVAL '1 months'
+                             ELSE date_trunc('month', staff_exit_date) END,
+                        0, count(*), 0
+                    FROM employee_table
+                    WHERE staff_exit_date >= date_trunc('year', CURRENT_DATE) - INTERVAL '1 year'
+                    GROUP BY 1
+                    UNION ALL
+                    SELECT
+                        CASE WHEN promotion_date < date_trunc('year', current_date)
+                             THEN date_trunc('year', current_date) - INTERVAL '1 months'
+                             ELSE date_trunc('month', promotion_date) END,
+                        0, 0, count(*)
+                    FROM employee_table
+                    WHERE promotion_date >= date_trunc('year', CURRENT_DATE) - INTERVAL '1 year'
+                    GROUP BY 1
+                ), MonthlySummary AS (
+                    SELECT employment_date,
+                           SUM(CASE WHEN new_hires > 0 THEN new_hires ELSE 0 END) AS new_hires,
+                           SUM(total_exit) AS total_exit,
+                           SUM(CASE WHEN new_promotion > 0 THEN new_promotion ELSE 0 END) AS new_promotion
+                    FROM MonthlyData GROUP BY employment_date
+                ), YearStart AS (
+                    SELECT COUNT(*) AS closing_position
+                    FROM employee_table
+                    WHERE date_of_employment < date_trunc('year', CURRENT_DATE) - INTERVAL '1 year'
+                      AND (staff_exit_date IS NULL OR staff_exit_date > date_trunc('year', CURRENT_DATE) - INTERVAL '1 year')
+                ), StaffCount AS (
+                    SELECT employment_date,
+                           COALESCE(SUM(new_hires) OVER (ORDER BY employment_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0) -
+                           COALESCE(SUM(total_exit) OVER (ORDER BY employment_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0) +
+                           (SELECT closing_position FROM YearStart) AS total_staff
+                    FROM MonthlySummary
+                )
+                SELECT employment_date, total_staff, new_hires, total_exit, new_promotion
+                FROM StaffCount LEFT JOIN MonthlySummary USING (employment_date)
+                ORDER BY employment_date
+            """)
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])

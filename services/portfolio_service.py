@@ -236,6 +236,35 @@ def deposit_trends_data(sales_code):
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def deposit_trends_per_customer(cust_id):
+    """Per-customer deposit balance trend rows — verbatim intent of old
+    core.depost_trends_per_customer: daily_balance_movement filtered by cust_cif,
+    same month-balance shape as deposit_trends_data (the RM version). The old
+    /customers/<pk>/deposits endpoint returned THIS trend series, not a
+    product_type-filtered account list (product_type never held 'SA'/'CA'/'FD',
+    so that filter returned nothing)."""
+    ybl = str(current_year - 2)[-2:]
+    py = str(previous_year)[-2:]
+    cy = str(current_year)[-2:]
+    sql = f"""
+        SELECT id::text, cust_cif::text, acc_num::text, brn_code::text, prod_id::text,
+               customer_segment::text, segment_code::text,
+               dec_{ybl}_bal::text,
+               mar_{py}_bal::text, jun_{py}_bal::text, sep_{py}_bal::text, dec_{py}_bal::text,
+               jan_{cy}_bal::text, feb_{cy}_bal::text, mar_{cy}_bal::text, apr_{cy}_bal::text,
+               may_{cy}_bal::text, jun_{cy}_bal::text, jul_{cy}_bal::text, aug_{cy}_bal::text,
+               sep_{cy}_bal::text, oct_{cy}_bal::text, nov_{cy}_bal::text, dec_{cy}_bal::text,
+               yester_2_bal::text, yester_1_bal::text, rm_code::text, diaspora_check::text,
+               open_date::text, sale_code::text, full_name::text
+        FROM daily_balance_movement
+        WHERE cust_cif = %s
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [cust_id])
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def _json_safe(row):
     # portfolio_rm_revenue.value is DecimalField(65535, 65535); a NaN/inf in that
     # warehouse column makes DRF's strict JSON renderer raise ValueError. Null those

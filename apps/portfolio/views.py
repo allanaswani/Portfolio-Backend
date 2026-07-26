@@ -144,8 +144,10 @@ class CustomerDepositTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        accounts = svc.customer_accounts(pk).filter(product_type__in=["SA", "CA", "FD"])
-        return Response(AccountsSerializer(accounts, many=True).data)
+        # Per-customer deposit balance trend (old core.depost_trends_per_customer).
+        # NOT customer_accounts filtered by product_type IN ('SA','CA','FD') —
+        # product_type never holds those codes, so that returned nothing.
+        return Response(svc.deposit_trends_per_customer(pk))
 
 
 @extend_schema(tags=["Portfolio — Customers"])
