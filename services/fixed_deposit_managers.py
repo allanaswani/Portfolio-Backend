@@ -60,9 +60,11 @@ class FixedDepositListManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query, [sales_code])
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             # Log the error (optional: replace with a logging framework)
@@ -106,9 +108,11 @@ class FixedDepositListManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query, [branch_name])
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             # Log the error (optional: replace with a logging framework)
@@ -152,9 +156,11 @@ class FixedDepositListManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query, [segment])
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             # Log the error (optional: replace with a logging framework)
@@ -194,9 +200,11 @@ class FixedDepositListManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query)
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             # Log the error (optional: replace with a logging framework)
@@ -255,9 +263,11 @@ class FixedDepositRateBandManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query, [sales_code])
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             print(f"Error fetching fixed deposit rate bands by rm: {e}")
@@ -307,9 +317,11 @@ class FixedDepositRateBandManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query, [branch_name])
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             print(f"Error fetching fixed deposit rate bands by branch: {e}")
@@ -361,9 +373,11 @@ class FixedDepositRateBandManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query, [segment])
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             print(f"Error fetching fixed deposit rate bands by segment: {e}")
@@ -406,9 +420,11 @@ class FixedDepositRateBandManager(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query)
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             print(f"Error fetching overall fixed deposit rate bands: {e}")
@@ -466,9 +482,11 @@ def expiry_timeline_band_by_rm_code(sales_code):
         with connection.cursor() as cursor:
             cursor.execute(query, [sales_code])
             result = cursor.fetchall()
-
-        # Convert the result to a list of dictionaries
-        columns = [col[0] for col in cursor.description]
+            # Convert the result to a list of dictionaries.
+            # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+            # (new container) a closed cursor's .description is None, which
+            # raised "NoneType is not iterable" and returned [] (empty FD).
+            columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in result]
     except Exception as e:
         print(f"Error fetching expiry timeline bands by RM code: {e}")
@@ -515,9 +533,11 @@ def expiry_timeline_band_by_branch(branch_name):
         with connection.cursor() as cursor:
             cursor.execute(query, [branch_name])
             result = cursor.fetchall()
-
-        # Convert the result to a list of dictionaries
-        columns = [col[0] for col in cursor.description]
+            # Convert the result to a list of dictionaries.
+            # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+            # (new container) a closed cursor's .description is None, which
+            # raised "NoneType is not iterable" and returned [] (empty FD).
+            columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in result]
     except Exception as e:
         print(f"Error fetching expiry timeline bands by branch: {e}")
@@ -566,9 +586,11 @@ def expiry_timeline_band_by_segment(segment):
         with connection.cursor() as cursor:
             cursor.execute(query, [segment])
             result = cursor.fetchall()
-
-        # Convert the result to a list of dictionaries
-        columns = [col[0] for col in cursor.description]
+            # Convert the result to a list of dictionaries.
+            # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+            # (new container) a closed cursor's .description is None, which
+            # raised "NoneType is not iterable" and returned [] (empty FD).
+            columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in result]
     except Exception as e:
         print(f"Error fetching expiry timeline bands by segment: {e}")
@@ -611,9 +633,11 @@ def expiry_timeline_band_overall():
         with connection.cursor() as cursor:
             cursor.execute(query)
             result = cursor.fetchall()
-
-        # Convert the result to a list of dictionaries
-        columns = [col[0] for col in cursor.description]
+            # Convert the result to a list of dictionaries.
+            # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+            # (new container) a closed cursor's .description is None, which
+            # raised "NoneType is not iterable" and returned [] (empty FD).
+            columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in result]
     except Exception as e:
         print(f"Error fetching overall expiry timeline bands: {e}")
@@ -648,9 +672,11 @@ class FixedDepositOverallSummary(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query)
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             print(f"Error fetching overall summary: {e}")
@@ -680,9 +706,11 @@ class FixedDepositOverallSummary(models.Manager):
             with connection.cursor() as cursor:
                 cursor.execute(query)
                 result = cursor.fetchall()
-
-            # Convert the result to a list of dictionaries
-            columns = [col[0] for col in cursor.description]
+                # Convert the result to a list of dictionaries.
+                # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
+                # (new container) a closed cursor's .description is None, which
+                # raised "NoneType is not iterable" and returned [] (empty FD).
+                columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
         except Exception as e:
             print(f"Error fetching overall summary: {e}")
