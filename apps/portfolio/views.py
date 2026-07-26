@@ -134,9 +134,9 @@ class CustomerDataView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        accounts = AccountsSerializer(svc.customer_accounts(pk), many=True).data
-        loans = LoansSerializer(svc.customer_loans(pk), many=True).data
-        return Response({"accounts": accounts, "loans": loans})
+        # /customers/<pk>/data → customer income breakdown by category
+        # (old customerData -> cust_revenues), not {accounts, loans}.
+        return Response(svc.cust_revenues(pk))
 
 
 @extend_schema(tags=["Portfolio — Customers"])
@@ -155,8 +155,9 @@ class CustomerLoanTrendsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        loans = svc.customer_loans(pk)
-        return Response(LoansSerializer(loans, many=True).data)
+        # /customers/<pk>/loans → per-customer loan balance TREND
+        # (old customerLoanTrends -> loan_trends_per_customer), not raw Loans records.
+        return Response(svc.loan_trends_per_customer(pk))
 
 
 @extend_schema(tags=["Portfolio — Customers"])
@@ -164,13 +165,8 @@ class CustomerPpcView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        # PPC = Product Per Customer — return product breakdown
-        accounts = svc.customer_accounts(pk)
-        product_summary = {}
-        for acc in accounts:
-            pt = acc.product_type
-            product_summary[pt] = product_summary.get(pt, 0) + 1
-        return Response({"cust_id": pk, "ppc": product_summary})
+        # /customers/<pk>/ppc → {ppc: <number>} (old customerPpc -> ppc_per_customer).
+        return Response(svc.ppc_per_customer(pk))
 
 
 @extend_schema(tags=["Portfolio — Customers"])
@@ -178,14 +174,9 @@ class CustomerFocusChartView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        accounts = svc.customer_accounts(pk)
-        loans = svc.customer_loans(pk)
-        return Response({
-            "accounts_count": accounts.count(),
-            "loans_count": loans.count(),
-            "total_deposits": sum(a.current_balance or 0 for a in accounts),
-            "total_loans": sum(l.euro_book_balance or 0 for l in loans),
-        })
+        # /customers/<pk>/focus → [{product_type, dates_eom, current_balance}]
+        # (old customerFocusChart -> portfolio_cust_deposit_trends).
+        return Response(svc.customer_focus_chart(pk))
 
 
 @extend_schema(tags=["Portfolio — Customers"])

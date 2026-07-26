@@ -265,6 +265,96 @@ def deposit_trends_per_customer(cust_id):
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def loan_trends_per_customer(cust_id):
+    """Per-customer loan balance trend rows (old core.loan_trends_per_customer):
+    loan_daily_balance_movement filtered by cust_cif. The old /customers/<pk>/loans
+    endpoint returned THIS trend series, not raw Loans records."""
+    ybl = str(current_year - 2)[-2:]
+    py = str(previous_year)[-2:]
+    cy = str(current_year)[-2:]
+    sql = f"""
+        SELECT id::text, cust_cif::text, acc_num::text, brn_code::text, prod_id::text,
+               customer_segment::text, segment_code::text,
+               dec_{ybl}_bal::text,
+               mar_{py}_bal::text, jun_{py}_bal::text, sep_{py}_bal::text, dec_{py}_bal::text,
+               jan_{cy}_bal::text, feb_{cy}_bal::text, mar_{cy}_bal::text, apr_{cy}_bal::text,
+               may_{cy}_bal::text, jun_{cy}_bal::text, jul_{cy}_bal::text, aug_{cy}_bal::text,
+               sep_{cy}_bal::text, oct_{cy}_bal::text, nov_{cy}_bal::text, dec_{cy}_bal::text,
+               yester_2_bal::text, yester_1_bal::text, rm_code::text, diaspora_check::text,
+               open_date::text, sale_code::text, full_name::text
+        FROM loan_daily_balance_movement
+        WHERE cust_cif = %s
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [cust_id])
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def cust_revenues(cust_id):
+    """Customer income breakdown by category → [{id, income_category, value}]
+    (old core.cust_revenues): revenue categories + computed ftp + loan_loss.
+    Feeds /customers/<pk>/data (which previously returned {accounts, loans})."""
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 id, income_category, SUM(sum_dc) AS value
+            FROM revenue
+            WHERE cust_id = %s
+              AND date_trunc('year', tmstamp) = date_trunc('year', now())
+            GROUP BY income_category
+            UNION ALL
+            SELECT 1 id, 'ftp' AS income_category, COALESCE(SUM(total_ftp), 0) AS value
+            FROM cust_monthly_ftp
+            WHERE cust_cif = %s
+              AND current_year = EXTRACT(YEAR FROM CURRENT_DATE)
+            UNION ALL
+            SELECT 1 id, 'loan_loss' AS income_category,
+                   -SUM(COALESCE(pl_charge, 0) - COALESCE(int_adj, 0)) AS value
+            FROM loans_mom_ifrs_movement
+            WHERE cust_code_strategy::int = %s
+              AND EXTRACT(YEAR FROM eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+              AND cust_code_strategy ~ '^[0-9]+$'
+            """,
+            [cust_id, cust_id, cust_id],
+        )
+        cols = [c[0] for c in cur.description]
+        return [_json_safe(dict(zip(cols, row))) for row in cur.fetchall()]
+
+
+def ppc_per_customer(cust_id):
+    """Products-per-customer number → {ppc} (old core.ppc_per_customer). Previously
+    the view returned {cust_id, ppc: {product_type: count}} which the UI can't read."""
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT round(sum((case when fd >= 1 then 1 else 0 end) +
+                             (case when ca >= 1 then 1 else 0 end) +
+                             (case when sa::numeric >= 1 then 1 else 0 end) +
+                             (case when mortagage >= 1 then 1 else 0 end)), 2) AS ppc
+            FROM hf_customer AS hf
+            LEFT JOIN retail_allocated_portfolio rap ON hf.cust_id = rap.cust_id
+            WHERE hf.cust_id = %s
+            """,
+            [cust_id],
+        )
+        row = cur.fetchone()
+    return {"ppc": row[0] if row and row[0] is not None else 0}
+
+
+def customer_focus_chart(cust_id):
+    """Customer focus chart → [{product_type, dates_eom, current_balance}]
+    (old core: portfolio_cust_deposit_trends). Previously returned {counts, totals}."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT product_type, dates_eom, value AS current_balance "
+            "FROM portfolio_cust_deposit_trends WHERE cust_id = %s",
+            [cust_id],
+        )
+        cols = [c[0] for c in cur.description]
+        return [_json_safe(dict(zip(cols, row))) for row in cur.fetchall()]
+
+
 def _json_safe(row):
     # portfolio_rm_revenue.value is DecimalField(65535, 65535); a NaN/inf in that
     # warehouse column makes DRF's strict JSON renderer raise ValueError. Null those
