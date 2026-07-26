@@ -38,6 +38,84 @@ def _raw_to_list(qs, fields):
     return [{f: getattr(r, f) for f in fields} for r in qs]
 
 
+# Branch CASE keyed on hf_customer.branch_code (old backend's branch_list /
+# rmlist read hf_customer, whose column is `branch_code` — NOT the
+# daily_balance_movement `brn_code` that BRN_CASE targets).
+BRANCH_CODE_CASE = """
+    CASE
+        WHEN branch_code::text = '230' THEN 'BURUBURU BRANCH'
+        WHEN branch_code::text = '410' THEN 'ELDORET BRANCH'
+        WHEN branch_code::text = '25'  THEN 'EMBU BRANCH'
+        WHEN branch_code::text = '220' THEN 'HARAMBEE AVE BRANCH'
+        WHEN branch_code::text = '100' THEN 'HEAD OFFICE'
+        WHEN branch_code::text = '109' THEN 'HF WHIZZ'
+        WHEN branch_code::text = '19'  THEN 'HURLINGHAM BRANCH'
+        WHEN branch_code::text = '600' THEN 'KISUMU BRANCH'
+        WHEN branch_code::text = '16'  THEN 'KITENGELA BRANCH'
+        WHEN branch_code::text = '23'  THEN 'KOMAROCK BRANCH'
+        WHEN branch_code::text = '24'  THEN 'MACHAKOS BRANCH'
+        WHEN branch_code::text = '520' THEN 'MERU BRANCH'
+        WHEN branch_code::text = '300' THEN 'MOMBASA BRANCH'
+        WHEN branch_code::text = '17'  THEN 'NAIVASHA BRANCH'
+        WHEN branch_code::text = '400' THEN 'NAKURU BRANCH'
+        WHEN branch_code::text = '22'  THEN 'NANYUKI BRANCH'
+        WHEN branch_code::text = '510' THEN 'NYERI BRANCH'
+        WHEN branch_code::text = '200' THEN 'REHANI BRANCH'
+        WHEN branch_code::text = '20'  THEN 'RIVERROAD BRANCH'
+        WHEN branch_code::text = '250' THEN 'RONGAI BRANCH'
+        WHEN branch_code::text = '270' THEN 'SAMEER BRANCH'
+        WHEN branch_code::text = '500' THEN 'THIKA BRANCH'
+        WHEN branch_code::text = '260' THEN 'TRM BRANCH'
+        WHEN branch_code::text = '280' THEN 'WESTLANDS BRANCH'
+        ELSE 'HEAD OFFICE'
+    END
+"""
+
+# Segment re-mapping used by top_customer_inflow / top_customer_outflow.
+_BANKING_SEGMENT_CASE = """
+    CASE
+        WHEN customer_segment IN ('FINANCIAL INSTITUTIONS') THEN 'FINANCIAL INSTITUTIONS'
+        WHEN customer_segment IN ('INSTITUTIONAL BANKING') THEN 'INSTITUTIONAL BANKING'
+        WHEN customer_segment IN ('INTERNAL ACCOUNTS') THEN 'INTERNAL ACCOUNTS'
+        WHEN customer_segment IN ('PROJECT FINANCE') THEN 'PROJECT FINANCE'
+        WHEN customer_segment IN ('SCHEME') THEN 'SCHEME'
+        WHEN customer_segment IN ('VIRTUAL') THEN 'VIRTUAL'
+        WHEN customer_segment IN ('LARGE ENTERPRISES') THEN 'COMMERCIAL BANKING'
+        WHEN customer_segment IN ('MEDIUM ENTERPRISES', 'SMALL ENTERPRISES') THEN 'SME'
+        WHEN customer_segment IN ('ULTIMATE') THEN 'ULTIMATE BANKING'
+        WHEN customer_segment IN ('MASS', 'STANDARD') THEN 'PB'
+        ELSE 'New-Unsegmented'
+    END
+"""
+
+
+def _topcust_yester_case(col: str) -> str:
+    """yester_1/yester_2 fallback used ONLY by top_customer_inflow/outflow.
+
+    Differs from date_utils._yester_case in two ways that the old backend
+    intentionally has: the monthly SUMs carry NO ``FILTER (WHERE > 0)``, and the
+    January (month = 1) fallback uses ``dec_{cy}`` (current year) rather than
+    ``dec_{py}``.
+    """
+    return f"""
+        CASE
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 2)  THEN SUM(dbm.jan_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 3)  THEN SUM(dbm.feb_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 4)  THEN SUM(dbm.mar_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 5)  THEN SUM(dbm.apr_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 6)  THEN SUM(dbm.may_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 7)  THEN SUM(dbm.jun_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 8)  THEN SUM(dbm.jul_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 9)  THEN SUM(dbm.aug_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 10) THEN SUM(dbm.sep_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 11) THEN SUM(dbm.oct_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 12) THEN SUM(dbm.nov_{cy}_bal)
+            WHEN (SUM(dbm.{col}) = 0 AND EXTRACT(month FROM current_date) = 1)  THEN SUM(dbm.dec_{cy}_bal)
+            ELSE SUM(dbm.{col})
+        END
+    """
+
+
 def _monthly_movement_sql(table: str) -> str:
     month_sums = "\n".join(
         f"         SUM(dbm.{col}_bal) FILTER (WHERE dbm.{col}_bal > 0) AS {col},"
@@ -768,17 +846,18 @@ class BranchListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old backend `branch_list`: hf_customer grouped by branch_code CASE,
+        # no segment filter and no customer_count (the frontend table reads
+        # branch_code / total_revenue / total_deposit_balance / total_loans).
         sql = f"""
             SELECT
-                {BRN_CASE} AS branch_code,
+                {BRANCH_CODE_CASE} AS branch_code,
+                SUM(total_revenue)        AS total_revenue,
                 SUM(total_depost_balance) AS total_deposit_balance,
-                SUM(total_loans) AS total_loans,
-                SUM(total_revenue) AS total_revenue,
-                COUNT(*) AS customer_count
+                SUM(total_loans)          AS total_loans
             FROM hf_customer
-            WHERE segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-            GROUP BY {BRN_CASE}
-            ORDER BY total_deposit_balance DESC NULLS LAST
+            GROUP BY {BRANCH_CODE_CASE}
+            ORDER BY {BRANCH_CODE_CASE}
         """
         with connection.cursor() as cur:
             cur.execute(sql)
@@ -789,19 +868,26 @@ class BranchListView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — RM"])
 class RMListView(APIView):
+    """Old backend `rmlist`: per-RM revenue / deposit / loan totals from
+    hf_customer joined to retail_allocated_portfolio (NOT a distinct dropdown
+    off daily_balance_movement, which returned no totals)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        sql = """
+            SELECT
+                sales_code,
+                rap.rm_name,
+                SUM(total_revenue)        AS total_revenue,
+                SUM(total_depost_balance) AS total_deposit_balance,
+                SUM(total_loans)          AS total_loans
+            FROM hf_customer
+            LEFT JOIN retail_allocated_portfolio rap
+                ON hf_customer.cust_id = rap.cust_id
+            GROUP BY sales_code, rap.rm_name
+        """
         with connection.cursor() as cur:
-            cur.execute("""
-                SELECT DISTINCT
-                    rm_code,
-                    sale_code,
-                    full_name
-                FROM daily_balance_movement
-                WHERE rm_code IS NOT NULL
-                ORDER BY full_name
-            """)
+            cur.execute(sql)
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return Response(rows)
@@ -890,39 +976,37 @@ class TopCustomerInflowView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old backend `top_customer_inflow`: aggregate per customer with the
+        # month-fallback yester CASE (plain SUMs, no >0 filter), then take the
+        # top 10 by inflow movement.
+        yester2 = _topcust_yester_case("yester_2_bal")
+        yester1 = _topcust_yester_case("yester_1_bal")
         sql = f"""
+            WITH data AS (
+                SELECT
+                    dbm.cust_cif,
+                    dbm.full_name,
+                    rap.rm_name,
+                    {yester2} AS yester_2_bal,
+                    {yester1} AS yester_1_bal,
+                    {_BANKING_SEGMENT_CASE} AS banking_segment
+                FROM daily_balance_movement dbm
+                LEFT JOIN retail_allocated_portfolio rap
+                    ON dbm.cust_cif = rap.cust_id
+                WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS')
+                GROUP BY dbm.cust_cif, dbm.full_name, rap.rm_name, customer_segment
+            )
             SELECT
-                dbm.cust_cif,
-                dbm.full_name,
-                dbm.customer_segment,
-                CASE
-                    WHEN dbm.customer_segment IN ('FINANCIAL INSTITUTIONS') THEN 'FINANCIAL INSTITUTIONS'
-                    WHEN dbm.customer_segment IN ('INSTITUTIONAL BANKING') THEN 'INSTITUTIONAL BANKING'
-                    WHEN dbm.customer_segment IN ('INTERNAL ACCOUNTS') THEN 'INTERNAL ACCOUNTS'
-                    WHEN dbm.customer_segment IN ('PROJECT FINANCE') THEN 'PROJECT FINANCE'
-                    WHEN dbm.customer_segment IN ('SCHEME') THEN 'SCHEME'
-                    WHEN dbm.customer_segment IN ('VIRTUAL') THEN 'VIRTUAL'
-                    WHEN dbm.customer_segment IN ('LARGE ENTERPRISES') THEN 'COMMERCIAL BANKING'
-                    WHEN dbm.customer_segment IN ('MEDIUM ENTERPRISES', 'SMALL ENTERPRISES') THEN 'SME'
-                    WHEN dbm.customer_segment IN ('ULTIMATE') THEN 'ULTIMATE BANKING'
-                    WHEN dbm.customer_segment IN ('MASS', 'STANDARD') THEN 'PB'
-                    ELSE 'New-Unsegmented'
-                END AS banking_segment,
-                dbm.rm_code,
-                rap.rm_name,
-                dbm.yester_1_bal,
-                dbm.yester_2_bal,
-                dbm.yester_1_bal - dbm.yester_2_bal AS movement
-            FROM daily_balance_movement dbm
-            LEFT JOIN (
-                SELECT DISTINCT ON (cust_id) cust_id, rm_name
-                FROM retail_allocated_portfolio
-                ORDER BY cust_id
-            ) rap ON dbm.cust_cif = rap.cust_id
-            WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND dbm.yester_1_bal > dbm.yester_2_bal
-            ORDER BY (dbm.yester_1_bal - dbm.yester_2_bal) DESC NULLS LAST
-            LIMIT 50
+                cust_cif,
+                full_name,
+                rm_name,
+                yester_2_bal,
+                yester_1_bal,
+                yester_1_bal - yester_2_bal AS movement,
+                banking_segment
+            FROM data
+            ORDER BY (yester_1_bal - yester_2_bal)::int DESC
+            LIMIT 10
         """
         with connection.cursor() as cur:
             cur.execute(sql)
@@ -936,39 +1020,36 @@ class TopCustomerOutflowView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old backend `top_customer_outflow`: same aggregate as inflow, ordered
+        # ascending (largest outflow first), top 10.
+        yester2 = _topcust_yester_case("yester_2_bal")
+        yester1 = _topcust_yester_case("yester_1_bal")
         sql = f"""
+            WITH data AS (
+                SELECT
+                    dbm.cust_cif,
+                    dbm.full_name,
+                    rap.rm_name,
+                    {yester2} AS yester_2_bal,
+                    {yester1} AS yester_1_bal,
+                    {_BANKING_SEGMENT_CASE} AS banking_segment
+                FROM daily_balance_movement dbm
+                LEFT JOIN retail_allocated_portfolio rap
+                    ON dbm.cust_cif = rap.cust_id
+                WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS')
+                GROUP BY dbm.cust_cif, dbm.full_name, rap.rm_name, customer_segment
+            )
             SELECT
-                dbm.cust_cif,
-                dbm.full_name,
-                dbm.customer_segment,
-                CASE
-                    WHEN dbm.customer_segment IN ('FINANCIAL INSTITUTIONS') THEN 'FINANCIAL INSTITUTIONS'
-                    WHEN dbm.customer_segment IN ('INSTITUTIONAL BANKING') THEN 'INSTITUTIONAL BANKING'
-                    WHEN dbm.customer_segment IN ('INTERNAL ACCOUNTS') THEN 'INTERNAL ACCOUNTS'
-                    WHEN dbm.customer_segment IN ('PROJECT FINANCE') THEN 'PROJECT FINANCE'
-                    WHEN dbm.customer_segment IN ('SCHEME') THEN 'SCHEME'
-                    WHEN dbm.customer_segment IN ('VIRTUAL') THEN 'VIRTUAL'
-                    WHEN dbm.customer_segment IN ('LARGE ENTERPRISES') THEN 'COMMERCIAL BANKING'
-                    WHEN dbm.customer_segment IN ('MEDIUM ENTERPRISES', 'SMALL ENTERPRISES') THEN 'SME'
-                    WHEN dbm.customer_segment IN ('ULTIMATE') THEN 'ULTIMATE BANKING'
-                    WHEN dbm.customer_segment IN ('MASS', 'STANDARD') THEN 'PB'
-                    ELSE 'New-Unsegmented'
-                END AS banking_segment,
-                dbm.rm_code,
-                rap.rm_name,
-                dbm.yester_1_bal,
-                dbm.yester_2_bal,
-                dbm.yester_1_bal - dbm.yester_2_bal AS movement
-            FROM daily_balance_movement dbm
-            LEFT JOIN (
-                SELECT DISTINCT ON (cust_id) cust_id, rm_name
-                FROM retail_allocated_portfolio
-                ORDER BY cust_id
-            ) rap ON dbm.cust_cif = rap.cust_id
-            WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND dbm.yester_1_bal < dbm.yester_2_bal
-            ORDER BY (dbm.yester_1_bal - dbm.yester_2_bal) ASC NULLS LAST
-            LIMIT 50
+                cust_cif,
+                full_name,
+                rm_name,
+                yester_2_bal,
+                yester_1_bal,
+                yester_1_bal - yester_2_bal AS movement,
+                banking_segment
+            FROM data
+            ORDER BY (yester_1_bal - yester_2_bal)::int ASC
+            LIMIT 10
         """
         with connection.cursor() as cur:
             cur.execute(sql)
@@ -982,20 +1063,30 @@ class RMYTDMovementView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Old backend `rm_ytd_movement`: rm_name comes from the rap join,
+        # dec_bal is an unfiltered SUM(dec_{py}_bal), yester_1_bal uses the
+        # month-fallback CASE, and there is NO customer_segment filter.
+        yester1 = _yester_case("dbm", "yester_1_bal", cy, py)
         sql = f"""
+            WITH data AS (
+                SELECT
+                    rm_code,
+                    rap.rm_name,
+                    SUM(dbm.dec_{py}_bal) AS dec_bal,
+                    {yester1} AS yester_1_bal
+                FROM daily_balance_movement dbm
+                LEFT JOIN retail_allocated_portfolio rap
+                    ON dbm.cust_cif = rap.cust_id
+                GROUP BY rm_code, rap.rm_name
+            )
             SELECT
                 rm_code,
-                MAX(sale_code) AS sale_code,
-                MAX(full_name) AS rm_name,
-                SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0) AS yester_1_bal,
-                SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal,
-                SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0)
-                    - SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS ytd_movement
-            FROM daily_balance_movement
-            WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND rm_code IS NOT NULL
-            GROUP BY rm_code
-            ORDER BY ytd_movement DESC NULLS LAST
+                rm_name,
+                dec_bal,
+                yester_1_bal,
+                yester_1_bal - dec_bal AS movement
+            FROM data
+            ORDER BY (yester_1_bal - dec_bal) DESC
         """
         with connection.cursor() as cur:
             cur.execute(sql)
