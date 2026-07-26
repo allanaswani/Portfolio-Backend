@@ -483,18 +483,93 @@ class ActiveCustomersMoMView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Channels"])
 class DigitalChannelsMoMView(APIView):
+    # Old gceo customers_active_digital_channles_month_on_month: distinct active
+    # customers per month over digital channels (ESB / KOCELA / INTERNET) from
+    # transaction_diary. The chart reads date_trunc_months + number_active_customers;
+    # the previous ceo_channel_report shape ({month, trx_channel, count}) left the
+    # "Active Digital Customers — Month on Month" chart (and Latest Month Active) empty.
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         with connection.cursor() as cur:
             cur.execute("""
-                SELECT
-                    TO_CHAR(trx_date, 'YYYY-MM') AS month,
-                    trx_channel,
-                    COUNT(DISTINCT cust_id) AS count
-                FROM ceo_channel_report
-                GROUP BY TO_CHAR(trx_date, 'YYYY-MM'), trx_channel
-                ORDER BY month, count DESC
+                SELECT   Date_trunc('months', t.tmstamp)       AS date_trunc_months,
+                         Count(DISTINCT t.fk_customercust_id)   AS number_active_customers
+                FROM     transaction_diary t
+                WHERE    1=1
+                AND      t.justific_name IN ('CHEQUE DEPOSIT OF OTHER BANK (ELEC.CLER)',
+                                             'IN HOUSE CHEQUES',
+                                             'DEPOSIT CASH',
+                                             'CASH DEPOSIT FROM ATM',
+                                             'CASH WITHDRAWAL',
+                                             'CHEQUE PAYMENT FROM CARNET',
+                                             'ORDINARY CLEARING CHEQUE',
+                                             'CLOSURE ZERO BALANCE',
+                                             'ATM WITHDRAWAL (HF TERMINAL)',
+                                             'Confirmation To Embassies',
+                                             'Audit Confirmation',
+                                             'Bank Reference/Opinion',
+                                             'Interim Statement- e-mail',
+                                             'CHEQUE DEPOSIT OF OTHER BANK FC',
+                                             'OTC CASH WITHDRAWAL',
+                                             'ACCOUNT CLOSING AFTER 6 MONTHS',
+                                             'WITHDRAW FROM UNCLEAR BALANCE',
+                                             'INTERIM STATEMENT PER PG',
+                                             'COUNTER CHEQUE WITHDRAWAL',
+                                             'DUPLICATE STATEMENT PER PG',
+                                             'DEBIT FROM MOBILE BANKING',
+                                             'CREDIT FROM MOBILE BANKING',
+                                             'CHEQUE STOP PAYMENT',
+                                             'BANK DRAFT ISSUED',
+                                             'CR FROM MOBILE BANKING-MPESA TO ACC',
+                                             'CONTRACT FINANCING',
+                                             'SECURED OVERDRAFTS (SOD)',
+                                             'NORMAL INSPECTION FEES-PROJECTS',
+                                             'BANK DRAFT ISSUED /NON ACC.HOLDER',
+                                             'BANK DRAFT ISSUED /ACC. HOLDER',
+                                             'BANK DRAFT ISSUED /STAFF',
+                                             'BILL COMMISSION',
+                                             'REACTIVATION ACCOUNT CHARGES (DORMANT)',
+                                             'STANDING ORDER DEACTIVATION FEE',
+                                             'CASH WITHDRAWAL LENGO FOR CLOSING',
+                                             'A/C CLOSURE-JOURNAL TRANSFER WITH COMM',
+                                             'ATM WITHDRAWAL ONUS KENSWITCH',
+                                             'ATM WITHDR OFFUS KENSWITCH',
+                                             'ATM WITHDR OFFUS MASTERCARD',
+                                             'INCOMING RTGS CR',
+                                             'INCOMING RTGS DB',
+                                             'BUY GOOD( MOBILE APP)',
+                                             'PAY BILL(ACCOUNT TO MPESA PAYBILL)',
+                                             'AIRTIME PURCHASE( MOBILE APP)',
+                                             'ACCOUNT TO MPESA(B2C)',
+                                             'UTILITY BILL PAYMENT(APP)',
+                                             'CR UTILITY BILLPAYMENT(APP)',
+                                             'CR AIRTIME PURCHASE(APP)',
+                                             'CR PAYBILL(ACCOUNT TO MPESA PAYBILL)',
+                                             'CR BUY GOODS (APP)',
+                                             'MOBILE APP DEPOSIT',
+                                             'MPESA CR WHIZZPAY',
+                                             'MPESA DR WHIZZPAY',
+                                             'DEPOSIT THROUGH TILL',
+                                             'DR THROUGH TILL',
+                                             'retrieval of documents -vouchers',
+                                             'Duplicate Statement (before Bankplus)',
+                                             'BATCH STATEMENT CHARGE/PAGE-EMAIL',
+                                             'ACCOUNT CLOSING BEFORE 6 MONTHS',
+                                             'DOMESTIC FCY CHEQUES VALUE 7days',
+                                             'Effects not cleared (withdr from unclear',
+                                             'Retrieval of documents Archives',
+                                             'STAGE INSPECTION FEES-RETAIL',
+                                             'ATM CASH DEPOSIT',
+                                             'CLOSED AC BELOW 5Y PER PG')
+                AND      t.chanel_description IS NOT NULL
+                AND      t.value_date IS NOT NULL
+                AND      account_number IS NOT NULL
+                AND      product_description IS NOT NULL
+                AND      tmstamp >= (Now() - interval '366 days')
+                AND      date_trunc('months', tmstamp) != date_trunc('months', now())
+                AND      chanel_description IN ('ESB - ENTERPRISE SERVICE BUS','KOCELA - SUBSCRIBER AND PAYMENT CHANNEL','INTERNET')
+                GROUP BY date_trunc('months', tmstamp)
             """)
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -588,16 +663,52 @@ class StaffGradeView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
 class StaffYearsServiceView(APIView):
+    # Old gceo staff_years_service: banded service periods, NOT raw service_years.
+    # The chart reads service_period ('< 1 yr', '1 - 2 yr', ...) + total_staff;
+    # returning {service_years, count} left the chart empty.
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        data = (
-            EmployeeTable.objects.exclude(exit=1)
-            .values("service_years")
-            .annotate(count=Count("id"))
-            .order_by("service_years")
-        )
-        return Response(list(data))
+        with connection.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    service_period,
+                    total_staff,
+                    new_hires,
+                    new_promotion,
+                    total_exit
+                FROM (
+                    SELECT
+                        CASE
+                            WHEN service_years < 1 THEN '< 1 yr'
+                            WHEN service_years < 2 THEN '1 - 2 yr'
+                            WHEN service_years < 5 THEN '2 - 5 yr'
+                            WHEN service_years < 8 THEN '5 - 8 yr'
+                            WHEN service_years < 10 THEN '8 - 10 yr'
+                            WHEN service_years < 15 THEN '10 - 15 yr'
+                            WHEN service_years >= 10 THEN '> 15 yr'
+                        END::text AS service_period,
+                        COUNT(*) FILTER (WHERE exit = 0) AS total_staff,
+                        COUNT(*) FILTER (WHERE new = 1) AS new_hires,
+                        COUNT(*) FILTER (WHERE promotion = 1) AS new_promotion,
+                        COUNT(*) FILTER (WHERE exit = 1) AS total_exit,
+                        CASE
+                            WHEN service_years < 1 THEN 1
+                            WHEN service_years < 2 THEN 2
+                            WHEN service_years < 5 THEN 3
+                            WHEN service_years < 8 THEN 4
+                            WHEN service_years < 10 THEN 5
+                            WHEN service_years < 15 THEN 6
+                            ELSE 7
+                        END AS service_period_order
+                    FROM employee_table
+                    GROUP BY service_period, service_period_order
+                ) AS subquery
+                ORDER BY service_period_order
+            """)
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
