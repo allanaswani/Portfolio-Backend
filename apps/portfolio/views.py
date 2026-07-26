@@ -19,6 +19,7 @@ from .serializers import (
     PortfolioRmDepositTrendsSerializer, PortfolioRmRevenueSerializer,
     AccountsSerializer, AccountsHistorySerializer, LoansSerializer,
     LoansMomIFRSMovementSerializer, ChangePasswordSerializer, LogoutSerializer,
+    CustomerRevenueListSerializer,
 )
 from services import portfolio_service as svc
 
@@ -814,26 +815,53 @@ class RmTop10CustomersPerIncomeCategoryView(APIView):
 
 @extend_schema(tags=["Portfolio — Revenue"])
 class CustomersRevenueListView(generics.ListAPIView):
+    # Per-customer revenue breakdown (interest_income, interest_expenses, nfi, ftp,
+    # loan_loss, total_revenue) — old core.customers_revenue_list_for_rm. This is NOT
+    # customers() (deposit/loan balances); wiring it there made the revenue columns
+    # render as zeros.
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
+    serializer_class = CustomerRevenueListSerializer
     pagination_class = StandardPagination
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
-            return HfCustomer.objects.none()
+            return []
         profile = _get_profile(self.request.user)
-        return list(svc.customers(profile.sales_code))
+        return svc.customers_revenue_list_for_rm(profile.sales_code)
 
 
 @extend_schema(tags=["Portfolio — Revenue"])
 class DynamicFilterCustomersRevenueListPaginatedView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = HfCustomerSerializer
+    serializer_class = CustomerRevenueListSerializer
     pagination_class = StandardPagination
-    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
-            return HfCustomer.objects.none()
+            return []
         profile = _get_profile(self.request.user)
-        return list(svc.customers(profile.sales_code))
+        rows = svc.customers_revenue_list_for_rm(profile.sales_code)
+
+        # Old backend's dynamic filter: case-insensitive partial match for strings,
+        # exact match for numbers, over any column present in the row. Pagination's
+        # own params (page/page_size) aren't row keys, so they're ignored.
+        params = self.request.query_params
+        if not params:
+            return rows
+        filtered = []
+        for row in rows:
+            match = True
+            for key, value in params.items():
+                if key not in row:
+                    continue
+                field_val = row[key]
+                if isinstance(field_val, str):
+                    if value.lower() not in field_val.lower():
+                        match = False
+                        break
+                elif str(field_val) != str(value):
+                    match = False
+                    break
+            if match:
+                filtered.append(row)
+        return filtered

@@ -37,6 +37,59 @@ def customers(sales_code):
     )
 
 
+def customers_revenue_list_for_rm(sales_code):
+    """Per-customer REVENUE breakdown for an RM's book — the actual payload the
+    /portfolio/customers/revenue-list/ page expects:
+    cust_id, customer_name, interest_income, interest_expenses, nfi, ftp,
+    loan_loss, total_revenue, revenue_date.
+
+    Verbatim port of old core.customers_revenue_list_for_rm(). Do NOT confuse with
+    customers() above — that returns deposit/loan BALANCES (total_depost_balance,
+    total_loans) and was wrongly wired to this endpoint, which made every revenue
+    column render as zero on the frontend."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                rap.cust_id,
+                rap.customer_name,
+                COALESCE(SUM(CASE WHEN r.income_category = 'interest_income' THEN r.sum_dc END), 0) AS interest_income,
+                COALESCE(SUM(CASE WHEN r.income_category = 'interest_expenses' THEN r.sum_dc END), 0) AS interest_expenses,
+                COALESCE(SUM(CASE WHEN r.income_category = 'nfi' THEN r.sum_dc END), 0) AS nfi,
+                COALESCE(f.total_ftp, 0) AS ftp,
+                COALESCE(ll.loan_loss, 0) AS loan_loss,
+                (
+                    COALESCE(SUM(CASE WHEN r.income_category = 'interest_income' THEN r.sum_dc END), 0) +
+                    COALESCE(SUM(CASE WHEN r.income_category = 'interest_expenses' THEN r.sum_dc END), 0) +
+                    COALESCE(SUM(CASE WHEN r.income_category = 'nfi' THEN r.sum_dc END), 0) +
+                    COALESCE(f.total_ftp, 0) +
+                    COALESCE(ll.loan_loss, 0)
+                ) AS total_revenue,
+                CURRENT_DATE AS revenue_date
+            FROM retail_allocated_portfolio rap
+            LEFT JOIN revenue r
+                ON rap.cust_id = r.cust_id
+                AND date_trunc('year', r.tmstamp) = date_trunc('year', now())
+            LEFT JOIN (
+                SELECT cust_cif, SUM(total_ftp) AS total_ftp
+                FROM cust_monthly_ftp
+                WHERE current_year = EXTRACT(YEAR FROM CURRENT_DATE)
+                GROUP BY cust_cif
+            ) f ON rap.cust_id = f.cust_cif
+            LEFT JOIN (
+                SELECT cust_code_strategy::int AS cust_id, -SUM(COALESCE(pl_charge, 0) - COALESCE(int_adj, 0)) AS loan_loss
+                FROM loans_mom_ifrs_movement
+                WHERE EXTRACT(YEAR FROM eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+                AND cust_code_strategy ~ '^[0-9]+$'
+                GROUP BY cust_code_strategy
+            ) ll ON rap.cust_id = ll.cust_id
+            WHERE rap.sales_code = %s
+            GROUP BY rap.cust_id, rap.customer_name, f.total_ftp, ll.loan_loss
+            ORDER BY total_revenue DESC
+        """, [sales_code])
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
 def branch_customers(branch):
     return HfCustomer.objects.raw(
         """

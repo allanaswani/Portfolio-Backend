@@ -166,6 +166,21 @@ class SegmentCustomerSerializer(serializers.ModelSerializer):
     def get_unsecured(self, obj):      return str(obj.unsecured)
 
 
+class CustomerRevenueListSerializer(serializers.Serializer):
+    """Ported verbatim from old backend (portfolio.serializers). Shape of
+    /portfolio/customers/revenue-list/ — per-customer revenue components. The
+    frontend revenue table reads these exact field names; anything else renders
+    as zeros."""
+    cust_id = serializers.IntegerField()
+    customer_name = serializers.CharField()
+    interest_income = serializers.FloatField()
+    interest_expenses = serializers.FloatField()
+    nfi = serializers.FloatField()
+    ftp = serializers.FloatField()
+    loan_loss = serializers.FloatField()
+    total_revenue = serializers.FloatField()
+
+
 class ProspectsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Prospects
