@@ -529,15 +529,30 @@ class SalesCodeView(APIView):
 
 @extend_schema(tags=["Portfolio — Profile"])
 class RmFullListView(APIView):
+    """Old backend `rmlist`: per-RM revenue / deposit / loan totals from
+    hf_customer joined to retail_allocated_portfolio. Was returning Django
+    Profile rows (sales_code/branch/name) instead, so the RM-list table — which
+    reads rm_name/total_revenue/total_deposit_balance/total_loans — was empty."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        profiles = Profile.objects.select_related("user").exclude(sales_code__isnull=True)
-        data = [
-            {"sales_code": p.sales_code, "branch": p.branch, "name": p.user.get_full_name()}
-            for p in profiles
-        ]
-        return Response(data)
+        sql = """
+            SELECT
+                sales_code,
+                rap.rm_name,
+                SUM(total_revenue)        AS total_revenue,
+                SUM(total_depost_balance) AS total_deposit_balance,
+                SUM(total_loans)          AS total_loans
+            FROM hf_customer
+            LEFT JOIN retail_allocated_portfolio rap
+                ON hf_customer.cust_id = rap.cust_id
+            GROUP BY sales_code, rap.rm_name
+        """
+        with connection.cursor() as cur:
+            cur.execute(sql)
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return Response(rows)
 
 
 # ---------------------------------------------------------------------------
