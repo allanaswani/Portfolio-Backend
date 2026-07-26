@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from django.db import connection
+from django.db.models.functions import Lower, Trim
 from apps.portfolio.models import (
     HfCustomer, RetailAllocatedPortfolio, Prospects, Feedback, Loans,
     Accounts, AccountsHistory, PortfolioRmDepositTrends, PortfolioRmRevenue,
@@ -184,9 +185,25 @@ def loans_mom_ifrs_movement_by_sales_code(sales_code):
 
 
 def loans_arrears_by_sales_code(sales_code):
-    return Loans.objects.filter(
-        account_officer=sales_code,
-        days_in_arrears__gt=0,
+    # Match the OLD backend exactly (core.core LoansArrears*ByRmCode):
+    #   LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+    #   WHERE lns.days_in_arrears > 0
+    #     AND LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
+    # A loan belongs to an RM when the loan's CUSTOMER is allocated to that RM in
+    # retail_allocated_portfolio — NOT via loans.account_officer (that column is not
+    # the RM allocation key; filtering on it returns zero rows, which is why every
+    # arrears widget rendered empty). sales_code is CHAR-padded in the warehouse, so
+    # trim + lower both sides.
+    cust_ids = (
+        RetailAllocatedPortfolio.objects
+        .annotate(_sc=Lower(Trim("sales_code")))
+        .filter(_sc=(sales_code or "").strip().lower())
+        .values("cust_id")
+    )
+    return (
+        Loans.objects
+        .filter(cust_id__in=cust_ids, days_in_arrears__gt=0)
+        .order_by("days_in_arrears")  # deterministic order for pagination (old backend: days_in_arrears ASC)
     )
 
 

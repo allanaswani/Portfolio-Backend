@@ -701,7 +701,7 @@ class LoansArrearsSummaryByRmView(APIView):
     def get(self, request):
         from django.db.models import Count, Sum
         profile = _get_profile(request.user)
-        qs = Loans.objects.filter(account_officer=profile.sales_code, days_in_arrears__gt=0)
+        qs = svc.loans_arrears_by_sales_code(profile.sales_code)
         return Response({
             "total_accounts": qs.count(),
             "total_arrears": qs.aggregate(total=Sum("total_arrears"))["total"] or 0,
@@ -717,7 +717,7 @@ class LoansArrearsAccountsListByRmView(generics.ListAPIView):
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
-        return Loans.objects.filter(account_officer=profile.sales_code, days_in_arrears__gt=0)
+        return svc.loans_arrears_by_sales_code(profile.sales_code)
 
 
 @extend_schema(tags=["Portfolio — Arrears"])
@@ -730,7 +730,7 @@ class SearchLoansArrearsAccountsListByRmView(generics.ListAPIView):
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
-        return Loans.objects.filter(account_officer=profile.sales_code, days_in_arrears__gt=0)
+        return svc.loans_arrears_by_sales_code(profile.sales_code)
 
 
 @extend_schema(tags=["Portfolio — Arrears"])
@@ -740,7 +740,7 @@ class LoansArrearsDpdBucketSummaryByRmView(APIView):
     def get(self, request):
         from django.db.models import Count, Sum
         profile = _get_profile(request.user)
-        qs = Loans.objects.filter(account_officer=profile.sales_code, days_in_arrears__gt=0)
+        qs = svc.loans_arrears_by_sales_code(profile.sales_code)
 
         def bucket(days):
             if days <= 30:
@@ -770,7 +770,8 @@ class LoansProductArrearsSummaryByRmView(APIView):
         from django.db.models import Count, Sum
         profile = _get_profile(request.user)
         data = (
-            Loans.objects.filter(account_officer=profile.sales_code, days_in_arrears__gt=0)
+            svc.loans_arrears_by_sales_code(profile.sales_code)
+            .order_by()  # drop the service-level ordering so it doesn't leak into GROUP BY
             .values("loan_product")
             .annotate(count=Count("id"), total_arrears=Sum("total_arrears"))
         )
