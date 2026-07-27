@@ -604,7 +604,7 @@ class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
     model = AffordableHousingApplication
     serializer_class = AffordableHousingApplicationSerializer
     result_filename = "affordable_housing_applications_upload_results"
-    excluded_columns = ("id", "house_type")
+    excluded_columns = ("id", "house_type", "project_name")
 
     # Per-application assisted_by corrections (ported from legacy, which hardcoded
     # this as a one-off `if application_id == ...` in amend_row). Add entries here
