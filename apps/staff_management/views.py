@@ -779,56 +779,8 @@ class SeedDefaultKPIConfigView(APIView):
 
 
 # ── Trigger script endpoints ──────────────────────────────────────────────────
-
-def _trigger_response(default_name, request=None):
-    name = (request and request.data.get("script_name")) or default_name
-    return Response({
-        "status": "triggered",
-        "script": name,
-        "message": f"{name} script triggered successfully.",
-        "triggered_at": timezone.now().isoformat(),
-    })
-
-
-@extend_schema(tags=["Scorecard — Automation"])
-class TriggerInsuranceScriptView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            return _trigger_response("Insurance Policies", request)
-        except Exception as exc:
-            return Response({"status": "error", "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-@extend_schema(tags=["Scorecard — Automation"])
-class TriggerDrawdownsScriptView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            return _trigger_response("Drawdowns", request)
-        except Exception as exc:
-            return Response({"status": "error", "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-@extend_schema(tags=["Scorecard — Automation"])
-class TriggerTradeFinanceScriptView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            return _trigger_response("Trade Finance", request)
-        except Exception as exc:
-            return Response({"status": "error", "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-@extend_schema(tags=["Scorecard — Automation"])
-class TriggerWeightedSalesScriptView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            return _trigger_response("Weighted Sales", request)
-        except Exception as exc:
-            return Response({"status": "error", "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+# The Insurance / Drawdowns / Trade-Finance / Weighted-Sales trigger buttons are
+# wired directly to core.script_trigger.ScriptTriggerAPIView in urls.py — they run
+# the real ETL report (which emails the output), same as the old backend. They used
+# to be no-op stubs here that returned fake "triggered" success without doing
+# anything, which is why clicking "send" sent nothing.

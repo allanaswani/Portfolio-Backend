@@ -1,4 +1,7 @@
 from django.urls import include, path
+
+from core.script_trigger import ScriptTriggerAPIView
+
 from . import views
 from . import legacy_views as lv
 
@@ -57,10 +60,14 @@ urlpatterns = [
     path("setup-defaults/",                          views.SeedDefaultKPIConfigView.as_view()),
 
     # ── Automation trigger scripts ────────────────────────────────────────────
-    path("insurance-policy/trigger-script/",         views.TriggerInsuranceScriptView.as_view()),
-    path("drawdowns/trigger-script/",                views.TriggerDrawdownsScriptView.as_view()),
-    path("trade-finance/trigger-script/",            views.TriggerTradeFinanceScriptView.as_view()),
-    path("weighted-sales/trigger-script/",           views.TriggerWeightedSalesScriptView.as_view()),
+    # Run the real ETL report (which emails the output), exactly like the old
+    # backend: the frontend POSTs `script_name` (multipart) and we invoke
+    # `initiate_automation_report.sh <script_name>`. Same shared runner the HFDI
+    # trigger buttons use. (Previously these were no-op stubs that faked success.)
+    path("insurance-policy/trigger-script/",         ScriptTriggerAPIView.as_view()),
+    path("drawdowns/trigger-script/",                ScriptTriggerAPIView.as_view()),
+    path("trade-finance/trigger-script/",            ScriptTriggerAPIView.as_view()),
+    path("weighted-sales/trigger-script/",           ScriptTriggerAPIView.as_view()),
 
     # ══ Ported legacy staff_management resources ══════════════════════════════
     # NOTE: for each resource, the `upload-csv` / action paths are declared
