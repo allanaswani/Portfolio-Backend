@@ -219,10 +219,18 @@ work — Docker is the runtime for this deployment):
 docker run -d --name hf-backend --restart unless-stopped \
   --network=host \
   --env-file /etc/hf/prod.env \
+  -v /data/apps/datascience/etls/app_settings.py:/app/etls/app_settings.py:ro \
   hf-backend:latest
 
 docker logs -f hf-backend      # watch it boot
 ```
+> **The `-v … app_settings.py` mount is required for the ETL report buttons**
+> (Trade Finance / Insurance / Drawdowns / Weighted Sales scorecard "send"
+> buttons). The report scripts are baked into the image under `etls/`, but the
+> secret `app_settings.py` (bank-wide DB creds + SMTP password) is **not** — it is
+> injected read-only from the host at run time so credentials never enter git or an
+> image layer. Without the mount the buttons return a clear "app_settings.py is not
+> mounted" error instead of sending. See `etls/run_report.sh`.
 > **Code/config changes need a rebuild** — the image is a frozen snapshot. To pick up new
 > commits: `docker stop hf-backend && docker rm hf-backend`, `docker build -t hf-backend:latest .`,
 > then re-run the `docker run … hf-backend` command above.

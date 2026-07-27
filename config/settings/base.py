@@ -234,6 +234,12 @@ EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 
+# ETL report trigger (Trade Finance / Insurance / Drawdowns / Weighted Sales /
+# HFDI buttons). The reports are baked into the image under etls/ and run by
+# core.script_trigger.ScriptTriggerAPIView via this bash wrapper. Defaults to the
+# in-image runner; override per-host with ETL_SCRIPT_PATH if needed.
+ETL_SCRIPT_PATH = env("ETL_SCRIPT_PATH", default=str(BASE_DIR / "etls" / "run_report.sh"))
+
 # OpenAI
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 
