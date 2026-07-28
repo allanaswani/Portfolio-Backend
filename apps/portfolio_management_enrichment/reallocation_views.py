@@ -399,8 +399,9 @@ class CustomerAllocationBaseCSVUploadView(APIView):
         import io
         import zipfile
 
-        import chardet
         from django.http import HttpResponse
+
+        from core.csv_upload import decode_csv_bytes
 
         upload = request.FILES.get("file")
         if not upload:
@@ -408,8 +409,7 @@ class CustomerAllocationBaseCSVUploadView(APIView):
 
         try:
             raw = upload.read()
-            encoding = chardet.detect(raw)["encoding"] or "utf-8"
-            reader = csv.DictReader(raw.decode(encoding).splitlines())
+            reader = csv.DictReader(decode_csv_bytes(raw).splitlines())
 
             required_columns = [
                 f.name for f in CustomerAllocationBase._meta.concrete_fields

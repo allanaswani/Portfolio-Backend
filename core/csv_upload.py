@@ -37,6 +37,23 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 
+def decode_csv_bytes(raw_data):
+    """Decode uploaded CSV bytes to text, tolerating stray high bytes.
+
+    chardet returns ``"ascii"`` (or ``None``) for a file that is ASCII apart from
+    a handful of stray high bytes — most often a ``0xA0`` non-breaking space or a
+    smart quote pasted in from Excel. Strictly decoding such a file as ASCII then
+    raises ``'ascii' codec can't decode byte 0xA0`` and fails the whole upload.
+    We widen ASCII/None to cp1252 (a Windows superset of ASCII that also maps
+    nbsp and smart quotes) and always decode with ``errors="replace"`` so a single
+    bad byte can never abort the import.
+    """
+    detected = chardet.detect(raw_data)["encoding"]
+    if not detected or detected.lower() == "ascii":
+        detected = "cp1252"
+    return raw_data.decode(detected, errors="replace")
+
+
 class AmendingCsvUploadView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = (MultiPartParser, FormParser)
@@ -125,8 +142,7 @@ class AmendingCsvUploadView(APIView):
 
         try:
             raw_data = file_obj.read()
-            encoding = chardet.detect(raw_data)["encoding"] or "utf-8"
-            decoded_file = raw_data.decode(encoding).splitlines()
+            decoded_file = decode_csv_bytes(raw_data).splitlines()
             reader = csv.DictReader(decoded_file)
             fieldnames = reader.fieldnames or []
 
