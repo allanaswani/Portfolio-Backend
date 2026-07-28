@@ -437,21 +437,27 @@ class BranchRMDepositMovementYTDView(APIView):
     def get(self, request, branch=None):
         profile = _get_profile(request.user)
         yester1 = _yester_case("", "yester_1_bal", cy, py)
+        # rm_name must be the RM's name (from retail_allocated_portfolio), NOT the
+        # customer's. The earlier port used MAX(full_name) — full_name is the
+        # CUSTOMER name in daily_balance_movement — so the RM column showed customer
+        # names. Old backend (core.branch_rm_deposit_movement_ytd_data) sources it
+        # from rap.rm_name via a cust_cif = cust_id join, grouped by rm_code, rm_name.
         sql = f"""
             SELECT
-                rm_code,
-                MAX(full_name) AS rm_name,
-                SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0) AS yester_1_bal,
-                SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal,
-                SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0)
-                    - SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS ytd_movement
-            FROM daily_balance_movement
-            WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND brn_code::text IN (
+                dbm.rm_code,
+                rap.rm_name,
+                SUM(dbm.yester_1_bal) FILTER (WHERE dbm.yester_1_bal > 0) AS yester_1_bal,
+                SUM(dbm.dec_{py}_bal) FILTER (WHERE dbm.dec_{py}_bal > 0) AS dec_bal,
+                SUM(dbm.yester_1_bal) FILTER (WHERE dbm.yester_1_bal > 0)
+                    - SUM(dbm.dec_{py}_bal) FILTER (WHERE dbm.dec_{py}_bal > 0) AS ytd_movement
+            FROM daily_balance_movement dbm
+            LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = dbm.cust_cif
+            WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
+              AND dbm.brn_code::text IN (
                   SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
               )
-              AND rm_code IS NOT NULL
-            GROUP BY rm_code
+              AND dbm.rm_code IS NOT NULL
+            GROUP BY dbm.rm_code, rap.rm_name
             ORDER BY ytd_movement DESC NULLS LAST
         """
         with connection.cursor() as cur:
