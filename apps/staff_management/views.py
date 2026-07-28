@@ -733,30 +733,52 @@ class SeedDefaultKPIConfigView(APIView):
     def post(self, request):
         try:
             DEFAULT_ROLES = [
-                {"name": "Relationship Manager", "description": "RM managing retail portfolio"},
-                {"name": "Branch Manager", "description": "Branch-level management"},
-                {"name": "Team Leader", "description": "Team Leader overseeing RMs"},
-                {"name": "Sales Staff", "description": "Front-line sales personnel"},
+                {"name": "Relationship Manager", "description": "RM managing retail portfolio", "role_code": "RM", "role_type": "IC"},
+                {"name": "Branch Manager", "description": "Branch-level management", "role_code": "BM", "role_type": "MGR"},
+                {"name": "Team Leader", "description": "Team Leader overseeing RMs", "role_code": "TL", "role_type": "MGR"},
+                {"name": "Sales Staff", "description": "Front-line sales personnel", "role_code": "SS", "role_type": "IC"},
             ]
             DEFAULT_KPIS = [
-                {"name": "Deposits", "category": "deposits", "weight": 40.0},
-                {"name": "Loans", "category": "loans", "weight": 30.0},
-                {"name": "Revenue", "category": "revenue", "weight": 20.0},
-                {"name": "New Customers", "category": "customers", "weight": 10.0},
+                {"name": "Deposits", "category": "deposits", "weight": 40.0, "kpi_code": "DEP"},
+                {"name": "Loans", "category": "loans", "weight": 30.0, "kpi_code": "LOAN"},
+                {"name": "Revenue", "category": "revenue", "weight": 20.0, "kpi_code": "REV"},
+                {"name": "New Customers", "category": "customers", "weight": 10.0, "kpi_code": "NC"},
             ]
 
             roles_created, kpis_created, mappings_created = 0, 0, 0
 
+            # update_or_create so re-running this backfills the config fields on
+            # rows that were seeded before those columns existed.
             roles = []
             for r in DEFAULT_ROLES:
-                obj, created = ScorecardRole.objects.get_or_create(name=r["name"], defaults={"description": r["description"]})
+                obj, created = ScorecardRole.objects.update_or_create(
+                    name=r["name"],
+                    defaults={
+                        "description": r["description"],
+                        "role_code": r["role_code"],
+                        "role_type": r["role_type"],
+                        "is_active": True,
+                    },
+                )
                 roles.append(obj)
                 if created:
                     roles_created += 1
 
             kpis = []
             for k in DEFAULT_KPIS:
-                obj, created = ScorecardKPI.objects.get_or_create(name=k["name"], defaults={"category": k["category"], "weight": k["weight"]})
+                obj, created = ScorecardKPI.objects.update_or_create(
+                    name=k["name"],
+                    defaults={
+                        "category": k["category"],
+                        "weight": k["weight"],
+                        "kpi_code": k["kpi_code"],
+                        "kpi_description": f"{k['name']} performance vs target",
+                        "kpi_calculation_mode": "actual_vs_target",
+                        "kpi_rating_type": "percentage",
+                        "score_cap": 100,
+                        "is_active": True,
+                    },
+                )
                 kpis.append(obj)
                 if created:
                     kpis_created += 1

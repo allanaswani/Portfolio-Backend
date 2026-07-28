@@ -42,4 +42,14 @@ CREATE TABLE IF NOT EXISTS "employee_monthly_performance_v2" (
     "generated_at" timestamp with time zone NOT NULL
 );
 
+-- Scorecard config fields (staff_management 0007) so the Role KPI Mappings screen
+-- fills in role_code/role_type and kpi_code/description/calc-mode/rating/score_cap.
+ALTER TABLE "scorecard_roles" ADD COLUMN IF NOT EXISTS "role_code" varchar(50) NULL;
+ALTER TABLE "scorecard_roles" ADD COLUMN IF NOT EXISTS "role_type" varchar(10) NULL;
+ALTER TABLE "scorecard_kpis"  ADD COLUMN IF NOT EXISTS "kpi_code" varchar(50) NULL;
+ALTER TABLE "scorecard_kpis"  ADD COLUMN IF NOT EXISTS "kpi_description" text NULL;
+ALTER TABLE "scorecard_kpis"  ADD COLUMN IF NOT EXISTS "kpi_calculation_mode" varchar(50) NULL;
+ALTER TABLE "scorecard_kpis"  ADD COLUMN IF NOT EXISTS "kpi_rating_type" varchar(50) NULL;
+ALTER TABLE "scorecard_kpis"  ADD COLUMN IF NOT EXISTS "score_cap" double precision NOT NULL DEFAULT 0;
+
 COMMIT;

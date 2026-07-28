@@ -51,9 +51,16 @@ class BranchEmployeeData(models.Model):
 # ORM); the v2 table is created empty and repopulated by the scorecard recompute.
 # See [[model-gap-audit]] and docs/DEPLOY.md §"Full-replace".
 class ScorecardRole(models.Model):
+    ROLE_TYPE_CHOICES = [("IC", "IC"), ("MGR", "MGR"), ("EXEC", "EXEC")]
+
+    # ``name`` stays the canonical unique key (used by the seed + RoleKPIMapping);
+    # the frontend Role KPI Mappings screen reads/writes it as ``role_name``.
     name = models.CharField(max_length=255, unique=True)
     description = models.TextField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
+    # Contract fields the scorecard config screen expects.
+    role_code = models.CharField(max_length=50, blank=True, null=True)
+    role_type = models.CharField(max_length=10, choices=ROLE_TYPE_CHOICES, blank=True, null=True)
 
     class Meta:
         managed = True
@@ -72,10 +79,18 @@ class ScorecardKPI(models.Model):
         ("customers", "New Customers"),
         ("quality", "Quality"),
     ]
+    # ``name`` stays the canonical unique key; the frontend reads/writes it as
+    # ``kpi_name``. ``category``/``weight`` remain the internal computation inputs.
     name = models.CharField(max_length=255, unique=True)
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default="deposits")
     weight = models.FloatField(default=1.0)
     is_active = models.BooleanField(default=True)
+    # Contract fields the scorecard config screen expects.
+    kpi_code = models.CharField(max_length=50, blank=True, null=True)
+    kpi_description = models.TextField(blank=True, null=True)
+    kpi_calculation_mode = models.CharField(max_length=50, blank=True, null=True)
+    kpi_rating_type = models.CharField(max_length=50, blank=True, null=True)
+    score_cap = models.FloatField(default=0)
 
     class Meta:
         managed = True

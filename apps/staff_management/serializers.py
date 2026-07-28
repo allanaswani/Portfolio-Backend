@@ -39,15 +39,26 @@ class BranchEmployeeDataSerializer(serializers.ModelSerializer):
 
 
 class ScorecardRoleSerializer(serializers.ModelSerializer):
+    # Frontend Role KPI Mappings screen contract: role_code / role_name /
+    # role_type / is_active. role_name maps to the model's canonical ``name``.
+    role_name = serializers.CharField(source="name")
+
     class Meta:
         model = ScorecardRole
-        fields = "__all__"
+        fields = ["id", "role_code", "role_name", "role_type", "is_active"]
 
 
 class ScorecardKPISerializer(serializers.ModelSerializer):
+    # Frontend contract: kpi_code / kpi_name / kpi_description /
+    # kpi_calculation_mode / kpi_rating_type / score_cap / is_active.
+    kpi_name = serializers.CharField(source="name")
+
     class Meta:
         model = ScorecardKPI
-        fields = "__all__"
+        fields = [
+            "id", "kpi_code", "kpi_name", "kpi_description",
+            "kpi_calculation_mode", "kpi_rating_type", "score_cap", "is_active",
+        ]
 
 
 class RoleKPIMappingSerializer(serializers.ModelSerializer):
