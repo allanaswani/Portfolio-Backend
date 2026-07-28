@@ -97,6 +97,7 @@ reportlab==4.5.0
 openpyxl==3.1.5
 python-docx==1.2.0
 XlsxWriter==3.2.0  # required by the baked-in ETL report scripts under etls/
+psutil==6.1.1  # drawdown_report_correct.py builds a process-ancestry audit trail
 
 # ── Web Scraping / NLP ───────────────────────────────────────────────────────
 newspaper3k==0.2.8
