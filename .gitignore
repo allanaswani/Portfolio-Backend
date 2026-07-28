@@ -60,3 +60,6 @@ nosetests.xml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local ETL trigger queue (populated at runtime; host-mounted in prod)
+etl_requests/

@@ -219,21 +219,42 @@ work — Docker is the runtime for this deployment):
 docker run -d --name hf-backend --restart unless-stopped \
   --network=host \
   --env-file /etc/hf/prod.env \
-  -v /data/apps/datascience/etls/app_settings.py:/app/etls/app_settings.py:ro \
+  -v /data/apps/datascience/etl_requests:/app/etl_requests \
   hf-backend:latest
 
 docker logs -f hf-backend      # watch it boot
 ```
-> **The `-v … app_settings.py` mount is required for the ETL report buttons**
-> (Trade Finance / Insurance / Drawdowns / Weighted Sales scorecard "send"
-> buttons). The report scripts are baked into the image under `etls/`, but the
-> secret `app_settings.py` (bank-wide DB creds + SMTP password) is **not** — it is
-> injected read-only from the host at run time so credentials never enter git or an
-> image layer. Without the mount the buttons return a clear "app_settings.py is not
-> mounted" error instead of sending. See `etls/run_report.sh`.
+> **The `-v … etl_requests` mount powers the ETL report buttons** (Trade Finance /
+> Insurance / Drawdowns / Weighted Sales / HFDI "send" buttons). The report scripts
+> are **owned by the data team and run on the host** (`/data/apps/datascience/etls/`
+> with host `python3.6`) — they are deliberately **not** in this repo or image. The
+> button just writes a request file into this shared queue directory; a host-side
+> cron watcher runs the real report and it emails its own output. See **"ETL report
+> triggers (host-run)"** below.
 > **Code/config changes need a rebuild** — the image is a frozen snapshot. To pick up new
 > commits: `docker stop hf-backend && docker rm hf-backend`, `docker build -t hf-backend:latest .`,
 > then re-run the `docker run … hf-backend` command above.
+
+**ETL report triggers (host-run).** The trigger buttons queue a request; the host
+runs the report. One-time host setup:
+```bash
+# 1. Shared queue + logs dirs (the queue is bind-mounted into the container above)
+mkdir -p /data/apps/datascience/etl_requests /data/apps/datascience/logs
+
+# 2. Install the watcher (shipped in this repo at deploy/host/etl_request_watcher.sh)
+install -m 0755 deploy/host/etl_request_watcher.sh \
+  /data/apps/datascience/etl_request_watcher.sh
+
+# 3. Run it every minute from host cron (flock prevents overlap)
+( crontab -l 2>/dev/null; \
+  echo '* * * * * /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1' \
+) | crontab -
+```
+The watcher runs the data team's `initiate_automation_report.sh <script_name>` with
+host `python3.6`, exactly as the old backend did. Nothing about the reports (code,
+DB drivers, SMTP creds, `.sql`/config files) lives in this backend. Requests are
+marked `.done` / `.failed` in the queue dir; watcher activity is in
+`etl_request_watcher.log`.
 
 **Scheduled jobs — host cron.** Add these so the slides and insights stay fresh (they were the
 former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):

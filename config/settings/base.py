@@ -235,10 +235,13 @@ EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 
 # ETL report trigger (Trade Finance / Insurance / Drawdowns / Weighted Sales /
-# HFDI buttons). The reports are baked into the image under etls/ and run by
-# core.script_trigger.ScriptTriggerAPIView via this bash wrapper. Defaults to the
-# in-image runner; override per-host with ETL_SCRIPT_PATH if needed.
-ETL_SCRIPT_PATH = env("ETL_SCRIPT_PATH", default=str(BASE_DIR / "etls" / "run_report.sh"))
+# HFDI buttons). The report scripts are owned by the data team and run on the
+# HOST — they are NOT in this repo/image. core.script_trigger.ScriptTriggerAPIView
+# drops a request file into this queue directory; a host-side cron watcher
+# (deploy/host/etl_request_watcher.sh) runs the real report with the host's
+# python3.6. In the container, bind-mount the host's
+# /data/apps/datascience/etl_requests onto this path (see docs/DEPLOY.md).
+ETL_REQUEST_DIR = env("ETL_REQUEST_DIR", default=str(BASE_DIR / "etl_requests"))
 
 # OpenAI
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
