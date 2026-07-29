@@ -58,7 +58,7 @@ class BranchEmployeeDmcListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["sales_code", "brn_code", "staff_branch", "staff_zone", "team_leader", "active"]
-    queryset = BranchEmployeeDmcData.objects.all()
+    queryset = BranchEmployeeDmcData.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -95,7 +95,7 @@ class BranchFinalEmployeeDmcListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["sales_code", "brn_code", "staff_branch", "staff_zone", "team_leader", "active"]
-    queryset = BranchFinalEmployeeDmcData.objects.all()
+    queryset = BranchFinalEmployeeDmcData.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -132,7 +132,7 @@ class DrawdownListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["cust_id", "branch", "segment", "year_month", "unit_code"]
-    queryset = Drawdown.objects.all()
+    queryset = Drawdown.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -179,7 +179,7 @@ class InsurancePolicyListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["branch", "code", "rm", "month", "year", "product", "underwriter"]
-    queryset = InsurancePolicy.objects.all()
+    queryset = InsurancePolicy.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -226,7 +226,7 @@ class TradeFinanceListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["originating_branch", "rm_code", "product_type", "segment", "month", "year", "currency"]
-    queryset = TradeFinanceData.objects.all()
+    queryset = TradeFinanceData.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -269,7 +269,7 @@ class CustMonthlyFtpListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["cust_cif", "current_year"]
-    queryset = CustMonthlyFtp.objects.all()
+    queryset = CustMonthlyFtp.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -314,7 +314,7 @@ class MerchantBankTillManualListView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["seller_code", "sellercode", "current_branch", "brn_zone", "staff_role"]
-    queryset = MerchantBankTillManualData.objects.all()
+    queryset = MerchantBankTillManualData.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
@@ -342,7 +342,7 @@ class ProductListView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["code", "product_map", "focus", "sme_pb"]
-    queryset = Product.objects.all()
+    queryset = Product.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
