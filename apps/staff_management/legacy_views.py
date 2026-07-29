@@ -153,12 +153,14 @@ class DrawdownDailyListView(generics.ListCreateAPIView):
     # data-management screens. drawdown_daily is unmanaged, but DB_*/DW_* point
     # at the same physical database in this deployment, so the write lands in
     # the right table.
+    # Newest-first: without ordering the list is oldest-first, so freshly-added
+    # rows (highest id) land on the last page and look "missing" after a save.
     permission_classes = [IsAuthenticated]
     serializer_class = DrawdownDailySerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["cust_id", "unit_code", "id_product", "customer_segment"]
-    queryset = DrawdownDaily.objects.all()
+    queryset = DrawdownDaily.objects.all().order_by("-id")
 
 
 @extend_schema(tags=TAG)
