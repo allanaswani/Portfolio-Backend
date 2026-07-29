@@ -166,7 +166,10 @@ class DrawdownDailyListView(generics.ListCreateAPIView):
 
 
 @extend_schema(tags=TAG)
-class DrawdownDailyDetailView(generics.RetrieveAPIView):
+class DrawdownDailyDetailView(generics.RetrieveUpdateDestroyAPIView):
+    # Retrieve + update + delete, like the old backend's DrawdownDailyView
+    # (GET/PUT/DELETE). Editing (e.g. correcting a sales code) sent PUT here and
+    # got 405 while this was a read-only RetrieveAPIView.
     permission_classes = [IsAuthenticated]
     serializer_class = DrawdownDailySerializer
     queryset = DrawdownDaily.objects.all()
@@ -320,7 +323,8 @@ class MerchantBankTillManualListView(generics.ListCreateAPIView):
 
 
 @extend_schema(tags=TAG)
-class MerchantBankTillManualDetailView(generics.RetrieveAPIView):
+class MerchantBankTillManualDetailView(generics.RetrieveUpdateDestroyAPIView):
+    # Retrieve + update + delete, like the old backend's MerchantBankTillDetailView.
     permission_classes = [IsAuthenticated]
     serializer_class = MerchantBankTillManualDataSerializer
     queryset = MerchantBankTillManualData.objects.all()
