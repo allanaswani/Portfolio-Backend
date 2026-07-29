@@ -1,3 +1,4 @@
+import logging
 import random
 import string
 from datetime import timedelta
@@ -5,6 +6,36 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
+
+logger = logging.getLogger(__name__)
+
+
+def _brand():
+    return getattr(settings, "APP_BRAND_NAME", "HFCB")
+
+
+def _access_links_block():
+    """Footer listing both ways to reach the tool — off-LAN and on-LAN."""
+    pub = (getattr(settings, "FRONTEND_PUBLIC_URL", "") or "").rstrip("/")
+    lan = (getattr(settings, "FRONTEND_LAN_URL", "") or "").rstrip("/")
+    lines = ["Access the tool here:"]
+    if pub:
+        lines.append(f"  - Off-network (internet): {pub}")
+    if lan:
+        lines.append(f"  - On-network (office LAN): {lan}")
+    return "\n".join(lines)
+
+
+def _reset_links_block(token):
+    """Both password-reset links (off-LAN + on-LAN) carrying the token."""
+    pub = (getattr(settings, "FRONTEND_PUBLIC_URL", "") or "").rstrip("/")
+    lan = (getattr(settings, "FRONTEND_LAN_URL", "") or "").rstrip("/")
+    lines = []
+    if pub:
+        lines.append(f"  - Off-network (internet): {pub}/reset_password/confirm/{token}")
+    if lan:
+        lines.append(f"  - On-network (office LAN): {lan}/reset_password/confirm/{token}")
+    return "\n".join(lines)
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -80,13 +111,16 @@ class GenerateOTPView(APIView):
 
         try:
             send_mail(
-                subject="Your OTP Code",
-                message=f"Your OTP is: {otp_code}. It expires in 5 minutes.",
-                from_email="reports.analytics@hfgroup.co.ke",
+                subject=f"Your {_brand()} OTP code",
+                message=(
+                    f"Your {_brand()} OTP is: {otp_code}. It expires in 5 minutes.\n\n"
+                    f"{_access_links_block()}"
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
             )
         except Exception:
-            pass
+            logger.exception("OTP email failed for %s", user.email)
 
         if settings.DEBUG:
             print(f"[DEBUG] Generated OTP for {user.email}: {otp_code}")
@@ -117,17 +151,30 @@ class VerifyOTPView(APIView):
 
 
 def password_reset_token_created(sender, instance, reset_password_token, *args, **kwargs):
-    """Signal handler for django-rest-passwordreset."""
-    send_mail(
-        subject="Password Reset Request",
-        message=(
-            f"Hi {instance.user.first_name},\n\n"
-            f"Use this token to reset your password: {reset_password_token.key}\n\n"
-            "This token expires in 24 hours."
-        ),
-        from_email="reports.analytics@hfgroup.co.ke",
-        recipient_list=[instance.user.email],
+    """Signal handler for django-rest-passwordreset — emails the reset links."""
+    brand = _brand()
+    token = reset_password_token.key
+    greeting = instance.user.first_name or instance.user.username
+    message = (
+        f"Hi {greeting},\n\n"
+        f"We received a request to reset your {brand} account password.\n\n"
+        "Open one of the links below and follow the prompts to set a new password:\n\n"
+        f"{_reset_links_block(token)}\n\n"
+        f"If the links don't open, go to the reset page and paste this token:\n  {token}\n\n"
+        "This link and token expire in 24 hours. If you didn't request this, "
+        "you can safely ignore this email."
     )
+    try:
+        send_mail(
+            subject=f"{brand} password reset",
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[instance.user.email],
+        )
+    except Exception:
+        # Don't 500 the reset endpoint on a mail hiccup — but make the cause
+        # visible in the container logs instead of failing silently.
+        logger.exception("Password reset email failed for %s", instance.user.email)
 
 
 # ===========================================================================
@@ -164,25 +211,27 @@ def _email_temp_password(email, username, password, *, is_reset=False):
     change it. Best-effort — never blocks the admin action if mail fails."""
     if not email:
         return
+    brand = _brand()
     action = "reset" if is_reset else "created"
     try:
         send_mail(
-            subject="Your HF Group account password",
+            subject=f"Your {brand} account password",
             message=(
                 f"Hello {username},\n\n"
-                f"Your HF Group analytics account has been {action}.\n\n"
+                f"Your {brand} account has been {action}.\n\n"
                 f"Username: {username}\n"
                 f"Temporary password: {password}\n\n"
                 "Please sign in with this temporary password and update it "
                 "immediately from your profile settings.\n\n"
+                f"{_access_links_block()}\n\n"
                 "If you did not expect this email, contact your administrator."
             ),
-            from_email="reports.analytics@hfgroup.co.ke",
+            from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[email],
             fail_silently=True,
         )
     except Exception:
-        pass
+        logger.exception("Account password email failed for %s", email)
 
 
 @extend_schema(tags=["Admin — Users"])

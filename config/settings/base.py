@@ -233,6 +233,15 @@ EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="reports.analytics@hfgroup.co.ke")
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+
+# Branding + access links baked into outgoing emails (OTP, password reset,
+# account provisioning). Env-driven so a rename or a new host never needs a code
+# change. FRONTEND_PUBLIC_URL = off-LAN/internet, FRONTEND_LAN_URL = office LAN.
+APP_BRAND_NAME = env("APP_BRAND_NAME", default="HFCB")
+FRONTEND_PUBLIC_URL = env("FRONTEND_PUBLIC_URL", default="https://ceo.hfgroup.co.ke")
+FRONTEND_LAN_URL = env("FRONTEND_LAN_URL", default="http://128.2.1.25:5400")
 
 # ETL report trigger (Trade Finance / Insurance / Drawdowns / Weighted Sales /
 # HFDI buttons). The report scripts are owned by the data team and run on the
