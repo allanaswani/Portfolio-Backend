@@ -151,10 +151,16 @@ class VerifyOTPView(APIView):
 
 
 def password_reset_token_created(sender, instance, reset_password_token, *args, **kwargs):
-    """Signal handler for django-rest-passwordreset — emails the reset links."""
+    """Signal handler for django-rest-passwordreset — emails the reset links.
+
+    NOTE: in this library ``instance`` is the *view*, not the token. The user is
+    on ``reset_password_token.user`` (using ``instance.user`` raised AttributeError
+    and 500'd the endpoint before any mail was sent).
+    """
     brand = _brand()
     token = reset_password_token.key
-    greeting = instance.user.first_name or instance.user.username
+    user = reset_password_token.user
+    greeting = user.first_name or user.username
     message = (
         f"Hi {greeting},\n\n"
         f"We received a request to reset your {brand} account password.\n\n"
@@ -169,12 +175,12 @@ def password_reset_token_created(sender, instance, reset_password_token, *args, 
             subject=f"{brand} password reset",
             message=message,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[instance.user.email],
+            recipient_list=[user.email],
         )
     except Exception:
         # Don't 500 the reset endpoint on a mail hiccup — but make the cause
         # visible in the container logs instead of failing silently.
-        logger.exception("Password reset email failed for %s", instance.user.email)
+        logger.exception("Password reset email failed for %s", user.email)
 
 
 # ===========================================================================
