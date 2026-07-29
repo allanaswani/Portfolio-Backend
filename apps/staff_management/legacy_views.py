@@ -75,7 +75,9 @@ class BranchEmployeeDmcCsvUploadView(AmendingCsvUploadView):
     model = BranchEmployeeDmcData
     serializer_class = BranchEmployeeDmcDataSerializer
     result_filename = "branch_employee_dmc_data_upload_results"
-    excluded_columns = ("id", "updated_at")
+    # date_time_etl is an auto-filled ETL housekeeping column (default=now); the
+    # old backend never required it in the CSV, so don't demand it here either.
+    excluded_columns = ("id", "updated_at", "date_time_etl")
 
     def save_valid(self, row, serializer):
         data = serializer.validated_data
