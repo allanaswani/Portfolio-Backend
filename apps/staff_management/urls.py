@@ -69,6 +69,7 @@ urlpatterns = [
     path("trade-finance/trigger-script/",            ScriptTriggerAPIView.as_view()),
     path("weighted-sales/trigger-script/",           ScriptTriggerAPIView.as_view()),
     path("branch-deposit-movement/trigger-script/",  ScriptTriggerAPIView.as_view()),
+    path("billable-transactions/trigger-script/",    ScriptTriggerAPIView.as_view()),
 
     # ══ Ported legacy staff_management resources ══════════════════════════════
     # NOTE: for each resource, the `upload-csv` / action paths are declared
