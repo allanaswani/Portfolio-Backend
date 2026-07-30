@@ -5,6 +5,7 @@ from .models import (
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
     ProjectTitanDailyCollections, ProjectTitanPlotsAllocation, ProjectTitanPlotsAllocationFieldChange,
+    ProjectTitanPlotsAgentAllocation,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
@@ -118,6 +119,13 @@ class ProjectTitanPlotsAllocationFieldChangeSerializer(serializers.ModelSerializ
     class Meta:
         model = ProjectTitanPlotsAllocationFieldChange
         fields = "__all__"
+
+
+class ProjectTitanPlotsAgentAllocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectTitanPlotsAgentAllocation
+        fields = "__all__"
+        read_only_fields = ("created_at", "updated_at")
 
 
 class HfdiProjectsDailyCollectionsDataSerializer(serializers.ModelSerializer):

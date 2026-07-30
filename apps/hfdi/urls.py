@@ -78,6 +78,12 @@ urlpatterns = [
     path("project_titan_plots_allocation/changes/", views.ProjectTitanPlotsAllocationFieldChangeListView.as_view()),
     path("project_titan_plots_allocation/<int:pk>/", views.ProjectTitanPlotsAllocationDetailView.as_view()),
 
+    # Project Titan Plots Agent Allocation (managed: full CRUD + search + upload)
+    path("project_titan_plots_agent_allocation/", views.ProjectTitanPlotsAgentAllocationListView.as_view()),
+    path("project_titan_plots_agent_allocation/search/", views.ProjectTitanPlotsAgentAllocationSearchAPIView.as_view()),
+    path("project_titan_plots_agent_allocation/upload-csv/", views.ProjectTitanPlotsAgentAllocationCSVUploadView.as_view()),
+    path("project_titan_plots_agent_allocation/<int:pk>/", views.ProjectTitanPlotsAgentAllocationDetailView.as_view()),
+
     # Daily Collections + Inventory Sales (warehouse, read-only: list + search)
     path("daily_collections/", views.HfdiProjectsDailyCollectionsDataListView.as_view()),
     path("daily_collections/search/", views.HfdiProjectsDailyCollectionsDataSearchAPIView.as_view()),

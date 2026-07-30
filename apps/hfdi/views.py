@@ -20,6 +20,7 @@ from .models import (
     HfdiEmployeeData, HfdiEmployeeDataSalesRecord, HfdiScorecardPerformanceRecord,
     WeightedDashboardManualSales, HfdiCustomersHfcMortgages,
     ProjectTitanDailyCollections, ProjectTitanPlotsAllocation, ProjectTitanPlotsAllocationFieldChange,
+    ProjectTitanPlotsAgentAllocation,
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
@@ -32,6 +33,7 @@ from .serializers import (
     HfdiScorecardPerformanceRecordSerializer, WeightedDashboardManualSalesSerializer,
     HfdiCustomersHfcMortgagesSerializer, ProjectTitanDailyCollectionsSerializer,
     ProjectTitanPlotsAllocationSerializer, ProjectTitanPlotsAllocationFieldChangeSerializer,
+    ProjectTitanPlotsAgentAllocationSerializer,
     HfdiProjectsDailyCollectionsDataSerializer,
     HfdiProjectsInventorySalesDataSerializer, AffordableHousingApplicationSerializer,
     AffordableHousingRegistrationsSerializer, AffordableHousingProjectsPipelineSerializer,
@@ -484,7 +486,7 @@ class ProjectTitanPlotsAllocationCSVUploadView(AmendingCsvUploadView):
     model = ProjectTitanPlotsAllocation
     serializer_class = ProjectTitanPlotsAllocationSerializer
     result_filename = "project_titan_plots_allocation_upload_results"
-    excluded_columns = ("id", "alternative_phone_number", "allocation_collection_agent", "allocation_collection_group")
+    excluded_columns = ("id", "alternative_phone_number")
 
     def amend_row(self, row):
         phone_parts = [part.strip() for part in re.split(r"[/,&]", row.get("phone_number") or "") if part.strip()]
@@ -535,6 +537,45 @@ class ProjectTitanPlotsAllocationFieldChangeListView(generics.ListAPIView):
         if plot_number:
             queryset = queryset.filter(plot_number=plot_number)
         return queryset
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
+class ProjectTitanPlotsAgentAllocationListView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanPlotsAgentAllocationSerializer
+    pagination_class = StandardPagination
+    queryset = ProjectTitanPlotsAgentAllocation.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
+class ProjectTitanPlotsAgentAllocationDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectTitanPlotsAgentAllocationSerializer
+    queryset = ProjectTitanPlotsAgentAllocation.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
+class ProjectTitanPlotsAgentAllocationSearchAPIView(DynamicColumnSearchListView):
+    serializer_class = ProjectTitanPlotsAgentAllocationSerializer
+    search_model = ProjectTitanPlotsAgentAllocation
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
+class ProjectTitanPlotsAgentAllocationCSVUploadView(AmendingCsvUploadView):
+    """Upsert on plot_number."""
+
+    model = ProjectTitanPlotsAgentAllocation
+    serializer_class = ProjectTitanPlotsAgentAllocationSerializer
+    result_filename = "project_titan_plots_agent_allocation_upload_results"
+    excluded_columns = ("id",)
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        ProjectTitanPlotsAgentAllocation.objects.update_or_create(
+            plot_number=data.get("plot_number"),
+            defaults=data,
+        )
+        return None
 
 
 # Daily Collections and Inventory Sales are unmanaged warehouse tables

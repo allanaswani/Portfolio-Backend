@@ -305,6 +305,24 @@ class ProjectTitanPlotsAllocation(models.Model):
     plot_status = models.CharField(max_length=200, null=True, blank=True, verbose_name="Plot Status")
     plot_title_number = models.CharField(max_length=200, null=True, blank=True, verbose_name="Plot Title Number")
     plot_balance = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Plot Balance")
+
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "project_titan_plots_allocation"
+
+
+class ProjectTitanPlotsAgentAllocation(models.Model):
+    """
+    Collection-agent assignment for a Project Titan plot, split out of
+    ProjectTitanPlotsAllocation so agent reassignments (a separate workflow
+    from plot allocation itself) get their own upload/search/history trail.
+    """
+    plot_number = models.IntegerField(null=True, blank=True, verbose_name="Plot Number")
     allocation_collection_code = models.IntegerField(null=True, blank=True, verbose_name="Staff Collection Code")
     allocation_collection_agent = models.CharField(max_length=300, null=True, blank=True, verbose_name="Staff Collection Name")
     allocation_collection_group = models.CharField(max_length=300, null=True, blank=True, verbose_name="Staff Collection Group")
@@ -316,7 +334,7 @@ class ProjectTitanPlotsAllocation(models.Model):
 
     class Meta:
         managed = True
-        db_table = "project_titan_plots_allocation"
+        db_table = "project_titan_plots_agent_allocation"
 
 
 class ProjectTitanPlotsAllocationFieldChange(models.Model):
@@ -346,8 +364,6 @@ class ProjectTitanPlotsAllocationFieldChange(models.Model):
     eurobond_employee_allocaiton_changed = models.BooleanField(default=False)
     deed_of_settlment_allocation_changed = models.BooleanField(default=False)
     gratuity_allocation_changed = models.BooleanField(default=False)
-    allocation_collection_agent_changed = models.BooleanField(default=False)
-    allocation_collection_group_changed = models.BooleanField(default=False)
     national_id_changed = models.BooleanField(default=False)
     phone_number_changed = models.BooleanField(default=False)
     alternative_phone_number_changed = models.BooleanField(default=False)
