@@ -4,6 +4,7 @@ The rewritten views returned per-channel/segment LISTS, but the frontend (built 
 the old backend) expects SCALAR objects: {total,...}, {number_of_digital,...},
 {number_of_active,...}. These reproduce the old queries 1:1 against the same tables.
 """
+from django.core.cache import cache
 from django.db import connection
 from apps.gceo_dashboard.models import Customers, TransactionDiary
 from core.date_utils import current_year, previous_year
@@ -15,50 +16,77 @@ def _first(rows, default=None):
     return default
 
 
+# These four customer KPIs run live COUNT(DISTINCT) aggregations over the very
+# large customers/accounts and transaction_diary tables. They are daily-grade
+# figures, so we serve them from the shared (DB) cache and only recompute every
+# 30 min — this keeps a single heavy query from blocking gunicorn workers on
+# every dashboard load. See ActiveCustomersView (was timing out at 120s).
+_KPI_TTL = 60 * 30  # seconds
+
+
+def _cached(key, compute, ttl=_KPI_TTL):
+    value = cache.get(key)
+    if value is None:
+        value = compute()
+        cache.set(key, value, ttl)
+    return value
+
+
 def customer_total():
     """customer_total/ → {total, percentage_change} (old customer_total_list)."""
-    q = Customers.objects.raw('''
-        SELECT 1 id,
-            Count(DISTINCT c.cust_id) filter ( WHERE account_no IS NOT NULL ) AS total,
-            round(CASE
-                WHEN (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1 IS NULL THEN 0
-                ELSE (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1
-            END::numeric, 2) AS percentage_change
-        FROM customers c
-        JOIN accounts a ON c.cust_id = a.cust_id
-    ''')
-    r = _first(q)
-    return {"total": r.total, "percentage_change": r.percentage_change} if r else {}
+    def _compute():
+        q = Customers.objects.raw('''
+            SELECT 1 id,
+                Count(DISTINCT c.cust_id) filter ( WHERE account_no IS NOT NULL ) AS total,
+                round(CASE
+                    WHEN (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1 IS NULL THEN 0
+                    ELSE (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1
+                END::numeric, 2) AS percentage_change
+            FROM customers c
+            JOIN accounts a ON c.cust_id = a.cust_id
+        ''')
+        r = _first(q)
+        return {"total": r.total, "percentage_change": r.percentage_change} if r else {}
+    return _cached("gceo:customer_total", _compute)
 
 
 def digital_customers():
     """digital_customers/ → {number_of_digital, percentage_change} (VIRTUAL ACCOUNT MOBILE)."""
-    q = Customers.objects.raw('''
-        SELECT 1 id,
-            Count(DISTINCT c.cust_id) filter ( WHERE account_no IS NOT NULL ) AS number_of_digital,
-            round(CASE
-                WHEN (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1 IS NULL THEN 0
-                ELSE (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1
-            END::numeric, 2) AS percentage_change
-        FROM customers c
-        LEFT JOIN accounts a ON c.cust_id = a.cust_id
-        WHERE a.product_type = 'VIRTUAL ACCOUNT MOBILE' AND 1=1
-    ''')
-    r = _first(q)
-    return {"number_of_digital": r.number_of_digital, "percentage_change": r.percentage_change} if r else {}
+    def _compute():
+        q = Customers.objects.raw('''
+            SELECT 1 id,
+                Count(DISTINCT c.cust_id) filter ( WHERE account_no IS NOT NULL ) AS number_of_digital,
+                round(CASE
+                    WHEN (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1 IS NULL THEN 0
+                    ELSE (count(DISTINCT c.cust_id) filter ( WHERE c.open_date::DATE >= date_trunc('year', now())::timestamp::DATE)::DOUBLE PRECISION / nullif(count(DISTINCT c.cust_id),0))::DOUBLE PRECISION * 1
+                END::numeric, 2) AS percentage_change
+            FROM customers c
+            LEFT JOIN accounts a ON c.cust_id = a.cust_id
+            WHERE a.product_type = 'VIRTUAL ACCOUNT MOBILE' AND 1=1
+        ''')
+        r = _first(q)
+        return {"number_of_digital": r.number_of_digital, "percentage_change": r.percentage_change} if r else {}
+    return _cached("gceo:digital_customers", _compute)
 
 
 def bank_customers_active():
     """bank_customers_active → {number_of_active, percentage_change} — distinct customers
     transacting in the last 30 days (old customers_active)."""
-    q = TransactionDiary.objects.raw('''
+    def _compute():
+        q = TransactionDiary.objects.raw('''
         SELECT 1 id,
             Count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp >= now() - interval '30days') AS number_of_active,
             ((count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp <= now() - interval '30days' AND tmstamp >= now() - interval '60days')
               - count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp >= now() - interval '30days'))::DOUBLE PRECISION
              / nullif(count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp <= now() - interval '30days' AND tmstamp >= now() - interval '60days'),0))::DOUBLE PRECISION * 1 AS percentage_change
         FROM transaction_diary t
-        WHERE t.justific_name IN (
+        WHERE
+            -- Every FILTER above only looks back 60 days, so rows older than that
+            -- contribute 0 to all counts. Bounding the scan here is equivalent but
+            -- reads a 60-day slice instead of the entire transaction history
+            -- (this is what was blowing the 120s worker timeout).
+            t.tmstamp >= now() - interval '60days' AND
+            t.justific_name IN (
             'CHEQUE DEPOSIT OF OTHER BANK (ELEC.CLER)','IN HOUSE CHEQUES','DEPOSIT CASH','CASH DEPOSIT FROM ATM',
             'CASH WITHDRAWAL','CHEQUE PAYMENT FROM CARNET','ORDINARY CLEARING CHEQUE','CLOSURE ZERO BALANCE',
             'ATM WITHDRAWAL (HF TERMINAL)','Confirmation To Embassies','Audit Confirmation','Bank Reference/Opinion',
@@ -83,26 +111,32 @@ def bank_customers_active():
         AND lower(reversed_trx_flag) != lower('Reversed')
         AND reverse_flag != 'Reversal'
     ''')
-    r = _first(q)
-    return {"number_of_active": r.number_of_active, "percentage_change": r.percentage_change} if r else {}
+        r = _first(q)
+        return {"number_of_active": r.number_of_active, "percentage_change": r.percentage_change} if r else {}
+    return _cached("gceo:bank_customers_active", _compute)
 
 
 def digital_active_30():
     """digital_active_30_days → {number_of_active, percentage_change} — distinct customers
     active on digital channels in the last 30 days."""
-    q = TransactionDiary.objects.raw('''
+    def _compute():
+        q = TransactionDiary.objects.raw('''
         SELECT 1 id,
             Count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp >= now() - interval '30days') AS number_of_active,
             ((count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp <= now() - interval '30days' AND tmstamp >= now() - interval '60days')
               - count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp >= now() - interval '30days'))::DOUBLE PRECISION
              / nullif(count(DISTINCT fk_customercust_id) filter ( WHERE tmstamp <= now() - interval '30days' AND tmstamp >= now() - interval '60days'),0))::DOUBLE PRECISION * 1 AS percentage_change
         FROM transaction_diary t
-        WHERE t.justific_name IN (
+        WHERE
+            -- Bound the scan to the 60-day window the FILTERs use (see bank_customers_active).
+            t.tmstamp >= now() - interval '60days' AND
+            t.justific_name IN (
             'ESB - ENTERPRISE SERVICE BUS','KOCELA - SUBSCRIBER AND PAYMENT CHANNEL','DEPOSIT CASH')
         AND t.chanel_description IS NOT NULL
     ''')
-    r = _first(q)
-    return {"number_of_active": r.number_of_active, "percentage_change": r.percentage_change} if r else {}
+        r = _first(q)
+        return {"number_of_active": r.number_of_active, "percentage_change": r.percentage_change} if r else {}
+    return _cached("gceo:digital_active_30", _compute)
 
 
 def new_customers_trends():
