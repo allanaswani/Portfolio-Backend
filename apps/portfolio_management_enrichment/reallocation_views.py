@@ -16,7 +16,7 @@ those):
     legacy excoPermissions                          → ExcoPermissions         ("exco")
 """
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import transaction
+from django.db import connections, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -471,24 +471,174 @@ class CustomerAllocationBaseCSVUploadView(APIView):
         return "; ".join(f"{field}: {', '.join(map(str, errs))}" for field, errs in errors.items())
 
 
+def _dbs_colocated():
+    """True when the app (``default``) and warehouse (``datawarehouse``) aliases
+    point at the same physical Postgres. The prod deployment aligns DW_* to DB_*
+    (both = the datawarehouse database), so the sync's cross-table SQL — which
+    joins customer_allocation_base (app) with retail_allocated_portfolio +
+    branch_employee_dmc_data (warehouse) — can run on one connection. Only a
+    genuinely split dev setup (separate physical DBs) should block it."""
+    def target(alias):
+        s = connections[alias].settings_dict
+        return ((s.get("HOST") or "").lower(), str(s.get("PORT") or ""), s.get("NAME"))
+    try:
+        return target("default") == target("datawarehouse")
+    except Exception:
+        return False
+
+
 @extend_schema(tags=[_TAG])
 class PortfolioAllocationUpdateView(APIView):
     """
     EXCO strategy-override: sync retail_allocated_portfolio from
-    customer_allocation_base. The legacy implementation runs a single raw-SQL
-    statement joining customer_allocation_base (now the APP db) with
-    retail_allocated_portfolio + branch_employee_dmc_data (the WAREHOUSE db).
-    Under the new two-database split those tables live in different connections,
-    so the cross-database join cannot run here. Disabled with a clear message
-    rather than silently writing partial/incorrect warehouse data.
+    customer_allocation_base (+ branch_employee_dmc_data for the RM email) with a
+    single-CTE UPDATE/INSERT, pre-logging every RM change to
+    CustomerTransferHistory. Ported verbatim from the legacy backend.
+
+    The join spans the app and warehouse tables, so it needs all three co-located
+    in one physical database. On prod they are (DW_* is aligned to DB_*), so this
+    runs on the ``default`` connection. On a genuinely split dev DB it self-disables
+    with a clear 501 rather than writing partial/incorrect data.
     """
     permission_classes = [IsAuthenticated, ExcoPermissions]
 
     def post(self, request):
+        if not _dbs_colocated():
+            return Response(
+                {"detail": "Portfolio allocation sync is unavailable in the split-database "
+                           "deployment (customer_allocation_base is in the application DB while "
+                           "retail_allocated_portfolio is in the warehouse). Run the sync where "
+                           "both tables are co-located, or migrate it to a cross-DB ETL job."},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        try:
+            with transaction.atomic(using="default"):
+                affected = self._perform_sql_update()
+        except Exception as exc:  # noqa: BLE001 — surface the DB error to the caller
+            return Response({"detail": f"Allocation sync failed: {exc}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(
-            {"detail": "Portfolio allocation sync is unavailable in the split-database "
-                       "deployment (customer_allocation_base is in the application DB while "
-                       "retail_allocated_portfolio is in the warehouse). Run the sync where "
-                       "both tables are co-located, or migrate it to a cross-DB ETL job."},
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+            {"detail": "Portfolio allocation synced.", "rows_affected": affected},
+            status=status.HTTP_200_OK,
         )
+
+    def _log_transfer_history(self, cust_id, from_rm_code, from_rm_name,
+                              to_rm_code, to_rm_name, email, approval="strategy_override"):
+        customer = CustomerAllocationBase.objects.filter(cust_id=cust_id).first()
+        if not customer:
+            return
+        CustomerTransferHistory.objects.create(
+            group_id=customer.group_id or "Unknown",
+            cust_id=cust_id,
+            customer_name=customer.customer_name or "Unknown",
+            main_segment=customer.main_segment or "Unknown",
+            customer_branch_name=customer.customer_branch_name or "Unknown",
+            cust_branch=customer.cust_branch or "Unknown",
+            from_rm_code=from_rm_code or "Unassigned",
+            from_rm_name=from_rm_name or "Unassigned",
+            from_rm_role=customer.rm_role or "Unknown",
+            from_rm_branch_name=customer.rm_branch_name or "Unknown",
+            to_rm_code=to_rm_code or "Unassigned",
+            to_rm_name=to_rm_name or "Unassigned",
+            to_rm_role="Unknown",
+            to_rm_branch_name="Unknown",
+            approved_by_team_leader="Strategy Approved Override",
+            approval_status=approval,
+            approval_comments=f"Automated update: RM={to_rm_name}, Email={email}",
+            requesting_comments="Data sync from external source",
+        )
+
+    def _perform_sql_update(self):
+        """Legacy single-pass sync: pre-log changes, then one CTE UPDATE/INSERT.
+        Returns the number of rows affected by the write."""
+        with connections["default"].cursor() as cursor:
+            # Step 1: pre-log every row whose RM/email differs from the warehouse.
+            cursor.execute("""
+                SELECT
+                    cab.cust_id,
+                    cab.rm_code, cab.rm_name, bedd.staff_email,
+                    rap.sales_code, rap.rm_name, rap.email
+                FROM customer_allocation_base cab
+                LEFT JOIN branch_employee_dmc_data bedd ON bedd.sales_code = cab.rm_code
+                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id::int = cab.cust_id::int
+                WHERE lower(trim(cab.rm_code)) != lower(trim(COALESCE(NULLIF(rap.sales_code, ''), 'Others')))
+                  AND lower(trim(cab.rm_code)) NOT IN (lower(trim('Unassigned')), lower(trim('3579')))
+            """)
+            for (cust_id, old_sales_code, old_rm_name, old_email,
+                 new_rm_code, new_rm_name, new_email) in cursor.fetchall():
+                if (old_sales_code != new_rm_code or old_rm_name != new_rm_name
+                        or old_email != new_email):
+                    self._log_transfer_history(
+                        cust_id, old_sales_code, old_rm_name,
+                        new_rm_code or "Unassigned", new_rm_name or "Unassigned",
+                        new_email or "Unknown",
+                    )
+
+            # Step 2: UPDATE existing + INSERT new retail_allocated_portfolio rows.
+            cursor.execute("""
+                WITH source_data AS (
+                    SELECT
+                        cab.cust_id,
+                        cab.customer_name,
+                        cab.rm_code AS sales_code,
+                        cab.rm_name,
+                        bedd.staff_email AS email,
+                        cab.cust_branch AS branch,
+                        CASE main_segment_prev
+                            WHEN 'BUSINESS' THEN 'BUSINESS BANKING'
+                            WHEN 'COMMERCIAL' THEN 'COMMERCIAL'
+                            WHEN 'DIASPORA' THEN 'DIASPORA'
+                            WHEN 'FI' THEN 'FINANCIAL INSTITUTIONS'
+                            WHEN 'IB' THEN 'INSTITUTIONAL BANKING'
+                            WHEN 'INTERNAL' THEN 'INTERNAL ACCOUNTS'
+                            WHEN 'PERSONAL' THEN 'PB'
+                            WHEN 'PROJECT FINANCE' THEN 'PROJECT FINANCE'
+                            WHEN 'SCHEME' THEN 'SCHEME'
+                            WHEN 'STAFF' THEN 'STAFF'
+                            WHEN 'ULTIMATE' THEN 'ULTIMATE'
+                            WHEN 'UNKNOWN' THEN 'UNKNOWN'
+                            WHEN 'VIRTUAL' THEN 'VIRTUAL'
+                            ELSE 'INTERNAL ACCOUNTS'
+                        END AS main_segment
+                    FROM customer_allocation_base cab
+                    LEFT JOIN branch_employee_dmc_data bedd ON bedd.sales_code = cab.rm_code
+                    LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id::int = cab.cust_id::int
+                    WHERE lower(trim(cab.rm_code)) != lower(trim(COALESCE(NULLIF(rap.sales_code, ''), 'Others')))
+                      AND lower(trim(cab.rm_code)) NOT IN (lower(trim('Unassigned')), lower(trim('3579')))
+                ),
+                updated AS (
+                    UPDATE retail_allocated_portfolio rap
+                    SET
+                        customer_name = sd.customer_name,
+                        sales_code = sd.sales_code,
+                        rm_name = sd.rm_name,
+                        email = sd.email,
+                        branch = FLOOR(sd.branch::NUMERIC)::INTEGER,
+                        main_segment = sd.main_segment,
+                        updated_at = CURRENT_TIMESTAMP
+                    FROM source_data sd
+                    WHERE rap.cust_id = FLOOR(sd.cust_id::NUMERIC)::INTEGER
+                    RETURNING rap.cust_id
+                )
+                INSERT INTO retail_allocated_portfolio (
+                    cust_id, customer_name, sales_code, rm_name, email, branch, main_segment, updated_at
+                )
+                SELECT
+                    FLOOR(sd.cust_id::NUMERIC)::INTEGER,
+                    sd.customer_name,
+                    sd.sales_code,
+                    sd.rm_name,
+                    sd.email,
+                    FLOOR(sd.branch::NUMERIC)::INTEGER,
+                    sd.main_segment,
+                    CURRENT_TIMESTAMP
+                FROM source_data sd
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM updated u WHERE u.cust_id = FLOOR(sd.cust_id::NUMERIC)::INTEGER
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM retail_allocated_portfolio rap
+                    WHERE rap.cust_id = FLOOR(sd.cust_id::NUMERIC)::INTEGER
+                )
+            """)
+            return cursor.rowcount
