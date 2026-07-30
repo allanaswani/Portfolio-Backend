@@ -193,6 +193,26 @@ class FeedbackSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class BranchFeedbackSerializer(serializers.ModelSerializer):
+    """Feedback enriched with the customer name (by cust_id) and RM name (by
+    sales_code) for the branch Feedback Log, which renders both columns. The view
+    supplies batched ``cust_names`` / ``rm_names`` lookup maps via context."""
+    customer_name = serializers.SerializerMethodField()
+    rm_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Feedback
+        fields = "__all__"
+
+    def get_customer_name(self, obj):
+        if obj.cust_id is None:
+            return None
+        return (self.context.get("cust_names") or {}).get(int(obj.cust_id))
+
+    def get_rm_name(self, obj):
+        return (self.context.get("rm_names") or {}).get(obj.sales_code)
+
+
 class PortfolioRmDepositTrendsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PortfolioRmDepositTrends

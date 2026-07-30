@@ -8,10 +8,12 @@ from django.db.models import Sum, Count, Q
 from django.db import connection
 from django.shortcuts import get_object_or_404
 
-from apps.portfolio.models import HfCustomer, Accounts, Loans, Feedback, Profile, Prospects
+from apps.portfolio.models import (
+    HfCustomer, Accounts, Loans, Feedback, Profile, Prospects, RetailAllocatedPortfolio,
+)
 from apps.portfolio.serializers import (
     HfCustomerSerializer, AccountsSerializer, LoansSerializer, FeedbackSerializer,
-    ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
+    BranchFeedbackSerializer, ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
 )
 from . import legacy_queries as lq
 from services.arrears_managers import (
@@ -150,9 +152,23 @@ class BranchTotalCustomersView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         qs = HfCustomer.objects.filter(branch__icontains=_branch_filter(profile))
+        # The Customers page KPIs read total_deposits/total_loans from here; the
+        # old body only returned counts, so both money cards showed KSh 0. Sum the
+        # same hf_customer columns the allocated table draws from (mirrors
+        # BranchDashboardSummaryView).
+        agg = qs.aggregate(
+            total_customers=Count("cust_id"),
+            active_customers=Count("cust_id", filter=Q(active=True)),
+            total_deposits=Sum("total_depost_balance"),
+            total_loans=Sum("total_loans"),
+            total_revenue=Sum("total_revenue"),
+        )
         return Response({
-            "total_customers": qs.count(),
-            "active_customers": qs.filter(active=True).count(),
+            "total_customers": agg["total_customers"] or 0,
+            "active_customers": agg["active_customers"] or 0,
+            "total_deposits": agg["total_deposits"] or 0,
+            "total_loans": agg["total_loans"] or 0,
+            "total_revenue": agg["total_revenue"] or 0,
             "branch": profile.branch,
         })
 
@@ -721,7 +737,7 @@ class BranchFixedDepositListView(APIView):
 @extend_schema(tags=["Branch Portfolio — Feedback"])
 class BranchFeedbackView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = FeedbackSerializer
+    serializer_class = BranchFeedbackSerializer
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
@@ -729,6 +745,34 @@ class BranchFeedbackView(generics.ListAPIView):
             branch__icontains=_branch_filter(profile)
         ).values_list("cust_id", flat=True)
         return Feedback.objects.filter(cust_id__in=branch_cust_ids)
+
+    def list(self, request, *args, **kwargs):
+        # The Feedback Log shows the customer + RM name, but Feedback only stores
+        # cust_id + sales_code. Batch-resolve both for the current page (customer
+        # name from hf_customer, RM name from retail_allocated_portfolio) and hand
+        # them to the serializer via context — avoids an N+1 per row.
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else list(queryset)
+
+        cust_ids = {int(r.cust_id) for r in rows if r.cust_id is not None}
+        sales_codes = {r.sales_code for r in rows if r.sales_code}
+        cust_names = {
+            int(cid): name
+            for cid, name in HfCustomer.objects.filter(cust_id__in=cust_ids)
+            .values_list("cust_id", "latin_surname")
+        }
+        rm_names = dict(
+            RetailAllocatedPortfolio.objects.filter(sales_code__in=sales_codes)
+            .values_list("sales_code", "rm_name")
+        )
+
+        ctx = self.get_serializer_context()
+        ctx.update({"cust_names": cust_names, "rm_names": rm_names})
+        serializer = self.get_serializer(rows, many=True, context=ctx)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
 
 @extend_schema(tags=["Branch Portfolio — Prospects"])
