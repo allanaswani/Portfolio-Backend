@@ -4,7 +4,7 @@ Load the diaspora leads master CSV and assign each lead to its existing RM login
 Thin CLI wrapper around apps.mortgages.diaspora (the same logic backs the admin
 browser-upload endpoint). Does NOT create accounts — it resolves each RM to their
 existing User, grants `mortgage_officer`, and assigns leads. RM mapping:
-    NA -> Beldine   |   "Previously allocated-X" -> X   |   <name> -> that RM
+    NA -> Hilda (Chemutai)  |  "Previously allocated-X" -> X  |  <name> -> that RM
 
 Discover usernames first (no CSV needed):
     docker exec hf-backend python manage.py load_diaspora_leads --probe

@@ -26,22 +26,28 @@ OFFICER_GROUP = "mortgage_officer"
 SOURCE_NAME = "Diaspora Roadshow 2025"
 
 # Canonical RM key -> how to find their EXISTING account.
-#   match      : search term for the account (exact username/email wins, else
-#                icontains on username/email/first/last name). Override per-run.
-#   sales_code : optional; written to Profile.sales_code. "" = skip.
+#   match      : the RM's exact username (an exact username/email wins over any
+#                icontains fallback), so resolution is unambiguous. Override per-run
+#                with --map / the upload form if an account is ever renamed.
+#   sales_code : optional; written to Profile.sales_code. "" = leave as-is.
+# NOTE on the two "antony.opitso" entries: the CSV author wrote this one RM (full
+# name *Antony Opitso*, DIASPORA) as both "Opitso" and "Antony". Both labels
+# intentionally point at the same login — confirmed with the business.
 DEFAULT_ROSTER = {
-    "Beldine": {"match": "beldine", "sales_code": ""},
-    "Doris":   {"match": "doris",   "sales_code": ""},
-    "Mark":    {"match": "mark",    "sales_code": ""},
-    "Opitso":  {"match": "opitso",  "sales_code": ""},
-    "Edward":  {"match": "edward",  "sales_code": ""},
-    "Antony":  {"match": "antony",  "sales_code": ""},
+    "Hilda":   {"match": "hilda.chemutai", "sales_code": ""},   # the NA / unallocated bucket
+    "Beldine": {"match": "beldine.otieno", "sales_code": ""},
+    "Doris":   {"match": "doris.njuki",    "sales_code": ""},
+    "Mark":    {"match": "mark.waiganjo",  "sales_code": ""},
+    "Opitso":  {"match": "antony.opitso",  "sales_code": ""},
+    "Antony":  {"match": "antony.opitso",  "sales_code": ""},   # same person as Opitso
+    "Edward":  {"match": "edward.kosgei",  "sales_code": ""},
 }
 
 # CSV `RM` value (case-insensitive, trimmed) -> canonical RM key.
+# NA / blank are the unallocated bucket and go to Hilda (per the business).
 ALIASES = {
-    "na": "Beldine",
-    "": "Beldine",
+    "na": "Hilda",
+    "": "Hilda",
     "beldine": "Beldine",
     "doris": "Doris",
     "mark": "Mark",
