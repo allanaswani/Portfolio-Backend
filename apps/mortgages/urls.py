@@ -64,6 +64,7 @@ urlpatterns = [
     path("field-agents/",            v.FieldAgentListCreateView.as_view()),
 
     path("leads/upload-csv/",      v.LeadCsvUploadView.as_view()),
+    path("leads/upload-diaspora/", v.DiasporaLeadUploadView.as_view()),
     path("leads/<int:pk>/convert/", v.LeadConvertView.as_view()),
     path("leads/<int:pk>/",        v.LeadDetailView.as_view()),
     path("leads/",                 v.LeadListCreateView.as_view()),

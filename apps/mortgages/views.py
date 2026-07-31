@@ -16,6 +16,7 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 from apps.staff_management.views import BaseCsvUploadView
 
+from . import diaspora
 from .models import (
     MortgageProduct, Borrower, Property, MortgageApplication, LoanApproval,
     MortgageLoan, RepaymentScheduleItem, Payment, Fee, MortgageInsurancePolicy,
@@ -236,6 +237,57 @@ class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
 @extend_schema(tags=TAG_LEADS)
 class LeadCsvUploadView(BaseCsvUploadView):
     serializer_class = LeadSerializer
+
+
+@extend_schema(tags=TAG_LEADS)
+class DiasporaLeadUploadView(APIView):
+    """Admin-only browser upload of the diaspora leads master CSV.
+
+    Runs the full diaspora load (RM mapping NA->Beldine / "Previously allocated-X"
+    ->X, grant mortgage_officer, assign each lead to its RM) — the same logic as the
+    `load_diaspora_leads` command. Multipart fields:
+        file      (required) the CSV.
+        dry_run   optional "true"/"1" — validate & report without writing.
+        map       optional, repeatable "RM=identifier" to pin an ambiguous RM.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def _is_admin(user):
+        return user.is_superuser or user.is_staff or \
+            user.groups.filter(name="mortgage_admin").exists()
+
+    def post(self, request):
+        if not self._is_admin(request.user):
+            return Response({"detail": "Admin only."}, status=status.HTTP_403_FORBIDDEN)
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "No file uploaded. Send a CSV in the 'file' field."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return Response({"detail": "File must be UTF-8 encoded CSV."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        import csv as _csv
+        import io
+        rows = list(_csv.DictReader(io.StringIO(text)))
+
+        dry = str(request.data.get("dry_run", "")).lower() in ("1", "true", "yes", "on")
+        overrides = {}
+        for item in request.data.getlist("map") if hasattr(request.data, "getlist") else []:
+            if "=" in item:
+                k, v = item.split("=", 1)
+                overrides[k.strip()] = v.strip()
+
+        try:
+            summary = diaspora.run_load(rows, overrides=overrides, dry_run=dry)
+        except diaspora.DiasporaLoadError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(summary, status=status.HTTP_200_OK)
 
 
 @extend_schema(tags=TAG_LEADS)
