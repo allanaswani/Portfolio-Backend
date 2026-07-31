@@ -150,9 +150,9 @@ CampaignListCreateView, CampaignDetailView = crud(
     Campaign, CampaignSerializer, ["is_active"], tag=TAG_LEADS)
 FieldAgentListCreateView, FieldAgentDetailView = crud(
     FieldAgent, FieldAgentSerializer, ["team", "branch", "is_active"], tag=TAG_LEADS)
-LeadListCreateView, LeadDetailView = crud(
-    Lead, LeadSerializer, ["status", "branch", "source", "field_agent", "campaign"],
-    tag=TAG_LEADS, select=("source", "field_agent", "interested_product"))
+# NOTE: Leads are RM-scoped (see below), so they are NOT built via the generic
+# `crud()` factory — they need a per-request queryset. LeadListCreateView /
+# LeadDetailView are defined further down next to the scoping helper.
 FieldVisitListCreateView, FieldVisitDetailView = crud(
     FieldVisit, FieldVisitSerializer, ["field_agent", "team"], tag=TAG_LEADS,
     select=("field_agent",))
@@ -179,6 +179,60 @@ class PaymentCsvUploadView(BaseCsvUploadView):
     serializer_class = PaymentSerializer
 
 
+# ── Leads: RM-scoped list/detail ────────────────────────────────────────────────
+# A front-line RM (mortgage_officer) may only see the leads assigned to them.
+# Managers, finance and admins (and superusers) see every RM's leads.
+
+_LEAD_PRIVILEGED_GROUPS = {"mortgage_manager", "mortgage_finance", "mortgage_admin"}
+_LEAD_QS = Lead.objects.select_related(
+    "source", "field_agent", "interested_product", "assigned_to")
+
+
+def _lead_privileged(user):
+    """True when the user may see all RMs' leads (not scoped to their own)."""
+    if user.is_superuser:
+        return True
+    groups = set(user.groups.values_list("name", flat=True))
+    return bool(groups & _LEAD_PRIVILEGED_GROUPS)
+
+
+def _scoped_leads(user):
+    qs = _LEAD_QS
+    if not _lead_privileged(user):
+        qs = qs.filter(assigned_to=user)
+    return qs
+
+
+@extend_schema(tags=TAG_LEADS)
+class LeadListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = LeadSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend]
+    # `assigned_to` is filterable so a manager/admin can view one RM's book.
+    filterset_fields = ["status", "branch", "source", "field_agent", "campaign", "assigned_to"]
+
+    def get_queryset(self):
+        return _scoped_leads(self.request.user)
+
+    def perform_create(self, serializer):
+        # A front-line RM owns any lead they capture (unless one is set explicitly);
+        # privileged users may assign to whomever they choose.
+        if not _lead_privileged(self.request.user) and not serializer.validated_data.get("assigned_to"):
+            serializer.save(assigned_to=self.request.user)
+        else:
+            serializer.save()
+
+
+@extend_schema(tags=TAG_LEADS)
+class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = LeadSerializer
+
+    def get_queryset(self):
+        return _scoped_leads(self.request.user)
+
+
 @extend_schema(tags=TAG_LEADS)
 class LeadCsvUploadView(BaseCsvUploadView):
     serializer_class = LeadSerializer
@@ -203,7 +257,8 @@ class LeadConvertView(APIView):
 
     def post(self, request, pk):
         try:
-            lead = Lead.objects.get(pk=pk)
+            # RM-scoped: an officer can only convert their own leads.
+            lead = _scoped_leads(request.user).get(pk=pk)
         except Lead.DoesNotExist:
             return Response({"detail": "Lead not found."}, status=status.HTTP_404_NOT_FOUND)
         if lead.converted_application_id:
@@ -391,8 +446,10 @@ class LeadFunnelView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Same RM-scoping as the leads list: an officer's funnel reflects only their
+        # own leads; managers/finance/admin/superusers see the whole book.
         counts = {row["status"]: row["n"]
-                  for row in Lead.objects.values("status").annotate(n=Count("id"))}
+                  for row in _scoped_leads(request.user).values("status").annotate(n=Count("id"))}
         ordered = [{"status": key, "label": label, "count": counts.get(key, 0)}
                    for key, label in Lead.STATUS]
         total = sum(counts.values())

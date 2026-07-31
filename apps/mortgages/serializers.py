@@ -114,11 +114,19 @@ class LeadSerializer(serializers.ModelSerializer):
     source_name = serializers.CharField(source="source.name", read_only=True)
     field_agent_name = serializers.CharField(source="field_agent.name", read_only=True)
     product_name = serializers.CharField(source="interested_product.name", read_only=True)
+    # The owning RM (assigned_to is the login the lead is scoped to). Exposed so the
+    # UI can show who a lead belongs to; managers/admin see it across all RMs.
+    assigned_to_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
         fields = "__all__"
         read_only_fields = ["lead_ref", "converted_application"]
+
+    def get_assigned_to_name(self, obj):
+        if obj.assigned_to:
+            return obj.assigned_to.get_full_name().strip() or obj.assigned_to.username
+        return None
 
 
 class FieldVisitSerializer(serializers.ModelSerializer):
