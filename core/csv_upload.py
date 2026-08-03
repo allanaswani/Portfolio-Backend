@@ -82,15 +82,32 @@ class AmendingCsvUploadView(APIView):
 
     @staticmethod
     def parse_date(raw, fmt, out_fmt=None):
-        """Parse ``raw`` with ``fmt``; return ``out_fmt`` string (or isoformat), else None."""
+        """Parse ``raw`` and return ``out_fmt`` (or isoformat), else None.
+
+        ``fmt`` is the caller's primary format and is tried first (a str, or an
+        iterable of formats). A handful of common shapes are then tried as
+        fallbacks so a date in a slightly different layout (ISO, hyphenated,
+        2-digit year) is not silently dropped to NULL. Null dates downstream have
+        crashed report scripts — e.g. ``NaTType does not support isocalendar`` in
+        the bancassurance report when ``starting_date`` came back NULL.
+        """
         raw = (raw or "").strip()
         if not raw:
             return None
-        try:
-            dt = datetime.strptime(raw, fmt)
-        except ValueError:
-            return None
-        return dt.strftime(out_fmt) if out_fmt else dt.isoformat()
+        primary = [fmt] if isinstance(fmt, str) else list(fmt)
+        fallbacks = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d",
+                     "%d.%m.%Y", "%d/%m/%y", "%m/%d/%Y"]
+        seen = set()
+        for candidate in primary + fallbacks:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                dt = datetime.strptime(raw, candidate)
+            except ValueError:
+                continue
+            return dt.strftime(out_fmt) if out_fmt else dt.isoformat()
+        return None
 
     @staticmethod
     def clean_number(raw, *, dash_to_zero=False, default=None):
