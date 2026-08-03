@@ -146,7 +146,12 @@ class DrawdownDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=TAG)
 class DrawdownCsvUploadView(BaseCsvUploadView):
-    serializer_class = DrawdownSerializer
+    # Write to DrawdownDaily (table ``drawdown_daily``) — the SAME table the list,
+    # search, single-create and update all use (drawdown-daily/). The upload was
+    # wired to the separate ``drawdown`` table (DrawdownSerializer), so uploaded
+    # rows never appeared in the drawdowns screen. The whole UI (columns, create
+    # form) is built on DrawdownDaily fields, so the uploaded CSV matches this.
+    serializer_class = DrawdownDailySerializer
 
 
 @extend_schema(tags=TAG)

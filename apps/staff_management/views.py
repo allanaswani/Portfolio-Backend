@@ -297,17 +297,25 @@ class BaseCsvUploadView(APIView):
     """
     Bulk-create rows from an uploaded CSV file (multipart field ``file``).
 
-    Tries a single bulk validation first; on any row error it falls back to
-    per-row processing so valid rows still import and the response reports which
-    rows failed (1-based, accounting for the header line).
+    Memory-safe: the file is **streamed** (never fully loaded) and processed in
+    fixed-size chunks. Each chunk is validated as a batch and written with a
+    single ``bulk_create``; if a chunk has a bad row it falls back to per-row so
+    valid rows still import and the response reports which rows failed (line
+    numbers are 1-based including the header). Bounded memory means large uploads
+    no longer OOM the worker (which previously showed up as a SIGKILL and *no*
+    response at all — the client saw neither success nor error).
+
+    Response contract (unchanged): ``{created, errors[:50], error_count}``.
     """
 
     permission_classes = [IsAuthenticated]
     serializer_class = None  # set by subclass
+    chunk_size = 1000
 
     def post(self, request):
         import csv
         import io
+        from django.db import transaction
 
         upload = request.FILES.get("file")
         if not upload:
@@ -315,42 +323,83 @@ class BaseCsvUploadView(APIView):
                 {"detail": "No file uploaded. Send a CSV in the 'file' field."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        model = self.serializer_class.Meta.model
+
+        # Stream the upload instead of reading it all into memory. Django keeps
+        # large uploads (> FILE_UPLOAD_MAX_MEMORY_SIZE) on disk, so TextIOWrapper
+        # reads them incrementally rather than materialising the whole file.
         try:
-            text = upload.read().decode("utf-8-sig")
+            upload.file.seek(0)
+        except Exception:  # some backends don't support seek — ignore
+            pass
+        stream = io.TextIOWrapper(upload.file, encoding="utf-8-sig", newline="")
+
+        created = 0
+        error_count = 0
+        errors = []  # first 50 detailed errors only
+
+        def process(pending):
+            """pending: list of (line_no, row_dict)."""
+            nonlocal created, error_count
+            data = [row for _, row in pending]
+            batch = self.serializer_class(data=data, many=True)
+            if batch.is_valid():
+                try:
+                    objs = [model(**vd) for vd in batch.validated_data]
+                    with transaction.atomic():
+                        model.objects.bulk_create(objs, batch_size=500)
+                    created += len(objs)
+                    return
+                except Exception:
+                    pass  # DB error on the batch — retry row-by-row below
+            for line_no, row in pending:
+                one = self.serializer_class(data=row)
+                if one.is_valid():
+                    try:
+                        one.save()
+                        created += 1
+                    except Exception as exc:  # e.g. constraint violation
+                        error_count += 1
+                        if len(errors) < 50:
+                            errors.append({"row": line_no, "errors": {"detail": str(exc)[:200]}})
+                else:
+                    error_count += 1
+                    if len(errors) < 50:
+                        errors.append({"row": line_no, "errors": one.errors})
+
+        line_no = 1  # header line
+        data_rows = 0
+        pending = []
+        try:
+            reader = csv.DictReader(stream)
+            if not reader.fieldnames:
+                return Response({"detail": "CSV has no header row."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            for row in reader:
+                line_no += 1
+                data_rows += 1
+                pending.append((line_no, row))
+                if len(pending) >= self.chunk_size:
+                    process(pending)
+                    pending = []
+            if pending:
+                process(pending)
         except UnicodeDecodeError:
-            return Response(
-                {"detail": "File must be UTF-8 encoded CSV."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "File must be UTF-8 encoded CSV."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            try:
+                stream.detach()  # don't close the underlying upload file
+            except Exception:
+                pass
 
-        rows = list(csv.DictReader(io.StringIO(text)))
-        if not rows:
-            return Response(
-                {"detail": "CSV has no data rows."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Fast path: validate & save the whole batch.
-        batch = self.serializer_class(data=rows, many=True)
-        if batch.is_valid():
-            batch.save()
-            return Response(
-                {"created": len(batch.validated_data), "errors": [], "error_count": 0},
-                status=status.HTTP_201_CREATED,
-            )
-
-        # Slow path: import valid rows, report the rest.
-        created, errors = 0, []
-        for idx, row in enumerate(rows):
-            one = self.serializer_class(data=row)
-            if one.is_valid():
-                one.save()
-                created += 1
-            else:
-                errors.append({"row": idx + 2, "errors": one.errors})  # +2: header + 1-based
+        if data_rows == 0:
+            return Response({"detail": "CSV has no data rows."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
-            {"created": created, "errors": errors[:50], "error_count": len(errors)},
+            {"created": created, "errors": errors[:50], "error_count": error_count},
             status=status.HTTP_201_CREATED if created else status.HTTP_400_BAD_REQUEST,
         )
 

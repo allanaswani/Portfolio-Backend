@@ -119,12 +119,18 @@ class LegacyStaffManagementEndpointTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content)
         self.assertTrue(EmployeeRoleHistory.objects.filter(sales_code="RM01").exists())
 
-    def test_drawdowns_csv_upload(self):
-        csv_content = b"cust_id,customer_name,branch,segment\n123,Cust A,Nairobi,Corporate\n"
-        upload = SimpleUploadedFile("dd.csv", csv_content, content_type="text/csv")
-        r = self.client.post("/staff_management/drawdowns/upload-csv/", {"file": upload}, format="multipart")
-        self.assertEqual(r.status_code, 201, r.content)
-        self.assertEqual(Drawdown.objects.count(), 1)
+    def test_drawdowns_csv_upload_targets_daily_table(self):
+        # The CSV upload must be wired to DrawdownDaily (table ``drawdown_daily``) —
+        # the SAME table the drawdowns screen lists / searches / single-creates /
+        # updates — not the separate ``drawdown`` table it used to write to, which
+        # made uploaded rows invisible on the screen. DrawdownDaily lives on the
+        # ``datawarehouse`` alias (unreachable in local tests, same physical DB as
+        # ``default`` in prod), so assert the wiring rather than perform a
+        # warehouse write; the write path itself is the one single-create already
+        # uses in production.
+        from .legacy_views import DrawdownCsvUploadView
+        from .serializers import DrawdownDailySerializer
+        self.assertIs(DrawdownCsvUploadView.serializer_class, DrawdownDailySerializer)
 
     def test_sales_people_csv_upload(self):
         csv_content = b"sales_code,sales_person,branch,role,team_leader\nT01,John,Nairobi,Telesales,Lead A\n"
