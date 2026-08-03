@@ -29,6 +29,7 @@ urlpatterns = [
     path("mortgages/", include("apps.mortgages.urls")),
     path("client_briefs/", include("apps.client_briefs.urls")),
     path("registry/", include("apps.registry.urls")),
+    path("business_performance/", include("apps.business_performance.urls")),
 
     # New feature APIs (v1 prefix for new frontend)
     path("api/v1/analytics/", include("apps.analytics.urls")),
