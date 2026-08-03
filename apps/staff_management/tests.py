@@ -252,6 +252,32 @@ class AmendingCsvUploaderTests(TestCase):
         self.assertEqual(obj.premiums, 0)                        # blank → 0
         self.assertEqual(obj.paid, 2500)
 
+    def test_insurance_tolerates_messy_headers(self):
+        # "The columns are there" but formatted differently — a BOM on the first
+        # header, trailing spaces, and Title/UPPER case must all still match the
+        # model's snake_case columns instead of being reported as missing.
+        import csv as _csv, io as _io
+        from .legacy_views import InsurancePolicyCsvUploadView
+        required = InsurancePolicyCsvUploadView().required_columns()
+        messy = {"sum_insured": "Sum Insured", "premiums": " PREMIUMS ",
+                 "paid": "Paid ", "balance": "Balance", "commission": "Commission"}
+        headers = [messy.get(c, c) for c in required]
+        headers[0] = "﻿" + headers[0]  # BOM, as Excel writes on the first column
+        values = {c: "" for c in required}
+        values.update({"insured": "Acme", "year": "2024", "month": "March",
+                       "sum_insured": "1,000,000", "paid": "2,500", "commission": "100"})
+        buf = _io.StringIO()
+        writer = _csv.writer(buf)
+        writer.writerow(headers)
+        writer.writerow([values[c] for c in required])
+        upload = SimpleUploadedFile("insurance.csv", buf.getvalue().encode("utf-8"), content_type="text/csv")
+        r = self.client.post("/staff_management/insurance-policy/upload-csv/", {"file": upload}, format="multipart")
+        self.assertEqual(r.status_code, 200, r.content)
+        obj = InsurancePolicy.objects.get(year="2024")
+        self.assertEqual(obj.insured, "Acme")
+        self.assertEqual(obj.sum_insured, 1000000)   # matched despite "Sum Insured" header
+        self.assertEqual(obj.paid, 2500)             # matched despite "Paid " header
+
     def test_trade_finance_casts_money_and_fx_default(self):
         url = "/staff_management/trade-finance/upload-csv/"
         row = {

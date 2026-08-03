@@ -109,6 +109,19 @@ class AmendingCsvUploadView(APIView):
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def normalize_header(name):
+        """Canonicalise a CSV header so trivial formatting differences don't read
+        as a *missing* column: strip a UTF-8 BOM / zero-width chars, surrounding
+        quotes and whitespace, lower-case, and collapse inner whitespace to
+        underscores. So "Sum Insured", " sum_insured ", "SUM_INSURED" and a
+        BOM-prefixed "﻿sum_insured" all match the model field ``sum_insured``."""
+        if name is None:
+            return ""
+        s = str(name).replace("﻿", "").replace("​", "")
+        s = s.strip().strip('"').strip("'").strip()
+        return re.sub(r"\s+", "_", s.lower())
+
     # ── hooks ───────────────────────────────────────────────────────────────────
     def required_columns(self):
         # Editable concrete columns the CSV must carry — auto/non-editable columns
@@ -144,16 +157,25 @@ class AmendingCsvUploadView(APIView):
             raw_data = file_obj.read()
             decoded_file = decode_csv_bytes(raw_data).splitlines()
             reader = csv.DictReader(decoded_file)
-            fieldnames = reader.fieldnames or []
+            raw_fieldnames = reader.fieldnames or []
+
+            # Match headers tolerantly — a stray space, different case or a BOM
+            # shouldn't make a column that IS present read as "missing".
+            norm_map = {orig: self.normalize_header(orig) for orig in raw_fieldnames}
+            fieldnames = list(norm_map.values())
 
             missing = [c for c in self.required_columns() if c not in fieldnames]
             if missing:
                 return Response(
-                    {"error": f"The following columns are missing in the CSV: {missing}"},
+                    {"error": (f"The following columns are missing in the CSV: {missing}. "
+                               f"Columns found: {raw_fieldnames}")},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            rows = list(reader)
+            # Re-key every row to the canonical (normalized) header names so
+            # amend_row / the serializer see the exact model field names.
+            rows = [{norm_map.get(k, self.normalize_header(k)): v for k, v in r.items()}
+                    for r in reader]
             self.before_rows(rows)
 
             success_buffer, fail_buffer = io.StringIO(), io.StringIO()
