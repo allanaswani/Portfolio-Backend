@@ -86,6 +86,9 @@ NEW_ROLES = (
     "registry_officer",
     "registry_supervisor",
     "archives_officer",
+    # Strategy & Business Performance module (apps/business_performance) —
+    # executive cockpit for the director; can set the department's targets.
+    "business_performance",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -100,6 +103,7 @@ NEW_ROLE_DESCRIPTIONS = {
     "registry_officer": "Records & Registry — registry officer (issue/return files).",
     "registry_supervisor": "Records & Registry — team leader / officer-in-charge.",
     "archives_officer": "Records & Registry — archives officer (transfers/destruction).",
+    "business_performance": "Strategy & Business Performance — executive cockpit + targets (director).",
 }
 
 # Every role the system knows about (legacy + new).
@@ -137,6 +141,8 @@ ROLE_TO_TIER = {
     "registry_supervisor": ROLE_MANAGER,
     "registry_officer": ROLE_OFFICER,
     "archives_officer": ROLE_OFFICER,
+    # strategy & business performance
+    "business_performance": ROLE_MANAGER,
 }
 
 # Backward-compatible alias (older imports referenced this name).
