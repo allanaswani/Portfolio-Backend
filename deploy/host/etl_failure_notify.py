@@ -44,6 +44,33 @@ def _load_app_settings(etl_dir):
     return app
 
 
+def _resolve_log(log_file, script_name, log_dir):
+    """Pick the log most likely to hold the traceback.
+
+    The data team's initiate_automation_report.sh redirects the report's output
+    (incl. the Python traceback) into ``<script>_temp.log`` and only renames it to
+    ``<script>_log.log`` on success — so on failure the error is in the temp log,
+    NOT in whatever the watcher captured (which is usually just a banner). We take
+    the first candidate that exists and is non-empty: the passed log, then the
+    runner's temp log, then its final log. This holds for every ETL, since they
+    all run through the same runner.
+    """
+    candidates = []
+    if log_file:
+        candidates.append(log_file)
+    if script_name and log_dir:
+        candidates.append(os.path.join(log_dir, "%s_temp.log" % script_name))
+        candidates.append(os.path.join(log_dir, "%s_log.log" % script_name))
+    for path in candidates:
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                return path
+        except OSError:
+            continue
+    # Nothing non-empty — fall back to the passed log even if empty, for the msg.
+    return log_file
+
+
 def _read_log_tail(log_file, max_bytes):
     if not log_file or not os.path.isfile(log_file):
         return "(no log captured)"
@@ -55,7 +82,8 @@ def _read_log_tail(log_file, max_bytes):
                 data = b"...(truncated; showing last %d bytes)...\n" % max_bytes + fh.read()
             else:
                 data = fh.read()
-        return data.decode("utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace").strip()
+        return text or "(log was empty)"
     except Exception as exc:  # noqa: BLE001 — never let log-reading break the alert
         return "(could not read log %s: %s)" % (log_file, exc)
 
@@ -88,7 +116,9 @@ def main():
     from_addr = app.hf_email["user"]
     host = socket.gethostname()
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_tail = _read_log_tail(log_file, max_bytes)
+    log_dir = os.environ.get("ETL_LOG_DIR", "/data/apps/datascience/logs")
+    resolved_log = _resolve_log(log_file, script_name, log_dir)
+    log_tail = _read_log_tail(resolved_log, max_bytes)
 
     subject = "[ETL FAILED] %s (exit %s) on %s" % (script_name, exit_code, host)
     body = (

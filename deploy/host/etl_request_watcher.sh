@@ -50,7 +50,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 notify_failure() {
     local script_name="$1" log_file="$2" exit_code="$3"
     if [ -f "$NOTIFY" ]; then
-        ETL_DIR="$ETL_DIR" "$NOTIFY_PY" "$NOTIFY" "$script_name" "$log_file" "$exit_code" \
+        ETL_DIR="$ETL_DIR" ETL_LOG_DIR="$LOG_DIR" "$NOTIFY_PY" "$NOTIFY" "$script_name" "$log_file" "$exit_code" \
             || echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: failure notifier errored for $script_name"
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: no notifier at $NOTIFY — cannot email alert"
@@ -90,7 +90,12 @@ for req in "$QUEUE_DIR"/*.request; do
         continue
     fi
 
-    # Capture output while still echoing it to the watcher log (tee).
+    # Capture the runner's own stdout/stderr as a fallback. NOTE: the data team's
+    # initiate_automation_report.sh does `exec > <script>_temp.log 2>&1`, so it
+    # redirects the report's real output (incl. the Python traceback) into ITS
+    # OWN log — our capture here is usually just the banner. The actual error for
+    # a failed run therefore lives in $LOG_DIR/<script>_temp.log (the runner only
+    # moves it to <script>_log.log on success), so we hand the notifier that path.
     if bash "$RUNNER" "$script_name" > "$run_log" 2>&1; then
         rc=0
     else
@@ -104,6 +109,12 @@ for req in "$QUEUE_DIR"/*.request; do
     else
         echo "[$ts] FAILED: $script_name (exit $rc)"
         mv "$running" "${running%.running}.failed"
-        notify_failure "$script_name" "$run_log" "$rc"
+        # Prefer the runner's own log (holds the traceback) over our capture.
+        err_log="$run_log"
+        runner_temp="$LOG_DIR/${script_name}_temp.log"
+        runner_final="$LOG_DIR/${script_name}_log.log"
+        if [ -s "$runner_temp" ]; then err_log="$runner_temp"
+        elif [ -s "$runner_final" ]; then err_log="$runner_final"; fi
+        notify_failure "$script_name" "$err_log" "$rc"
     fi
 done
