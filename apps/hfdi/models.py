@@ -298,7 +298,7 @@ class ProjectTitanPlotsAllocation(models.Model):
     eurobond_employee_allocaiton = models.CharField(max_length=300, null=True, blank=True, verbose_name="Eurobond Beneficiaries Employees Allocation")
     deed_of_settlment_allocation = models.CharField(max_length=300, null=True, blank=True, verbose_name="Deed of Settlement Beneficiaries Allocation")
     gratuity_allocation = models.CharField(max_length=300, null=True, blank=True, verbose_name="Gratuity Employees Allocation")
-    national_id = models.BigIntegerField(null=True, blank=True, verbose_name="National ID")
+    national_id = models.CharField(max_length=30, null=True, blank=True, verbose_name="National ID")
     phone_number = models.BigIntegerField(null=True, blank=True, verbose_name="Phone Number")
     alternative_phone_number = models.BigIntegerField(null=True, blank=True, verbose_name="Alternative Phone Number")
     amount_paid = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Amount Paid")
