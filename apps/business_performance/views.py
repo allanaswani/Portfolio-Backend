@@ -192,45 +192,93 @@ class ExecBriefView(APIView):
         return points[:3]
 
     def _fallback(self, section, period, metrics):
-        """Rule-based brief when the LLM is unavailable — still meeting-ready."""
+        """Rule-based brief when the LLM is unavailable — a genuine, number-rich
+        read of the section (headline, delivery spread, momentum, KES gap-to-
+        target, and a specific ask), not three generic lines."""
         if not metrics:
             return [f"No {section} metrics available for {period or 'this period'}."]
         scored = []
         for m in metrics:
-            unit = m.get("unit", "number")
             actual, target, growth = m.get("actual"), m.get("target"), m.get("growth")
-            pct = (actual / target * 100) if (actual is not None and target) else None
-            scored.append((m["label"], unit, actual, target, growth, pct))
+            scored.append({
+                "label": m["label"],
+                "unit": m.get("unit", "number"),
+                "actual": actual,
+                "target": target,
+                "growth": growth,
+                "pct": (actual / target * 100) if (actual is not None and target) else None,
+                "gap": (target - actual) if (actual is not None and target is not None) else None,
+            })
+        per = f" for {period}" if period else ""
+        points = []
 
-        # 1 — headline: the metric with the largest absolute actual.
-        lead = max(scored, key=lambda s: abs(s[2] or 0))
-        p1 = f"{lead[0]} stands at {self._fmt(lead[2], lead[1])}" + (
-            f", {lead[5]:.0f}% of target." if lead[5] is not None else
-            (f", {lead[4]:+.1f}% vs last period." if lead[4] is not None else "."))
-
-        # 2 — why it matters: strongest grower (or best achiever).
-        movers = [s for s in scored if s[4] is not None]
-        if movers:
-            mv = max(movers, key=lambda s: s[4])
-            p2 = f"{mv[0]} is the strongest mover at {mv[4]:+.1f}%, driving the {section.lower()} trend."
+        # 1 — headline: the biggest number and where it stands vs plan.
+        lead = max(scored, key=lambda s: abs(s["actual"] or 0))
+        if lead["pct"] is not None:
+            stance = "ahead of plan" if lead["pct"] >= 100 else \
+                     "on plan" if lead["pct"] >= 95 else "behind plan"
+            points.append(
+                f"{lead['label']}{per} is {self._fmt(lead['actual'], lead['unit'])}, "
+                f"{lead['pct']:.0f}% of target — {stance}.")
+        elif lead["growth"] is not None:
+            points.append(f"{lead['label']}{per} is {self._fmt(lead['actual'], lead['unit'])}, "
+                          f"{lead['growth']:+.1f}% on the period.")
         else:
-            ach = [s for s in scored if s[5] is not None]
-            mv = max(ach, key=lambda s: s[5]) if ach else lead
-            p2 = (f"{mv[0]} leads on delivery at {mv[5]:.0f}% of target."
-                  if mv[5] is not None else f"{mv[0]} anchors the {section.lower()} book.")
+            points.append(f"{lead['label']}{per} is {self._fmt(lead['actual'], lead['unit'])}.")
 
-        # 3 — watch-out: worst achiever, or the sharpest decline.
-        risks = [s for s in scored if s[5] is not None]
-        if risks:
-            wk = min(risks, key=lambda s: s[5])
-            p3 = (f"Watch {wk[0]} — only {wk[5]:.0f}% of target; needs a push to close the gap."
-                  if wk[5] < 100 else
-                  f"All tracked metrics are at or above target — hold the momentum on {wk[0]}.")
-        else:
-            decl = [s for s in scored if s[4] is not None and s[4] < 0]
-            if decl:
-                wk = min(decl, key=lambda s: s[4])
-                p3 = f"Watch {wk[0]} — down {abs(wk[4]):.1f}%; understand the driver before it compounds."
+        # 2 — delivery spread across everything carrying a target.
+        with_t = [s for s in scored if s["pct"] is not None]
+        if len(with_t) >= 2:
+            best = max(with_t, key=lambda s: s["pct"])
+            worst = min(with_t, key=lambda s: s["pct"])
+            avg = sum(s["pct"] for s in with_t) / len(with_t)
+            points.append(
+                f"Delivery averages {avg:.0f}% of target: {best['label']} leads at "
+                f"{best['pct']:.0f}%, {worst['label']} trails at {worst['pct']:.0f}%.")
+        elif with_t:
+            only = with_t[0]
+            points.append(f"{only['label']} is at {only['pct']:.0f}% of its target.")
+
+        # 3 — momentum, naming the strongest and weakest movers.
+        movers = [s for s in scored if s["growth"] is not None]
+        if len(movers) >= 2:
+            up = max(movers, key=lambda s: s["growth"])
+            dn = min(movers, key=lambda s: s["growth"])
+            if up["label"] != dn["label"]:
+                points.append(
+                    f"Momentum: {up['label']} {up['growth']:+.1f}% versus "
+                    f"{dn['label']} {dn['growth']:+.1f}% period-on-period.")
+        elif movers:
+            mv = movers[0]
+            points.append(f"{mv['label']} moved {mv['growth']:+.1f}% on the period.")
+
+        # 4 — the money: total KES still to find against target.
+        gaps = [s for s in scored if s["unit"] == "currency" and s["gap"] and s["gap"] > 0]
+        if gaps:
+            total_gap = sum(s["gap"] for s in gaps)
+            biggest = max(gaps, key=lambda s: s["gap"])
+            points.append(
+                f"Gap to target: {self._fmt(total_gap, 'currency')} to close, most of it "
+                f"on {biggest['label']} ({self._fmt(biggest['gap'], 'currency')}).")
+
+        # 5 — the ask / watch-out.
+        if with_t:
+            worst = min(with_t, key=lambda s: s["pct"])
+            if worst["pct"] < 90:
+                points.append(
+                    f"Ask: prioritise {worst['label']} at {worst['pct']:.0f}% of target — "
+                    f"the biggest risk to the {section.lower()} scorecard.")
             else:
-                p3 = f"No targets set for {section.lower()} yet — add them to track delivery, not just growth."
-        return [p1, p2, p3]
+                points.append(
+                    f"All tracked {section.lower()} metrics sit near or above target — "
+                    f"protect the momentum into the next period.")
+        else:
+            decl = [s for s in scored if s["growth"] is not None and s["growth"] < 0]
+            if decl:
+                wk = min(decl, key=lambda s: s["growth"])
+                points.append(f"Watch {wk['label']} — down {abs(wk['growth']):.1f}%; "
+                              f"understand the driver before it compounds.")
+            else:
+                points.append(f"No targets set for {section.lower()} yet — add them so the "
+                              f"board sees delivery, not just levels.")
+        return points
