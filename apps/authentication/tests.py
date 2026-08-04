@@ -209,6 +209,42 @@ class AdminUserManagementAPITests(TestCase):
         self.plain.refresh_from_db()
         self.assertTrue(self.plain.check_password("BrandNewP@ss123"))
 
+    def test_change_password_accepts_password_field(self):
+        # The change-password form historically sends `password` (not
+        # `new_password`); the serializer now accepts both, so the change
+        # succeeds instead of 400-ing with a misleading "wrong current password".
+        self.client.force_authenticate(self.plain)
+        resp = self.client.put(
+            f"/auth/change_password/{self.plain.pk}/",
+            {"old_password": "x", "password": "BrandNewP@ss123"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.plain.refresh_from_db()
+        self.assertTrue(self.plain.check_password("BrandNewP@ss123"))
+
+    def test_change_password_accepts_new_password_field(self):
+        self.client.force_authenticate(self.plain)
+        resp = self.client.put(
+            f"/auth/change_password/{self.plain.pk}/",
+            {"old_password": "x", "new_password": "BrandNewP@ss123"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.plain.refresh_from_db()
+        self.assertTrue(self.plain.check_password("BrandNewP@ss123"))
+
+    def test_change_password_wrong_current_is_rejected(self):
+        self.client.force_authenticate(self.plain)
+        resp = self.client.put(
+            f"/auth/change_password/{self.plain.pk}/",
+            {"old_password": "not-the-password", "new_password": "BrandNewP@ss123"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.plain.refresh_from_db()
+        self.assertTrue(self.plain.check_password("x"))
+
     def test_soft_delete_deactivates(self):
         self.client.force_authenticate(self.admin)
         resp = self.client.delete(f"/auth/users/{self.plain.pk}/")

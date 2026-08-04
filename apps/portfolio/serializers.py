@@ -257,8 +257,23 @@ class LoansMomIFRSMovementSerializer(serializers.ModelSerializer):
 
 class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField(required=True)
-    new_password = serializers.CharField(required=True)
+    # Accept either `new_password` (canonical) or `password` (the name the change
+    # -password form historically sent). Previously only `new_password` was
+    # accepted, so the form's `password` field was dropped, `new_password` came
+    # back "required" (400), and the frontend showed a misleading "check your
+    # current password" message even though the current password was correct.
+    new_password = serializers.CharField(required=False)
+    password = serializers.CharField(required=False)
     otp = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        new_pw = attrs.get("new_password") or attrs.get("password")
+        if not new_pw:
+            raise serializers.ValidationError(
+                {"new_password": "This field is required."}
+            )
+        attrs["new_password"] = new_pw
+        return attrs
 
 
 class LogoutSerializer(serializers.Serializer):
