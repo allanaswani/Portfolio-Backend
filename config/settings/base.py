@@ -141,8 +141,10 @@ CACHES = {
 # REST Framework
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # JWT is the app's auth. BasicAuthentication was dropped — it added an
+        # extra credential-checking surface the SPA never uses. SessionAuth stays
+        # only for the browsable API / Django admin.
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -153,11 +155,18 @@ REST_FRAMEWORK = {
         "django_filters.rest_framework.DjangoFilterBackend",
     ],
     "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "user": "10000000/day",
+        # Per-user cap: generous enough for the dashboards (which fire ~30 calls
+        # on load) but bounded so a single compromised token can't hammer the API.
+        "user": env("USER_THROTTLE_RATE", default="20000/hour"),
+        # Anonymous cap protects the unauthenticated surface (login / token) from
+        # credential brute-force. Keyed by IP, so kept generous for office NAT.
+        "anon": env("ANON_THROTTLE_RATE", default="300/hour"),
         "otp_request": "50/hour",
+        "otp_verify": env("OTP_VERIFY_THROTTLE_RATE", default="10/hour"),
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "PAGE_SIZE": 10,

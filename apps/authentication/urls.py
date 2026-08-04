@@ -3,6 +3,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views import (
     ChangePasswordView, LogoutAPIView, GenerateOTPView, VerifyOTPView,
     AdminUserListCreateView, AdminUserDetailView, AdminSetPasswordView, RoleListView,
+    UserMetaChoicesView,
 )
 
 urlpatterns = [
@@ -18,4 +19,5 @@ urlpatterns = [
     path("users/<int:pk>/", AdminUserDetailView.as_view(), name="admin_user_detail"),
     path("users/<int:pk>/set-password/", AdminSetPasswordView.as_view(), name="admin_user_set_password"),
     path("roles/", RoleListView.as_view(), name="admin_role_list"),
+    path("user-meta/", UserMetaChoicesView.as_view(), name="admin_user_meta"),
 ]

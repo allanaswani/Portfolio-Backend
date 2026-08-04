@@ -109,6 +109,26 @@ class AdminUserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("A user with that username already exists.")
         return value
 
+    # ---- privilege-escalation guard --------------------------------------
+    def validate(self, attrs):
+        """Only a superuser may grant Django ``is_staff`` / ``is_superuser``, and
+        no one may elevate their OWN account through this endpoint.
+
+        Without this, ``IsAdministrator`` admits any *staff* user, and these two
+        fields are writable on the model — so a merely-staff admin could mint a
+        new superuser (or PATCH themselves to superuser) and bypass every
+        permission check in the system. We silently drop the privileged fields
+        rather than error, so ordinary edits (name, groups, branch) still succeed.
+        """
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+        actor_is_superuser = bool(actor and actor.is_superuser)
+        editing_self = bool(actor and self.instance and self.instance.pk == actor.pk)
+        if not actor_is_superuser or editing_self:
+            attrs.pop("is_superuser", None)
+            attrs.pop("is_staff", None)
+        return attrs
+
     # ---- create ----------------------------------------------------------
     def create(self, validated_data):
         groups = validated_data.pop("groups", [])

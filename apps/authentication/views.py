@@ -1,5 +1,5 @@
 import logging
-import random
+import secrets
 import string
 from datetime import timedelta
 
@@ -54,6 +54,12 @@ class OTPRequestThrottle(UserRateThrottle):
     scope = "otp_request"
 
 
+class OTPVerifyThrottle(UserRateThrottle):
+    """Caps OTP *verification* attempts so the 6-digit code can't be brute-forced
+    (1M combinations). Without this the verify endpoint had no attempt limit."""
+    scope = "otp_verify"
+
+
 @extend_schema(tags=["Authentication"])
 class ChangePasswordView(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
@@ -104,7 +110,9 @@ class GenerateOTPView(APIView):
 
     def post(self, request):
         user = request.user
-        otp_code = "".join(random.choices(string.digits, k=6))
+        # secrets (CSPRNG), not random (Mersenne Twister) — OTP codes must not be
+        # predictable from previously observed outputs.
+        otp_code = "".join(secrets.choice(string.digits) for _ in range(6))
         expires_at = timezone.now() + timedelta(minutes=5)
         OTP.objects.filter(user=user).delete()
         OTP.objects.create(user=user, otp=otp_code, expires_at=expires_at)
@@ -131,6 +139,7 @@ class GenerateOTPView(APIView):
 @extend_schema(tags=["Authentication"])
 class VerifyOTPView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [OTPVerifyThrottle]
 
     def post(self, request):
         otp_code = request.data.get("otp")
@@ -329,3 +338,23 @@ class RoleListView(generics.ListAPIView):
 
     def get_queryset(self):
         return Group.objects.all().order_by("name")
+
+
+@extend_schema(tags=["Admin — Users"])
+class UserMetaChoicesView(APIView):
+    """Branch & segment option lists for the Users screen dropdowns.
+
+    Sourced from the Profile model's ``BRANCH_CHOICES`` / ``SEGMENT_CHOICES`` so
+    the form can never store a branch/segment the profile field would reject —
+    one source of truth, no free-text typos that would silently break RBAC
+    branch scoping (RBACQueryFilter matches ``profile.branch`` exactly).
+    """
+
+    permission_classes = [IsAuthenticated, IsAdministrator]
+
+    def get(self, request):
+        from apps.portfolio.models import BRANCH_CHOICES, SEGMENT_CHOICES
+        return Response({
+            "branches": [value for value, _label in BRANCH_CHOICES],
+            "segments": [value for value, _label in SEGMENT_CHOICES],
+        })

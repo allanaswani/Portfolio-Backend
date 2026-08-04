@@ -34,11 +34,40 @@ def _get_profile(user):
     return get_object_or_404(Profile, user_id=user.id)
 
 
+# Roles allowed to inspect ANY branch (and the all-branch roll-up). Everyone else
+# is pinned to the branch on their own profile.
+_ALL_BRANCH_ROLES = {"ceo", "exco"}
+
+
+def _may_see_all_branches(user):
+    return bool(
+        user
+        and (user.is_superuser or user.groups.filter(name__in=_ALL_BRANCH_ROLES).exists())
+    )
+
+
 def _branch_filter(profile, branch=None):
-    """Effective branch name to filter on. An explicit `branch` — supplied by the
-    /<branch> drill-down routes used by EXCO/CEO to inspect ANY branch — overrides
-    the caller's own profile branch. Read-only, mirrors the legacy BranchDash."""
-    return (branch or (profile.branch if profile else None) or "").strip()
+    """Effective branch name to filter on — WITH authorization.
+
+    Only EXCO/CEO/superuser may inspect an arbitrary branch via the /<branch>
+    drill-down routes, or see the all-branch roll-up. For everyone else:
+
+    * the URL `branch` is ignored — they cannot drill into another branch (this
+      previously let ANY authenticated user read ANY branch's customers/PII);
+    * a caller with no branch on their profile is denied rather than served the
+      whole book (an empty filter became ``ILIKE '%%'`` and matched EVERY branch).
+
+    Read-only, mirrors the legacy BranchDash for the privileged path.
+    """
+    user = getattr(profile, "user", None)
+    privileged = _may_see_all_branches(user)
+    if not privileged:
+        branch = None  # pin non-privileged callers to their own branch
+    resolved = (branch or (profile.branch if profile else None) or "").strip()
+    if not resolved and not privileged:
+        from rest_framework.exceptions import PermissionDenied
+        raise PermissionDenied("No branch is assigned to your account.")
+    return resolved
 
 
 # ── Customers ──────────────────────────────────────────────────────────────

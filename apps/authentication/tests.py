@@ -159,6 +159,45 @@ class AdminUserManagementAPITests(TestCase):
         )
         self.assertEqual(len(mail.outbox), 0)
 
+    def test_staff_admin_cannot_mint_superuser(self):
+        # A staff-but-not-superuser admin must not be able to create a superuser
+        # (or a staff user) — that would be a privilege escalation.
+        self.client.force_authenticate(self.admin)
+        resp = self.client.post(
+            "/auth/users/",
+            {"username": "sneaky", "password": "StrongP@ssw0rd99",
+             "is_superuser": True, "is_staff": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        created = User.objects.get(username="sneaky")
+        self.assertFalse(created.is_superuser)
+        self.assertFalse(created.is_staff)
+
+    def test_staff_admin_cannot_self_escalate(self):
+        # No one may elevate their OWN account through the user-management API.
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(
+            f"/auth/users/{self.admin.pk}/",
+            {"is_superuser": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.admin.refresh_from_db()
+        self.assertFalse(self.admin.is_superuser)
+
+    def test_superuser_may_grant_superuser(self):
+        # A genuine superuser retains the ability to grant the flag.
+        root = User.objects.create_superuser("root", "root@hf.co.ke", "x")
+        self.client.force_authenticate(root)
+        resp = self.client.post(
+            "/auth/users/",
+            {"username": "deputy", "password": "StrongP@ssw0rd99", "is_superuser": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertTrue(User.objects.get(username="deputy").is_superuser)
+
     def test_admin_set_password(self):
         self.client.force_authenticate(self.admin)
         resp = self.client.post(
@@ -184,12 +223,13 @@ class AdminUserManagementAPITests(TestCase):
         self.assertEqual(resp.status_code, 200)
         rows = resp.data["results"] if isinstance(resp.data, dict) else resp.data
         names = {r["name"] for r in rows}
-        # 14 baseline + 4 mortgage-module + 3 registry-module roles.
-        self.assertEqual(len(names), 21)
+        # 14 baseline + 4 mortgage-module + 3 registry-module + 1 business-performance role.
+        self.assertEqual(len(names), 22)
         self.assertIn("ceo", names)
         self.assertIn("staff_mgt", names)
         self.assertIn("mortgage_officer", names)
         self.assertIn("registry_officer", names)
+        self.assertIn("business_performance", names)
 
 
 class MigrateLegacyAuthCommandTests(TestCase):
