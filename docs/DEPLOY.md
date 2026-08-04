@@ -241,13 +241,17 @@ runs the report. One-time host setup:
 # 1. Shared queue + logs dirs (the queue is bind-mounted into the container above)
 mkdir -p /data/apps/datascience/etl_requests /data/apps/datascience/logs
 
-# 2. Install the watcher (shipped in this repo at deploy/host/etl_request_watcher.sh)
+# 2. Install the watcher AND the failure notifier, side by side (both shipped in
+#    this repo under deploy/host/)
 install -m 0755 deploy/host/etl_request_watcher.sh \
   /data/apps/datascience/etl_request_watcher.sh
+install -m 0644 deploy/host/etl_failure_notify.py \
+  /data/apps/datascience/etl_failure_notify.py
 
-# 3. Run it every minute from host cron (flock prevents overlap)
+# 3. Run it every minute from host cron (flock prevents overlap). Set the failure
+#    -alert recipient(s) — comma-separated — so a failed trigger reaches someone.
 ( crontab -l 2>/dev/null; \
-  echo '* * * * * /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1' \
+  echo '* * * * * ETL_ALERT_RECIPIENTS="datateam@hfcb.co.ke" /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1' \
 ) | crontab -
 ```
 The watcher runs the data team's `initiate_automation_report.sh <script_name>` with
@@ -255,6 +259,17 @@ host `python3.6`, exactly as the old backend did. Nothing about the reports (cod
 DB drivers, SMTP creds, `.sql`/config files) lives in this backend. Requests are
 marked `.done` / `.failed` in the queue dir; watcher activity is in
 `etl_request_watcher.log`.
+
+**Failure alerts.** On SUCCESS each report emails its own output. On FAILURE (the
+report crashes, or the host `<script>.py` is missing) the watcher captures the
+report's stdout+stderr to `logs/<request>.log` and `etl_failure_notify.py` emails
+that traceback to `ETL_ALERT_RECIPIENTS` — so a "Send Report" / trigger that does
+nothing is no longer silent. The notifier reuses the reports' own SMTP settings
+from `app_settings` (`import app_settings as app`), so there is **no separate mail
+config** and no secrets in this repo. Tunables (env): `ETL_ALERT_RECIPIENTS`
+(comma-separated To:), `ETL_ALERT_MAX_LOG_BYTES` (traceback tail size, default
+8000), `ETL_NOTIFY` (notifier path, defaults next to the watcher),
+`ETL_NOTIFY_PYTHON` (default `python3.6`, the host's report interpreter).
 
 **Scheduled jobs — host cron.** Add these so the slides and insights stay fresh (they were the
 former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):
