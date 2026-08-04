@@ -29,7 +29,11 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-DEFAULT_RECIPIENTS = "datateam@hfcb.co.ke"
+DEFAULT_RECIPIENTS = (
+    "Bryan.Kanyingi@hfcb.co.ke,"
+    "Allan.Aswani@hfcb.co.ke,"
+    "washingtone.amolo@hfcb.co.ke"
+)
 
 
 def _load_app_settings(etl_dir):

@@ -21,9 +21,10 @@
 #        install -m 0644 etl_failure_notify.py  /data/apps/datascience/etl_failure_notify.py
 #      (the notifier is resolved next to this script by default; override with
 #       ETL_NOTIFY=/path/to/etl_failure_notify.py)
-#   4. Add a cron entry (runs every minute; flock stops overlap). Set the alert
-#      recipient(s) — comma-separated — so failures actually reach someone:
-#        * * * * * ETL_ALERT_RECIPIENTS="datateam@hfcb.co.ke,ops@hfcb.co.ke" /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1
+#   4. Add a cron entry (runs every minute; flock stops overlap). Failure alerts
+#      go to a baked-in default list (see etl_failure_notify.py); override per
+#      -run with ETL_ALERT_RECIPIENTS="a@x,b@y" if needed:
+#        * * * * * /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1
 #
 # The button returns immediately ("queued"); on SUCCESS the report emails its own
 # output (a couple of minutes). On FAILURE (report crashes, or the host script is

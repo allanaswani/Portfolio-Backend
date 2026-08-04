@@ -248,10 +248,12 @@ install -m 0755 deploy/host/etl_request_watcher.sh \
 install -m 0644 deploy/host/etl_failure_notify.py \
   /data/apps/datascience/etl_failure_notify.py
 
-# 3. Run it every minute from host cron (flock prevents overlap). Set the failure
-#    -alert recipient(s) — comma-separated — so a failed trigger reaches someone.
-( crontab -l 2>/dev/null; \
-  echo '* * * * * ETL_ALERT_RECIPIENTS="datateam@hfcb.co.ke" /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1' \
+# 3. Run it every minute from host cron (flock prevents overlap). Failure alerts
+#    go to the baked-in default list in etl_failure_notify.py; override with
+#    ETL_ALERT_RECIPIENTS="a@x,b@y" on the cron line if that ever changes. This
+#    replaces any existing watcher line without opening an editor:
+( crontab -l 2>/dev/null | grep -v 'etl_request_watcher.sh'; \
+  echo '* * * * * /data/apps/datascience/etl_request_watcher.sh >> /data/apps/datascience/logs/etl_request_watcher.log 2>&1' \
 ) | crontab -
 ```
 The watcher runs the data team's `initiate_automation_report.sh <script_name>` with
