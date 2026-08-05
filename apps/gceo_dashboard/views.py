@@ -465,19 +465,44 @@ class ActiveCustomersMoMView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    TO_CHAR(last_updated_date, 'YYYY-MM') AS month,
-                    COUNT(*) AS active_count
-                FROM customers
-                WHERE status = 'Active'
-                  AND last_updated_date IS NOT NULL
-                GROUP BY TO_CHAR(last_updated_date, 'YYYY-MM')
-                ORDER BY month
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        # Preferred source: the maintained `customers` master. On prod this table
+        # is frequently empty / not present, which left the "Active Customers
+        # (MoM)" chart blank. If it yields nothing, fall back to distinct
+        # transacting customers per month from `transaction_diary` — the same
+        # ledger the digital-channel MoM uses, which IS reliably populated.
+        # (No ATOMIC_REQUESTS, so a failed statement doesn't poison the next.)
+        rows = []
+        try:
+            with connection.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        TO_CHAR(last_updated_date, 'YYYY-MM') AS month,
+                        COUNT(*) AS active_count
+                    FROM customers
+                    WHERE status = 'Active'
+                      AND last_updated_date IS NOT NULL
+                    GROUP BY TO_CHAR(last_updated_date, 'YYYY-MM')
+                    ORDER BY month
+                """)
+                cols = [c[0] for c in cur.description]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception:
+            rows = []
+
+        if not rows:
+            with connection.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        TO_CHAR(DATE_TRUNC('month', t.tmstamp), 'YYYY-MM') AS month,
+                        COUNT(DISTINCT t.fk_customercust_id)                AS active_count
+                    FROM   transaction_diary t
+                    WHERE  t.tmstamp IS NOT NULL
+                      AND  t.tmstamp >= NOW() - INTERVAL '24 months'
+                    GROUP BY DATE_TRUNC('month', t.tmstamp)
+                    ORDER BY month
+                """)
+                cols = [c[0] for c in cur.description]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return Response(rows)
 
 
