@@ -21,6 +21,11 @@ from django.db import models
 from django.db.models import Q
 from simple_history.models import HistoricalRecords
 
+# Reuse the bank's canonical branch/segment lists (the same ones the Users admin
+# screen offers and Profile stores) so referral tracking stays consistent with the
+# rest of the platform instead of inventing a parallel list.
+from apps.portfolio.models import BRANCH_CHOICES, SEGMENT_CHOICES
+
 USER = settings.AUTH_USER_MODEL
 
 
@@ -80,6 +85,12 @@ class Referral(TimeStamped):
     national_id = models.CharField(max_length=20)
     phone = models.CharField(max_length=20)
     email = models.EmailField(blank=True)
+
+    # ── Tracking (branch / segment) ───────────────────────────────────────────
+    # Selected from the canonical BRANCH_CHOICES / SEGMENT_CHOICES so referrals can
+    # be grouped and filtered by branch and segment. Optional at capture.
+    branch = models.CharField(max_length=32, choices=BRANCH_CHOICES, blank=True)
+    segment = models.CharField(max_length=32, choices=SEGMENT_CHOICES, blank=True)
 
     # ── Allocation to telesales ───────────────────────────────────────────────
     status = models.CharField(max_length=20, choices=STATUS, default=STATUS_UNALLOCATED)

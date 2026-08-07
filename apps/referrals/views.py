@@ -48,10 +48,13 @@ class ReferralListCreateView(generics.ListCreateAPIView):
     serializer_class = ReferralSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["status", "assigned_to", "is_possible_duplicate", "staff_verified"]
+    filterset_fields = [
+        "status", "assigned_to", "is_possible_duplicate", "staff_verified",
+        "branch", "segment",
+    ]
     search_fields = [
         "referral_ref", "customer_name", "national_id", "phone",
-        "pf_number", "sales_code", "email",
+        "pf_number", "sales_code", "email", "branch", "segment",
     ]
     ordering_fields = ["created_at", "allocated_at", "status", "customer_name"]
 
