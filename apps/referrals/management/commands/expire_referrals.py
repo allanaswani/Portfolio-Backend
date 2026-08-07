@@ -11,14 +11,15 @@ Policy (confirmed with the business):
 Deletions are auditable: ``simple_history`` writes a delete row to
 ``referrals_history`` for every purged referral.
 
-Usage::
+Usage (local/dev)::
 
     python manage.py expire_referrals            # apply
     python manage.py expire_referrals --dry-run   # report only, change nothing
 
-Suggested host cron (mirrors the registry/ETL host jobs), daily at 02:15::
+On prod the app runs in the Docker container ``hf-backend`` (see docs/DEPLOY.md).
+Suggested host cron, mirroring the slideshow/insights jobs, daily at 02:15::
 
-    15 2 * * * cd /app && /app/.venv/bin/python manage.py expire_referrals >> /var/log/referrals_retention.log 2>&1
+    15 2 * * * docker exec hf-backend python manage.py expire_referrals >> /var/log/referrals_retention.log 2>&1
 """
 
 from datetime import timedelta
