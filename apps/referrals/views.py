@@ -50,11 +50,11 @@ class ReferralListCreateView(generics.ListCreateAPIView):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = [
         "status", "assigned_to", "is_possible_duplicate", "staff_verified",
-        "branch", "segment",
+        "branch", "segment", "department",
     ]
     search_fields = [
         "referral_ref", "customer_name", "national_id", "phone",
-        "pf_number", "sales_code", "email", "branch", "segment",
+        "pf_number", "sales_code", "email", "branch", "segment", "department",
     ]
     ordering_fields = ["created_at", "allocated_at", "status", "customer_name"]
 
@@ -180,6 +180,29 @@ class TelesalesAgentsView(APIView):
             .order_by("first_name", "username")
         )
         return Response(TelesalesAgentSerializer(agents, many=True).data)
+
+
+@extend_schema(tags=["Referrals"])
+class ReferralDepartmentsView(APIView):
+    """Distinct department names from the HR roster (``employee_table``), for the
+    referral capture Department dropdown. Read-only; never errors the form."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            from apps.gceo_dashboard.models import EmployeeTable
+
+            depts = (
+                EmployeeTable.objects
+                .exclude(department__isnull=True).exclude(department="")
+                .values_list("department", flat=True)
+                .distinct()
+            )
+            return Response(sorted({d.strip() for d in depts if d and d.strip()}))
+        except Exception:
+            # HR roster unavailable — return empty so the dropdown just has no options.
+            return Response([])
 
 
 @extend_schema(tags=["Referrals"])

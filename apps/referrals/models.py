@@ -91,6 +91,9 @@ class Referral(TimeStamped):
     # be grouped and filtered by branch and segment. Optional at capture.
     branch = models.CharField(max_length=32, choices=BRANCH_CHOICES, blank=True)
     segment = models.CharField(max_length=32, choices=SEGMENT_CHOICES, blank=True)
+    # Free-text (dropdown fed from the live employee_table department list, which is
+    # dynamic — so no static choices here); optional at capture.
+    department = models.CharField(max_length=120, blank=True)
 
     # ── Allocation to telesales ───────────────────────────────────────────────
     status = models.CharField(max_length=20, choices=STATUS, default=STATUS_UNALLOCATED)

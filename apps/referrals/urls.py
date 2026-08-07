@@ -6,6 +6,7 @@ urlpatterns = [
     # Aggregations / roster
     path("stats/", v.ReferralStatsView.as_view()),
     path("telesales-agents/", v.TelesalesAgentsView.as_view()),
+    path("departments/", v.ReferralDepartmentsView.as_view()),
 
     # Pipeline actions (specific routes before the <pk> catch-all)
     path("<int:pk>/allocate/", v.ReferralAllocateView.as_view()),
