@@ -1,4 +1,4 @@
-from rest_framework import generics, filters
+from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -665,28 +665,64 @@ class EmployeeRosterPagination(StandardPagination):
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
-class EmployeeRosterListView(generics.ListAPIView):
+class EmployeeRosterListView(generics.GenericAPIView):
     """Complete HR employee roster from ``employee_table`` (~1,271 staff).
 
     Unlike the sales/branch DMC tables (``branch_employee_dmc_data`` +
     ``branch_final_employee_dmc_data``, ~808 customer-facing staff), this is the
     full headcount including HQ and back-office. Read-only — ``employee_table`` is
-    a managed=False datawarehouse mirror, so no writes here.
+    a managed=False datawarehouse mirror.
+
+    We return an explicit ``.values()`` projection of the columns the directory
+    needs rather than the full model serializer: ``employee_table`` carries fields
+    the ORM/DRF choke on when serialised in bulk (e.g. a ``DecimalField`` declared
+    with ``max_digits=990``), so selecting only the needed plain columns is both
+    robust and lighter.
     """
 
     permission_classes = [IsAuthenticated]
-    serializer_class = EmployeeTableSerializer
     pagination_class = EmployeeRosterPagination
-    filter_backends = [
-        django_filters.rest_framework.DjangoFilterBackend,
-        filters.SearchFilter,
-        filters.OrderingFilter,
+
+    # Only the columns the admin directory renders — all safe scalar fields.
+    COLUMNS = [
+        "name", "staff_id", "national_id", "email",
+        "department", "division", "unit", "job_title", "grade", "exit",
     ]
-    filterset_fields = ["department", "division", "unit", "grade", "gender", "exit"]
-    search_fields = ["name", "national_id", "email", "job_title", "department", "division"]
-    ordering_fields = ["name", "department", "date_of_employment"]
-    ordering = ["name"]
-    queryset = EmployeeTable.objects.all()
+    FILTER_FIELDS = ["department", "division", "unit", "grade", "gender", "exit"]
+
+    def get(self, request):
+        qs = EmployeeTable.objects.all()
+
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(national_id__icontains=search)
+                | Q(job_title__icontains=search)
+                | Q(department__icontains=search)
+                | Q(division__icontains=search)
+            )
+        for field in self.FILTER_FIELDS:
+            value = request.query_params.get(field)
+            if value not in (None, ""):
+                qs = qs.filter(**{field: value})
+
+        rows = list(qs.order_by("name").values(*self.COLUMNS))
+
+        # staff_id is a Decimal; hand back a plain number so the client renders it cleanly.
+        for row in rows:
+            sid = row.get("staff_id")
+            if sid is not None:
+                try:
+                    row["staff_id"] = int(sid)
+                except (TypeError, ValueError):
+                    row["staff_id"] = str(sid)
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
