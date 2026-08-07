@@ -1,4 +1,4 @@
-from rest_framework import generics
+from rest_framework import generics, filters
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -656,6 +656,37 @@ class StaffGenderView(APIView):
             .annotate(count=Count("id"))
         )
         return Response(list(data))
+
+
+class EmployeeRosterPagination(StandardPagination):
+    # The full roster is ~1,300 rows; allow a single large page so the admin table
+    # can load the whole directory in one request (via the frontend's getList).
+    max_page_size = 5000
+
+
+@extend_schema(tags=["CEO Dashboard — Staff"])
+class EmployeeRosterListView(generics.ListAPIView):
+    """Complete HR employee roster from ``employee_table`` (~1,271 staff).
+
+    Unlike the sales/branch DMC tables (``branch_employee_dmc_data`` +
+    ``branch_final_employee_dmc_data``, ~808 customer-facing staff), this is the
+    full headcount including HQ and back-office. Read-only — ``employee_table`` is
+    a managed=False datawarehouse mirror, so no writes here.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = EmployeeTableSerializer
+    pagination_class = EmployeeRosterPagination
+    filter_backends = [
+        django_filters.rest_framework.DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["department", "division", "unit", "grade", "gender", "exit"]
+    search_fields = ["name", "national_id", "email", "job_title", "department", "division"]
+    ordering_fields = ["name", "department", "date_of_employment"]
+    ordering = ["name"]
+    queryset = EmployeeTable.objects.all()
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])

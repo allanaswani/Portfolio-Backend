@@ -92,4 +92,7 @@ urlpatterns = [
 
     # Transactions
     path("transactions/",                views.TransactionDiaryView.as_view()),
+
+    # Full HR employee roster (employee_table) — complete headcount (~1,271)
+    path("employees/",                   views.EmployeeRosterListView.as_view()),
 ]
