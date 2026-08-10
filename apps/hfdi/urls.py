@@ -73,6 +73,7 @@ urlpatterns = [
 
     # Project Titan Plots Allocation (managed: full CRUD + search + upload)
     path("project_titan_plots_allocation/", views.ProjectTitanPlotsAllocationListView.as_view()),
+    path("project_titan_plots_allocation/summary/", views.ProjectTitanPlotsAllocationSummaryView.as_view()),
     path("project_titan_plots_allocation/search/", views.ProjectTitanPlotsAllocationSearchAPIView.as_view()),
     path("project_titan_plots_allocation/upload-csv/", views.ProjectTitanPlotsAllocationCSVUploadView.as_view()),
     path("project_titan_plots_allocation/changes/", views.ProjectTitanPlotsAllocationFieldChangeListView.as_view()),

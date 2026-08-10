@@ -1,6 +1,7 @@
 import re
 from datetime import datetime
 
+from django.db.models import Sum, Count
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -464,6 +465,32 @@ class ProjectTitanPlotsAllocationListView(generics.ListCreateAPIView):
     serializer_class = ProjectTitanPlotsAllocationSerializer
     pagination_class = StandardPagination
     queryset = ProjectTitanPlotsAllocation.objects.all()
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
+class ProjectTitanPlotsAllocationSummaryView(APIView):
+    """KPI totals aggregated in SQL over the FULL plots table (~7k rows).
+
+    The list endpoint is paginated and the frontend previously summed KPIs from a
+    client-side fetch that caps at ~5,000 rows, so Total Plots and the value/paid/
+    balance totals were understated. This computes them across every row.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agg = ProjectTitanPlotsAllocation.objects.aggregate(
+            total_plots=Count("id"),
+            total_value=Sum("plot_value"),
+            total_paid=Sum("amount_paid"),
+            total_balance=Sum("plot_balance"),
+        )
+        return Response({
+            "total_plots": agg["total_plots"] or 0,
+            "total_value": agg["total_value"] or 0,
+            "total_paid": agg["total_paid"] or 0,
+            "total_balance": agg["total_balance"] or 0,
+        })
 
 
 @extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
