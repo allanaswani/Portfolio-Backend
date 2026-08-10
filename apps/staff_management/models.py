@@ -881,6 +881,29 @@ class DSRSalesCode(models.Model):
         return f"{self.sales_code} — {self.salesperson} (PF {self.pf_number})"
 
 
+class TeamLeaderBranch(models.Model):
+    """Which team leader owns a branch (for PB DSRs etc.).
+
+    One row per branch (canonical, normalised name). A team leader owns many
+    branches; when a TL exits, their branches are reassigned to another TL. Used to
+    auto-fill a DSR's team leader from its branch on allocation.
+    """
+
+    branch = models.CharField(max_length=120, unique=True, verbose_name="Branch")
+    team_leader = models.CharField(max_length=200, verbose_name="Team Leader")
+    role = models.CharField(max_length=60, blank=True, default="PB DSR")
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = True
+        db_table = "team_leader_branches"
+        ordering = ["team_leader", "branch"]
+
+    def __str__(self):
+        return f"{self.branch} → {self.team_leader}"
+
+
 # ── Scorecard automation engine (parallel subsystem) ───────────────────────────
 # Imported here so Django discovers these models under the staff_management app.
 # Their tables are namespaced sc_* and do NOT collide with the redesigned

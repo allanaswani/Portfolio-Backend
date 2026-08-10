@@ -5,8 +5,15 @@ from core.script_trigger import ScriptTriggerAPIView
 from . import views
 from . import legacy_views as lv
 from . import dsr_views as dsr
+from . import tl_views as tl
 
 urlpatterns = [
+    # ── Team leader ↔ branch mapping (Administration) ─────────────────────────
+    path("team-leaders/reassign/",   tl.TeamLeaderReassignView.as_view()),
+    path("team-leaders/upload-csv/", tl.TeamLeaderBranchUploadView.as_view()),
+    path("team-leaders/<int:pk>/",   tl.TeamLeaderBranchDeleteView.as_view()),
+    path("team-leaders/",            tl.TeamLeaderBranchListView.as_view()),
+    path("team-leaders/upsert/",     tl.TeamLeaderBranchUpsertView.as_view()),
     # ── Legacy scorecard automation engine (parallel subsystem, sc_* tables) ──
     path("scorecard-automation/", include("apps.staff_management.scorecard_automation.urls")),
 

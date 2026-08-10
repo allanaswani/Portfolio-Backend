@@ -32,14 +32,33 @@ def _to_int(value):
         return None
 
 
+def team_leader_for_branch(branch) -> str:
+    """The team leader who owns ``branch`` (by canonical name), or ''."""
+    from apps.staff_management.branches import normalize_branch
+    from apps.staff_management.models import TeamLeaderBranch
+
+    canon = normalize_branch(branch)
+    if not canon:
+        return ""
+    try:
+        row = (
+            TeamLeaderBranch.objects.filter(branch=canon, active=True)
+            .values_list("team_leader", flat=True)
+            .first()
+        )
+        return row or ""
+    except Exception:
+        return ""
+
+
 def autofill_from_roster(pf_number) -> dict:
-    """Best-effort name/branch/department for a PF from the staff roster.
+    """Best-effort name/branch/department/team_leader for a PF from the staff roster.
 
     Name + branch come from ``BranchFinalEmployeeDmcData`` (keyed on
-    ``staff_pf_number``); department from ``employee_table`` when a matching row
-    exists. Never raises — missing data just yields blanks for the user to fill.
+    ``staff_pf_number``); department from ``employee_table``; team leader from the
+    branch→TL mapping. Never raises — missing data just yields blanks to fill.
     """
-    out = {"salesperson": "", "branch": "", "department": ""}
+    out = {"salesperson": "", "branch": "", "department": "", "team_leader": ""}
     pf_int = _to_int(pf_number)
 
     try:
@@ -71,5 +90,11 @@ def autofill_from_roster(pf_number) -> dict:
                 out["department"] = (er.get("department") or "").strip()
     except Exception:
         pass
+
+    # Canonicalise the branch and derive the team leader from the branch→TL map.
+    if out["branch"]:
+        from apps.staff_management.branches import normalize_branch
+        out["branch"] = normalize_branch(out["branch"])
+        out["team_leader"] = team_leader_for_branch(out["branch"])
 
     return out
