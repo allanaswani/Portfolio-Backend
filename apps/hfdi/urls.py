@@ -67,6 +67,7 @@ urlpatterns = [
 
     # Project Titan Daily Collections (managed: full CRUD + search + upload)
     path("project_titan_daily_collections/", views.ProjectTitanDailyCollectionsListView.as_view()),
+    path("project_titan_daily_collections/summary/", views.ProjectTitanDailyCollectionsSummaryView.as_view()),
     path("project_titan_daily_collections/search/", views.ProjectTitanDailyCollectionsSearchAPIView.as_view()),
     path("project_titan_daily_collections/upload-csv/", views.ProjectTitanDailyCollectionsCSVUploadView.as_view()),
     path("project_titan_daily_collections/<int:pk>/", views.ProjectTitanDailyCollectionsDetailView.as_view()),
@@ -81,6 +82,7 @@ urlpatterns = [
 
     # Project Titan Plots Agent Allocation (managed: full CRUD + search + upload)
     path("project_titan_plots_agent_allocation/", views.ProjectTitanPlotsAgentAllocationListView.as_view()),
+    path("project_titan_plots_agent_allocation/summary/", views.ProjectTitanPlotsAgentAllocationSummaryView.as_view()),
     path("project_titan_plots_agent_allocation/search/", views.ProjectTitanPlotsAgentAllocationSearchAPIView.as_view()),
     path("project_titan_plots_agent_allocation/upload-csv/", views.ProjectTitanPlotsAgentAllocationCSVUploadView.as_view()),
     path("project_titan_plots_agent_allocation/<int:pk>/", views.ProjectTitanPlotsAgentAllocationDetailView.as_view()),

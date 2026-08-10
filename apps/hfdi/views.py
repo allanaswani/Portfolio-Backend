@@ -493,6 +493,42 @@ class ProjectTitanPlotsAllocationSummaryView(APIView):
         })
 
 
+@extend_schema(tags=["HFDI — Project Titan Daily Collections"])
+class ProjectTitanDailyCollectionsSummaryView(APIView):
+    """KPI totals over the FULL daily-collections table (client fetch caps at ~5,000)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = ProjectTitanDailyCollections.objects.all()
+        agg = qs.aggregate(total_records=Count("id"), total_amount=Sum("trx_amount"))
+        credits = qs.filter(dr_cr__istartswith="C").count()
+        return Response({
+            "total_records": agg["total_records"] or 0,
+            "total_amount": agg["total_amount"] or 0,
+            "credit_entries": credits,
+        })
+
+
+@extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
+class ProjectTitanPlotsAgentAllocationSummaryView(APIView):
+    """KPI totals over the FULL agent-allocation table (client fetch caps at ~5,000)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = ProjectTitanPlotsAgentAllocation.objects.all()
+        agents = (
+            qs.exclude(allocation_collection_agent__isnull=True).exclude(allocation_collection_agent="")
+            .values("allocation_collection_agent").distinct().count()
+        )
+        groups = (
+            qs.exclude(allocation_collection_group__isnull=True).exclude(allocation_collection_group="")
+            .values("allocation_collection_group").distinct().count()
+        )
+        return Response({"allocations": qs.count(), "agents": agents, "groups": groups})
+
+
 @extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
 class ProjectTitanPlotsAllocationDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
