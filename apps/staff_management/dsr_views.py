@@ -154,19 +154,53 @@ class DSRSalesCodeAllocateView(APIView):
         )
 
 
-class DSRSalesCodeCSVUploadView(APIView):
-    """Bulk import the DSR listing. Upserts on PF number; headers are case-insensitive.
+def _clean_cell(value) -> str:
+    """Stringify a cell, trimming Excel's numeric ``.0`` tails (e.g. PF 3804.0)."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    return s
 
-    Recognised columns: PF_NO, SALESCODE, SALESPERSON, Branch, Role, Team Leader,
-    DATE OF EMPLOYMENT, ALLOCATION DATE.
+
+def _read_upload_rows(upload):
+    """Return a list of rows (each a list of string cells) from a CSV or XLSX upload.
+
+    Handles both formats so the listing can be uploaded exactly as exported — no
+    need to strip the Excel's blank header row or leading empty columns first.
+    """
+    name = (getattr(upload, "name", "") or "").lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        import openpyxl
+
+        wb = openpyxl.load_workbook(upload, read_only=True, data_only=True)
+        ws = wb["List"] if "List" in wb.sheetnames else wb[wb.sheetnames[0]]
+        return [[_clean_cell(c) for c in row] for row in ws.iter_rows(values_only=True)]
+
+    raw = upload.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    return [[_clean_cell(c) for c in row] for row in csv.reader(io.StringIO(text))]
+
+
+class DSRSalesCodeCSVUploadView(APIView):
+    """Bulk import the DSR listing (CSV **or** XLSX). Upserts on PF number.
+
+    The header row is located by name (case-insensitive), so a blank leading row,
+    empty leading columns, and extra columns (CH, unnamed) in the export are all
+    tolerated. Recognised headers: PF_NO, SALESCODE, SALESPERSON, Branch, Role,
+    Team Leader, DATE OF EMPLOYMENT, ALLOCATION DATE.
     """
 
     permission_classes = [IsAuthenticated]
 
     HEADER_MAP = {
-        "pf_no": "pf_number", "pf_number": "pf_number", "pf": "pf_number",
-        "salescode": "sales_code", "sales_code": "sales_code",
-        "salesperson": "salesperson", "name": "salesperson",
+        "pf_no": "pf_number", "pf no": "pf_number", "pf_number": "pf_number", "pf": "pf_number",
+        "salescode": "sales_code", "sales code": "sales_code", "sales_code": "sales_code",
+        "salesperson": "salesperson", "sales person": "salesperson", "name": "salesperson",
         "branch": "branch",
         "role": "role",
         "department": "department",
@@ -184,49 +218,56 @@ class DSRSalesCodeCSVUploadView(APIView):
             return Response({"detail": "No file provided."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            text = upload.read().decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = upload.read().decode("latin-1")
+            rows = _read_upload_rows(upload)
+        except Exception as exc:
+            return Response({"detail": f"Could not read the file: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        reader = csv.DictReader(io.StringIO(text))
+        # Locate the header row: the first row that maps to both PF and sales code.
+        col_map = {}
+        header_idx = None
+        for i, row in enumerate(rows):
+            mapping = {j: self.HEADER_MAP[c.strip().lower()]
+                       for j, c in enumerate(row) if c.strip().lower() in self.HEADER_MAP}
+            if "pf_number" in mapping.values() and "sales_code" in mapping.values():
+                col_map, header_idx = mapping, i
+                break
+
+        if header_idx is None:
+            return Response(
+                {"detail": "Could not find the header row — need PF_NO and SALESCODE columns."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         created = updated = skipped = 0
         errors = []
-
         with transaction.atomic():
-            for i, raw in enumerate(reader, start=2):
-                row = {}
-                for key, val in raw.items():
-                    if key is None:
-                        continue
-                    mapped = self.HEADER_MAP.get(str(key).strip().lower())
-                    if mapped:
-                        row[mapped] = (val or "").strip()
-
-                pf = row.get("pf_number", "").strip()
-                code = row.get("sales_code", "").strip()
+            for n, row in enumerate(rows[header_idx + 1:], start=header_idx + 2):
+                data = {field: (row[j] if j < len(row) else "") for j, field in col_map.items()}
+                pf = data.get("pf_number", "").strip()
+                code = data.get("sales_code", "").strip()
                 if not pf or not code:
                     skipped += 1
                     continue
 
                 fields = {
                     "sales_code": code,
-                    "salesperson": row.get("salesperson", ""),
-                    "branch": row.get("branch", ""),
-                    "department": row.get("department", ""),
-                    "role": row.get("role", ""),
-                    "team_leader": row.get("team_leader", ""),
-                    "date_of_employment": _parse_date(row.get("date_of_employment")),
-                    "allocation_date": _parse_date(row.get("allocation_date")),
+                    "salesperson": data.get("salesperson", ""),
+                    "branch": data.get("branch", ""),
+                    "department": data.get("department", ""),
+                    "role": data.get("role", ""),
+                    "team_leader": data.get("team_leader", ""),
+                    "date_of_employment": _parse_date(data.get("date_of_employment")),
+                    "allocation_date": _parse_date(data.get("allocation_date")),
                 }
                 try:
-                    _, was_created = DSRSalesCode.objects.update_or_create(
-                        pf_number=pf, defaults=fields,
-                    )
+                    with transaction.atomic():
+                        _, was_created = DSRSalesCode.objects.update_or_create(
+                            pf_number=pf, defaults=fields,
+                        )
                     created += int(was_created)
                     updated += int(not was_created)
                 except IntegrityError:
-                    # sales_code already used by a different PF — flag, don't abort.
-                    errors.append(f"Row {i}: sales code {code} already used by another PF.")
+                    errors.append(f"Row {n}: sales code {code} already used by another PF.")
                     skipped += 1
 
         return Response({
