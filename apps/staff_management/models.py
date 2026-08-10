@@ -851,6 +851,36 @@ class MerchantBankTillManualUpload(models.Model):
         ordering = ["-uploaded_at"]
 
 
+class DSRSalesCode(models.Model):
+    """A DSR (Direct Sales Rep) seller-code allocation — one per person.
+
+    Mirrors the "DSRs Seller Code Allocation" listing. ``pf_number`` is the unique
+    person key (used to detect an existing allocation) and ``sales_code`` is a
+    unique ``DSR###`` code. New codes are the next sequential number after the
+    current maximum, so a code is never reused (see ``dsr.next_sales_code``).
+    """
+
+    pf_number = models.CharField(max_length=30, unique=True, verbose_name="PF Number")
+    sales_code = models.CharField(max_length=20, unique=True, verbose_name="Sales Code")
+    salesperson = models.CharField(max_length=200, blank=True)
+    branch = models.CharField(max_length=120, blank=True)
+    department = models.CharField(max_length=120, blank=True)
+    role = models.CharField(max_length=60, blank=True)
+    team_leader = models.CharField(max_length=200, blank=True)
+    date_of_employment = models.DateField(null=True, blank=True)
+    allocation_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = True
+        db_table = "dsr_sales_codes"
+        ordering = ["sales_code"]
+
+    def __str__(self):
+        return f"{self.sales_code} — {self.salesperson} (PF {self.pf_number})"
+
+
 # ── Scorecard automation engine (parallel subsystem) ───────────────────────────
 # Imported here so Django discovers these models under the staff_management app.
 # Their tables are namespaced sc_* and do NOT collide with the redesigned

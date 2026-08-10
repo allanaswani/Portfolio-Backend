@@ -4,10 +4,17 @@ from core.script_trigger import ScriptTriggerAPIView
 
 from . import views
 from . import legacy_views as lv
+from . import dsr_views as dsr
 
 urlpatterns = [
     # ── Legacy scorecard automation engine (parallel subsystem, sc_* tables) ──
     path("scorecard-automation/", include("apps.staff_management.scorecard_automation.urls")),
+
+    # ── DSR seller-code allocation (Administration module) ────────────────────
+    path("dsr-sales-codes/lookup/",     dsr.DSRSalesCodeLookupView.as_view()),
+    path("dsr-sales-codes/allocate/",   dsr.DSRSalesCodeAllocateView.as_view()),
+    path("dsr-sales-codes/upload-csv/", dsr.DSRSalesCodeCSVUploadView.as_view()),
+    path("dsr-sales-codes/",            dsr.DSRSalesCodeListView.as_view()),
 
     # ── Existing staff endpoints ──────────────────────────────────────────────
     path("branch_managers/",  views.BranchManagersListView.as_view()),
