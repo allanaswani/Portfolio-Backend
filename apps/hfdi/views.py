@@ -25,6 +25,7 @@ from .models import (
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
+    ProjectInventoryLegalDocumentsStatus,
 )
 from .serializers import (
     ProjectSerializer, TargetsSerializer, SalesSerializer, ObligationSummarySerializer,
@@ -39,6 +40,7 @@ from .serializers import (
     HfdiProjectsInventorySalesDataSerializer, AffordableHousingApplicationSerializer,
     AffordableHousingRegistrationsSerializer, AffordableHousingProjectsPipelineSerializer,
     AFHSellerMappingSerializer,
+    ProjectInventoryLegalDocumentsStatusSerializer,
 )
 
 
@@ -876,6 +878,59 @@ class AFHSellerMappingCSVUploadView(AmendingCsvUploadView):
         data = serializer.validated_data
         AFHSellerMapping.objects.update_or_create(
             staff_id=data.get("staff_id"),
+            defaults=data,
+        )
+        return None
+
+
+# ── Project Inventory Legal Documents Status ───────────────────────────────────
+
+@extend_schema(tags=["HFDI — Legal Documents Status"])
+class ProjectInventoryLegalDocumentsStatusListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectInventoryLegalDocumentsStatusSerializer
+    pagination_class = StandardPagination
+    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
+    filterset_fields = ["project_name", "unit_name"]
+    queryset = ProjectInventoryLegalDocumentsStatus.objects.all()
+
+
+@extend_schema(tags=["HFDI — Legal Documents Status"])
+class ProjectInventoryLegalDocumentsStatusDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectInventoryLegalDocumentsStatusSerializer
+    queryset = ProjectInventoryLegalDocumentsStatus.objects.all()
+
+
+@extend_schema(tags=["HFDI — Legal Documents Status"])
+class ProjectInventoryLegalDocumentsStatusSearchAPIView(DynamicColumnSearchListView):
+    serializer_class = ProjectInventoryLegalDocumentsStatusSerializer
+    search_model = ProjectInventoryLegalDocumentsStatus
+
+
+@extend_schema(tags=["HFDI — Legal Documents Status"])
+class ProjectInventoryLegalDocumentsStatusCSVUploadView(AmendingCsvUploadView):
+    """Upsert on (project_name, unit_name); blank boolean cells default to False."""
+
+    model = ProjectInventoryLegalDocumentsStatus
+    serializer_class = ProjectInventoryLegalDocumentsStatusSerializer
+    result_filename = "project_inventory_legal_documents_status_upload_results"
+    excluded_columns = ("id",)
+
+    BOOLEAN_FIELDS = ("sale_agreement", "readiness_to_complete", "completion_notice", "rescission_notice")
+
+    def amend_row(self, row):
+        for field in self.BOOLEAN_FIELDS:
+            if not (row.get(field) or "").strip():
+                row[field] = "False"
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        if not data.get("project_name") or not data.get("unit_name"):
+            return {"project_name/unit_name": "Both fields are required for upsert."}
+        ProjectInventoryLegalDocumentsStatus.objects.update_or_create(
+            project_name=data.get("project_name"),
+            unit_name=data.get("unit_name"),
             defaults=data,
         )
         return None

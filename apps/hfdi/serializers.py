@@ -9,6 +9,7 @@ from .models import (
     HfdiProjectsDailyCollectionsData, HfdiProjectsInventorySalesData,
     AffordableHousingApplication, AffordableHousingRegistrations,
     AffordableHousingProjectsPipeline, AFHSellerMapping,
+    ProjectInventoryLegalDocumentsStatus,
 )
 
 
@@ -162,3 +163,10 @@ class AFHSellerMappingSerializer(serializers.ModelSerializer):
     class Meta:
         model = AFHSellerMapping
         fields = "__all__"
+
+
+class ProjectInventoryLegalDocumentsStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectInventoryLegalDocumentsStatus
+        fields = "__all__"
+        read_only_fields = ("created_at", "updated_at")

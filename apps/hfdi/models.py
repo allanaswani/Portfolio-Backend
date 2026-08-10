@@ -501,6 +501,30 @@ class AffordableHousingProjectsPipeline(models.Model):
         return f"{self.project_name} - {self.county}"
 
 
+class ProjectInventoryLegalDocumentsStatus(models.Model):
+    """Per-unit legal-document completion status (sale agreement through rescission)."""
+    project_name = models.CharField(max_length=255)
+    unit_name = models.CharField(max_length=255)
+    sale_agreement = models.BooleanField(default=False)
+    readiness_to_complete = models.BooleanField(default=False)
+    completion_notice = models.BooleanField(default=False)
+    rescission_notice = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "project_inventory_legal_documents_status"
+        verbose_name = "Project Inventory Legal Documents Status"
+        verbose_name_plural = "Project Inventory Legal Documents Status"
+
+    def __str__(self):
+        return f"{self.project_name} - {self.unit_name}"
+
+
 class AFHSellerMapping(models.Model):
     """Maps AFH sellers/staff to their org units (port of legacy model)."""
     staff_id = models.CharField(max_length=255, blank=True, null=True)

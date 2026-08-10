@@ -117,6 +117,12 @@ urlpatterns = [
     path("afh_seller_mapping/upload-csv/", views.AFHSellerMappingCSVUploadView.as_view()),
     path("afh_seller_mapping/<int:pk>/", views.AFHSellerMappingDetailView.as_view()),
 
+    # Project Inventory Legal Documents Status (managed: full CRUD + search + upload)
+    path("project_inventory_legal_documents_status/", views.ProjectInventoryLegalDocumentsStatusListCreateView.as_view()),
+    path("project_inventory_legal_documents_status/search/", views.ProjectInventoryLegalDocumentsStatusSearchAPIView.as_view()),
+    path("project_inventory_legal_documents_status/upload-csv/", views.ProjectInventoryLegalDocumentsStatusCSVUploadView.as_view()),
+    path("project_inventory_legal_documents_status/<int:pk>/", views.ProjectInventoryLegalDocumentsStatusDetailView.as_view()),
+
     # ══════════════════════════════════════════════════════════════════════════
     # Frontend-contract aliases — exact paths the portfolio-management-frontend
     # hooks call (these mirror the OLD backend's URL scheme). They point at the
