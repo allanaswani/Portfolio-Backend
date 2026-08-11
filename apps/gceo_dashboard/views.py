@@ -334,7 +334,9 @@ class CeoDailyAsOfView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        latest = DailyBalanceMovement.objects.aggregate(mx=Max("etl_date_updated"))["mx"]
+        agg = DailyBalanceMovement.objects.aggregate(
+            etl=Max("etl_date_updated"), opened=Max("open_date"))
+        latest = agg["etl"] or agg["opened"]
         return Response({"as_of": latest.isoformat() if latest else None})
 
 
