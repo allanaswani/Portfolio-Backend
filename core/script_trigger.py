@@ -33,7 +33,7 @@ from rest_framework.views import APIView
 # Script names are turned into filenames and consumed by a host shell script, so
 # restrict them hard: letters, digits, underscore, hyphen only. This blocks path
 # traversal and shell-metacharacter injection at the boundary.
-_SAFE_SCRIPT_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+_SAFE_SCRIPT_NAME = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 
 
 def _queue_dir() -> Path:
@@ -59,7 +59,8 @@ class ScriptTriggerAPIView(APIView):
             )
         if not _SAFE_SCRIPT_NAME.match(str(script_name)):
             return Response(
-                {"error": "Invalid script name. Use letters, digits, underscore or hyphen only."},
+                {"error": "Invalid script name. Use letters, digits, underscore, hyphen — "
+                          "and '/' to point at a subfolder (e.g. hfcb_properties_reports/afh_applications)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -76,7 +77,12 @@ class ScriptTriggerAPIView(APIView):
 
         requested_by = getattr(request.user, "username", None) or "unknown"
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        request_path = queue_dir / f"{script_name}__{stamp}.request"
+        # Keep the queue file flat (the watcher globs the top level), so a subfolder
+        # name like "a/b" is flattened to "a~b" in the FILENAME only — the real
+        # script_name (with the slash) is preserved in the JSON payload below and
+        # is what the watcher reads to locate the script.
+        safe_name = str(script_name).replace("/", "~")
+        request_path = queue_dir / f"{safe_name}__{stamp}.request"
         payload = {
             "script_name": script_name,
             "requested_by": requested_by,

@@ -327,6 +327,18 @@ class DailyMovementView(APIView):
 
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
+class CeoDailyAsOfView(APIView):
+    """The reference date of the daily balances — the 'as of' behind the day-over-day
+    Top Inflows/Outflows (which compare yester_1_bal vs yester_2_bal)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        latest = DailyBalanceMovement.objects.aggregate(mx=Max("etl_date_updated"))["mx"]
+        return Response({"as_of": latest.isoformat() if latest else None})
+
+
+@extend_schema(tags=["CEO Dashboard — Deposits"])
 class DepositGrowthPctView(APIView):
     permission_classes = [IsAuthenticated]
 

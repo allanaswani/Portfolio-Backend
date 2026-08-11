@@ -71,9 +71,14 @@ for req in "$QUEUE_DIR"/*.request; do
     mv -n "$req" "$running" 2>/dev/null || continue
     [ -f "$running" ] || continue
 
-    # The sanitized script name is the filename prefix before the "__timestamp".
+    # The real script name (which may include a subfolder, e.g.
+    # hfcb_properties_reports/afh_applications) is stored in the request JSON.
+    # Fall back to the filename prefix for older/plain requests. Then guard
+    # against path traversal / absolute paths.
     base="$(basename "$running")"
-    script_name="${base%%__*}"
+    script_name="$(sed -n 's/.*"script_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$running" | head -1)"
+    [ -n "$script_name" ] || script_name="${base%%__*}"
+    case "$script_name" in *..* | /*) script_name="" ;; esac
 
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
     echo "[$ts] Running ETL report: $script_name (from $base)"

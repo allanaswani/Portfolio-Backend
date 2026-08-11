@@ -16,6 +16,7 @@ urlpatterns = [
     path("deposit_movement_daily/",      views.DepositMovementDailyView.as_view()),
     path("segment_daily_movement",       views.SegmentDailyMovementView.as_view()),
     path("daily_movement",               views.DailyMovementView.as_view()),
+    path("daily_asof/",                  views.CeoDailyAsOfView.as_view()),
     path("deposit_movement_daily_current_day_percentag_growth", views.DepositGrowthPctView.as_view()),
     path("deposit_movement_by_segment",  views.DepositMovementBySegmentView.as_view()),
 
