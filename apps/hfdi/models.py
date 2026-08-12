@@ -288,6 +288,7 @@ class ProjectTitanDailyCollections(models.Model):
 
 class ProjectTitanPlotsAllocation(models.Model):
     serial_number = models.IntegerField(null=True, blank=True, verbose_name="Serial Number")
+    parcel_block = models.CharField(max_length=30, null=True, blank=True, verbose_name="Plot Block Number")
     plot_number = models.IntegerField(null=True, blank=True, verbose_name="Plot Number")
     parcel_lr_number = models.BigIntegerField(null=True, blank=True, verbose_name="Parcel LR Number")
     plot_area = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True, verbose_name="Plot Area (Hectares)")
