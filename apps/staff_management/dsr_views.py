@@ -23,16 +23,43 @@ from rest_framework.views import APIView
 
 from core.pagination import StandardPagination
 
+from .branches import normalize_branch
 from .dsr import autofill_from_roster, next_sales_code
 from .models import DSRSalesCode
 
 
 class DSRSalesCodeSerializer(serializers.ModelSerializer):
+    # Show the team leader who currently owns the DSR's branch. If a value was
+    # stored at allocation time we keep it; otherwise we derive it live from the
+    # branch→TL mapping, so rows auto-fill the moment a mapping exists (and follow
+    # a branch's reassignment) instead of staying blank forever.
+    team_leader = serializers.SerializerMethodField()
+
     class Meta:
         model = DSRSalesCode
         fields = "__all__"
         # sales_code is system-generated on allocate; never accept it from the body.
         read_only_fields = ["sales_code", "created_at", "updated_at"]
+
+    def get_team_leader(self, obj):
+        stored = (getattr(obj, "team_leader", "") or "").strip()
+        if stored:
+            return stored
+        return self._branch_tl_map().get(normalize_branch(obj.branch), "")
+
+    def _branch_tl_map(self):
+        """Cache the (small) branch→team-leader map once per serialization pass."""
+        cache = getattr(self, "_tl_map_cache", None)
+        if cache is None:
+            from .models import TeamLeaderBranch
+
+            cache = dict(
+                TeamLeaderBranch.objects.filter(active=True).values_list(
+                    "branch", "team_leader"
+                )
+            )
+            self._tl_map_cache = cache
+        return cache
 
 
 def _is_admin(user) -> bool:
