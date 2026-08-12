@@ -4,6 +4,8 @@ from . import views
 urlpatterns = [
     # Customers
     path("customers/",                    views.BranchCustomerListView.as_view()),
+    path("customers/search/",             views.BranchCustomerListSearchView.as_view()),
+    path("customers/top/",                views.BranchTopCustomersView.as_view()),
     path("customers_allocated/",          views.BranchCustomerListAllocatedView.as_view()),
     path("customers_allocated/search/",   views.BranchCustomerListAllocatedSearchView.as_view()),
     path("customers_not_allocated/",      views.BranchCustomerListNotAllocatedView.as_view()),

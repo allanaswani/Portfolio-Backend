@@ -6,6 +6,8 @@ urlpatterns = [
     # Dynamic search: filters the RM's customers by any visible column
     # (case-insensitive partial match) plus min_/max_ numeric range params.
     path("customers/search/", views.DynamicFilterCustomerListPaginatedDetailView.as_view()),
+    # Top-N customers by deposit balance (default 10) — must precede <str:rm_code>.
+    path("customers/top/", views.RmTopCustomersView.as_view()),
     path("customers/<str:rm_code>", views.RmCustomerListView.as_view()),
     path("customers/<int:pk>/", views.CustomerDetailView.as_view()),
     path("customers/<int:pk>/data", views.CustomerDataView.as_view()),

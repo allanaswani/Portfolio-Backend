@@ -16,6 +16,7 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, status
 from rest_framework import serializers as drf_serializers
+from rest_framework.filters import SearchFilter
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -660,6 +661,12 @@ class RetailAllocatedPortfolioListView(generics.ListCreateAPIView):
     # Old endpoint was list+create (allocation admin screen posts new rows).
     permission_classes = [IsAuthenticated]
     pagination_class = StandardPagination
+    # Server-side search so the (large) allocation base can be paged instead of
+    # pulled whole and filtered in the browser. `?search=` matches the text columns;
+    # `?sales_code=` / `?main_segment=` are exact filters.
+    filter_backends = [SearchFilter, DjangoFilterBackend]
+    search_fields = ["customer_name", "sales_code", "rm_name", "main_segment"]
+    filterset_fields = ["sales_code", "main_segment"]
 
     def get_serializer_class(self):
         from apps.portfolio.models import RetailAllocatedPortfolio
@@ -674,7 +681,7 @@ class RetailAllocatedPortfolioListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         from apps.portfolio.models import RetailAllocatedPortfolio
-        return RetailAllocatedPortfolio.objects.all()
+        return RetailAllocatedPortfolio.objects.all().order_by("cust_id")
 
 
 @extend_schema(tags=TAG)

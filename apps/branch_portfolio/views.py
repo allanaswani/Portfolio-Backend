@@ -120,6 +120,48 @@ class BranchCustomerListView(APIView):
 
 
 @extend_schema(tags=["Branch Portfolio — Customers"])
+class BranchCustomerListSearchView(generics.ListAPIView):
+    """customers/search/ — full branch base, server-paginated + filterable (10/page).
+
+    Same rows as customers/ (the whole branch book, allocated + unallocated) but one
+    page at a time, so the branch overview table no longer pulls the entire base into
+    the browser. Filtering mirrors the allocated/unallocated search views."""
+    permission_classes = [IsAuthenticated]
+    serializer_class = SegmentCustomerSerializer
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return HfCustomer.objects.none()
+        profile = _get_profile(self.request.user)
+        branch = _branch_filter(profile, self.kwargs.get("branch"))
+        rows = list(lq.branch_customers(branch))
+        return _apply_customer_filters(rows, self.request.query_params)
+
+
+@extend_schema(tags=["Branch Portfolio — Customers"])
+class BranchTopCustomersView(APIView):
+    """customers/top/?limit=N — the branch's top customers by deposit balance (10).
+
+    Reuses lq.branch_customers() and returns only the top N, so the Top-10 chart no
+    longer pulls the whole branch base to rank it client-side."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile = _get_profile(request.user)
+        try:
+            limit = max(1, min(int(request.query_params.get("limit", 10)), 100))
+        except (TypeError, ValueError):
+            limit = 10
+        rows = list(lq.branch_customers(_branch_filter(profile)))
+        rows.sort(
+            key=lambda c: float(getattr(c, "total_depost_balance", 0) or 0),
+            reverse=True,
+        )
+        return Response(SegmentCustomerSerializer(rows[:limit], many=True).data)
+
+
+@extend_schema(tags=["Branch Portfolio — Customers"])
 class BranchCustomerListAllocatedView(APIView):
     """customers_allocated/ — full allocated list (old: customer_list_allocated)."""
     permission_classes = [IsAuthenticated]

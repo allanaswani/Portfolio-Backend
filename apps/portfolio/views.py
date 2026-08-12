@@ -52,6 +52,30 @@ class CustomerListView(APIView):
 
 
 @extend_schema(tags=["Portfolio — Customers"])
+class RmTopCustomersView(APIView):
+    """customers/top/?limit=N — the RM's top customers by deposit balance (default 10).
+
+    Reuses svc.customers() (the same query the paginated list uses), sorts in Python,
+    and returns only the top N. The frontend chart used to pull the RM's whole book to
+    rank it client-side; now it fetches just the N rows it renders."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile = _get_profile(request.user)
+        try:
+            limit = max(1, min(int(request.query_params.get("limit", 10)), 100))
+        except (TypeError, ValueError):
+            limit = 10
+        customers = list(svc.customers(profile.sales_code))
+        customers.sort(
+            key=lambda c: float(getattr(c, "total_depost_balance", 0) or 0),
+            reverse=True,
+        )
+        return Response(HfCustomerSerializer(customers[:limit], many=True).data)
+
+
+@extend_schema(tags=["Portfolio — Customers"])
 class DynamicFilterCustomerListPaginatedDetailView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = HfCustomerSerializer
