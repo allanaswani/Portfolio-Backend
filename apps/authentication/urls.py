@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from .token_serializers import EnrichedTokenObtainPairSerializer
 from .views import (
     ChangePasswordView, LogoutAPIView, GenerateOTPView, VerifyOTPView,
     AdminUserListCreateView, AdminUserDetailView, AdminSetPasswordView, RoleListView,
@@ -7,7 +8,9 @@ from .views import (
 )
 
 urlpatterns = [
-    path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    # Issue the JWT pair with identity + RBAC claims embedded, so sibling systems
+    # (e.g. Customer 360) can trust this token without a shared user database.
+    path("api/token/", TokenObtainPairView.as_view(serializer_class=EnrichedTokenObtainPairSerializer), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("change_password/<int:pk>/", ChangePasswordView.as_view(), name="auth_change_password"),
     path("logout/", LogoutAPIView.as_view(), name="auth_logout"),
