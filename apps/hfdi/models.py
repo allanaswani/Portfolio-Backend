@@ -294,6 +294,7 @@ class ProjectTitanPlotsAllocation(models.Model):
     plot_area = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True, verbose_name="Plot Area (Hectares)")
     plot_value = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Plot Value")
     plot_squatter_name = models.CharField(max_length=300, null=True, blank=True, verbose_name="Plot Squatter Name")
+    plot_cleaned_name = models.CharField(max_length=300, null=True, blank=True, verbose_name="Plot Cleaned Name")
     surveyor_allocation = models.CharField(max_length=300, null=True, blank=True, verbose_name="Geoner Systems Allocation")
     administration_fees = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Administration Fees")
     eurobond_employee_allocaiton = models.CharField(max_length=300, null=True, blank=True, verbose_name="Eurobond Beneficiaries Employees Allocation")
