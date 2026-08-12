@@ -45,4 +45,11 @@ EXPOSE 9000
 # Gunicorn binds ${PORT} on all interfaces. With `--network=host` at run time
 # this IS the host port, so set PORT to whatever port the OLD backend used
 # (same-port cutover -> no new firewall rule, no Security ticket).
-CMD ["sh", "-c", "gunicorn config.wsgi:application --bind 0.0.0.0:${PORT} --workers 3 --timeout 120 --access-logfile - --error-logfile -"]
+#
+# Concurrency: the app is I/O-bound (mostly waiting on Postgres), so we use the
+# threaded worker (gthread) instead of plain sync workers. 3 sync workers meant a
+# hard ceiling of 3 in-flight requests — a couple of dashboard loads saturated the
+# pool and every other request queued. On this 8-core host: 9 processes give CPU
+# parallelism, 4 threads each give I/O concurrency -> ~36 concurrent requests.
+# Override at run time with GUNICORN_WORKERS / GUNICORN_THREADS if the box changes.
+CMD ["sh", "-c", "gunicorn config.wsgi:application --bind 0.0.0.0:${PORT} --worker-class gthread --workers ${GUNICORN_WORKERS:-9} --threads ${GUNICORN_THREADS:-4} --timeout 120 --access-logfile - --error-logfile -"]

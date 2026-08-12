@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 from django.db import connection
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
 from core.pagination import StandardPagination
@@ -35,6 +36,40 @@ class CollectionListCreateView(generics.ListCreateAPIView):
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
     filterset_fields = ["cust_id", "collection_officer_code", "collection_status", "recording_date"]
     queryset = Collection.objects.all()
+
+
+@extend_schema(tags=["Collections"])
+class CollectionsFeedbackSummaryView(APIView):
+    """KPI tiles for the Collections Diary — computed server-side.
+
+    The diary page used to pull the ENTIRE feedback table into the browser just to
+    show three counts (total / contacted / not-contacted) and to page a table
+    client-side. Now the table loads one page at a time, so these tiles need their
+    own tiny aggregate. Honours the same optional filters as the list view so the
+    tiles stay consistent if the page filters by officer / status. Matches the old
+    client logic: "contacted" == contactibility is exactly 'contacted' or
+    'reachable' (case-insensitive)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = Collection.objects.all()
+        officer = request.query_params.get("collection_officer_code")
+        if officer:
+            qs = qs.filter(collection_officer_code=officer)
+        status_filter = request.query_params.get("collection_status")
+        if status_filter:
+            qs = qs.filter(collection_status=status_filter)
+
+        total = qs.count()
+        contacted = qs.filter(
+            Q(contactibility__iexact="contacted") | Q(contactibility__iexact="reachable")
+        ).count()
+        return Response({
+            "total": total,
+            "contacted": contacted,
+            "not_contacted": total - contacted,
+        })
 
 
 @extend_schema(tags=["Collections"])

@@ -27,9 +27,15 @@ django-cors-headers==4.4.0
 django-environ==0.11.2
 python-dotenv==1.2.2
 
-# Celery, Redis and Channels were removed: scheduled jobs run from host cron
-# (manage.py precompute_slides / run_insights_pipeline), the cache uses Django's
-# DatabaseCache, and the app is WSGI-only. No broker, worker, or websocket layer.
+# Celery and Channels were removed: scheduled jobs run from host cron
+# (manage.py precompute_slides / run_insights_pipeline) and the app is WSGI-only.
+# No broker, worker, or websocket layer.
+#
+# django-redis is OPTIONAL: the cache backend is chosen at runtime from REDIS_URL.
+# Unset REDIS_URL -> Django's DatabaseCache (no Redis needed, nothing to install
+# server-side). Set REDIS_URL -> this client is used, with IGNORE_EXCEPTIONS so a
+# Redis outage degrades to cache-misses instead of erroring the app.
+django-redis==5.4.0
 
 # ── AI / LLM ─────────────────────────────────────────────────────────────────
 anthropic==0.75.0

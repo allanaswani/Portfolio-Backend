@@ -126,16 +126,49 @@ DATABASES = {
 
 DATABASE_ROUTERS = ["core.db_router.HFGroupRouter"]
 
-# Cache — DatabaseCache (no Redis). Backs DRF throttling; a DB table shared by
-# all gunicorn workers keeps throttle counts consistent. Create the table with
-# `manage.py createcachetable` (also created automatically by the
-# slideshow.0002 migration on deploy).
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
-        "LOCATION": "django_cache",
+# Cache — chosen at runtime. Backs DRF throttling + the KPI cache, so it's on the
+# hot path of most requests. Two backends, selected by whether REDIS_URL is set:
+#
+#   REDIS_URL set   -> Redis (fast, off-Postgres). IGNORE_EXCEPTIONS makes a Redis
+#                      outage degrade to cache-misses, NOT 500s — so if Redis
+#                      misbehaves you simply unset REDIS_URL and restart to fall
+#                      back to the DB cache; no rebuild, no code change.
+#   REDIS_URL unset -> Django's DatabaseCache, shared across gunicorn workers.
+#                      MAX_ENTRIES lifted from its 300 default: throttling writes a
+#                      key per active user/IP and the KPI cache shares this table,
+#                      so at 300 the table culled on nearly every write (a
+#                      SELECT COUNT(*) + DELETE on django_cache, on the request
+#                      path) — that storm made every request, login included, slow.
+#                      A high ceiling effectively never culls at this scale. Create
+#                      the table with `manage.py createcachetable` (also created by
+#                      the slideshow.0002 migration on deploy).
+REDIS_URL = env("REDIS_URL", default="")
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "KEY_PREFIX": "hf",
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                # Redis down -> treat as a cache miss instead of raising. Keeps the
+                # app serving (throttle just won't count that request) if Redis dies.
+                "IGNORE_EXCEPTIONS": True,
+                "SOCKET_CONNECT_TIMEOUT": 2,
+                "SOCKET_TIMEOUT": 2,
+            },
+        }
     }
-}
+    # Log ignored Redis errors rather than swallowing them silently.
+    DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS = True
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "django_cache",
+            "OPTIONS": {"MAX_ENTRIES": 1_000_000},
+        }
+    }
 
 # Scheduled jobs (formerly Celery beat) now run from host cron:
 #   */5 * * * *  manage.py precompute_slides
@@ -157,13 +190,19 @@ REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",
     ],
+    # Only AnonRateThrottle runs globally — it guards the unauthenticated surface
+    # (login / token) against brute-force and sees little traffic, so its cache
+    # read/write per request is cheap. UserRateThrottle was REMOVED from the
+    # defaults: it fired on EVERY authenticated request (~30 per dashboard load),
+    # and each hit did a cache read + a rewrite of that user's whole timestamp list
+    # — a heavy per-request tax (crippling on the DB cache). The `user` rate is
+    # kept below so any view that genuinely needs a per-user cap can opt in with
+    # `throttle_classes = [UserRateThrottle]`; the OTP throttles already do this.
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        # Per-user cap: generous enough for the dashboards (which fire ~30 calls
-        # on load) but bounded so a single compromised token can't hammer the API.
+        # Retained for views that opt into UserRateThrottle explicitly (not global).
         "user": env("USER_THROTTLE_RATE", default="20000/hour"),
         # Anonymous cap protects the unauthenticated surface (login / token) from
         # credential brute-force. Keyed by IP, so kept generous for office NAT.
