@@ -46,17 +46,35 @@ class _DynamicCustomerFilterMixin:
     (so a filter on a computed column absent from the ORM row is a no-op rather
     than excluding every row)."""
 
-    _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering"}
+    _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering", "search"}
     _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
+    # Free-text `search` matches ANY of these (OR) — restores the old client-side
+    # search box that scanned every visible column at once.
+    _SEARCH_FIELDS = (
+        "customer_name", "latin_surname", "full_name", "account_name", "rm_name",
+        "cust_id", "account_no", "banking_segment", "main_segment",
+    )
 
     def _apply_filters(self, customers):
         params = self.request.query_params
         if not params:
             return customers
 
+        search = (params.get("search") or "").strip().lower()
+
         filtered = []
         for customer in customers:
             match = True
+
+            if search:
+                hit = False
+                for field in self._SEARCH_FIELDS:
+                    attr = getattr(customer, field, None)
+                    if attr is not None and search in str(attr).lower():
+                        hit = True
+                        break
+                if not hit:
+                    continue
 
             for param, value in params.items():
                 if param in self._CONTROL_PARAMS or param.startswith(("min_", "max_")):

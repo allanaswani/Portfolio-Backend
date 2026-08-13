@@ -82,9 +82,15 @@ class DynamicFilterCustomerListPaginatedDetailView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     # Params that steer the query/pagination rather than filter customer columns.
-    _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering"}
+    _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering", "search"}
     # Numeric columns that support min_<field> / max_<field> range filtering.
     _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
+    # Free-text `search` matches ANY of these (OR) — mirrors the old client-side
+    # "search box" that scanned every visible column at once.
+    _SEARCH_FIELDS = (
+        "customer_name", "latin_surname", "full_name", "account_name",
+        "cust_id", "account_no", "banking_segment", "main_segment",
+    )
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -99,12 +105,26 @@ class DynamicFilterCustomerListPaginatedDetailView(generics.ListAPIView):
         if not params:
             return customers
 
+        search = (params.get("search") or "").strip().lower()
+
         # Dynamic per-column search: any param matching a customer attribute is a
         # case-insensitive partial match (mirrors the old backend's UI search by
         # any visible column). Numeric range filters use min_/max_ prefixes.
         filtered = []
         for customer in customers:
             match = True
+
+            # Free-text search: keep the customer if the term appears in ANY of the
+            # searchable columns (OR). Empty term is a no-op.
+            if search:
+                hit = False
+                for field in self._SEARCH_FIELDS:
+                    attr = getattr(customer, field, None)
+                    if attr is not None and search in str(attr).lower():
+                        hit = True
+                        break
+                if not hit:
+                    continue
 
             for param, value in params.items():
                 if param in self._CONTROL_PARAMS or param.startswith(("min_", "max_")):

@@ -80,10 +80,26 @@ def _apply_customer_filters(customer_list, query_params):
     if not query_params:
         return customer_list
     numeric_fields = ['total_revenue', 'total_depost_balance', 'total_loans']
+    # Free-text `search` matches ANY of these (OR) — restores the old client-side
+    # search box that scanned every visible column at once.
+    search_fields = ('customer_name', 'latin_surname', 'full_name', 'account_name',
+                     'rm_name', 'cust_id', 'account_no', 'banking_segment', 'main_segment')
+    search = (query_params.get('search') or "").strip().lower()
     filtered = []
     for customer in customer_list:
         match = True
+        if search:
+            hit = False
+            for field in search_fields:
+                attr = getattr(customer, field, None)
+                if attr is not None and search in str(attr).lower():
+                    hit = True
+                    break
+            if not hit:
+                continue
         for param, value in query_params.items():
+            if param == 'search':
+                continue
             if hasattr(customer, param):
                 if str(getattr(customer, param, "") or "").lower().find(value.lower()) == -1:
                     match = False
