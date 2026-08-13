@@ -48,12 +48,11 @@ class _DynamicCustomerFilterMixin:
 
     _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering", "search"}
     _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
-    # Free-text `search` matches ANY of these (OR) — restores the old client-side
-    # search box that scanned every visible column at once.
-    _SEARCH_FIELDS = (
-        "customer_name", "latin_surname", "full_name", "account_name", "rm_name",
-        "cust_id", "account_no", "banking_segment", "main_segment",
-    )
+    # Free-text `search` matches ANY of these (OR). MUST be limited to columns the
+    # segment_customers* raw SELECT actually returns — any other model field here
+    # triggers a deferred per-row DB fetch (N+1) that comes back null under the
+    # multi-DB router, so it is both slow AND silently misses matches.
+    _SEARCH_FIELDS = ("customer_name", "rm_name", "cust_id", "sales_code")
 
     def _apply_filters(self, customers):
         params = self.request.query_params

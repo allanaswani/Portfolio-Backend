@@ -85,12 +85,11 @@ class DynamicFilterCustomerListPaginatedDetailView(generics.ListAPIView):
     _CONTROL_PARAMS = {"sales_code", "page", "page_size", "format", "ordering", "search"}
     # Numeric columns that support min_<field> / max_<field> range filtering.
     _NUMERIC_FIELDS = ("total_revenue", "total_depost_balance", "total_loans")
-    # Free-text `search` matches ANY of these (OR) — mirrors the old client-side
-    # "search box" that scanned every visible column at once.
-    _SEARCH_FIELDS = (
-        "customer_name", "latin_surname", "full_name", "account_name",
-        "cust_id", "account_no", "banking_segment", "main_segment",
-    )
+    # Free-text `search` matches ANY of these (OR). MUST be limited to columns the
+    # svc.customers() raw SELECT actually returns — referencing any other model
+    # field here triggers a deferred per-row DB fetch (N+1) that under the multi-DB
+    # router comes back null, so it is both slow AND silently misses matches.
+    _SEARCH_FIELDS = ("customer_name", "latin_surname", "cust_id", "sales_code")
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
