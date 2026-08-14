@@ -417,7 +417,18 @@ def rm_revenue(sales_code):
 def loan_trends_data(sales_code):
     """RM loan trends — per-account loan balance rows for an RM's book, with the
     month-end balance columns the frontend aggregator expects (customer_segment +
-    mon_YY_bal + yester_1/2_bal). Verbatim port of old core.loan_trends_data()."""
+    mon_YY_bal + yester_1/2_bal).
+
+    Ported from old core.loan_trends_data(), but the old rm_code-only match returned
+    NOTHING for many RMs (loans trend read flat-zero on the tile + chart while
+    total_summary/ showed a real balance). loan_daily_balance_movement carries some
+    books under a stale/blank rm_code even when the accounts belong to the RM, so an
+    exact `trim(rm_code) = sales_code` misses them. We ALSO scope by the RM's actual
+    customer set — cust_cif IN the RM's allocated cust_ids — which is the same path
+    total_summary/ uses to derive the authoritative loan balance, so the trend can no
+    longer disagree with the tile. The OR is ADDITIVE: it only adds rows, never drops
+    one that already matched by rm_code (no regression for RMs where rm_code was fine).
+    The deposit path is intentionally left unchanged — it already resolves correctly."""
     ybl = str(current_year - 2)[-2:]
     py = str(previous_year)[-2:]
     cy = str(current_year)[-2:]
@@ -433,9 +444,12 @@ def loan_trends_data(sales_code):
                open_date::text, sale_code::text, full_name::text
         FROM loan_daily_balance_movement
         WHERE trim(rm_code) = %s
+           OR cust_cif::text IN (
+               SELECT cust_id::text FROM retail_allocated_portfolio WHERE sales_code = %s
+           )
     """
     with connection.cursor() as cur:
-        cur.execute(sql, [sales_code])
+        cur.execute(sql, [sales_code, sales_code])
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
