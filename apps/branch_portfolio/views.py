@@ -883,3 +883,135 @@ class BranchProfileView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return _get_profile(self.request.user)
+
+
+# ── Property Holdings ("amounts sold") ───────────────────────────────────────
+# Source = the CRM ERP warehouse tables loaded by extraction_from_crm_code.py:
+#   hfdi_crm_project_clients_data  — one row per client-held unit (who holds what)
+#   hfdi_crm_project_units_data    — one row per unit, carries `unit_value` (price)
+# A holding gets its sale amount by joining the client's (project_name, unit_name)
+# to the unit's (project_name, hs_name). The units table is collapsed to one value
+# per (project, unit) first, so a duplicate unit row can't fan-out / double-count.
+#
+# ⚠ ORG-WIDE, NOT per-branch (yet). These CRM tables carry NO usable customer
+# identifier — client_idno / client_phone / client_email are ALL blank in the
+# warehouse (encrypted at source, never decrypted by the extraction). So holdings
+# cannot be matched to a branch's bank customers, and these views are org-wide by
+# design (every branch sees the same totals). Per-branch attribution is blocked
+# UPSTREAM: the CRM extraction must populate a customer identifier first — same
+# class of ETL gap as loan_daily_balance_movement. Once client_idno lands, add a
+# JOIN hf_customer ON btrim(id_no)=btrim(client_idno) + branch filter here.
+
+_PROPERTY_HOLDINGS_FROM = """
+    FROM hfdi_crm_project_clients_data cl
+    LEFT JOIN (
+        SELECT project_name, hs_name,
+               MAX(unit_value) AS unit_value,
+               MAX(hs_type)    AS hs_type
+        FROM hfdi_crm_project_units_data
+        WHERE COALESCE(btrim(hs_name), '') <> ''
+        GROUP BY project_name, hs_name
+    ) u ON u.project_name = cl.project_name AND u.hs_name = cl.unit_name
+"""
+
+
+def _pf(v):
+    """Decimal/None → JSON-friendly float (0.0 for NULL sums)."""
+    return float(v) if v is not None else 0.0
+
+
+@extend_schema(tags=["Branch Portfolio — Property Holdings"])
+class BranchPropertyHoldingsSummaryView(APIView):
+    """KPI totals over ALL CRM property holdings (org-wide — see note above)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sql = f"""
+            SELECT
+                COUNT(*)                                          AS total_holdings,
+                COUNT(u.unit_value)                               AS valued_holdings,
+                COALESCE(SUM(u.unit_value), 0)                    AS total_amount_sold,
+                COUNT(DISTINCT NULLIF(btrim(cl.client_name), '')) AS total_customers,
+                COUNT(DISTINCT NULLIF(btrim(cl.project_name), '')) AS total_projects
+            {_PROPERTY_HOLDINGS_FROM}
+        """
+        with connection.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+        return Response({
+            "total_holdings":    int(row[0] or 0),
+            "valued_holdings":   int(row[1] or 0),
+            "total_amount_sold": _pf(row[2]),
+            "total_customers":   int(row[3] or 0),
+            "total_projects":    int(row[4] or 0),
+        })
+
+
+@extend_schema(tags=["Branch Portfolio — Property Holdings"])
+class BranchPropertyHoldingsByProjectView(APIView):
+    """Amount sold + holdings grouped by project (org-wide breakdown)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sql = f"""
+            SELECT
+                COALESCE(NULLIF(btrim(cl.project_name), ''), 'Unassigned') AS project_name,
+                COUNT(*)                                          AS holdings,
+                COUNT(DISTINCT NULLIF(btrim(cl.client_name), '')) AS customers,
+                COALESCE(SUM(u.unit_value), 0)                    AS amount_sold
+            {_PROPERTY_HOLDINGS_FROM}
+            GROUP BY 1
+            ORDER BY amount_sold DESC
+        """
+        with connection.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+        return Response([
+            {
+                "project_name": r[0],
+                "holdings":     int(r[1] or 0),
+                "customers":    int(r[2] or 0),
+                "amount_sold":  _pf(r[3]),
+            }
+            for r in rows
+        ])
+
+
+@extend_schema(tags=["Branch Portfolio — Property Holdings"])
+class BranchPropertyHoldingsListView(APIView):
+    """Full list of individual property holdings (client · project · unit · value).
+
+    Plain array (DataTable searches/sorts/pages it client-side). Capped at 8,000
+    rows — above the ~6.4k live holdings. KPI totals come from /summary/, so this
+    cap never under-counts the tiles."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sql = f"""
+            SELECT
+                cl.client_name, cl.project_name, cl.unit_name,
+                u.unit_value, u.hs_type,
+                cl.reservation_date, cl.client_creation_date
+            {_PROPERTY_HOLDINGS_FROM}
+            ORDER BY u.unit_value DESC NULLS LAST, cl.client_name
+            LIMIT 8000
+        """
+        with connection.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+        return Response([
+            {
+                "id":           i + 1,
+                "client_name":  r[0],
+                "project_name": r[1],
+                "unit_name":    r[2],
+                "unit_value":   _pf(r[3]),
+                "hs_type":      r[4],
+                "reservation_date":     r[5],
+                "client_creation_date": r[6],
+            }
+            for i, r in enumerate(rows)
+        ])

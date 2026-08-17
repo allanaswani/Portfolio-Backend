@@ -70,6 +70,7 @@ urlpatterns = [
     path("project_titan_daily_collections/summary/", views.ProjectTitanDailyCollectionsSummaryView.as_view()),
     path("project_titan_daily_collections/search/", views.ProjectTitanDailyCollectionsSearchAPIView.as_view()),
     path("project_titan_daily_collections/upload-csv/", views.ProjectTitanDailyCollectionsCSVUploadView.as_view()),
+    path("project_titan_daily_collections/trigger-script/", ScriptTriggerAPIView.as_view()),
     path("project_titan_daily_collections/<int:pk>/", views.ProjectTitanDailyCollectionsDetailView.as_view()),
 
     # Project Titan Plots Allocation (managed: full CRUD + search + upload)

@@ -65,4 +65,9 @@ urlpatterns = [
 
     # Profile
     path("profile/",                      views.BranchProfileView.as_view()),
+
+    # Property Holdings ("amounts sold" — org-wide today, see views.py note)
+    path("property_holdings/summary/",    views.BranchPropertyHoldingsSummaryView.as_view()),
+    path("property_holdings/by_project/", views.BranchPropertyHoldingsByProjectView.as_view()),
+    path("property_holdings/list/",       views.BranchPropertyHoldingsListView.as_view()),
 ]
