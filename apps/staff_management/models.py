@@ -881,6 +881,33 @@ class DSRSalesCode(models.Model):
         return f"{self.sales_code} — {self.salesperson} (PF {self.pf_number})"
 
 
+class DSRRoleTeamLeader(models.Model):
+    """Team leader(s) that own a DSR **role** (as opposed to a branch).
+
+    Some DSR roles are led by a team leader independent of branch — e.g.
+    "BANCA DSR" → David Wambugu, "SME DSR" (a.k.a. DPA) → Eva Kabiwa / Luke Njagi.
+    A role may have more than one leader, so the Seller-Codes allocator offers the
+    matching options for the chosen role and the admin picks the right one.
+    """
+
+    role = models.CharField(max_length=60, db_index=True)
+    team_leader = models.CharField(max_length=200)
+    sort_order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = True
+        db_table = "dsr_role_team_leaders"
+        ordering = ["role", "sort_order", "team_leader"]
+        constraints = [
+            models.UniqueConstraint(fields=["role", "team_leader"], name="uniq_role_team_leader"),
+        ]
+
+    def __str__(self):
+        return f"{self.role} → {self.team_leader}"
+
+
 class TeamLeaderBranch(models.Model):
     """Which team leader owns a branch (for PB DSRs etc.).
 

@@ -25,7 +25,7 @@ from core.pagination import StandardPagination
 
 from .branches import normalize_branch
 from .dsr import autofill_from_roster, next_sales_code
-from .models import DSRSalesCode
+from .models import DSRSalesCode, DSRRoleTeamLeader
 
 
 class DSRSalesCodeSerializer(serializers.ModelSerializer):
@@ -94,6 +94,27 @@ class DSRSalesCodeListView(generics.ListAPIView):
     search_fields = ["pf_number", "sales_code", "salesperson", "branch", "role", "team_leader"]
     ordering_fields = ["sales_code", "salesperson", "branch", "created_at"]
     queryset = DSRSalesCode.objects.all()
+
+
+class DSRRoleTeamLeaderListView(APIView):
+    """Role → team-leader options for the Seller-Codes allocator.
+
+    Returns ``{"roles": {role: [team_leader, …]}}`` for active mappings, so the
+    UI can offer the right team-leader choices once a DSR's role is picked. A role
+    with a single leader auto-fills; a role with several (e.g. SME DSR) lets the
+    admin pick per DSR.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        roles = {}
+        for role, tl in (
+            DSRRoleTeamLeader.objects.filter(active=True)
+            .values_list("role", "team_leader")
+        ):
+            roles.setdefault(role, []).append(tl)
+        return Response({"roles": roles})
 
 
 class DSRSalesCodeLookupView(APIView):

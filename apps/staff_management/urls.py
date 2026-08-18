@@ -18,6 +18,7 @@ urlpatterns = [
     path("scorecard-automation/", include("apps.staff_management.scorecard_automation.urls")),
 
     # ── DSR seller-code allocation (Administration module) ────────────────────
+    path("dsr-role-team-leaders/",      dsr.DSRRoleTeamLeaderListView.as_view()),
     path("dsr-sales-codes/lookup/",     dsr.DSRSalesCodeLookupView.as_view()),
     path("dsr-sales-codes/allocate/",   dsr.DSRSalesCodeAllocateView.as_view()),
     path("dsr-sales-codes/upload-csv/", dsr.DSRSalesCodeCSVUploadView.as_view()),
