@@ -94,6 +94,39 @@ class SyncTests(APITestCase):
         e.refresh_from_db()
         self.assertEqual(e.our_customer, "ACME RENAMED")
 
+    def _entry_with_beneficiary(self):
+        return TradeRegisterEntry.objects.create(
+            product=self.bid, originating_branch="WESTLANDS", rm_name="JANE",
+            segment="COMMERCIAL", our_customer="ACME", beneficiary="KPLC",
+            currency="KES", amount_fcy=5000, customer_id=777,
+            issue_date=date(2026, 8, 13),
+        )
+
+    def test_blank_register_field_does_not_wipe_trade_finance(self):
+        """Esther clears a field on the register → TF keeps the info we had."""
+        e = self._entry_with_beneficiary()
+        self.assertEqual(TradeFinanceData.objects.get(pk=e.tf_id).beneficiary, "KPLC")
+        e.beneficiary = ""
+        e.save()
+        self.assertEqual(TradeFinanceData.objects.get(pk=e.tf_id).beneficiary, "KPLC")
+
+    def test_blank_trade_finance_field_does_not_wipe_register(self):
+        e = self._entry_with_beneficiary()
+        tf = TradeFinanceData.objects.get(pk=e.tf_id)
+        tf.beneficiary = ""
+        tf.save()
+        e.refresh_from_db()
+        self.assertEqual(e.beneficiary, "KPLC")
+
+    def test_new_record_populates_all_trade_finance_fields(self):
+        """A brand-new register record creates the TF row with its fields."""
+        e = self._entry_with_beneficiary()
+        tf = TradeFinanceData.objects.get(pk=e.tf_id)
+        self.assertEqual(tf.beneficiary, "KPLC")
+        self.assertEqual(tf.originating_branch, "WESTLANDS")
+        self.assertEqual(str(tf.amount_fcy), "5000.00")
+        self.assertEqual(tf.issue_date, "2026-08-13")
+
 
 class ApiTests(APITestCase):
     def setUp(self):

@@ -218,12 +218,20 @@ class TradeRegisterEntry(models.Model):
         Uses queryset ``.update()``/``.create()`` deliberately: ``.update()``
         does not fire model signals, so the register → TF write never triggers
         the TF → register back-sync (no loop).
+
+        Non-destructive on update: only fields the register actually has a value
+        for are written, so a blank the register didn't fill never wipes out
+        information Trade Finance already has ("info we have right"). Amounts
+        default to 0 — a real value — so they always sync; only empty text and
+        null decimals (e.g. cash cover) are skipped. A create writes everything.
         """
         from apps.staff_management.models import TradeFinanceData
 
         values = self._tf_field_values()
         if self.tf_id:
-            TradeFinanceData.objects.filter(pk=self.tf_id).update(**values)
+            updates = {k: v for k, v in values.items() if v not in (None, "")}
+            if updates:
+                TradeFinanceData.objects.filter(pk=self.tf_id).update(**updates)
         else:
             tf = TradeFinanceData.objects.create(**values)
             # Link without re-triggering save()/sync.
@@ -231,9 +239,14 @@ class TradeRegisterEntry(models.Model):
             self.tf_id = tf.pk
 
     def apply_from_trade_finance(self, tf):
-        """Best-effort back-fill of scalar fields when the TF row is edited in
-        Administration. Called from the ``post_save`` signal. Persists via
-        queryset ``.update()`` so it does not re-enter ``save()``/sync."""
+        """Back-fill scalar fields when the TF row is edited in Administration.
+
+        Called from the ``post_save`` signal; persists via queryset ``.update()``
+        so it does not re-enter ``save()``/sync. Non-destructive in the same
+        spirit as :meth:`sync_to_trade_finance`: a value TF left blank does not
+        wipe what the register already holds (its extra fields — product FK,
+        amendment, is_open_ended — are never touched here). Amounts sync as-is
+        (0 is a real value); text fields only overwrite when non-empty."""
         from datetime import datetime
 
         def _parse_date(value):
@@ -247,28 +260,39 @@ class TradeRegisterEntry(models.Model):
             return None
 
         open_ended = str(tf.expiry_date or "").strip().upper() == "OPEN ENDED"
-        expiry = None if open_ended else _parse_date(tf.expiry_date)
-        issue = _parse_date(tf.issue_date) or self.issue_date
 
-        type(self).objects.filter(pk=self.pk).update(
-            originating_branch=tf.originating_branch or "",
-            rm_name=tf.rm_name or "",
-            rm_code=tf.rm_code or "",
-            guarantee_ref=tf.guarantee_ref or "",
-            product_type=tf.product_type or "",
-            customer_id=tf.customer_id or 0,
-            segment=tf.segment or "",
-            our_customer=tf.our_customer or "",
-            beneficiary=tf.beneficiary or "",
-            currency=tf.currency or "KES",
-            amount_fcy=_dec(tf.amount_fcy, 0),
-            fx_rate=_dec(tf.fx_rate, 0),
-            commission=_dec(tf.commission_lcy, 0),
-            issue_date=issue,
-            is_open_ended=open_ended,
-            expiry_date=expiry,
-            security_type=tf.security_type or "",
-            cash_cover_amount=_dec(tf.cash_cover_amount),
-            cash_cover_percentage=_dec(tf.cash_cover_percentage),
-            other_security=tf.other_security or "",
-        )
+        # Text fields: overwrite only when TF has something (preserve otherwise).
+        text = {
+            "originating_branch": tf.originating_branch, "rm_name": tf.rm_name,
+            "rm_code": tf.rm_code, "guarantee_ref": tf.guarantee_ref,
+            "product_type": tf.product_type, "segment": tf.segment,
+            "our_customer": tf.our_customer, "beneficiary": tf.beneficiary,
+            "currency": tf.currency, "security_type": tf.security_type,
+            "other_security": tf.other_security,
+        }
+        updates = {k: v for k, v in text.items() if v not in (None, "")}
+
+        # Numerics always reflect TF (0 is meaningful); customer_id only if set.
+        updates["amount_fcy"] = _dec(tf.amount_fcy, 0)
+        updates["fx_rate"] = _dec(tf.fx_rate, 0)
+        updates["commission"] = _dec(tf.commission_lcy, 0)
+        if tf.customer_id:
+            updates["customer_id"] = tf.customer_id
+        for key, dec in (("cash_cover_amount", _dec(tf.cash_cover_amount)),
+                         ("cash_cover_percentage", _dec(tf.cash_cover_percentage))):
+            if dec is not None:
+                updates[key] = dec
+
+        # Dates: only overwrite when TF actually parses to a date.
+        issue = _parse_date(tf.issue_date)
+        if issue is not None:
+            updates["issue_date"] = issue
+        updates["is_open_ended"] = open_ended
+        if open_ended:
+            updates["expiry_date"] = None
+        else:
+            expiry = _parse_date(tf.expiry_date)
+            if expiry is not None:
+                updates["expiry_date"] = expiry
+
+        type(self).objects.filter(pk=self.pk).update(**updates)
