@@ -18,6 +18,35 @@ from .serializers import TradeProductSerializer, TradeRegisterEntrySerializer
 
 TAG = ["Trade Register"]
 
+# Known HFC branches — the dropdown falls back to these so it's never empty on a
+# fresh DB; the live endpoint unions them with branches actually seen in the data.
+HFC_BRANCHES = [
+    "BURUBURU", "ELDORET", "EMBU", "HARAMBEE AVENUE", "HURLINGHAM", "KISUMU",
+    "KITENGELA", "KOMAROCK", "MACHAKOS", "MERU", "MOMBASA", "NAIVASHA", "NAKURU",
+    "NANYUKI", "NYERI", "REHANI", "RIVER ROAD", "RONGAI", "SAMEER", "THIKA",
+    "TRM", "WESTLANDS", "HEAD OFFICE",
+]
+
+
+@extend_schema(tags=TAG)
+class BranchListView(APIView):
+    """Branch names for the Originating Branch dropdown — the known HFC branches
+    unioned with any branch already present in the trade data, de-duped + sorted."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.models import TradeFinanceData
+        from .models import TradeRegisterEntry
+
+        names = {b.strip().upper() for b in HFC_BRANCHES}
+        for src in (
+            TradeRegisterEntry.objects.values_list("originating_branch", flat=True),
+            TradeFinanceData.objects.values_list("originating_branch", flat=True),
+        ):
+            names.update((b or "").strip().upper() for b in src if (b or "").strip())
+        return Response(sorted(names))
+
 
 @extend_schema(tags=TAG)
 class TradeProductListView(generics.ListAPIView):

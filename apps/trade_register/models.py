@@ -20,6 +20,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
 from . import references as refs
@@ -115,6 +116,10 @@ class TradeRegisterEntry(models.Model):
     commission = models.DecimalField(
         max_digits=20, decimal_places=6, default=0, validators=[MinValueValidator(0)],
     )
+
+    # Reporting date — when the transaction is captured/reported. Auto-defaults to
+    # the system date (Stacy's request); editable per record.
+    reporting_date = models.DateField(default=timezone.localdate)
 
     issue_date = models.DateField()
     is_open_ended = models.BooleanField(default=False)

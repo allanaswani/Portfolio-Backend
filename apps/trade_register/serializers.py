@@ -24,7 +24,7 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
             "amendment_type", "parent_ref",
             "customer_id", "segment", "our_customer", "beneficiary",
             "currency", "amount_fcy", "fx_rate", "commission",
-            "issue_date", "is_open_ended", "expiry_date",
+            "reporting_date", "issue_date", "is_open_ended", "expiry_date",
             "security_type", "cash_cover_amount", "cash_cover_percentage",
             "other_security",
             "month", "year",
