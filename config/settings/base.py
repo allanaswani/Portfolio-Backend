@@ -52,7 +52,7 @@ LOCAL_APPS = [
     "apps.slideshow",
     "apps.mortgages",
     "apps.client_briefs",
-    "apps.registry",
+    "apps.trade_register",
     "apps.business_performance",
     "apps.referrals",
 ]
