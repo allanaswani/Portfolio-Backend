@@ -358,7 +358,8 @@ class ProductListView(generics.ListCreateAPIView):
 
 
 @extend_schema(tags=TAG)
-class ProductDetailView(generics.RetrieveAPIView):
+class ProductDetailView(generics.RetrieveUpdateAPIView):
+    # Retrieve + update — the admin "Update" button PUTs here (was GET-only, 405).
     permission_classes = [IsAuthenticated]
     serializer_class = ProductSerializer
     queryset = Product.objects.all()
@@ -410,19 +411,24 @@ class ProductMappingCsvUploadView(APIView):
             code = (row.get("code") or "").strip()
             if not code:
                 row["error"] = "Missing 'code'"; fw.writerow(row); continue
+            # loan_* columns are optional in the CSV — blank/absent leaves them NULL.
+            _opt = lambda k: ((row.get(k) or "").strip() or None)
             vals = [row.get("product_description"), row.get("product_map"),
-                    row.get("focus"), row.get("sme_pb")]
+                    row.get("focus"), row.get("sme_pb"),
+                    _opt("loan_category"), _opt("loan_security"), _opt("loan_collateral")]
             try:
                 with transaction.atomic(), connection.cursor() as cur:
                     cur.execute(
                         "UPDATE product_mapping SET product_description=%s, product_map=%s, "
-                        "focus=%s, sme_pb=%s WHERE code=%s",
+                        "focus=%s, sme_pb=%s, loan_category=%s, loan_security=%s, "
+                        "loan_collateral=%s WHERE code=%s",
                         vals + [code],
                     )
                     if cur.rowcount == 0:
                         cur.execute(
                             "INSERT INTO product_mapping (code, product_description, product_map, "
-                            "focus, sme_pb, date_created) VALUES (%s,%s,%s,%s,%s, now())",
+                            "focus, sme_pb, loan_category, loan_security, loan_collateral, "
+                            "date_created) VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now())",
                             [code] + vals,
                         )
                         created += 1

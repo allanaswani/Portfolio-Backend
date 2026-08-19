@@ -611,8 +611,13 @@ class Product(models.Model):
     product_description = models.CharField(max_length=255)
     product_map = models.CharField(max_length=20)
     focus = models.CharField(max_length=1)
-    sme_pb = models.CharField(max_length=1)
-    date_created = models.DateTimeField()
+    sme_pb = models.CharField(max_length=20)
+    # Loan classification columns (already present in the product_mapping table).
+    loan_category = models.CharField(max_length=50, blank=True, null=True)
+    loan_security = models.CharField(max_length=50, blank=True, null=True)
+    loan_collateral = models.CharField(max_length=50, blank=True, null=True)
+    # Default so "Add New Product" no longer requires it; existing rows keep theirs.
+    date_created = models.DateTimeField(default=timezone.now, blank=True)
 
     class Meta:
         managed = False
