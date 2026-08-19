@@ -117,6 +117,55 @@ class DSRRoleTeamLeaderListView(APIView):
         return Response({"roles": roles})
 
 
+class DSRRoleTeamLeaderManageView(APIView):
+    """Manage the role→team-leader mappings shown on the Team Leaders page.
+
+    ``GET``  → flat rows ``[{id, role, team_leader, sort_order}]`` for the table.
+    ``POST`` → add/update one mapping (admin only), idempotent on (role, team_leader)
+    thanks to the model's unique constraint, so it can never create a duplicate.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        rows = list(
+            DSRRoleTeamLeader.objects.filter(active=True)
+            .order_by("role", "sort_order", "team_leader")
+            .values("id", "role", "team_leader", "sort_order")
+        )
+        return Response(rows)
+
+    def post(self, request):
+        if not _is_admin(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        role = (request.data.get("role") or "").strip()
+        tl = (request.data.get("team_leader") or "").strip()
+        if not role or not tl:
+            return Response({"detail": "Both role and team_leader are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        obj, created = DSRRoleTeamLeader.objects.update_or_create(
+            role=role, team_leader=tl, defaults={"active": True},
+        )
+        return Response(
+            {"id": obj.id, "role": obj.role, "team_leader": obj.team_leader, "created": created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class DSRRoleTeamLeaderDetailView(APIView):
+    """Delete one role→team-leader mapping by id (admin only)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not _is_admin(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        deleted, _ = DSRRoleTeamLeader.objects.filter(pk=pk).delete()
+        if not deleted:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class DSRSalesCodeLookupView(APIView):
     """Check a PF before allocating: existing code, or an autofilled preview."""
 
