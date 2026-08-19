@@ -1,5 +1,9 @@
-from rest_framework import generics
+import csv
+import io
+
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
@@ -17,8 +21,9 @@ from .models import (
     CeoDepositMovement, CeoDepositMovementDaily, Revenue, MobileLoanDisbusements,
     HfCustomer, PhoneNumber, AccountsHistory, CeoLoanMovementMonthlyBySegment,
     CeoDepositMovementMonthlyBySegment, DailyBalanceMovement, LoanDailyBalanceMovement,
-    EmployeeTable, LoansHistory, Accounts,
+    EmployeeTable, EmployeeRosterOverlay, LoansHistory, Accounts,
 )
+from .departments import standardize_department
 from . import gceo_legacy as gl
 from .serializers import (
     CeoDepositMovementMonthlySerializer, CustomersSerializer, CeoChannelReportSerializer,
@@ -697,10 +702,13 @@ class EmployeeRosterListView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
     pagination_class = EmployeeRosterPagination
 
-    # Only the columns the admin directory renders — all safe scalar fields.
+    # Columns the admin directory renders — all safe scalar fields on the ETL base.
     COLUMNS = [
         "name", "staff_id", "national_id", "email",
-        "department", "division", "unit", "job_title", "grade", "exit",
+        "department", "division", "unit", "org_unit", "job_title", "grade",
+        "gender", "age", "date_of_birth", "date_of_employment",
+        "service_code", "service_years",
+        "exit", "promotion", "new", "staff_exit_date", "promotion_date", "hfdi_erp_id",
     ]
     FILTER_FIELDS = ["department", "division", "unit", "grade", "gender", "exit"]
 
@@ -724,19 +732,185 @@ class EmployeeRosterListView(generics.GenericAPIView):
 
         rows = list(qs.order_by("name").values(*self.COLUMNS))
 
-        # staff_id is a Decimal; hand back a plain number so the client renders it cleanly.
+        # staff_id is a Decimal; hand back a plain number so the client renders it
+        # cleanly, and key each row by its canonical string for the overlay join.
         for row in rows:
-            sid = row.get("staff_id")
-            if sid is not None:
-                try:
-                    row["staff_id"] = int(sid)
-                except (TypeError, ValueError):
-                    row["staff_id"] = str(sid)
+            row["staff_id"] = _canon_staff_id(row.get("staff_id"))
+
+        # Merge the editable overlay (standard_department / current_role /
+        # previous_role) by staff_id — one query for the whole page.
+        keys = [r["staff_id"] for r in rows if r["staff_id"] not in (None, "")]
+        overlay = {
+            o["staff_id"]: o
+            for o in EmployeeRosterOverlay.objects.filter(staff_id__in=keys).values(
+                "staff_id", "standard_department", "current_role", "previous_role"
+            )
+        }
+        for row in rows:
+            ov = overlay.get(row["staff_id"]) or {}
+            row["standard_department"] = ov.get("standard_department") or standardize_department(row.get("department"))
+            # current_role defaults to the live job title unless overridden.
+            row["current_role"] = ov.get("current_role") or (row.get("job_title") or "")
+            # previous_role is overlay-only (captured by admins); blank otherwise.
+            row["previous_role"] = ov.get("previous_role") or ""
 
         page = self.paginate_queryset(rows)
         if page is not None:
             return self.get_paginated_response(page)
         return Response(rows)
+
+
+# ── Employee roster overlay (editable / uploadable) ──────────────────────────
+
+def _canon_staff_id(value) -> str:
+    """Canonical string key for a staff_id (Decimal/float/str) → integer string.
+
+    ``employee_table.staff_id`` is a Decimal (e.g. 4022.00000); the upload CSV may
+    carry "4022" or "4022.0". Normalising both to "4022" keeps the overlay join
+    and the unique upsert stable, so re-uploads update rather than duplicate.
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    try:
+        return str(int(float(s)))
+    except (TypeError, ValueError):
+        return s
+
+
+def _is_staff_admin(user) -> bool:
+    return bool(
+        user
+        and user.is_authenticated
+        and (user.is_superuser or user.is_staff or user.groups.filter(name="staff_mgt").exists())
+    )
+
+
+# Accepted CSV/JSON header aliases → overlay field. staff_id is required; the
+# three overlay fields are optional (only provided, non-blank values are written).
+_OVERLAY_ALIASES = {
+    "staff_id": "staff_id", "staff id": "staff_id", "staffid": "staff_id", "staff_no": "staff_id",
+    "standard_department": "standard_department", "standard department": "standard_department",
+    "std_department": "standard_department", "std department": "standard_department",
+    "current_role": "current_role", "current role": "current_role",
+    "previous_role": "previous_role", "previous role": "previous_role", "prev_role": "previous_role",
+}
+
+
+def _map_overlay_row(raw: dict) -> dict:
+    """Fold a CSV row's arbitrary headers to overlay fields (alias-tolerant)."""
+    out = {}
+    for key, val in raw.items():
+        alias = _OVERLAY_ALIASES.get((key or "").strip().lower())
+        if alias:
+            out[alias] = (val or "").strip()
+    return out
+
+
+@extend_schema(tags=["CEO Dashboard — Staff"])
+class EmployeeOverlayUpsertView(APIView):
+    """Create/update one employee's overlay fields, keyed by staff_id (admin only).
+
+    Only the three overlay fields are writable — the ETL base (employee_table) is
+    never touched. Idempotent on staff_id, so it can never create a duplicate.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        return self._upsert(request)
+
+    def patch(self, request):
+        return self._upsert(request)
+
+    def _upsert(self, request):
+        if not _is_staff_admin(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        staff_id = _canon_staff_id(request.data.get("staff_id"))
+        if not staff_id:
+            return Response({"detail": "staff_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Only write fields explicitly present in the request (blank clears).
+        fields = {}
+        for f in ("standard_department", "current_role", "previous_role"):
+            if f in request.data:
+                fields[f] = (request.data.get(f) or "").strip()
+        fields["updated_by"] = (getattr(request.user, "username", "") or getattr(request.user, "email", "") or "")
+
+        obj, created = EmployeeRosterOverlay.objects.update_or_create(
+            staff_id=staff_id, defaults=fields,
+        )
+        return Response(
+            {
+                "created": created,
+                "record": {
+                    "staff_id": obj.staff_id,
+                    "standard_department": obj.standard_department,
+                    "current_role": obj.current_role,
+                    "previous_role": obj.previous_role,
+                },
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+@extend_schema(tags=["CEO Dashboard — Staff"])
+class EmployeeOverlayUploadView(APIView):
+    """Bulk upsert overlay rows from a CSV (admin only).
+
+    Header-tolerant (see ``_OVERLAY_ALIASES``). ``staff_id`` is required per row;
+    the three overlay fields are optional and only written when present & non-blank
+    — so re-uploading never blanks a field that a row omits, and the unique
+    staff_id key means updates land in place with zero duplicates.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        if not _is_staff_admin(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "No file uploaded (field 'file')."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return Response({"detail": "File must be UTF-8 CSV."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reader = csv.DictReader(io.StringIO(text))
+        created = updated = skipped = 0
+        by = (getattr(request.user, "username", "") or getattr(request.user, "email", "") or "")
+
+        for raw in reader:
+            mapped = _map_overlay_row(raw)
+            staff_id = _canon_staff_id(mapped.get("staff_id"))
+            if not staff_id:
+                skipped += 1
+                continue
+            defaults = {
+                f: mapped[f]
+                for f in ("standard_department", "current_role", "previous_role")
+                if mapped.get(f)  # only non-blank provided values
+            }
+            if not defaults:
+                skipped += 1
+                continue
+            defaults["updated_by"] = by
+            _, was_created = EmployeeRosterOverlay.objects.update_or_create(
+                staff_id=staff_id, defaults=defaults,
+            )
+            if was_created:
+                created += 1
+            else:
+                updated += 1
+
+        return Response({"created": created, "updated": updated, "skipped": skipped})
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])

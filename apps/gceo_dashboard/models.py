@@ -423,6 +423,39 @@ class EmployeeTable(models.Model):
         db_table = "employee_table"
 
 
+class EmployeeRosterOverlay(models.Model):
+    """Editable, upload-able overlay on the read-only ``employee_table`` ETL base.
+
+    ``employee_table`` is a datawarehouse mirror (``managed = False``) — we must
+    not write to it. This managed companion table, keyed one-to-one by
+    ``staff_id``, holds only the fields the business maintains by hand:
+
+      * ``standard_department`` — a per-employee override of the canonical name
+        (the default already comes from ``departments.standardize_department``).
+      * ``current_role`` — override of ``job_title`` (defaults to the live title).
+      * ``previous_role`` — the role held before an exit/promotion; NOT in the
+        source data, captured here via the upload/edit.
+
+    ``staff_id`` is stored as its canonical integer string (e.g. "4022") and is
+    unique, so re-uploading the same person UPDATES the one row rather than
+    creating a duplicate.
+    """
+
+    staff_id = models.CharField(max_length=50, unique=True, db_index=True)
+    standard_department = models.CharField(max_length=120, blank=True, default="")
+    current_role = models.CharField(max_length=200, blank=True, default="")
+    previous_role = models.CharField(max_length=200, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+
+    class Meta:
+        db_table = "employee_roster_overlay"
+        verbose_name = "Employee roster overlay"
+
+    def __str__(self):
+        return f"Overlay<{self.staff_id}>"
+
+
 class LoansHistory(models.Model):
     id = models.BigAutoField(primary_key=True)
     cust_id = models.BigIntegerField()

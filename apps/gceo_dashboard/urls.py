@@ -96,4 +96,6 @@ urlpatterns = [
 
     # Full HR employee roster (employee_table) — complete headcount (~1,271)
     path("employees/",                   views.EmployeeRosterListView.as_view()),
+    path("employees/overlay/",           views.EmployeeOverlayUpsertView.as_view()),
+    path("employees/overlay/upload/",    views.EmployeeOverlayUploadView.as_view()),
 ]
