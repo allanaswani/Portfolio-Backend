@@ -102,7 +102,12 @@ def branch_customers(branch):
                    total_revenue, total_depost_balance, total_loans, active,
                    ROW_NUMBER() OVER (PARTITION BY pn.cust_id ORDER BY pn.cust_id ASC) AS rn
             FROM hf_customer AS pn
-            LEFT OUTER JOIN retail_allocated_portfolio AS rap ON pn.cust_id = rap.cust_id
+            LEFT OUTER JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON pn.cust_id = rap.cust_id
             WHERE pn.branch = %s
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
@@ -119,7 +124,12 @@ def rM_total_customers(sales_code):
                COUNT(DISTINCT hf_customer.cust_id) FILTER (WHERE hf_customer.active = TRUE) AS active_customers,
                COUNT(DISTINCT hf_customer.cust_id) AS total_customers
         FROM hf_customer
-        LEFT JOIN retail_allocated_portfolio rap ON hf_customer.cust_id = rap.cust_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (cust_id) *
+            FROM retail_allocated_portfolio
+            WHERE cust_id IS NOT NULL
+            ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+        ) rap ON hf_customer.cust_id = rap.cust_id
         WHERE sales_code = %s
         GROUP BY sales_code
         """,
@@ -333,7 +343,12 @@ def ppc_per_customer(cust_id):
                              (case when sa::numeric >= 1 then 1 else 0 end) +
                              (case when mortagage >= 1 then 1 else 0 end)), 2) AS ppc
             FROM hf_customer AS hf
-            LEFT JOIN retail_allocated_portfolio rap ON hf.cust_id = rap.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON hf.cust_id = rap.cust_id
             WHERE hf.cust_id = %s
             """,
             [cust_id],
@@ -500,7 +515,12 @@ def ppc(sales_code):
             SELECT DISTINCT ON (hf.cust_id) hf.cust_id AS cust, fd, ca, internal, mobile, mortagage, sa
             FROM hf_customer hf
             LEFT JOIN phone_number pn ON hf.cust_id = pn.cust_id
-            LEFT JOIN retail_allocated_portfolio rap ON hf.cust_id = rap.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON hf.cust_id = rap.cust_id
             WHERE 1 = 1 AND rap.sales_code = %s
         )
         SELECT 1 AS id,
@@ -522,7 +542,12 @@ def top_ftp_customers_for_rm(sales_code):
         cur.execute("""
             SELECT ftp.cust_cif, rap.customer_name, ftp.total_ftp AS revenue_value
             FROM cust_monthly_ftp ftp
-            JOIN retail_allocated_portfolio rap ON ftp.cust_cif = rap.cust_id
+            JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON ftp.cust_cif = rap.cust_id
             WHERE rap.sales_code = %s
               AND ftp.current_year = EXTRACT(YEAR FROM CURRENT_DATE)
             ORDER BY ftp.total_ftp DESC
@@ -539,7 +564,12 @@ def top_loan_loss_customers_for_rm(sales_code):
             SELECT l.cust_code_strategy, l.customer_name,
                    -SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)) AS revenue_value
             FROM loans_mom_ifrs_movement l
-            JOIN retail_allocated_portfolio rap ON l.cust_code_strategy = CAST(rap.cust_id AS VARCHAR)
+            JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON l.cust_code_strategy = CAST(rap.cust_id AS VARCHAR)
             WHERE rap.sales_code = %s
               AND EXTRACT(YEAR FROM eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)
               AND cust_code_strategy ~ '^[0-9]+$'
@@ -562,7 +592,12 @@ def top_10_customers_per_income_category_for_rm(sales_code):
             cur.execute(f"""
                 SELECT r.cust_id, rap.customer_name, SUM(r.sum_dc) AS revenue_value
                 FROM revenue r
-                JOIN retail_allocated_portfolio rap ON r.cust_id = rap.cust_id
+                JOIN (
+                    SELECT DISTINCT ON (cust_id) *
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON r.cust_id = rap.cust_id
                 WHERE rap.sales_code = %s AND r.income_category = %s
                 GROUP BY r.cust_id, rap.customer_name
                 ORDER BY revenue_value {order}

@@ -145,7 +145,12 @@ def segment_customers(banking_segment):
                    total_revenue, total_depost_balance, total_loans, active,
                    ROW_NUMBER() OVER (PARTITION BY pn.cust_id ORDER BY pn.cust_id ASC) AS rn
             FROM hf_customer AS pn
-                 LEFT OUTER JOIN retail_allocated_portfolio AS rap ON pn.cust_id = rap.cust_id
+                 LEFT OUTER JOIN (
+                     SELECT DISTINCT ON (cust_id) *
+                     FROM retail_allocated_portfolio
+                     WHERE cust_id IS NOT NULL
+                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                 ) rap ON pn.cust_id = rap.cust_id
             WHERE trim(pn.banking_segment) = %s
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
@@ -207,7 +212,12 @@ def segment_customer_per_segment(segment):
                COUNT(DISTINCT a.cust_id) AS total_customers,
                COUNT(DISTINCT hf_customer.cust_id) FILTER (WHERE hf_customer.active = TRUE) AS active_customers
         FROM hf_customer
-        LEFT JOIN retail_allocated_portfolio rap ON hf_customer.cust_id = rap.cust_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (cust_id) *
+            FROM retail_allocated_portfolio
+            WHERE cust_id IS NOT NULL
+            ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+        ) rap ON hf_customer.cust_id = rap.cust_id
         INNER JOIN accounts a ON hf_customer.cust_id = a.cust_id
         WHERE 1 = 1 and banking_segment = %s
         GROUP BY banking_segment, {main_seg_case}, {seg_case}
@@ -237,7 +247,12 @@ def segment_deposit_trends(segment):
                    {SEG_CASE} as banking_segment,
                    rap.rm_name
             FROM daily_balance_movement
-            left join retail_allocated_portfolio rap ON rap.cust_id = daily_balance_movement.cust_cif
+            left join (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON rap.cust_id = daily_balance_movement.cust_cif
         )
         select * from data WHERE 1=1 and banking_segment = %s
     """, [segment])
@@ -307,7 +322,12 @@ def segment_rm_deposit_movement_ytd(segment):
                    sum(yester_1_bal - dec_{py}_bal) as movement,
                    {SEG_CASE} as banking_segment
             from daily_balance_movement dbm
-            left join retail_allocated_portfolio rap on dbm.cust_cif = rap.cust_id
+            left join (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap on dbm.cust_cif = rap.cust_id
             group by trim(rm_code), rap.rm_name, {SEG_CASE}
             order by sum(yester_1_bal - dec_{py}_bal) desc
         )
@@ -327,7 +347,12 @@ def _top_dtd(segment, order):
                    {_yester_fallback('yester_1_bal')} as yester_1_bal,
                    {SEG_CASE} as banking_segment
             from daily_balance_movement dbm
-                 left join retail_allocated_portfolio rap on dbm.cust_cif = rap.cust_id
+                 left join (
+                     SELECT DISTINCT ON (cust_id) *
+                     FROM retail_allocated_portfolio
+                     WHERE cust_id IS NOT NULL
+                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                 ) rap on dbm.cust_cif = rap.cust_id
             where 1=1
             group by dbm.cust_cif, dbm.full_name, rap.rm_name, {SEG_CASE}
         )
@@ -359,7 +384,12 @@ def _top_ytd(segment, order):
                    sum(yester_1_bal - dec_{py}_bal) as movement,
                    {SEG_CASE} as banking_segment
             from daily_balance_movement dbm
-            left join retail_allocated_portfolio rap on dbm.cust_cif = rap.cust_id
+            left join (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap on dbm.cust_cif = rap.cust_id
             where 1=1
             group by dbm.cust_cif, dbm.full_name, rap.rm_name, {SEG_CASE}
             order by sum(yester_1_bal - dec_{py}_bal) {order}

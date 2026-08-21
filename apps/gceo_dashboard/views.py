@@ -1371,7 +1371,12 @@ class TopCustomerInflowView(APIView):
                     {yester1} AS yester_1_bal,
                     {_BANKING_SEGMENT_CASE} AS banking_segment
                 FROM daily_balance_movement dbm
-                LEFT JOIN retail_allocated_portfolio rap
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) *
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap
                     ON dbm.cust_cif = rap.cust_id
                 WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS')
                 GROUP BY dbm.cust_cif, dbm.full_name, rap.rm_name, customer_segment
@@ -1414,7 +1419,12 @@ class TopCustomerOutflowView(APIView):
                     {yester1} AS yester_1_bal,
                     {_BANKING_SEGMENT_CASE} AS banking_segment
                 FROM daily_balance_movement dbm
-                LEFT JOIN retail_allocated_portfolio rap
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) *
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap
                     ON dbm.cust_cif = rap.cust_id
                 WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS')
                 GROUP BY dbm.cust_cif, dbm.full_name, rap.rm_name, customer_segment
@@ -1455,7 +1465,12 @@ class RMYTDMovementView(APIView):
                     SUM(dbm.dec_{py}_bal) AS dec_bal,
                     {yester1} AS yester_1_bal
                 FROM daily_balance_movement dbm
-                LEFT JOIN retail_allocated_portfolio rap
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) *
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap
                     ON dbm.cust_cif = rap.cust_id
                 GROUP BY rm_code, rap.rm_name
             )

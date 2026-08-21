@@ -49,7 +49,12 @@ class FixedDepositListManager(models.Manager):
             FROM accounts accs
             INNER JOIN product_mapping pm 
                 ON accs.type = pm.product_description
-            INNER JOIN retail_allocated_portfolio rap 
+            INNER JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap 
                 ON rap.cust_id = accs.cust_id
             WHERE rap.sales_code = %s
                 AND pm.product_map = 'FD'
@@ -95,7 +100,12 @@ class FixedDepositListManager(models.Manager):
             FROM accounts accs
             INNER JOIN product_mapping pm 
                 ON accs.type = pm.product_description
-            LEFT JOIN retail_allocated_portfolio rap 
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap 
                 ON rap.cust_id = accs.cust_id
             INNER JOIN hf_customer c 
                 ON c.cust_id = accs.cust_id
@@ -143,7 +153,12 @@ class FixedDepositListManager(models.Manager):
             FROM accounts accs
             INNER JOIN product_mapping pm 
                 ON accs.type = pm.product_description
-            LEFT JOIN retail_allocated_portfolio rap 
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap 
                 ON rap.cust_id = accs.cust_id
             LEFT JOIN hf_customer c 
                 ON c.cust_id = accs.cust_id
@@ -188,7 +203,12 @@ class FixedDepositListManager(models.Manager):
             FROM accounts accs
             INNER JOIN product_mapping pm 
                 ON accs.type = pm.product_description
-            LEFT JOIN retail_allocated_portfolio rap 
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap 
                 ON rap.cust_id = accs.cust_id
             INNER JOIN hf_customer c 
                 ON c.cust_id = accs.cust_id
@@ -252,7 +272,12 @@ class FixedDepositRateBandManager(models.Manager):
             FROM accounts accs
             INNER JOIN product_mapping pm 
                 ON accs.type = pm.product_description
-            INNER JOIN retail_allocated_portfolio rap 
+            INNER JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap 
                 ON rap.cust_id = accs.cust_id
             WHERE LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
             AND pm.product_map = 'FD'
@@ -471,7 +496,12 @@ def expiry_timeline_band_by_rm_code(sales_code):
         FROM accounts accs
         INNER JOIN product_mapping pm 
             ON accs.type = pm.product_description
-        INNER JOIN retail_allocated_portfolio rap 
+        INNER JOIN (
+            SELECT DISTINCT ON (cust_id) *
+            FROM retail_allocated_portfolio
+            WHERE cust_id IS NOT NULL
+            ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+        ) rap 
             ON rap.cust_id = accs.cust_id
         WHERE rap.sales_code = %s
             AND pm.product_map = 'FD'

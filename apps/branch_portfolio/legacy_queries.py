@@ -44,7 +44,12 @@ def branch_customers(branch):
                    total_depost_balance, total_loans, active,
                    Row_number() OVER (partition BY pn.cust_id ORDER BY pn.cust_id ASC) AS rn
             FROM   hf_customer AS pn
-                   LEFT OUTER JOIN retail_allocated_portfolio AS rap ON pn.cust_id = rap.cust_id
+                   LEFT OUTER JOIN (
+                       SELECT DISTINCT ON (cust_id) *
+                       FROM retail_allocated_portfolio
+                       WHERE cust_id IS NOT NULL
+                       ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                   ) rap ON pn.cust_id = rap.cust_id
             WHERE  pn.branch = %s)
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
         ORDER BY total_depost_balance DESC, total_loans DESC
@@ -101,7 +106,12 @@ def branch_customer_per_segment(branch):
             COUNT(DISTINCT hf_customer.cust_id) AS total_customers,
             COUNT(DISTINCT hf_customer.cust_id) FILTER (WHERE hf_customer.active = TRUE) AS active_customers
         FROM hf_customer
-        LEFT JOIN retail_allocated_portfolio rap ON hf_customer.cust_id = rap.cust_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (cust_id) *
+            FROM retail_allocated_portfolio
+            WHERE cust_id IS NOT NULL
+            ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+        ) rap ON hf_customer.cust_id = rap.cust_id
         WHERE 1 = 1 AND hf_customer.branch = %s
         GROUP BY banking_segment,
             CASE

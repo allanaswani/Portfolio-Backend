@@ -515,7 +515,12 @@ class BranchRMDepositMovementYTDView(APIView):
                 SUM(dbm.yester_1_bal) FILTER (WHERE dbm.yester_1_bal > 0)
                     - SUM(dbm.dec_{py}_bal) FILTER (WHERE dbm.dec_{py}_bal > 0) AS ytd_movement
             FROM daily_balance_movement dbm
-            LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = dbm.cust_cif
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) *
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON rap.cust_id = dbm.cust_cif
             WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
               AND dbm.brn_code::text IN (
                   SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
@@ -544,7 +549,12 @@ class BranchTopInflowDTDView(APIView):
                     dbm.yester_1_bal, dbm.yester_2_bal,
                     dbm.yester_1_bal - dbm.yester_2_bal AS movement
                 FROM daily_balance_movement dbm
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = dbm.cust_cif
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) *
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = dbm.cust_cif
                 WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
                   AND dbm.yester_1_bal > dbm.yester_2_bal
                   AND dbm.brn_code::text IN (
@@ -571,7 +581,12 @@ class BranchTopOutflowDTDView(APIView):
                     dbm.yester_1_bal, dbm.yester_2_bal,
                     dbm.yester_1_bal - dbm.yester_2_bal AS movement
                 FROM daily_balance_movement dbm
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = dbm.cust_cif
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) *
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = dbm.cust_cif
                 WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
                   AND dbm.yester_2_bal > dbm.yester_1_bal
                   AND dbm.brn_code::text IN (
