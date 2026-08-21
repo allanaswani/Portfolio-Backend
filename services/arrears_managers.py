@@ -77,7 +77,12 @@ class LoansArrearsSummaryManager(models.Manager):
                         sum(mov.pl_charge - mov.int_adj) as loan_loss,
                         max(mov.eom_date) as max_provisions_eom_date
                     from loans_mom_ifrs_movement mov 
-                    INNER JOIN retail_allocated_portfolio rap ON rap.cust_id::varchar = mov.cust_code_strategy
+                    INNER JOIN (
+                        SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                        FROM retail_allocated_portfolio
+                        WHERE cust_id IS NOT NULL
+                        ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                    ) rap ON rap.cust_id::varchar = mov.cust_code_strategy
                     where EXTRACT(YEAR FROM mov.eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)
                     AND LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
                 ),
@@ -91,7 +96,12 @@ class LoansArrearsSummaryManager(models.Manager):
                             ELSE 0
                         END AS percent_portfolio_in_arrears
                     FROM loans lns
-                    INNER JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                    INNER JOIN (
+                        SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                        FROM retail_allocated_portfolio
+                        WHERE cust_id IS NOT NULL
+                        ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                    ) rap ON rap.cust_id = lns.cust_id
                     where LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
                 )
                 select 
@@ -120,7 +130,11 @@ class LoansArrearsSummaryManager(models.Manager):
                         sum(mov.pl_charge - mov.int_adj) as loan_loss,
                         max(mov.eom_date) as max_provisions_eom_date
                     from loans_mom_ifrs_movement mov 
-                    INNER JOIN branch_final_employee_dmc_data bfedd 
+                    INNER JOIN (
+                        SELECT DISTINCT UPPER(TRIM(staff_branch)) AS staff_branch
+                        FROM branch_final_employee_dmc_data
+                        WHERE NULLIF(TRIM(staff_branch), '') IS NOT NULL
+                    ) bfedd
                         ON 
                             -- Remap mov.branch2 to match bfedd.staff_branch naming
                             CASE
@@ -163,7 +177,13 @@ class LoansArrearsSummaryManager(models.Manager):
                             ELSE 0
                         END AS percent_portfolio_in_arrears
                     FROM loans lns
-                    INNER JOIN branch_final_employee_dmc_data bfedd 
+                    INNER JOIN (
+                        SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                        FROM branch_final_employee_dmc_data
+                        WHERE brn_code IS NOT NULL
+                        ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                                 date_update_etl DESC NULLS LAST, ctid DESC
+                    ) bfedd
                         ON bfedd.brn_code = lns.branch
                     WHERE LOWER(TRIM(bfedd.staff_branch)) LIKE LOWER(%s)
                 )
@@ -279,10 +299,26 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 ORDER BY lns.days_in_arrears ASC,
                     CASE mov_latest.current_grade
@@ -364,10 +400,26 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 AND LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
                 ORDER BY lns.days_in_arrears ASC,
@@ -450,10 +502,26 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 AND LOWER(TRIM(bfedd.staff_branch)) LIKE LOWER(%s)
                 ORDER BY lns.days_in_arrears ASC,
@@ -537,10 +605,26 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 AND LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
                 ORDER BY lns.days_in_arrears ASC,
@@ -634,10 +718,26 @@ class LoansProductArrearsSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
             ),
             data AS (
@@ -711,10 +811,26 @@ class LoansProductArrearsSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 AND LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
             ),
@@ -789,10 +905,26 @@ class LoansProductArrearsSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 AND LOWER(TRIM(bfedd.staff_branch)) LIKE LOWER(%s)
             ),
@@ -868,10 +1000,26 @@ class LoansProductArrearsSummaryManager(models.Manager):
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
                 LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-                LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                    FROM retail_allocated_portfolio
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+                ) rap ON rap.cust_id = lns.cust_id
                 LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-                LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-                LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+                LEFT JOIN (
+                    SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                    FROM branch_final_employee_dmc_data
+                    WHERE brn_code IS NOT NULL
+                    ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                             date_update_etl DESC NULLS LAST, ctid DESC
+                ) bfedd ON bfedd.brn_code = lns.branch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                    FROM bank_employee
+                    WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                    ORDER BY TRIM(bank_id), ctid DESC
+                ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
                 AND LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
             ),
@@ -961,10 +1109,26 @@ class LoansArrearsAccountsListManager(models.Manager):
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
             LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-            LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON rap.cust_id = lns.cust_id
             LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-            LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-            LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+            LEFT JOIN (
+                SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                FROM branch_final_employee_dmc_data
+                WHERE brn_code IS NOT NULL
+                ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                         date_update_etl DESC NULLS LAST, ctid DESC
+            ) bfedd ON bfedd.brn_code = lns.branch
+            LEFT JOIN (
+                SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                FROM bank_employee
+                WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                ORDER BY TRIM(bank_id), ctid DESC
+            ) be ON be.bank_id = TRIM(lns.delay_officer)
             WHERE lns.days_in_arrears > 0
             ORDER BY lns.days_in_arrears ASC,
                 CASE mov_latest.current_grade
@@ -1049,10 +1213,26 @@ class LoansArrearsAccountsListManager(models.Manager):
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
             LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-            LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON rap.cust_id = lns.cust_id
             LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-            LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-            LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+            LEFT JOIN (
+                SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                FROM branch_final_employee_dmc_data
+                WHERE brn_code IS NOT NULL
+                ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                         date_update_etl DESC NULLS LAST, ctid DESC
+            ) bfedd ON bfedd.brn_code = lns.branch
+            LEFT JOIN (
+                SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                FROM bank_employee
+                WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                ORDER BY TRIM(bank_id), ctid DESC
+            ) be ON be.bank_id = TRIM(lns.delay_officer)
             WHERE lns.days_in_arrears > 0
               AND LOWER(TRIM(rap.sales_code)) = LOWER(TRIM(%s))
             ORDER BY lns.days_in_arrears ASC,
@@ -1138,10 +1318,26 @@ class LoansArrearsAccountsListManager(models.Manager):
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
             LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-            LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON rap.cust_id = lns.cust_id
             LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-            LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-            LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+            LEFT JOIN (
+                SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                FROM branch_final_employee_dmc_data
+                WHERE brn_code IS NOT NULL
+                ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                         date_update_etl DESC NULLS LAST, ctid DESC
+            ) bfedd ON bfedd.brn_code = lns.branch
+            LEFT JOIN (
+                SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                FROM bank_employee
+                WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                ORDER BY TRIM(bank_id), ctid DESC
+            ) be ON be.bank_id = TRIM(lns.delay_officer)
             WHERE lns.days_in_arrears > 0
               AND LOWER(TRIM(bfedd.staff_branch)) LIKE LOWER(%s)
             ORDER BY lns.days_in_arrears ASC,
@@ -1228,10 +1424,26 @@ class LoansArrearsAccountsListManager(models.Manager):
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
             LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
-            LEFT JOIN retail_allocated_portfolio rap ON rap.cust_id = lns.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap ON rap.cust_id = lns.cust_id
             LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
-            LEFT JOIN branch_final_employee_dmc_data bfedd ON bfedd.brn_code = lns.branch
-            LEFT JOIN bank_employee be ON trim(be.bank_id) = trim(lns.delay_officer)
+            LEFT JOIN (
+                SELECT DISTINCT ON (brn_code) brn_code, staff_branch
+                FROM branch_final_employee_dmc_data
+                WHERE brn_code IS NOT NULL
+                ORDER BY brn_code, (staff_branch IS NULL), active DESC NULLS LAST,
+                         date_update_etl DESC NULLS LAST, ctid DESC
+            ) bfedd ON bfedd.brn_code = lns.branch
+            LEFT JOIN (
+                SELECT DISTINCT ON (TRIM(bank_id)) TRIM(bank_id) AS bank_id, full_name
+                FROM bank_employee
+                WHERE NULLIF(TRIM(bank_id), '') IS NOT NULL
+                ORDER BY TRIM(bank_id), ctid DESC
+            ) be ON be.bank_id = TRIM(lns.delay_officer)
             WHERE lns.days_in_arrears > 0
               AND LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
             ORDER BY lns.days_in_arrears ASC,
