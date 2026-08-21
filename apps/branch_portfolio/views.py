@@ -15,6 +15,7 @@ from apps.portfolio.serializers import (
     HfCustomerSerializer, AccountsSerializer, LoansSerializer, FeedbackSerializer,
     BranchFeedbackSerializer, ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
 )
+from apps.portfolio.rm_rollup import fetch_rm_rollup
 from . import legacy_queries as lq
 from services.arrears_managers import (
     LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
@@ -293,60 +294,19 @@ class BranchNewCustomersView(APIView):
 class BranchRMListView(APIView):
     """Old backend `branch_rm_list`: per-RM revenue / deposit / loan totals for
     the branch's book, from hf_customer joined to retail_allocated_portfolio and
-    filtered to the caller's branch. Was reading daily_balance_movement with a
-    different shape (rm_code/sale_code/full_name/total_deposits), so the branch
-    RM-list table — which reads rm_name/total_revenue/total_deposit_balance/
-    total_loans — showed nothing."""
+    filtered to the caller's branch.
+
+    The roll-up lives in ``apps.portfolio.rm_rollup`` because this endpoint used
+    to fan out on duplicate allocation rows and to group by ``rap.branch``,
+    which split a single RM into several table rows (double-counting "Total
+    RMs" and inflating the money columns). See that module for the details.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         profile = _get_profile(request.user)
         branch = _branch_filter(profile)
-        sql = """
-            SELECT
-                sales_code,
-                rap.rm_name,
-                CASE
-                    WHEN rap.branch::text = '230' THEN 'BURUBURU BRANCH'
-                    WHEN rap.branch::text = '410' THEN 'ELDORET BRANCH'
-                    WHEN rap.branch::text = '25'  THEN 'EMBU BRANCH'
-                    WHEN rap.branch::text = '220' THEN 'GILL HOUSE BRANCH'
-                    WHEN rap.branch::text = '100' THEN 'HEAD OFFICE'
-                    WHEN rap.branch::text = '109' THEN 'HF WHIZZ'
-                    WHEN rap.branch::text = '19'  THEN 'HURLINGHAM BRANCH'
-                    WHEN rap.branch::text = '600' THEN 'KISUMU BRANCH'
-                    WHEN rap.branch::text = '16'  THEN 'KITENGELA BRANCH'
-                    WHEN rap.branch::text = '23'  THEN 'KOMAROCK BRANCH'
-                    WHEN rap.branch::text = '24'  THEN 'MACHAKOS BRANCH'
-                    WHEN rap.branch::text = '520' THEN 'MERU BRANCH'
-                    WHEN rap.branch::text = '300' THEN 'MOMBASA BRANCH'
-                    WHEN rap.branch::text = '17'  THEN 'NAIVASHA BRANCH'
-                    WHEN rap.branch::text = '400' THEN 'NAKURU BRANCH'
-                    WHEN rap.branch::text = '22'  THEN 'NANYUKI BRANCH'
-                    WHEN rap.branch::text = '510' THEN 'NYERI BRANCH'
-                    WHEN rap.branch::text = '200' THEN 'REHANI BRANCH'
-                    WHEN rap.branch::text = '20'  THEN 'RIVERROAD BRANCH'
-                    WHEN rap.branch::text = '250' THEN 'RONGAI BRANCH'
-                    WHEN rap.branch::text = '270' THEN 'SAMEER BUSINESS PARK BRANCH'
-                    WHEN rap.branch::text = '500' THEN 'THIKA BRANCH'
-                    WHEN rap.branch::text = '260' THEN 'THIKA ROAD MALL-TRM BRANCH'
-                    WHEN rap.branch::text = '280' THEN 'WESTLANDS BRANCH'
-                    ELSE 'HEAD OFFICE'
-                END AS rm_branch,
-                SUM(total_revenue)        AS total_revenue,
-                SUM(total_depost_balance) AS total_deposit_balance,
-                SUM(total_loans)          AS total_loans
-            FROM hf_customer
-            LEFT JOIN retail_allocated_portfolio rap
-                ON hf_customer.cust_id = rap.cust_id
-            WHERE hf_customer.branch = %s
-            GROUP BY sales_code, rap.rm_name, rap.branch
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql, [branch])
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(fetch_rm_rollup(branch=branch, with_branch_label=True))
 
 
 # ── Deposits ───────────────────────────────────────────────────────────────

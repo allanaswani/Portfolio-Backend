@@ -24,6 +24,7 @@ from .models import (
     EmployeeTable, EmployeeRosterOverlay, LoansHistory, Accounts,
 )
 from .departments import standardize_department
+from apps.portfolio.rm_rollup import fetch_rm_rollup
 from . import gceo_legacy as gl
 from .serializers import (
     CeoDepositMovementMonthlySerializer, CustomersSerializer, CeoChannelReportSerializer,
@@ -1261,27 +1262,15 @@ class BranchListView(APIView):
 class RMListView(APIView):
     """Old backend `rmlist`: per-RM revenue / deposit / loan totals from
     hf_customer joined to retail_allocated_portfolio (NOT a distinct dropdown
-    off daily_balance_movement, which returned no totals)."""
+    off daily_balance_movement, which returned no totals).
+
+    Shares ``apps.portfolio.rm_rollup`` with the branch/EXCO RM lists so a
+    customer with duplicate allocation rows is counted once instead of once per
+    duplicate."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        sql = """
-            SELECT
-                sales_code,
-                rap.rm_name,
-                SUM(total_revenue)        AS total_revenue,
-                SUM(total_depost_balance) AS total_deposit_balance,
-                SUM(total_loans)          AS total_loans
-            FROM hf_customer
-            LEFT JOIN retail_allocated_portfolio rap
-                ON hf_customer.cust_id = rap.cust_id
-            GROUP BY sales_code, rap.rm_name
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(fetch_rm_rollup())
 
 
 @extend_schema(tags=["CEO Dashboard — Branches"])

@@ -22,6 +22,7 @@ from .serializers import (
     CustomerRevenueListSerializer,
 )
 from core.permissions import PortfolioMgtPermissions
+from .rm_rollup import fetch_rm_rollup
 from services import portfolio_service as svc
 from services import fixed_deposit_managers as fdm
 from services.arrears_managers import (
@@ -574,29 +575,15 @@ class SalesCodeView(APIView):
 @extend_schema(tags=["Portfolio — Profile"])
 class RmFullListView(APIView):
     """Old backend `rmlist`: per-RM revenue / deposit / loan totals from
-    hf_customer joined to retail_allocated_portfolio. Was returning Django
-    Profile rows (sales_code/branch/name) instead, so the RM-list table — which
-    reads rm_name/total_revenue/total_deposit_balance/total_loans — was empty."""
+    hf_customer joined to retail_allocated_portfolio.
+
+    Shares ``rm_rollup`` with the CEO/branch RM lists — one row per sales code,
+    each customer counted once even when the ETL leaves duplicate allocation
+    rows behind."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        sql = """
-            SELECT
-                sales_code,
-                rap.rm_name,
-                SUM(total_revenue)        AS total_revenue,
-                SUM(total_depost_balance) AS total_deposit_balance,
-                SUM(total_loans)          AS total_loans
-            FROM hf_customer
-            LEFT JOIN retail_allocated_portfolio rap
-                ON hf_customer.cust_id = rap.cust_id
-            GROUP BY sales_code, rap.rm_name
-        """
-        with connection.cursor() as cur:
-            cur.execute(sql)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        return Response(fetch_rm_rollup())
 
 
 # ---------------------------------------------------------------------------
