@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 
 from .models import Referral
-from .rbac import AGENT_GROUP, is_allocatable, is_supervisor
+from .rbac import is_allocatable, is_supervisor
 from .serializers import ReferralSerializer, TelesalesAgentSerializer
 
 User = get_user_model()
@@ -69,11 +69,28 @@ class ReferralListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Referrals"])
 class ReferralDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Read/update a referral; delete is superuser-only.
+
+    DELETE was previously available to anyone the referral was scoped to, which
+    let a capturer erase their own submission. Removing a referral is an admin
+    act (clearing test rows, GDPR-style erasure), so it is restricted to
+    superusers. simple_history keeps the audit trail either way.
+    """
+
     permission_classes = [IsAuthenticated]
     serializer_class = ReferralSerializer
 
     def get_queryset(self):
         return _scoped(self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only a superuser may delete a referral."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Superusers see everything via _scoped, so the object lookup is unchanged.
+        return super().destroy(request, *args, **kwargs)
 
 
 @extend_schema(tags=["Referrals"])
@@ -115,6 +132,9 @@ class ReferralAllocateView(APIView):
         referral.assigned_to = agent
         referral.allocated_by = request.user
         referral.allocated_at = timezone.now()
+        # Credit the referral to the code the assignee works under, captured now
+        # so it survives any later change to their Profile.
+        referral.assigned_sales_code = (getattr(getattr(agent, "profile", None), "sales_code", "") or "").strip()
         if referral.status == Referral.STATUS_UNALLOCATED:
             referral.status = Referral.STATUS_ALLOCATED
         referral.save()
@@ -159,27 +179,46 @@ class ReferralStatusView(APIView):
         if notes is not None:
             referral.notes = notes
         referral.save()
+
+        # A rejected referral is discarded rather than parked: the pipeline should
+        # only ever show live work. The status and notes are saved first so the
+        # simple_history row records WHY it went, and the deletion itself is
+        # history-tracked too, so nothing is lost for audit.
+        if new_status == Referral.STATUS_REJECTED:
+            data = ReferralSerializer(referral).data
+            referral.delete()
+            return Response({**data, "deleted": True})
+
         return Response(ReferralSerializer(referral).data)
 
 
 @extend_schema(tags=["Referrals"])
 class TelesalesAgentsView(APIView):
-    """List telesales agents for the allocation dropdown. Supervisor-only."""
+    """Roster for the allocation dropdown. Supervisor-only.
+
+    Referrals are worked by relationship managers and branch sales staff as well
+    as the telesales team, but this used to return only ``telesales_agent``
+    members — so an RM could never be picked. It now returns every active
+    account, each carrying the sales code, branch and segment from their Profile
+    so the supervisor can tell two people with similar names apart and see which
+    sales code the referral will be credited to.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         if not is_supervisor(request.user):
             return Response(
-                {"detail": "Only telesales supervisors may view the agent roster."},
+                {"detail": "Only telesales supervisors may view the allocation roster."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        agents = (
-            User.objects.filter(is_active=True, groups__name=AGENT_GROUP)
-            .distinct()
-            .order_by("first_name", "username")
+        users = (
+            User.objects.filter(is_active=True)
+            .select_related("profile")
+            .prefetch_related("groups")
+            .order_by("first_name", "last_name", "username")
         )
-        return Response(TelesalesAgentSerializer(agents, many=True).data)
+        return Response(TelesalesAgentSerializer(users, many=True).data)
 
 
 @extend_schema(tags=["Referrals"])

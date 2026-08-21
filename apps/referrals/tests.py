@@ -149,14 +149,57 @@ class ReferralAllocationTests(APITestCase):
         )
         self.assertEqual(res.status_code, 403)
 
-    def test_cannot_allocate_to_non_telesales_user(self):
-        outsider = make_user("outsider")
+    def test_can_allocate_to_an_rm_outside_the_telesales_groups(self):
+        """RMs and branch sales staff hold no telesales group but do work
+        referrals, so any active account is a valid assignee."""
+        from apps.portfolio.models import Profile
+
+        rm = make_user("rm_jane", first_name="Jane")
+        Profile.objects.update_or_create(user=rm, defaults={"sales_code": "3914"})
+        self.client.force_authenticate(self.supervisor)
+        res = self.client.post(
+            f"/referrals/{self.ref.id}/allocate/",
+            {"assigned_to": rm.id}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.ref.refresh_from_db()
+        self.assertEqual(self.ref.assigned_to, rm)
+        # The assignee's sales code is snapshotted onto the referral.
+        self.assertEqual(self.ref.assigned_sales_code, "3914")
+        self.assertEqual(res.data["assigned_to_sales_code"], "3914")
+
+    def test_cannot_allocate_to_an_inactive_user(self):
+        outsider = make_user("outsider", is_active=False)
         self.client.force_authenticate(self.supervisor)
         res = self.client.post(
             f"/referrals/{self.ref.id}/allocate/",
             {"assigned_to": outsider.id}, format="json",
         )
         self.assertEqual(res.status_code, 400)
+
+    def test_allocation_roster_includes_non_telesales_staff(self):
+        from apps.portfolio.models import Profile
+
+        rm = make_user("rm_peter", first_name="Peter")
+        Profile.objects.update_or_create(user=rm, defaults={"sales_code": "3950"})
+        self.client.force_authenticate(self.supervisor)
+        res = self.client.get("/referrals/telesales-agents/")
+        self.assertEqual(res.status_code, 200, res.content)
+        by_id = {r["id"]: r for r in res.data}
+        self.assertIn(rm.id, by_id)
+        self.assertEqual(by_id[rm.id]["sales_code"], "3950")
+
+    def test_assignee_sees_the_referral_allocated_to_them(self):
+        rm = make_user("rm_alice")
+        self.ref.assigned_to = rm
+        self.ref.status = Referral.STATUS_ALLOCATED
+        self.ref.save()
+        self.client.force_authenticate(rm)
+        res = self.client.get("/referrals/")
+        self.assertEqual(res.status_code, 200, res.content)
+        rows = res.data["results"] if isinstance(res.data, dict) else res.data
+        self.assertEqual([r["id"] for r in rows], [self.ref.id])
+
 
     def test_agent_updates_status_and_stamps_converted(self):
         self.ref.assigned_to = self.agent
@@ -183,6 +226,46 @@ class ReferralAllocationTests(APITestCase):
         )
         self.assertEqual(res.status_code, 403)
 
+
+class ReferralDeletionTests(APITestCase):
+    def setUp(self):
+        self.supervisor = make_user("sup2", group=SUPERVISOR_GROUP)
+        self.superuser = make_user("root", is_superuser=True, is_staff=True)
+        self.agent = make_user("agent2", group=AGENT_GROUP)
+        self.ref = Referral.objects.create(
+            pf_number="12345", customer_name="Test Row",
+            national_id="12345678", phone="+254712345678",
+        )
+
+    def test_superuser_can_delete(self):
+        self.client.force_authenticate(self.superuser)
+        res = self.client.delete(f"/referrals/{self.ref.id}/")
+        self.assertEqual(res.status_code, 204, res.content)
+        self.assertFalse(Referral.objects.filter(pk=self.ref.pk).exists())
+
+    def test_supervisor_cannot_delete(self):
+        self.client.force_authenticate(self.supervisor)
+        res = self.client.delete(f"/referrals/{self.ref.id}/")
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertTrue(Referral.objects.filter(pk=self.ref.pk).exists())
+
+    def test_rejecting_a_referral_removes_it(self):
+        self.ref.assigned_to = self.agent
+        self.ref.status = Referral.STATUS_ALLOCATED
+        self.ref.save()
+        self.client.force_authenticate(self.agent)
+        res = self.client.post(
+            f"/referrals/{self.ref.id}/status/",
+            {"status": "rejected", "notes": "not interested"}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.data["deleted"])
+        self.assertFalse(Referral.objects.filter(pk=self.ref.pk).exists())
+        # The rejection and its notes survive in the history table for audit.
+        hist = Referral.history.filter(id=self.ref.pk).order_by("history_date")
+        self.assertEqual(hist.last().history_type, "-")
+        self.assertIn("rejected", {h.status for h in hist})
+        self.assertIn("not interested", {h.notes for h in hist})
 
 class ReferralRetentionTests(APITestCase):
     def _aged(self, days, **over):

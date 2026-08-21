@@ -104,6 +104,11 @@ class Referral(TimeStamped):
         USER, null=True, blank=True, on_delete=models.SET_NULL, related_name="referrals_allocated"
     )
     allocated_at = models.DateTimeField(null=True, blank=True)
+    # Sales code of whoever the referral was allocated to, snapshotted at
+    # allocation time from their Profile. Stored rather than derived so the
+    # referral keeps crediting the code it was actually worked under, even if the
+    # person's code later changes or they move desks.
+    assigned_sales_code = models.CharField(max_length=50, blank=True)
 
     # ── Working / lifecycle timestamps ────────────────────────────────────────
     contacted_at = models.DateTimeField(null=True, blank=True)

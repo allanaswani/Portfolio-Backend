@@ -25,8 +25,6 @@ AGENT_GROUP = "telesales_agent"
 
 #: Groups that grant the "see everything / allocate" privilege.
 PRIVILEGED_GROUPS = {SUPERVISOR_GROUP}
-#: Groups a referral may legitimately be allocated *to* (a real telesales member).
-ALLOCATABLE_GROUPS = {AGENT_GROUP, SUPERVISOR_GROUP}
 
 
 def is_supervisor(user) -> bool:
@@ -43,9 +41,16 @@ def is_supervisor(user) -> bool:
 
 
 def is_allocatable(user) -> bool:
-    """True when a referral may be assigned to ``user`` (an actual telesales member)."""
-    if not user or not user.is_authenticated or not user.is_active:
-        return False
-    if user.is_superuser:
-        return True
-    return user.groups.filter(name__in=ALLOCATABLE_GROUPS).exists()
+    """True when a referral may be assigned to ``user``.
+
+    Referrals were originally allocatable only to the two telesales groups, but
+    the business works them through relationship managers and branch sales staff
+    as well, who hold none of those groups. Restricting the roster to telesales
+    made those people unpickable, so any **active** account may now receive an
+    allocation and the supervisor decides who is appropriate.
+
+    Note this is a visibility grant: an assignee can read the referral's customer
+    details, so only a supervisor may perform the allocation (see
+    :func:`is_supervisor`).
+    """
+    return bool(user and user.is_authenticated and user.is_active)

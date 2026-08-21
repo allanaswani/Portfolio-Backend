@@ -38,6 +38,11 @@ class ReferralSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField()
     allocated_by_name = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    # Live sales code / branch of the assignee, so the RM working the referral (and
+    # anyone reviewing it) can see which code it sits under even before allocation
+    # snapshots one.
+    assigned_to_sales_code = serializers.SerializerMethodField()
+    assigned_to_branch = serializers.SerializerMethodField()
 
     class Meta:
         model = Referral
@@ -54,6 +59,7 @@ class ReferralSerializer(serializers.ModelSerializer):
             "assigned_to",
             "allocated_by",
             "allocated_at",
+            "assigned_sales_code",
             "contacted_at",
             "converted_at",
         ]
@@ -125,14 +131,51 @@ class ReferralSerializer(serializers.ModelSerializer):
     def get_allocated_by_name(self, obj):
         return self._name(obj.allocated_by)
 
+    @staticmethod
+    def _profile_field(user, field):
+        return (getattr(getattr(user, "profile", None), field, "") or "").strip()
+
+    def get_assigned_to_sales_code(self, obj):
+        # Prefer the snapshot taken at allocation; fall back to the live Profile
+        # for referrals allocated before the snapshot field existed.
+        return obj.assigned_sales_code or self._profile_field(obj.assigned_to, "sales_code")
+
+    def get_assigned_to_branch(self, obj):
+        return self._profile_field(obj.assigned_to, "branch")
+
 
 class TelesalesAgentSerializer(serializers.Serializer):
-    """Minimal user projection for the allocation dropdown."""
+    """User projection for the allocation dropdown.
+
+    Carries the Profile's sales code, branch and segment so a supervisor can pick
+    the right relationship manager — two staff often share a first name, and the
+    sales code is what the referral ends up credited to.
+    """
 
     id = serializers.IntegerField()
     name = serializers.SerializerMethodField()
     username = serializers.CharField()
+    sales_code = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
+    segment = serializers.SerializerMethodField()
+    roles = serializers.SerializerMethodField()
 
     def get_name(self, obj):
         full = obj.get_full_name().strip()
         return full or obj.username
+
+    @staticmethod
+    def _profile_field(obj, field):
+        return (getattr(getattr(obj, "profile", None), field, "") or "").strip()
+
+    def get_sales_code(self, obj):
+        return self._profile_field(obj, "sales_code")
+
+    def get_branch(self, obj):
+        return self._profile_field(obj, "branch")
+
+    def get_segment(self, obj):
+        return self._profile_field(obj, "segment")
+
+    def get_roles(self, obj):
+        return sorted(g.name for g in obj.groups.all())
