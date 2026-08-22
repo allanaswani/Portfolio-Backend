@@ -1,5 +1,10 @@
 -- Why the Loan Arrears list shows an empty Grade column and KSh 0 YTD Loan Loss
--- on every row. Read-only. Run: psql -U datawarehouse -d datawarehouse -f this
+-- on every row. Read-only. Run it over TCP (a plain "psql -U ..." hits the unix
+-- socket and fails with "Peer authentication failed"):
+--
+--   set -a; . /etc/hf/prod.env; set +a
+--   PGPASSWORD="$DW_PASSWORD" psql -h "${DW_HOST:-127.0.0.1}" -p "${DW_PORT:-5432}" \
+--     -U "$DW_USER" -d "$DW_NAME" -f docs/loan-arrears-grade-blank.sql
 --
 -- Both columns come ONLY from loans_mom_ifrs_movement, filtered to the current
 -- year:  WHERE EXTRACT(YEAR FROM eom_date) = EXTRACT(YEAR FROM CURRENT_DATE)

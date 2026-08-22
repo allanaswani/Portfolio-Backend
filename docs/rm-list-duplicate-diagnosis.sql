@@ -1,5 +1,10 @@
 -- Why the RM lists showed duplicate RMs and off numbers, and how to confirm it
--- on prod. Run on the datawarehouse: psql -U datawarehouse -d datawarehouse -f this
+-- on prod. Read-only. Run it over TCP (a plain "psql -U ..." hits the unix
+-- socket and fails with "Peer authentication failed"):
+--
+--   set -a; . /etc/hf/prod.env; set +a
+--   PGPASSWORD="$DW_PASSWORD" psql -h "${DW_HOST:-127.0.0.1}" -p "${DW_PORT:-5432}" \
+--     -U "$DW_USER" -d "$DW_NAME" -f docs/rm-list-duplicate-diagnosis.sql
 -- Everything here is read-only.
 
 -- 1. Join fan-out: retail_allocated_portfolio has no unique key on cust_id.
