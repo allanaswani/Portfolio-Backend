@@ -52,4 +52,9 @@ EXPOSE 9000
 # pool and every other request queued. On this 8-core host: 9 processes give CPU
 # parallelism, 4 threads each give I/O concurrency -> ~36 concurrent requests.
 # Override at run time with GUNICORN_WORKERS / GUNICORN_THREADS if the box changes.
-CMD ["sh", "-c", "gunicorn config.wsgi:application --bind 0.0.0.0:${PORT} --worker-class gthread --workers ${GUNICORN_WORKERS:-9} --threads ${GUNICORN_THREADS:-4} --timeout 120 --access-logfile - --error-logfile -"]
+#
+# Timeout: 120s killed the whole-base CSV importers. The customer allocation
+# upload does one SELECT plus one save() per row against a ~365k-row base, so a
+# 30 MB file runs for many minutes and the worker was reaped mid-import, leaving
+# a partial upsert and a 502. Raised to 600s and made overridable.
+CMD ["sh", "-c", "gunicorn config.wsgi:application --bind 0.0.0.0:${PORT} --worker-class gthread --workers ${GUNICORN_WORKERS:-9} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-600} --access-logfile - --error-logfile -"]

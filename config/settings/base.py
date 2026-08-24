@@ -126,6 +126,24 @@ DATABASES = {
 
 DATABASE_ROUTERS = ["core.db_router.HFGroupRouter"]
 
+# ── Uploads ──────────────────────────────────────────────────────────────────
+# The CSV/Excel importers take whole-base files: the customer allocation base is
+# ~365k rows, which is roughly 30 MB. Django's defaults are far below that.
+#
+# FILE_UPLOAD_MAX_MEMORY_SIZE is NOT the cap -- it is the point at which an
+# upload stops being buffered in RAM and is spooled to a temp file. It stays
+# small deliberately: with 9 gunicorn workers, buffering 30 MB each in memory is
+# how the box runs out of RAM. Anything larger streams through disk instead.
+FILE_UPLOAD_MAX_MEMORY_SIZE = env.int("FILE_UPLOAD_MAX_MEMORY_SIZE", default=5 * 1024 * 1024)
+
+# DATA_UPLOAD_MAX_MEMORY_SIZE caps the request body EXCLUDING file content, so it
+# never rejected a big CSV on its own. Raised anyway for the endpoints that POST
+# large JSON bodies (bulk reallocation) rather than a multipart file.
+DATA_UPLOAD_MAX_MEMORY_SIZE = env.int("DATA_UPLOAD_MAX_MEMORY_SIZE", default=64 * 1024 * 1024)
+
+# A wide scorecard CSV turns into a lot of form fields; the default 1000 is thin.
+DATA_UPLOAD_MAX_NUMBER_FIELDS = env.int("DATA_UPLOAD_MAX_NUMBER_FIELDS", default=10_000)
+
 # Cache — chosen at runtime. Backs DRF throttling + the KPI cache, so it's on the
 # hot path of most requests. Two backends, selected by whether REDIS_URL is set:
 #
