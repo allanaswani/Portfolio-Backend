@@ -26,6 +26,7 @@ from services.arrears_managers import (
 from services import fixed_deposit_managers as fdm
 from core.pagination import StandardPagination
 from core.date_utils import current_year
+from core.segments import segment_q, segment_where_sql, segment_params
 
 import django_filters.rest_framework
 
@@ -145,7 +146,7 @@ class TlTotalCustomersView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        qs = HfCustomer.objects.filter(banking_segment=_segment(profile))
+        qs = HfCustomer.objects.filter(segment_q(_segment(profile)))
         return Response({
             "total_customers": qs.count(),
             "active_customers": qs.filter(active=True).count(),
@@ -258,7 +259,7 @@ class TlTotalSummaryView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        qs = HfCustomer.objects.filter(banking_segment=_segment(profile))
+        qs = HfCustomer.objects.filter(segment_q(_segment(profile)))
         agg = qs.aggregate(
             total_customers=Count("cust_id"),
             active_customers=Count("cust_id", filter=Q(active=True)),
@@ -287,8 +288,9 @@ class TlPPCView(APIView):
                     )::numeric AS avg_products_per_customer,
                     COUNT(*) AS total_customers
                 FROM hf_customer
-                WHERE banking_segment = %s
-            """, [_segment(profile)])
+                WHERE {seg}
+            """.format(seg=segment_where_sql("hf_customer")),
+            segment_params(_segment(profile)))
             row = cur.fetchone()
         # Frontend reads `ppc` (old segment_ppc shape), not avg_products_per_customer.
         return Response({"ppc": row[0] if row else 0, "total_customers": row[1] if row else 0})
@@ -311,9 +313,10 @@ class TlSegmentRevenueView(APIView):
                 FROM revenue r
                 LEFT JOIN hf_customer hf ON hf.cust_id = r.cust_id
                 WHERE date_trunc('year', tmstamp) = date_trunc('year', now())
-                  AND banking_segment = %s
+                  AND {seg}
                 GROUP BY income_category
-            """, [_segment(profile)])
+            """.format(seg=segment_where_sql("hf")),
+            segment_params(_segment(profile)))
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return Response(rows)
@@ -501,7 +504,7 @@ class TlFeedbackListView(generics.ListCreateAPIView):
     def get_queryset(self):
         profile = _get_profile(self.request.user)
         segment_customer_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
+            segment_q(_segment(profile))
         ).values_list("cust_id", flat=True)
         return Feedback.objects.filter(cust_id__in=segment_customer_ids)
 
@@ -513,7 +516,7 @@ class TlSegmentFeedbackView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         segment_customer_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
+            segment_q(_segment(profile))
         ).values_list("cust_id", flat=True)
         data = (
             Feedback.objects.filter(cust_id__in=segment_customer_ids)
@@ -531,7 +534,7 @@ class TlFeedbackByLeadView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         segment_customer_ids = HfCustomer.objects.filter(
-            banking_segment=_segment(profile)
+            segment_q(_segment(profile))
         ).values_list("cust_id", flat=True)
         # `total_leads` mirrors the RM app's field name; `count` kept for back-compat.
         data = (
@@ -548,7 +551,7 @@ class TlContactabilityView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        total_cust = HfCustomer.objects.filter(banking_segment=_segment(profile)).count()
+        total_cust = HfCustomer.objects.filter(segment_q(_segment(profile))).count()
         rm_codes = Profile.objects.filter(segment=_segment(profile)).values_list("sales_code", flat=True)
         contacted = Feedback.objects.filter(sales_code__in=rm_codes).values("cust_id").distinct().count()
         not_contacted = max(0, total_cust - contacted)

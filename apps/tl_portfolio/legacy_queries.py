@@ -15,6 +15,7 @@ maps customer_segment through the CASE below before filtering — a raw
 from django.db import connection
 
 from core.date_utils import current_year, previous_year, year_before_last
+from core.segments import segment_where_sql, segment_params, canonical_segment
 from apps.portfolio.models import HfCustomer
 
 cy = str(current_year)[-2:]
@@ -42,6 +43,14 @@ SEG_CASE = """
 # The monthly aggregate queries use a slightly different mapping ('PRIVATE'
 # also maps to ULTIMATE) — kept verbatim from old core.py.
 SEG_CASE_MONTHLY = SEG_CASE.replace("in ('ULTIMATE')", "in ('PRIVATE', 'ULTIMATE')")
+
+# hf_customer stores the segment under a THIRD vocabulary ('SME' where the
+# movement tables say SMALL/MEDIUM ENTERPRISES and profile.segment says
+# 'BUSINESS BANKING'), so every hf_customer filter goes through the synonym
+# match instead of an equality test. See core/segments.py.
+_SEG_HC = segment_where_sql("hc")
+_SEG_PN = segment_where_sql("pn")
+_SEG_HFC = segment_where_sql("hf_customer")
 
 # All month-end balance columns selected on the per-account trend rows.
 _BAL_COLS = ", ".join(
@@ -100,17 +109,17 @@ def _rows(sql, params):
 def segment_new_customers_ytd(banking_segment):
     """→ {segment, new_customers} for a banking segment."""
     rows = _rows(
-        """
+        f"""
         SELECT hc.segment,
                COUNT(DISTINCT hc.cust_id) AS new_customers
         FROM accounts a
         LEFT JOIN hf_customer hc ON a.cust_id = hc.cust_id
         LEFT JOIN customers c ON a.cust_id = c.cust_id
-        WHERE hc.banking_segment = %s
+        WHERE {_SEG_HC}
           AND date_trunc('year', c.open_date) = date_trunc('year', now())
         GROUP BY hc.segment
         """,
-        [banking_segment],
+        segment_params(banking_segment),
     )
     return rows[0] if rows else {"segment": banking_segment, "new_customers": 0}
 
@@ -118,7 +127,7 @@ def segment_new_customers_ytd(banking_segment):
 def segment_new_customers_ytd_list(banking_segment):
     """→ [{cust_id, account_name, current_balance, open_date, opening_branch}]."""
     return _rows(
-        """
+        f"""
         SELECT a.cust_id,
                a.account_name,
                SUM(a.current_balance) AS current_balance,
@@ -127,11 +136,11 @@ def segment_new_customers_ytd_list(banking_segment):
         FROM accounts a
         LEFT JOIN hf_customer hc ON a.cust_id = hc.cust_id
         LEFT JOIN customers c ON a.cust_id = c.cust_id
-        WHERE hc.banking_segment = %s
+        WHERE {_SEG_HC}
           AND date_trunc('year', c.open_date) = date_trunc('year', now())
         GROUP BY a.cust_id, a.account_name, a.opening_branch
         """,
-        [banking_segment],
+        segment_params(banking_segment),
     )
 
 
@@ -139,7 +148,7 @@ def segment_new_customers_ytd_list(banking_segment):
 
 def segment_customers(banking_segment):
     """Old core.segment_customers — whole segment book with allocation columns."""
-    return HfCustomer.objects.raw("""
+    return HfCustomer.objects.raw(f"""
         WITH retail_allocation AS (
             SELECT pn.cust_id, customer_name, sales_code, rm_name,
                    total_revenue, total_depost_balance, total_loans, active,
@@ -151,43 +160,43 @@ def segment_customers(banking_segment):
                      WHERE cust_id IS NOT NULL
                      ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                  ) rap ON pn.cust_id = rap.cust_id
-            WHERE trim(pn.banking_segment) = %s
+            WHERE {_SEG_PN}
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
         ORDER BY total_depost_balance DESC, total_loans DESC
-    """, [banking_segment])
+    """, segment_params(banking_segment))
 
 
 def segment_customers_allocated(banking_segment):
     """Old core.segment_customers_allocated."""
-    return HfCustomer.objects.raw("""
+    return HfCustomer.objects.raw(f"""
         WITH retail_allocation AS (
             SELECT pn.cust_id, customer_name, sales_code, rm_name,
                    total_revenue, total_depost_balance, total_loans, active,
                    ROW_NUMBER() OVER (PARTITION BY pn.cust_id ORDER BY pn.cust_id ASC) AS rn
             FROM retail_allocated_portfolio AS rap
                  LEFT OUTER JOIN hf_customer AS pn ON pn.cust_id = rap.cust_id
-            WHERE 1=1 and trim(pn.banking_segment) = %s
+            WHERE 1=1 and {_SEG_PN}
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
         ORDER BY total_depost_balance DESC, total_loans DESC
-    """, [banking_segment])
+    """, segment_params(banking_segment))
 
 
 def segment_customers_not_allocated(banking_segment):
     """Old core.segment_customers_not_allocated (customer_name from latin_surname)."""
-    return HfCustomer.objects.raw("""
+    return HfCustomer.objects.raw(f"""
         WITH retail_allocation AS (
             SELECT pn.cust_id, latin_surname as customer_name, sales_code, rm_name,
                    total_revenue, total_depost_balance, total_loans, active,
                    ROW_NUMBER() OVER (PARTITION BY pn.cust_id ORDER BY pn.cust_id ASC) AS rn
             FROM retail_allocated_portfolio AS rap
                  RIGHT JOIN hf_customer AS pn ON pn.cust_id = rap.cust_id
-            WHERE 1=1 and rap.cust_id is null and trim(pn.banking_segment) = %s
+            WHERE 1=1 and rap.cust_id is null and {_SEG_PN}
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
         ORDER BY total_depost_balance DESC, total_loans DESC
-    """, [banking_segment])
+    """, segment_params(banking_segment))
 
 
 def segment_customer_per_segment(segment):
@@ -219,9 +228,9 @@ def segment_customer_per_segment(segment):
             ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
         ) rap ON hf_customer.cust_id = rap.cust_id
         INNER JOIN accounts a ON hf_customer.cust_id = a.cust_id
-        WHERE 1 = 1 and banking_segment = %s
+        WHERE 1 = 1 and {_SEG_HFC}
         GROUP BY banking_segment, {main_seg_case}, {seg_case}
-    """, [segment])
+    """, segment_params(segment))
     return [{
         "banking_segment": r["banking_segment"],
         "main_segment": r["main_segment"],
@@ -255,7 +264,7 @@ def segment_deposit_trends(segment):
             ) rap ON rap.cust_id = daily_balance_movement.cust_cif
         )
         select * from data WHERE 1=1 and banking_segment = %s
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 def segment_loan_trends(segment):
@@ -272,7 +281,7 @@ def segment_loan_trends(segment):
             FROM loan_daily_balance_movement
         )
         select * from data WHERE banking_segment = %s
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 def segment_monthly_deposit_trends(segment):
@@ -289,7 +298,7 @@ def segment_monthly_deposit_trends(segment):
             GROUP BY {SEG_CASE_MONTHLY}
         )
         select * from data where banking_segment = %s
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 def segment_monthly_loan_trends(segment):
@@ -305,7 +314,7 @@ def segment_monthly_loan_trends(segment):
             GROUP BY {SEG_CASE_MONTHLY}
         )
         select * from data where banking_segment = %s
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 # ── Movements ────────────────────────────────────────────────────────────────
@@ -332,7 +341,7 @@ def segment_rm_deposit_movement_ytd(segment):
             order by sum(yester_1_bal - dec_{py}_bal) desc
         )
         select * from data where banking_segment = %s
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 def _top_dtd(segment, order):
@@ -362,7 +371,7 @@ def _top_dtd(segment, order):
         where banking_segment = %s
         order by (yester_1_bal - yester_2_bal)::bigint {order}
         limit 10
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 def segment_top_inflow_dtd(segment):
@@ -396,7 +405,7 @@ def _top_ytd(segment, order):
         )
         select * from data where banking_segment = %s
         limit 10
-    """, [segment])
+    """, [canonical_segment(segment)])
 
 
 def segment_top_inflow_ytd(segment):

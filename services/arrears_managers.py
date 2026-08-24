@@ -17,6 +17,7 @@ The classes subclass models.Manager only because the original did; they are used
 standalone and only ever touch `connection`.
 """
 from django.db import connection, models
+from core.segments import segment_params, canonical_segment
 
 
 class LoansArrearsSummaryManager(models.Manager):
@@ -234,7 +235,7 @@ class LoansArrearsSummaryManager(models.Manager):
                     FROM loans lns
                     INNER JOIN hf_customer c 
                         ON c.cust_id = lns.cust_id
-                    WHERE LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+                    WHERE (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
                 )
                 select 
                     total_outstanding_loan_amount,
@@ -244,7 +245,7 @@ class LoansArrearsSummaryManager(models.Manager):
                     loan_loss,
                     max_provisions_eom_date
                 from loan_arrears, loan_provisions
-            """, [segment, segment])
+            """, [canonical_segment(segment)] + segment_params(segment))
             result = cursor.fetchone()
             columns = [col[0] for col in cursor.description]
             return dict(zip(columns, result)) if result else {}
@@ -626,7 +627,7 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                     ORDER BY TRIM(bank_id), ctid DESC
                 ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
-                AND LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+                AND (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
                 ORDER BY lns.days_in_arrears ASC,
                     CASE mov_latest.current_grade
                         WHEN 'NORMAL' THEN 1
@@ -657,7 +658,7 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                 END;
         """
         with connection.cursor() as cursor:
-            cursor.execute(query, [segment])
+            cursor.execute(query, segment_params(segment))
             result = cursor.fetchall()
             columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
@@ -1021,7 +1022,7 @@ class LoansProductArrearsSummaryManager(models.Manager):
                     ORDER BY TRIM(bank_id), ctid DESC
                 ) be ON be.bank_id = TRIM(lns.delay_officer)
                 WHERE lns.days_in_arrears > 0
-                AND LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+                AND (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
             ),
             data AS (
                 SELECT 
@@ -1037,7 +1038,7 @@ class LoansProductArrearsSummaryManager(models.Manager):
             LIMIT 10;
         """
         with connection.cursor() as cursor:
-            cursor.execute(query, [segment])
+            cursor.execute(query, segment_params(segment))
             result = cursor.fetchall()
             columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]
@@ -1445,7 +1446,7 @@ class LoansArrearsAccountsListManager(models.Manager):
                 ORDER BY TRIM(bank_id), ctid DESC
             ) be ON be.bank_id = TRIM(lns.delay_officer)
             WHERE lns.days_in_arrears > 0
-              AND LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+              AND (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
             ORDER BY lns.days_in_arrears ASC,
                 CASE mov_latest.current_grade
                     WHEN 'NORMAL' THEN 1
@@ -1459,7 +1460,7 @@ class LoansArrearsAccountsListManager(models.Manager):
                 END ASC;
         """
         with connection.cursor() as cursor:
-            cursor.execute(query, [segment])
+            cursor.execute(query, segment_params(segment))
             result = cursor.fetchall()
             columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in result]

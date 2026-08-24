@@ -38,8 +38,11 @@ DDL = [
     """CREATE TABLE IF NOT EXISTS retail_allocated_portfolio (
         cust_id integer, sales_code text, rm_name text, branch integer,
         updated_at timestamptz)""",
+    # `segment` holds the raw core-banking value; the segment filters read both
+    # columns because prod stores 'SME' in banking_segment where the movement
+    # tables say SMALL/MEDIUM ENTERPRISES. See core/segments.py.
     """CREATE TABLE IF NOT EXISTS hf_customer (
-        cust_id integer, latin_surname text, banking_segment text)""",
+        cust_id integer, latin_surname text, banking_segment text, segment text)""",
     "CREATE TABLE IF NOT EXISTS bank_employee (bank_id text, full_name text)",
 ]
 

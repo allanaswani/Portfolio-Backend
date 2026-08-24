@@ -18,6 +18,7 @@ Subclass models.Manager only because the original did; used standalone, touches
 only `connection`.
 """
 from django.db import connection, models
+from core.segments import segment_params
 
 
 class FixedDepositListManager(models.Manager):
@@ -162,14 +163,14 @@ class FixedDepositListManager(models.Manager):
                 ON rap.cust_id = accs.cust_id
             LEFT JOIN hf_customer c 
                 ON c.cust_id = accs.cust_id
-            WHERE LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+            WHERE (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
                 AND pm.product_map = 'FD'
                 -- AND accs.expiry_date > CURRENT_DATE
             ORDER BY accs.expiry_date ASC
         '''
         try:
             with connection.cursor() as cursor:
-                cursor.execute(query, [segment])
+                cursor.execute(query, segment_params(segment))
                 result = cursor.fetchall()
                 # Convert the result to a list of dictionaries.
                 # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
@@ -389,14 +390,14 @@ class FixedDepositRateBandManager(models.Manager):
                 ON accs.type = pm.product_description
             INNER JOIN hf_customer c 
                 ON c.cust_id = accs.cust_id
-            WHERE LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+            WHERE (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
               AND pm.product_map = 'FD'
             GROUP BY rate_band, rate_band_order
             ORDER BY rate_band_order
         '''
         try:
             with connection.cursor() as cursor:
-                cursor.execute(query, [segment])
+                cursor.execute(query, segment_params(segment))
                 result = cursor.fetchall()
                 # Convert the result to a list of dictionaries.
                 # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
@@ -607,14 +608,14 @@ def expiry_timeline_band_by_segment(segment):
             ON accs.type = pm.product_description
         INNER JOIN hf_customer c 
             ON c.cust_id = accs.cust_id
-        WHERE LOWER(TRIM(c.banking_segment)) = LOWER(TRIM(%s))
+        WHERE (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
             AND pm.product_map = 'FD'
         GROUP BY expiry_timeline_band, expiry_timeline_band_order
         ORDER BY expiry_timeline_band_order
     '''
     try:
         with connection.cursor() as cursor:
-            cursor.execute(query, [segment])
+            cursor.execute(query, segment_params(segment))
             result = cursor.fetchall()
             # Convert the result to a list of dictionaries.
             # NOTE: read cursor.description INSIDE the `with` — on psycopg 3
