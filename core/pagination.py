@@ -13,7 +13,10 @@ class TotalPagesPagination(PageNumberPagination):
 
     page_size = 10
     page_size_query_param = "page_size"
-    max_page_size = 100
+    # Matches StandardPagination so a full-table Export crawls in 500-row pages.
+    # The reallocation base is ~333k rows; at the old ceiling of 100 that was
+    # 3,330 sequential requests. The default stays 10 for normal page views.
+    max_page_size = 500
 
     def get_paginated_response(self, data):
         return Response({
