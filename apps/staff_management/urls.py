@@ -6,8 +6,12 @@ from . import views
 from . import legacy_views as lv
 from . import dsr_views as dsr
 from . import tl_views as tl
+from . import targets_views as tv
 
 urlpatterns = [
+    # ── DMC performance targets (feed the target-vs-actual KPI tiles) ─────────
+    path("dmc-targets/scopes/", tv.DmcTargetScopesView.as_view()),
+    path("dmc-targets/",        tv.DmcTargetsView.as_view()),
     # ── Team leader ↔ branch mapping (Administration) ─────────────────────────
     path("team-leaders/reassign/",   tl.TeamLeaderReassignView.as_view()),
     path("team-leaders/upload-csv/", tl.TeamLeaderBranchUploadView.as_view()),
