@@ -140,6 +140,42 @@ def _columns(model):
     return {f.name for f in model._meta.fields if f.name.startswith("target_")}
 
 
+def tl_branches(team_leader):
+    """The branches a team leader owns, from the ``team_leader_branches`` map.
+
+    TL Portfolio is *segment*-scoped while the DMC tables are branch-shaped, so
+    there is no column to join on. ``TeamLeaderBranch`` is the bank's own
+    branch→TL mapping and is the authoritative link: a TL's plan is the sum of
+    their branches' plans.
+
+    Returns the canonical (normalised) names — see
+    :mod:`apps.staff_management.branches` for why raw names cannot be compared
+    directly ("SAMEER" vs "SAMEER BUSINESS PARK BRANCH").
+    """
+    from apps.staff_management.models import TeamLeaderBranch
+    from apps.staff_management.branches import normalize_branch
+
+    if not team_leader:
+        return []
+    names = TeamLeaderBranch.objects.filter(
+        team_leader__iexact=str(team_leader).strip(), active=True,
+    ).values_list("branch", flat=True)
+    return sorted({normalize_branch(n) for n in names if n})
+
+
+def _dmc_rows_for_branches(model, canonical_names):
+    """Raw ``staff_branch`` values on ``model`` whose canonical form is in
+    ``canonical_names``. The DMC file and the TL sheet spell branches
+    differently, so both sides are normalised before matching."""
+    from apps.staff_management.branches import normalize_branch
+
+    if not canonical_names:
+        return []
+    wanted = set(canonical_names)
+    raw = _active(model.objects.all(), model).values_list("staff_branch", flat=True)
+    return sorted({r for r in raw if r and normalize_branch(r) in wanted})
+
+
 def _active(qs, model):
     """Current staff only. The two tables spell the exit flag differently:
     ``exit`` on the branch table, ``staff_exit`` on the staff table."""
@@ -152,9 +188,14 @@ def _active(qs, model):
     return qs
 
 
-def _scoped(model, scope, value):
+def _scoped(model, scope, value, tl_branch_names=None):
     """Filter a DMC table down to one scope. Returns ``None`` when the scope
-    needs a value and none was given."""
+    needs a value and none was given.
+
+    ``tl_branch_names`` — when a team leader resolved through the
+    ``team_leader_branches`` map, both tables are filtered to that TL's branches
+    rather than to the DMC file's own ``team_leader`` column.
+    """
     qs = _active(model.objects.all(), model)
     if scope == "bank":
         return qs
@@ -169,6 +210,9 @@ def _scoped(model, scope, value):
             return qs.filter(brn_code=int(v))
         return qs.filter(staff_branch__iexact=v)
     if scope == "team_leader":
+        if tl_branch_names:
+            rows = _dmc_rows_for_branches(model, tl_branch_names)
+            return qs.filter(staff_branch__in=rows) if rows else qs.none()
         return qs.filter(team_leader__iexact=v)
     if scope == "rm":
         return qs.filter(sales_code__iexact=v)
@@ -196,7 +240,14 @@ def _year_scoped(qs, year):
 # year. This mirrors ``targetForGrain`` in the frontend's lib/perf.ts — the two
 # must stay in step, so both use the same day-of-year arithmetic.
 
-def prorate(annual, today=None):
+def prorate(annual, today=None, unit="currency"):
+    """Slice an annual target into the windows a dashboard compares against.
+
+    ``unit="number"`` targets are counts — customers, accounts, tills, training
+    hours. Pro-rating leaves them fractional (897 new customers x 247/365 =
+    589.578) and the UI then renders "YTD target 589.578", which is meaningless
+    to a branch manager. Counts are rounded to whole units; money is not.
+    """
     if annual is None:
         return {"annual": None, "ytd": None, "qtd": None,
                 "mtd": None, "daily": None, "weekly": None, "months_elapsed": None}
@@ -206,13 +257,17 @@ def prorate(annual, today=None):
     days_in_year = 366 if leap else 365
     quarter_month = (today.month - 1) % 3 + 1      # 1..3 within the current quarter
     a = float(annual)
+
+    def shape(v):
+        return float(round(v)) if unit == "number" else v
+
     return {
-        "annual": a,
-        "ytd":    a * (day_of_year / days_in_year),
-        "qtd":    (a / 4) * (quarter_month / 3),
-        "mtd":    a / 12,
-        "daily":  a / days_in_year,
-        "weekly": a / 52,
+        "annual": shape(a),
+        "ytd":    shape(a * (day_of_year / days_in_year)),
+        "qtd":    shape((a / 4) * (quarter_month / 3)),
+        "mtd":    shape(a / 12),
+        "daily":  shape(a / days_in_year),
+        "weekly": shape(a / 52),
         "months_elapsed": today.month,
     }
 
@@ -229,13 +284,23 @@ def rollup(scope, value=None, year=None, today=None):
         raise ValueError(f"unknown scope '{scope}' (expected one of {', '.join(SCOPES)})")
 
     models = _models()
-    primary = _PRIMARY[scope]
+
+    # A team leader is resolved through the branch→TL map when one exists: their
+    # plan is the sum of their branches' plans, which comes off the branch table.
+    # Only when that map has nothing for them do we fall back to the DMC file's
+    # own `team_leader` column (which names each RM's line manager).
+    tl_branch_names, resolved_via = [], None
+    if scope == "team_leader":
+        tl_branch_names = tl_branches(value)
+        resolved_via = "team_leader_branches" if tl_branch_names else "dmc_team_leader_column"
+
+    primary = "branch" if (scope == "team_leader" and tl_branch_names) else _PRIMARY[scope]
     secondary = "staff" if primary == "branch" else "branch"
 
     querysets, sources = {}, {}
     for name in (primary, secondary):
         model = models[name]
-        qs = _scoped(model, scope, value)
+        qs = _scoped(model, scope, value, tl_branch_names=tl_branch_names)
         if qs is None:
             querysets[name] = None
             sources[name] = {"table": model._meta.db_table, "rows": 0,
@@ -274,7 +339,7 @@ def rollup(scope, value=None, year=None, today=None):
         entry = {"key": key, "label": label, "unit": unit, "direction": direction,
                  "basis": basis, "column": col,
                  "source": sources[source]["table"] if source else None}
-        entry.update(prorate(raw, today=today))
+        entry.update(prorate(raw, today=today, unit=unit))
         targets[key] = entry
 
     return {
@@ -282,6 +347,8 @@ def rollup(scope, value=None, year=None, today=None):
         "value": value or "",
         "year": year,
         "year_filtered": any(s.get("year_filtered") for s in sources.values()),
+        "resolved_via": resolved_via,
+        "branches": tl_branch_names,
         "sources": sources,
         "targets": targets,
     }

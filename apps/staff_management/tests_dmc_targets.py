@@ -215,3 +215,91 @@ class DmcTargetsApiTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["branches"], ["ALPHA BRANCH", "BETA BRANCH"])
         self.assertEqual(res.data["row_counts"]["branch_final_employee_dmc_data"], 2)
+
+
+class TeamLeaderBranchScopeTests(TestCase):
+    """A team leader's plan is the sum of the branches they own.
+
+    TL Portfolio is segment-scoped while the DMC tables are branch-shaped, so
+    there is no column to join on. TeamLeaderBranch is the bank's own mapping
+    and is what links the two.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.staff_management.models import TeamLeaderBranch
+
+        branch_row(staff_branch="ALPHA BRANCH", brn_code=100, staff_zone="Zone A",
+                   team_leader="Zonal One", target_deposits_value=1_000,
+                   target_new_customers=50)
+        branch_row(staff_branch="BETA BRANCH", brn_code=200, staff_zone="Zone B",
+                   team_leader="Zonal Two", target_deposits_value=2_000,
+                   target_new_customers=70)
+        branch_row(staff_branch="GAMMA BRANCH", brn_code=300, staff_zone="Zone C",
+                   team_leader="Zonal Two", target_deposits_value=4_000)
+        # Jane owns two of the three branches.
+        TeamLeaderBranch.objects.create(branch="ALPHA BRANCH", team_leader="Jane Wanjiru")
+        TeamLeaderBranch.objects.create(branch="BETA BRANCH",  team_leader="Jane Wanjiru")
+        TeamLeaderBranch.objects.create(branch="GAMMA BRANCH", team_leader="Peter Otieno")
+        # An RM row so the fallback path has something to find.
+        staff_row(sales_code="RM9", staff_branch="ALPHA BRANCH", brn_code=100,
+                  team_leader="Legacy TL", target_deposits_value=77)
+
+    def test_tl_plan_is_the_sum_of_their_branches(self):
+        out = tgt.rollup("team_leader", "Jane Wanjiru", year=YEAR)
+        self.assertEqual(out["targets"]["deposits"]["annual"], 3_000)   # 1000 + 2000
+        self.assertEqual(out["resolved_via"], "team_leader_branches")
+        self.assertEqual(out["branches"], ["ALPHA BRANCH", "BETA BRANCH"])
+
+    def test_a_tl_does_not_see_a_branch_they_do_not_own(self):
+        out = tgt.rollup("team_leader", "Peter Otieno", year=YEAR)
+        self.assertEqual(out["targets"]["deposits"]["annual"], 4_000)
+
+    def test_branch_name_spelling_is_normalised_before_matching(self):
+        """The TL sheet and the DMC file spell branches differently; matching raw
+        strings would silently return zero targets."""
+        from apps.staff_management.models import TeamLeaderBranch
+
+        TeamLeaderBranch.objects.create(branch="SAMEER", team_leader="Short Name TL")
+        branch_row(staff_branch="SAMEER BUSINESS PARK BRANCH", brn_code=270,
+                   target_deposits_value=555)
+        out = tgt.rollup("team_leader", "Short Name TL", year=YEAR)
+        self.assertEqual(out["targets"]["deposits"]["annual"], 555)
+
+    def test_unmapped_tl_falls_back_to_the_dmc_column(self):
+        out = tgt.rollup("team_leader", "Legacy TL", year=YEAR)
+        self.assertEqual(out["resolved_via"], "dmc_team_leader_column")
+        self.assertEqual(out["targets"]["deposits"]["annual"], 77)
+
+    def test_inactive_mapping_rows_are_ignored(self):
+        from apps.staff_management.models import TeamLeaderBranch
+
+        TeamLeaderBranch.objects.filter(branch="BETA BRANCH").update(active=False)
+        out = tgt.rollup("team_leader", "Jane Wanjiru", year=YEAR)
+        self.assertEqual(out["targets"]["deposits"]["annual"], 1_000)
+
+
+class CountTargetRoundingTests(TestCase):
+    """Counts must be whole units.
+
+    Pro-rating an annual count leaves it fractional (897 x 247/365 = 589.578) and
+    the tile then reads "YTD target 589.578 customers", which is nonsense to a
+    branch manager. Money keeps its precision.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        branch_row(staff_branch="ALPHA BRANCH", brn_code=100,
+                   target_new_customers=897, target_deposits_value=598_520_834)
+
+    def test_count_targets_are_whole_numbers(self):
+        out = tgt.rollup("branch", "ALPHA BRANCH", year=YEAR, today=date(2026, 9, 4))
+        nc = out["targets"]["new_customers"]
+        for window in ("annual", "ytd", "qtd", "mtd"):
+            self.assertEqual(nc[window], round(nc[window]),
+                             f"{window} target {nc[window]} is fractional")
+
+    def test_money_targets_keep_their_precision(self):
+        out = tgt.rollup("branch", "ALPHA BRANCH", year=YEAR, today=date(2026, 9, 4))
+        dep = out["targets"]["deposits"]
+        self.assertAlmostEqual(dep["ytd"], 598_520_834 * 247 / 365, places=4)

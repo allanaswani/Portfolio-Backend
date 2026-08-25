@@ -34,11 +34,33 @@ def _may_cross_scope(user):
     return bool(set(user.groups.values_list("name", flat=True)) & CROSS_SCOPE_GROUPS)
 
 
+def _own_team_leader(user):
+    """The caller's own name as it appears in the branch→TL map, or None.
+
+    Checked ONLY for members of the ``tl_portfolio`` group. Branch managers can
+    also show up as somebody's team leader, and matching them here would swap a
+    BM's branch plan for a multi-branch one — so the group gate is what keeps
+    this from mis-scoping people.
+    """
+    if not user.groups.filter(name="tl_portfolio").exists():
+        return None
+    name = (user.get_full_name() or "").strip()
+    if not name:
+        return None
+    return name if tgt.tl_branches(name) else None
+
+
 def _own_scope(user):
-    """The caller's default scope: their branch if they have one, else their
-    sales code, else the bank. Mirrors the legacy views, which fell back to
-    ``profile.branch`` whenever no explicit filter was supplied."""
+    """The caller's default scope: team leader if the branch→TL map knows them,
+    else their branch, else their sales code, else the bank. Mirrors the legacy
+    views, which fell back to ``profile.branch`` whenever no explicit filter was
+    supplied."""
     from apps.portfolio.models import Profile
+
+    tl = _own_team_leader(user)
+    if tl:
+        return "team_leader", tl
+
     profile = Profile.objects.filter(user_id=user.id).first()
     if profile:
         if profile.branch:
