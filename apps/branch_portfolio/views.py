@@ -340,8 +340,8 @@ class BranchMonthlyDepositTrendsView(APIView):
                 SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal
             FROM daily_balance_movement
             WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND brn_code::text IN (
-                  SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+              AND cust_cif IN (
+                  SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
               )
             GROUP BY customer_segment
             ORDER BY yester_1_bal DESC NULLS LAST
@@ -367,8 +367,8 @@ class BranchDepositPortfolioView(APIView):
                 {yester1} - SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS ytd_movement
             FROM daily_balance_movement
             WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND brn_code::text IN (
-                  SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+              AND cust_cif IN (
+                  SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
               )
         """
         with connection.cursor() as cur:
@@ -413,8 +413,8 @@ class BranchMonthlyLoanTrendsView(APIView):
                 SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS dec_bal
             FROM loan_daily_balance_movement
             WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS')
-              AND brn_code::text IN (
-                  SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+              AND cust_cif IN (
+                  SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
               )
             GROUP BY customer_segment
             ORDER BY yester_1_bal DESC NULLS LAST
@@ -440,8 +440,8 @@ class BranchLoanPortfolioView(APIView):
                 {yester1} - SUM(dec_{py}_bal) FILTER (WHERE dec_{py}_bal > 0) AS ytd_movement
             FROM loan_daily_balance_movement
             WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS')
-              AND brn_code::text IN (
-                  SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+              AND cust_cif IN (
+                  SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
               )
         """
         with connection.cursor() as cur:
@@ -481,8 +481,8 @@ class BranchYTDRevenuePerformanceView(APIView):
                     income_category,
                     SUM(sum_dc) AS total
                 FROM revenue
-                WHERE brn_code::text IN (
-                    SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+                WHERE cust_id IN (
+                    SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
                 )
                 GROUP BY income_category
                 ORDER BY total DESC NULLS LAST
@@ -522,8 +522,8 @@ class BranchRMDepositMovementYTDView(APIView):
                 ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
             ) rap ON rap.cust_id = dbm.cust_cif
             WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
-              AND dbm.brn_code::text IN (
-                  SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+              AND dbm.cust_cif IN (
+                  SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
               )
               AND dbm.rm_code IS NOT NULL
             GROUP BY dbm.rm_code, rap.rm_name
@@ -557,8 +557,8 @@ class BranchTopInflowDTDView(APIView):
                 ) rap ON rap.cust_id = dbm.cust_cif
                 WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
                   AND dbm.yester_1_bal > dbm.yester_2_bal
-                  AND dbm.brn_code::text IN (
-                      SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+                  AND dbm.cust_cif IN (
+                      SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
                   )
                 ORDER BY movement DESC NULLS LAST
                 LIMIT 50
@@ -589,8 +589,8 @@ class BranchTopOutflowDTDView(APIView):
                 ) rap ON rap.cust_id = dbm.cust_cif
                 WHERE dbm.customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
                   AND dbm.yester_2_bal > dbm.yester_1_bal
-                  AND dbm.brn_code::text IN (
-                      SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+                  AND dbm.cust_cif IN (
+                      SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
                   )
                 ORDER BY movement ASC NULLS LAST
                 LIMIT 50
@@ -616,8 +616,8 @@ class BranchTopInflowYTDView(APIView):
                 FROM daily_balance_movement
                 WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
                   AND yester_1_bal > dec_{py}_bal
-                  AND brn_code::text IN (
-                      SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+                  AND cust_cif IN (
+                      SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
                   )
                 ORDER BY ytd_movement DESC NULLS LAST
                 LIMIT 50
@@ -643,8 +643,8 @@ class BranchTopOutflowYTDView(APIView):
                 FROM daily_balance_movement
                 WHERE customer_segment NOT IN ('INTERNAL ACCOUNTS', 'VIRTUAL')
                   AND dec_{py}_bal > yester_1_bal
-                  AND brn_code::text IN (
-                      SELECT DISTINCT branch_code FROM hf_customer WHERE branch ILIKE %s
+                  AND cust_cif IN (
+                      SELECT cust_id FROM hf_customer WHERE branch ILIKE %s
                   )
                 ORDER BY ytd_outflow DESC NULLS LAST
                 LIMIT 50
