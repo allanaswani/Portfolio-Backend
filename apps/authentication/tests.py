@@ -259,13 +259,18 @@ class AdminUserManagementAPITests(TestCase):
         self.assertEqual(resp.status_code, 200)
         rows = resp.data["results"] if isinstance(resp.data, dict) else resp.data
         names = {r["name"] for r in rows}
-        # 14 baseline + 4 mortgage-module + 3 registry-module + 1 business-performance role.
-        self.assertEqual(len(names), 22)
+        # 14 baseline + 4 mortgage + 3 registry + 1 business-performance
+        # + 2 telesales + 2 Customer 360 roles.
+        self.assertEqual(len(names), 26)
         self.assertIn("ceo", names)
         self.assertIn("staff_mgt", names)
         self.assertIn("mortgage_officer", names)
         self.assertIn("registry_officer", names)
         self.assertIn("business_performance", names)
+        # Customer 360 is a separate app that authorises off this token's groups
+        # claim; its two roles must be assignable from this screen.
+        self.assertIn("c360_management", names)
+        self.assertIn("c360_rm", names)
 
 
 class MigrateLegacyAuthCommandTests(TestCase):
@@ -327,3 +332,68 @@ class MigrateLegacyAuthCommandTests(TestCase):
         self.assertEqual(
             User.objects.get(username="alice").groups.filter(name="ceo").count(), 1
         )
+
+
+class Customer360RoleContractTests(TestCase):
+    """Customer 360 is a separate resource server that trusts our JWT.
+
+    It authorises from the ``groups`` claim alone and derives its book scope from
+    its own registry, ``c360/roles.py`` (management -> whole book, rm -> own book
+    by sales_code). That registry names exactly two groups. If the names or tiers
+    here drift, an operator can provision a Customer 360 user on the Users screen
+    who lands with the wrong scope on the other side -- and nothing in this
+    codebase would fail. Hence this guard.
+    """
+
+    C360_GROUPS = ("c360_management", "c360_rm")
+
+    def test_both_groups_are_assignable(self):
+        from core.roles import ALL_ROLES
+
+        for name in self.C360_GROUPS:
+            self.assertIn(name, ALL_ROLES, f"{name} missing from the role registry")
+
+    def test_groups_are_seeded_so_the_users_screen_lists_them(self):
+        # Same path production takes: apps.authentication.apps._seed_roles runs
+        # on every post_migrate, and seed_roles runs the identical loop over
+        # ALL_ROLES. The Users screen lists Group rows, so no row = no checkbox.
+        call_command("seed_roles", stdout=StringIO())
+        for name in self.C360_GROUPS:
+            self.assertTrue(Group.objects.filter(name=name).exists(), name)
+
+    def test_tiers_match_customer_360s_own_registry(self):
+        self.assertEqual(tier_for_groups({"c360_management"}), ROLE_MANAGER)
+        self.assertEqual(tier_for_groups({"c360_rm"}), ROLE_OFFICER)
+
+    def test_every_role_carries_a_description(self):
+        """A role with no description renders as a blank row on the Users screen.
+
+        This is how telesales_supervisor/telesales_agent shipped: seeded by
+        referrals migration 0002 but never registered here.
+        """
+        from core.roles import ALL_ROLES, ALL_ROLE_DESCRIPTIONS
+
+        missing = [n for n in ALL_ROLES if not ALL_ROLE_DESCRIPTIONS.get(n)]
+        self.assertEqual(missing, [], f"roles with no description: {missing}")
+
+    def test_every_role_carries_a_tier(self):
+        from core.roles import ALL_ROLES, ROLE_TO_TIER
+
+        missing = [n for n in ALL_ROLES if n not in ROLE_TO_TIER]
+        self.assertEqual(missing, [], f"roles with no explicit tier: {missing}")
+
+    def test_seeded_groups_are_all_registered(self):
+        """Any group another app's migration creates must appear in ALL_ROLES.
+
+        Otherwise it shows on the Users screen with an empty description and the
+        fallback ``officer`` badge, whatever it actually is.
+        """
+        from core.roles import ALL_ROLES
+
+        # Every migration (including referrals 0002, which creates the telesales
+        # groups) has already run against the test database.
+        call_command("seed_roles", stdout=StringIO())
+        unregistered = set(
+            Group.objects.values_list("name", flat=True)
+        ) - set(ALL_ROLES)
+        self.assertEqual(unregistered, set(), f"unregistered groups: {unregistered}")

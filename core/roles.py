@@ -89,6 +89,19 @@ NEW_ROLES = (
     # Strategy & Business Performance module (apps/business_performance) —
     # executive cockpit for the director; can set the department's targets.
     "business_performance",
+    # Telesales / Referrals module (apps/referrals) — the groups themselves are
+    # created by referrals migration 0002; registered here so they carry a
+    # description and tier on the Users screen instead of rendering blank.
+    "telesales_supervisor",
+    "telesales_agent",
+    # Customer 360 — a SEPARATE resource server on the shared host. It has no
+    # Django app here: it trusts the JWT this backend mints and reads the
+    # ``groups`` claim (see apps/authentication/token_serializers.py). Its own
+    # registry, ``c360/roles.py``, defines exactly these two group names, so
+    # registering them here is what lets an operator provision Customer 360
+    # access from this Users screen. Keep the names byte-identical to that file.
+    "c360_management",
+    "c360_rm",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -104,6 +117,11 @@ NEW_ROLE_DESCRIPTIONS = {
     "registry_supervisor": "Records & Registry — team leader / officer-in-charge.",
     "archives_officer": "Records & Registry — archives officer (transfers/destruction).",
     "business_performance": "Strategy & Business Performance — executive cockpit + targets (director).",
+    "telesales_supervisor": "Telesales — supervisor; allocates referrals and sees the whole queue.",
+    "telesales_agent": "Telesales — agent; works the referrals allocated to them.",
+    # Wording mirrors c360/roles.py::C360_ROLE_DESCRIPTIONS.
+    "c360_management": "Customer 360 — management / analytics (whole-book Level 1).",
+    "c360_rm": "Customer 360 — relationship manager (own book).",
 }
 
 # Every role the system knows about (legacy + new).
@@ -143,6 +161,15 @@ ROLE_TO_TIER = {
     "archives_officer": ROLE_OFFICER,
     # strategy & business performance
     "business_performance": ROLE_MANAGER,
+    # telesales / referrals — apps/referrals gates on the group NAME, not on the
+    # tier, so these entries only decide the badge shown on the Users screen.
+    "telesales_supervisor": ROLE_MANAGER,
+    "telesales_agent": ROLE_OFFICER,
+    # Customer 360 — must match c360/roles.py::ROLE_TO_TIER, because Customer 360
+    # resolves book scope from the tier: manager/admin → whole book, officer →
+    # own book by sales_code. Nothing in THIS backend is gated on these two.
+    "c360_management": ROLE_MANAGER,
+    "c360_rm": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).
