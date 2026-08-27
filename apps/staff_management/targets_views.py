@@ -50,24 +50,74 @@ def _own_team_leader(user):
     return name if tgt.tl_branches(name) else None
 
 
-def _own_scope(user):
-    """The caller's default scope: team leader if the branch→TL map knows them,
-    else their branch, else their sales code, else the bank. Mirrors the legacy
-    views, which fell back to ``profile.branch`` whenever no explicit filter was
-    supplied."""
+# The RM Portfolio group. ``lib/roleNavConfig.tsx`` maps ``portfolio_mgt`` to
+# /rm-portfolio, and every actual on that dashboard is already fetched by the
+# signed-in user's ``profile.sales_code`` (apps/portfolio/views.py). So for
+# these users the sales code outranks the branch when picking a default scope —
+# otherwise an RM's own deposits get scored against the whole branch's plan,
+# which reads as ~2% achievement on a branch with a dozen RMs.
+RM_GROUP = "portfolio_mgt"
+
+
+def _own_scopes(user):
+    """Every scope this caller personally owns, best default first.
+
+    Returned as ``[(scope, value), ...]``:
+
+    * ``team_leader`` when the branch→TL map knows them (``tl_portfolio`` only),
+    * ``rm`` before ``branch`` for RM Portfolio users — see :data:`RM_GROUP`,
+    * ``branch`` then ``rm`` for everyone else, which is the order the legacy
+      views used (they fell back to ``profile.branch`` whenever no explicit
+      filter was supplied), so branch managers keep the scope they had.
+
+    The list — not just the first entry — is what an explicit ``?scope=`` is
+    checked against, so a user may always ask for a scope they genuinely own
+    even when it is not their default.
+    """
     from apps.portfolio.models import Profile
 
+    out = []
     tl = _own_team_leader(user)
     if tl:
-        return "team_leader", tl
+        out.append(("team_leader", tl))
 
     profile = Profile.objects.filter(user_id=user.id).first()
-    if profile:
-        if profile.branch:
-            return "branch", profile.branch
-        if profile.sales_code:
-            return "rm", profile.sales_code
-    return "bank", ""
+    branch = (getattr(profile, "branch", "") or "").strip()
+    sales_code = (getattr(profile, "sales_code", "") or "").strip()
+
+    if sales_code and user.groups.filter(name=RM_GROUP).exists():
+        out.append(("rm", sales_code))
+    if branch:
+        out.append(("branch", branch))
+    if sales_code:
+        out.append(("rm", sales_code))
+
+    seen, unique = set(), []
+    for scope, value in out:
+        key = (scope, str(value).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((scope, value))
+    return unique or [("bank", "")]
+
+
+def _own_scope(user):
+    """The caller's default scope — the first of :func:`_own_scopes`."""
+    return _own_scopes(user)[0]
+
+
+def _own_value(user, scope):
+    """The caller's own value for ``scope``, or ``""`` if they have none.
+
+    This is what lets a page ask for ``?scope=rm`` without knowing the sales
+    code: the RM dashboard knows *which* scope it is showing, the backend knows
+    *whose*.
+    """
+    for own_scope, own_value in _own_scopes(user):
+        if own_scope == scope:
+            return str(own_value)
+    return ""
 
 
 @extend_schema(
@@ -88,12 +138,18 @@ class DmcTargetsView(APIView):
 
         if not scope:
             scope, value = _own_scope(request.user)
-        elif not _may_cross_scope(request.user):
-            # A user without cross-scope rights may still ask explicitly — but
-            # only for the scope they already own.
-            own_scope, own_value = _own_scope(request.user)
-            if (scope, value.lower()) != (own_scope, str(own_value).lower()):
-                scope, value = own_scope, own_value
+        else:
+            # "My own <scope>" — the caller names the scope, we fill in whose.
+            # Without this an RM page asking for ?scope=rm would have to know
+            # its own sales code, and would otherwise resolve to no rows.
+            if not value and scope in ("rm", "branch", "team_leader"):
+                value = _own_value(request.user, scope)
+            if not _may_cross_scope(request.user):
+                # A user without cross-scope rights may still ask explicitly —
+                # but only for a scope they already own.
+                owned = {(s, str(v).lower()) for s, v in _own_scopes(request.user)}
+                if (scope, value.lower()) not in owned:
+                    scope, value = _own_scope(request.user)
 
         year = p.get("year")
         try:

@@ -26,8 +26,9 @@ The double-counting rule
 ────────────────────────
 A branch's deposit target appears **both** on its BBM row and, split up, across
 its RMs' rows. Adding them would roughly double the figure. So each scope reads
-one primary table, and only borrows the *other* table for metrics its primary
-does not carry at all:
+one primary table, and only borrows the *other* table for metrics the primary
+has nothing for — either it lacks the column, or no row matched the scope. It is
+always one table per metric, never a sum of the two:
 
 ===========  ====================  ==========================================
 scope        primary source        why
@@ -38,6 +39,11 @@ branch       branch                the single authoritative branch row
 team_leader  staff                 a TL owns RMs, not branches
 rm           staff                 the individual's own row
 ===========  ====================  ==========================================
+
+A BBM is the exception that proves the rule: their personal row is the *branch*
+row, so at ``rm`` scope the staff table has nothing for them and the fall-through
+above picks up their branch_final row — matched on their own ``sales_code``, so
+it is still only ever their own line.
 
 Direction
 ─────────
@@ -327,15 +333,29 @@ def rollup(scope, value=None, year=None, today=None):
 
     targets = {}
     for key, col, unit, label, direction, basis in CATALOGUE:
-        # The primary table wins whenever it carries the column at all; the
-        # secondary only fills metrics the primary does not have. Never the same
-        # metric from both — that is exactly what would double-count.
-        source = None
-        if col in totals.get(primary, {}):
-            source = primary
-        elif col in totals.get(secondary, {}):
-            source = secondary
-        raw = totals.get(source, {}).get(col) if source else None
+        # The primary table wins whenever it actually has a figure. The
+        # secondary fills in only when the primary has none — either it lacks
+        # the column, or no row matched this scope. Never the same metric from
+        # both: exactly one table is read, which is what keeps branch/zone/bank
+        # from double-counting a branch plan that also sits on its RMs' rows.
+        #
+        # The "no row matched" half of that matters for the RM scope. A BBM's
+        # targets live on branch_final_employee_dmc_data, not on the staff
+        # table, so keying on "does the primary carry this column" alone
+        # returned NULL for every metric both tables share — the RM had targets,
+        # and the dashboard showed none. Both tables are filtered by the same
+        # sales_code here, so falling through can only ever find that one
+        # person's own row.
+        source, raw = None, None
+        for name in (primary, secondary):
+            if col not in totals.get(name, {}):
+                continue
+            value_ = totals[name][col]
+            if value_ is not None:
+                source, raw = name, value_
+                break
+            if source is None:
+                source = name          # nothing to show, but say where we looked
         entry = {"key": key, "label": label, "unit": unit, "direction": direction,
                  "basis": basis, "column": col,
                  "source": sources[source]["table"] if source else None}

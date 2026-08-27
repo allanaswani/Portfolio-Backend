@@ -303,3 +303,96 @@ class CountTargetRoundingTests(TestCase):
         out = tgt.rollup("branch", "ALPHA BRANCH", year=YEAR, today=date(2026, 9, 4))
         dep = out["targets"]["deposits"]
         self.assertAlmostEqual(dep["ytd"], 598_520_834 * 247 / 365, places=4)
+
+
+class RmOwnTargetsTests(TestCase):
+    """An RM must be scored against their OWN plan, not their branch's.
+
+    Two things used to get in the way:
+
+    * ``_own_scope`` preferred ``profile.branch`` over ``profile.sales_code``,
+      so an RM whose profile carried a branch (most of them) got the whole
+      branch's plan on their dashboard while every actual on that page came
+      from their sales code alone.
+    * a BBM's personal row lives on the *branch* table, so at ``rm`` scope the
+      staff table had no row for them and every shared metric came back NULL.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # The branch plan, on the BBM's row — the BBM has a sales code too.
+        branch_row(staff_branch="ALPHA BRANCH", brn_code=100, staff_zone="Zone A",
+                   sales_code="BBM1", target_deposits_value=1_000,
+                   target_pbt_revenue=500, target_new_customers=50)
+        # …and one of that branch's RMs, with their own slice of it.
+        staff_row(sales_code="RM1", staff_branch="ALPHA BRANCH", brn_code=100,
+                  staff_zone="Zone A", target_deposits_value=600,
+                  target_new_customers=30)
+
+        rm_group = Group.objects.create(name="portfolio_mgt")
+        cls.rm = User.objects.create_user("rm_user", password="x")
+        cls.rm.groups.add(rm_group)
+        cls.rm.profile.branch = "ALPHA BRANCH"      # RMs carry a branch as well
+        cls.rm.profile.sales_code = "RM1"
+        cls.rm.profile.save()
+
+        cls.bbm = User.objects.create_user("bbm_user", password="x")
+        cls.bbm.groups.add(rm_group)
+        cls.bbm.profile.sales_code = "BBM1"
+        cls.bbm.profile.save()
+
+    def get(self, user, **params):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get("/staff_management/dmc-targets/", params)
+
+    # ── scope resolution ──────────────────────────────────────────────────────
+    def test_an_rm_defaults_to_their_own_sales_code_not_their_branch(self):
+        res = self.get(self.rm, year=YEAR)
+        self.assertEqual(res.data["scope"], "rm")
+        self.assertEqual(res.data["value"], "RM1")
+        self.assertEqual(res.data["targets"]["deposits"]["annual"], 600)
+
+    def test_scope_rm_without_a_value_fills_in_the_callers_own(self):
+        """The RM dashboard names the scope; the backend names whose."""
+        res = self.get(self.rm, scope="rm", year=YEAR)
+        self.assertEqual(res.data["value"], "RM1")
+        self.assertEqual(res.data["targets"]["deposits"]["annual"], 600)
+
+    def test_an_rm_may_still_ask_for_their_own_branch(self):
+        """``branch`` is a scope they own, so it is not swapped out from under
+        them — and it returns the branch row, not their slice of it."""
+        res = self.get(self.rm, scope="branch", value="ALPHA BRANCH", year=YEAR)
+        self.assertEqual(res.data["scope"], "branch")
+        self.assertEqual(res.data["targets"]["deposits"]["annual"], 1_000)
+
+    def test_a_bare_branch_scope_still_resolves_for_a_branch_manager(self):
+        """No portfolio_mgt group and no sales code: unchanged from before."""
+        bm = User.objects.create_user("bm2", password="x")
+        bm.profile.branch = "ALPHA BRANCH"
+        bm.profile.save()
+        res = self.get(bm, year=YEAR)
+        self.assertEqual(res.data["scope"], "branch")
+        self.assertEqual(res.data["targets"]["deposits"]["annual"], 1_000)
+
+    # ── the BBM fall-through ──────────────────────────────────────────────────
+    def test_a_bbm_reads_their_own_branch_table_row_at_rm_scope(self):
+        out = tgt.rollup("rm", "BBM1", year=YEAR)
+        self.assertEqual(out["targets"]["deposits"]["annual"], 1_000)
+        self.assertEqual(out["targets"]["deposits"]["source"],
+                         "branch_final_employee_dmc_data")
+        # branch-only metrics come through on the same row
+        self.assertEqual(out["targets"]["pbt_revenue"]["annual"], 500)
+
+    def test_the_fall_through_never_reaches_another_persons_row(self):
+        """RM1 has no row on the branch table, so the branch-only metrics stay
+        NULL — they must not inherit the branch plan sitting on the BBM's row."""
+        out = tgt.rollup("rm", "RM1", year=YEAR)
+        self.assertIsNone(out["targets"]["pbt_revenue"]["annual"])
+        self.assertEqual(out["targets"]["deposits"]["annual"], 600)
+
+    def test_the_branch_scope_is_unaffected(self):
+        """The fall-through must not start summing both tables."""
+        out = tgt.rollup("branch", "ALPHA BRANCH", year=YEAR)
+        self.assertEqual(out["targets"]["deposits"]["annual"], 1_000)   # not 1_600
+        self.assertEqual(out["targets"]["new_customers"]["annual"], 50)  # not 80
