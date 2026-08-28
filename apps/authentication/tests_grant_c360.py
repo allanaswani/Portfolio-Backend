@@ -240,6 +240,47 @@ class GrantC360AccessTests(TestCase):
         self.assertTrue(legacy.groups.filter(name="c360_rm").exists())
         self.assertEqual(legacy.email, "Jane.Doe@hfcb.co.ke")
 
+    # -------------------------------------------------------------- sources
+    def test_from_db_reads_the_roster_table_with_no_csv(self):
+        """The server has no copy of the export; the table is already here."""
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=1000, staff_name="Jane Doe", staff_role="PB RM",
+            sales_code="JD1000", staff_branch="REHANI BRANCH",
+            staff_email="Jane.Doe@hfcb.co.ke", staff_exit=0, active=1,
+        )
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=9, staff_name="Gone Away", staff_role="TELLER",
+            sales_code="GA9", staff_branch="MERU BRANCH",
+            staff_email="gone.away@hfcb.co.ke", staff_exit=1, active=0,
+        )
+
+        out = StringIO()
+        call_command("grant_c360_access", from_db=True, stdout=out, stderr=StringIO())
+
+        self.assertIn("branch_employee_dmc_data", out.getvalue())
+        user = User.objects.get(username="jane.doe")
+        self.assertEqual(Profile.objects.get(user=user).sales_code, "JD1000")
+        self.assertTrue(user.groups.filter(name="c360_rm").exists())
+        # The leaver is still skipped when the rows come from the table.
+        self.assertFalse(User.objects.filter(username="gone.away").exists())
+
+    def test_exactly_one_source_is_required(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("grant_c360_access", stdout=StringIO(), stderr=StringIO())
+        with self.assertRaises(CommandError):
+            self.run_cmd([row()], from_db=True)
+
+    def test_an_empty_roster_table_is_an_error_not_a_silent_no_op(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("grant_c360_access", from_db=True,
+                         stdout=StringIO(), stderr=StringIO())
+
     def test_a_typo_domain_is_flagged(self):
         out = self.run_cmd([row(staff_email="faith.minoo@hfcb.occo.ke")])
         self.assertIn("suspect email domain", out)

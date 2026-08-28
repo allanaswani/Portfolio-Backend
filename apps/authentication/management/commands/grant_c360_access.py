@@ -34,10 +34,15 @@ security incidents rather than inconveniences:
   book" is not a risk worth taking silently. ``--allow-blank-sales-code``
   overrides.
 
+The roster is ``branch_employee_dmc_data``, which is already in this database —
+so on the server ``--from-db`` needs no file copied in and can never be run
+against a stale download. ``--csv`` stays for provisioning from a file the
+table does not carry yet.
+
 Usage::
 
-    python manage.py grant_c360_access --csv staff.csv --dry-run
-    python manage.py grant_c360_access --csv staff.csv --report /tmp/c360.csv
+    python manage.py grant_c360_access --from-db --dry-run
+    python manage.py grant_c360_access --from-db --report /tmp/c360.csv
     python manage.py grant_c360_access --csv staff.csv --email-welcome
 """
 
@@ -80,8 +85,14 @@ KNOWN_DOMAINS = {"hfcb.co.ke", "hfgroup.co.ke", "housingfinance.co.ke"}
 
 
 def clean(value):
-    """Trim a warehouse cell and normalise its many spellings of NULL to ''."""
-    value = (value or "").strip()
+    """Trim a warehouse cell and normalise its many spellings of NULL to ''.
+
+    Takes ints and dates as well as strings, because the same records arrive
+    either from a CSV export (all text) or straight off the model (typed).
+    """
+    if value is None:
+        return ""
+    value = str(value).strip()
     return "" if value.lower() in NULLS else value
 
 
@@ -113,7 +124,16 @@ class Command(BaseCommand):
     help = "Create/refresh portfolio accounts for a staff CSV and give them Customer 360 access."
 
     def add_arguments(self, parser):
-        parser.add_argument("--csv", required=True, help="Path to the staff CSV export.")
+        parser.add_argument(
+            "--csv", default="",
+            help="Path to a staff CSV export. Use this only when the table is not "
+                 "reachable; --from-db needs no file transfer and is never stale.",
+        )
+        parser.add_argument(
+            "--from-db", action="store_true",
+            help="Read the staff roster straight from branch_employee_dmc_data "
+                 "instead of a CSV. Preferred on the server.",
+        )
         parser.add_argument(
             "--role", default=DEFAULT_ROLE,
             help=f"Role (Django Group) to grant. Default: {DEFAULT_ROLE}.",
@@ -142,8 +162,29 @@ class Command(BaseCommand):
         )
 
     # ------------------------------------------------------------------ read
-    def _load(self, path, include_exited, allow_blank_code):
-        """CSV -> one record per person, newest row wins, with skips explained."""
+    # The roster this reads is ``branch_employee_dmc_data``. It is already in
+    # the application database, so on the server there is nothing to copy
+    # in -- and reading it live means the run can never be against a stale
+    # export somebody downloaded weeks ago. The CSV path stays for the case
+    # where you want to provision from a file the table does not have yet.
+    DB_FIELDS = (
+        "id", "staff_pf_number", "staff_name", "staff_role", "sales_code",
+        "staff_branch", "staff_email", "staff_exit", "active",
+        "date_time_etl", "updated_at",
+    )
+
+    def _rows_from_db(self):
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        rows = list(BranchEmployeeDmcData.objects.values(*self.DB_FIELDS))
+        if not rows:
+            raise CommandError(
+                "branch_employee_dmc_data has no rows. Either the DMC load has "
+                "not run, or you are pointed at the wrong database."
+            )
+        return rows
+
+    def _rows_from_csv(self, path):
         if not os.path.exists(path):
             raise CommandError(f"CSV not found: {path}")
 
@@ -156,7 +197,10 @@ class Command(BaseCommand):
         missing = required - set(rows[0].keys())
         if missing:
             raise CommandError(f"CSV is missing required column(s): {', '.join(sorted(missing))}")
+        return rows
 
+    def _load(self, rows, include_exited, allow_blank_code):
+        """Roster rows -> one record per person, newest row wins, skips explained."""
         people, skipped = {}, []
 
         for row in rows:
@@ -271,10 +315,23 @@ class Command(BaseCommand):
                 f"post_migrate signal, not by a migration file."
             )
 
+        if bool(opts["csv"]) == bool(opts["from_db"]):
+            raise CommandError("Pass exactly one of --from-db or --csv <path>.")
+
+        if opts["from_db"]:
+            rows = self._rows_from_db()
+            source = "branch_employee_dmc_data"
+        else:
+            rows = self._rows_from_csv(opts["csv"])
+            source = opts["csv"]
+
         records, skipped = self._load(
-            opts["csv"], opts["include_exited"], opts["allow_blank_sales_code"]
+            rows, opts["include_exited"], opts["allow_blank_sales_code"]
         )
 
+        self.stdout.write(self.style.MIGRATE_HEADING(
+            f"Source: {source} ({len(rows)} rows)."
+        ))
         self.stdout.write(self.style.MIGRATE_HEADING(
             f"{len(records)} people to provision with '{role_name}'; "
             f"{len(skipped)} row(s) skipped."
