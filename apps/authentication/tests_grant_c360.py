@@ -206,10 +206,20 @@ class GrantC360AccessTests(TestCase):
 
     def test_a_branch_outside_the_choice_list_is_left_blank(self):
         """Writing an off-list value silently breaks every branch dropdown."""
-        self.run_cmd([row(staff_branch="HARAMBEE AVE BRANCH")])
+        self.run_cmd([row(staff_branch="SOMEWHERE THAT CLOSED")])
 
         user = User.objects.get(username="jane.doe")
         self.assertIn(Profile.objects.get(user=user).branch, ("", None))
+
+    def test_the_units_that_only_exist_in_the_dmc_roster_are_postable(self):
+        """HFDI and Harambee Ave carry staff but were missing from
+        BRANCH_CHOICES, so 58 people could not be given a posting at all."""
+        for unit in ("HFDI", "HARAMBEE AVE BRANCH"):
+            with self.subTest(unit=unit):
+                User.objects.all().delete()
+                self.run_cmd([row(staff_branch=unit)])
+                user = User.objects.get(username="jane.doe")
+                self.assertEqual(Profile.objects.get(user=user).branch, unit)
 
     def test_known_branch_aliases_are_mapped_to_the_choice_list(self):
         self.run_cmd([row(staff_branch="SAMEER BUSINESS PARK BRANCH")])

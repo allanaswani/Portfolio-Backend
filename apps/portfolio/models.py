@@ -37,6 +37,13 @@ BRANCH_CHOICES = [
     ("KOMAROCK BRANCH", "KOMAROCK BRANCH"),
     ("WESTLANDS BRANCH", "WESTLANDS BRANCH"),
     ("RONGAI BRANCH", "RONGAI BRANCH"),
+    # Two units that carry sales staff in branch_employee_dmc_data but were
+    # missing here, so their people could not be given a posting at all —
+    # not from the Users screen (this list drives its dropdown) and not from
+    # bulk provisioning. HFDI is the property subsidiary rather than a retail
+    # branch; it is listed because that is where its 42 staff actually sit.
+    ("HARAMBEE AVE BRANCH", "HARAMBEE AVE BRANCH"),
+    ("HFDI", "HFDI"),
 ]
 
 SEGMENT_CHOICES = [
