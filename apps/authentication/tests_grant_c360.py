@@ -97,6 +97,37 @@ class GrantC360AccessTests(TestCase):
         self.assertFalse(User.objects.get(username="jane.doe").has_usable_password())
         self.assertEqual(len(mail.outbox), 0)
 
+    def test_email_credentials_matches_the_users_screen_flow(self):
+        """The Users screen mails a temporary password on create; --email-credentials
+        does the same thing for accounts this command creates."""
+        self.run_cmd([row()], email_credentials=True)
+
+        user = User.objects.get(username="jane.doe")
+        self.assertTrue(user.has_usable_password())
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertIn("jane.doe", body)
+        self.assertIn("Temporary password:", body)
+        # The password that was mailed is the one that actually works.
+        sent = body.split("Temporary password:")[1].split("\n")[0].strip()
+        self.assertTrue(user.check_password(sent))
+
+    def test_nobody_who_already_had_an_account_is_ever_mailed(self):
+        """The whole point of the run is that existing people are left alone --
+        mailing them a new password would lock them out of their own account."""
+        existing = User.objects.create_user(
+            username="jane.doe", email="jane.doe@hfcb.co.ke", password="Original#123"
+        )
+        # create_user fires the portfolio post_save handler, which sends its own
+        # account-created mail. That one is not ours -- start counting from here.
+        mail.outbox = []
+
+        self.run_cmd([row()], email_credentials=True)
+
+        existing.refresh_from_db()
+        self.assertTrue(existing.check_password("Original#123"))
+        self.assertEqual(len(mail.outbox), 0)
+
     def test_email_welcome_sends_a_notice_without_a_password(self):
         self.run_cmd([row()], email_welcome=True)
         self.assertEqual(len(mail.outbox), 1)

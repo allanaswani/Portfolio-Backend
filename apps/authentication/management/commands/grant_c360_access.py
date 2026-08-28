@@ -39,11 +39,22 @@ so on the server ``--from-db`` needs no file copied in and can never be run
 against a stale download. ``--csv`` stays for provisioning from a file the
 table does not carry yet.
 
+Handing over a new account, matching the two flows the app already has:
+
+* ``--email-credentials`` mails a temporary password, exactly as the Users
+  screen does (``AdminUserListCreateView``).
+* ``--email-welcome`` mails only the username and points at "Forgot password?".
+* Neither: the account is created with no usable password and nobody is told.
+
+All three touch NEW accounts only. Anyone who already had an account keeps
+their password and is never mailed -- sending them a fresh one would lock them
+out of an account they are already using.
+
 Usage::
 
     python manage.py grant_c360_access --from-db --dry-run
     python manage.py grant_c360_access --from-db --report /tmp/c360.csv
-    python manage.py grant_c360_access --csv staff.csv --email-welcome
+    python manage.py grant_c360_access --from-db --email-credentials
 """
 
 import csv
@@ -55,6 +66,8 @@ from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from apps.authentication.serializers import _generate_password
+from apps.authentication.views import _email_temp_password
 from core.roles import ALL_ROLES
 from core.signals import muted_profile_signals
 
@@ -150,6 +163,12 @@ class Command(BaseCommand):
             "--allow-blank-sales-code", action="store_true",
             help="Provision people with no sales code (their Customer 360 book scope "
                  "is then whatever that app does with a blank code -- check first).",
+        )
+        parser.add_argument(
+            "--email-credentials", action="store_true",
+            help="Email NEWLY created users a temporary password, the same way the "
+                 "Users screen does. Only new accounts -- never anyone who already "
+                 "had one.",
         )
         parser.add_argument(
             "--email-welcome", action="store_true",
@@ -343,7 +362,7 @@ class Command(BaseCommand):
         taken = {u.lower() for u in User.objects.values_list("username", flat=True)}
 
         results = []
-        created = existing = granted = already = 0
+        created = existing = granted = already = mailed = 0
 
         # One transaction: a half-provisioned run is worse than none, and the
         # command is cheap to re-run.
@@ -390,15 +409,30 @@ class Command(BaseCommand):
                                 is_staff=False,
                                 is_superuser=False,
                             )
-                            # No password is set or mailed. The user sets their
-                            # own through "Forgot password?", which is the flow
-                            # apps/portfolio/models.py deliberately switched to.
-                            user.set_unusable_password()
+                            # Two ways to hand over an account, matching the two
+                            # the app already has:
+                            #   --email-credentials -> the Users screen's flow
+                            #       (AdminUserListCreateView): generate a
+                            #       temporary password and mail it.
+                            #   otherwise -> no usable password at all; the
+                            #       person sets their own through "Forgot
+                            #       password?". This is the default because a
+                            #       bulk run can put hundreds of passwords in
+                            #       hundreds of inboxes in one keystroke.
+                            raw = _generate_password() if opts["email_credentials"] else None
+                            if raw:
+                                user.set_password(raw)
+                            else:
+                                user.set_unusable_password()
                             user.save()
                             self._apply(user, rec["sales_code"], branch)
                             user.groups.add(role)
-                            if opts["email_welcome"]:
+                            if raw:
+                                _email_temp_password(user.email, user.username, raw)
+                                mailed += 1
+                            elif opts["email_welcome"]:
                                 self._welcome(user)
+                                mailed += 1
                         granted += 1
                     else:
                         action = "existing"
@@ -446,7 +480,7 @@ class Command(BaseCommand):
             })
 
         self._summarise(results, skipped, created, existing, granted, already,
-                        role_name, dry_run, opts["report"])
+                        mailed, role_name, dry_run, opts["report"])
 
     def _apply(self, user, sales_code, branch, fill_only=False):
         from apps.authentication.serializers import _apply_profile
@@ -460,7 +494,7 @@ class Command(BaseCommand):
         _apply_profile(user, sales_code or None, branch or None, None)
 
     def _summarise(self, results, skipped, created, existing, granted, already,
-                   role_name, dry_run, report_path):
+                   mailed, role_name, dry_run, report_path):
         import collections
 
         self.stdout.write("")
@@ -469,6 +503,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  already existed         : {existing}")
         self.stdout.write(f"  '{role_name}' granted    : {granted}")
         self.stdout.write(f"  already had '{role_name}': {already}")
+        self.stdout.write(f"  emails sent             : {mailed}")
         self.stdout.write(f"  skipped                 : {len(skipped)}")
         for reason, count in collections.Counter(r for r, _, _ in skipped).most_common():
             self.stdout.write(f"      {reason}: {count}")
