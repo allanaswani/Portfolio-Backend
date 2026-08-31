@@ -15,5 +15,6 @@ urlpatterns = [
     # Whole-bank equivalents of the RM-scoped portfolio views.
     path("customer_feedback_list/", views.ExcoFeedbackListView.as_view()),
     path("loans-arrears/list/", views.ExcoLoansArrearsListView.as_view()),
+    path("loans-arrears/summary/", views.ExcoLoansArrearsSummaryView.as_view()),
     path("prospects/", views.ExcoProspectsListView.as_view()),
 ]

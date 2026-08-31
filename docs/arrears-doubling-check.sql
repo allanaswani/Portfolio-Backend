@@ -115,5 +115,7 @@ unfixed AS (
 SELECT t.acc   AS true_accounts,   t.arr AS true_arrears,
        f.acc   AS fixed_accounts,  f.arr AS fixed_arrears,
        u.acc   AS unfixed_accounts,u.arr AS unfixed_arrears,
-       round(u.arr / nullif(t.arr, 0), 4) AS inflation_before_fix
+       -- cast: total_arrears is double precision, and round(double, int)
+       -- does not exist in Postgres.
+       round((u.arr / nullif(t.arr, 0))::numeric, 4) AS inflation_before_fix
 FROM truth t, fixed f, unfixed u;

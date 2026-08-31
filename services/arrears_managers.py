@@ -1246,7 +1246,14 @@ class LoansArrearsAccountsListManager(models.Manager):
                     WHEN 'AUCTION SHORTFALLS' THEN 6
                     WHEN 'N_A' THEN 7
                     ELSE 8
-                END ASC;
+                END ASC,
+                -- Unique tiebreaker. days_in_arrears + grade leave thousands of
+                -- ties, and these lists are handed to DRF page by page: with no
+                -- total order Postgres is free to return a different arrangement
+                -- for each LIMIT/OFFSET, so a client that walks every page sees
+                -- some loans twice and never sees others. Any KPI card that sums
+                -- the crawled list then reports a number that changes per reload.
+                lns.loan_account_no ASC;
         """
         with connection.cursor() as cursor:
             cursor.execute(query)
@@ -1362,7 +1369,14 @@ class LoansArrearsAccountsListManager(models.Manager):
                     WHEN 'AUCTION SHORTFALLS' THEN 6
                     WHEN 'N_A' THEN 7
                     ELSE 8
-                END ASC;
+                END ASC,
+                -- Unique tiebreaker. days_in_arrears + grade leave thousands of
+                -- ties, and these lists are handed to DRF page by page: with no
+                -- total order Postgres is free to return a different arrangement
+                -- for each LIMIT/OFFSET, so a client that walks every page sees
+                -- some loans twice and never sees others. Any KPI card that sums
+                -- the crawled list then reports a number that changes per reload.
+                lns.loan_account_no ASC;
         """
         with connection.cursor() as cursor:
             cursor.execute(query, [rm_code])
@@ -1478,7 +1492,14 @@ class LoansArrearsAccountsListManager(models.Manager):
                     WHEN 'AUCTION SHORTFALLS' THEN 6
                     WHEN 'N_A' THEN 7
                     ELSE 8
-                END ASC;
+                END ASC,
+                -- Unique tiebreaker. days_in_arrears + grade leave thousands of
+                -- ties, and these lists are handed to DRF page by page: with no
+                -- total order Postgres is free to return a different arrangement
+                -- for each LIMIT/OFFSET, so a client that walks every page sees
+                -- some loans twice and never sees others. Any KPI card that sums
+                -- the crawled list then reports a number that changes per reload.
+                lns.loan_account_no ASC;
         """
         branch_pattern = f"%{branch.strip()}%"
         with connection.cursor() as cursor:
@@ -1595,7 +1616,14 @@ class LoansArrearsAccountsListManager(models.Manager):
                     WHEN 'AUCTION SHORTFALLS' THEN 6
                     WHEN 'N_A' THEN 7
                     ELSE 8
-                END ASC;
+                END ASC,
+                -- Unique tiebreaker. days_in_arrears + grade leave thousands of
+                -- ties, and these lists are handed to DRF page by page: with no
+                -- total order Postgres is free to return a different arrangement
+                -- for each LIMIT/OFFSET, so a client that walks every page sees
+                -- some loans twice and never sees others. Any KPI card that sums
+                -- the crawled list then reports a number that changes per reload.
+                lns.loan_account_no ASC;
         """
         with connection.cursor() as cursor:
             cursor.execute(query, segment_params(segment))

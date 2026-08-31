@@ -12,6 +12,8 @@ defined here.
 """
 
 from rest_framework import generics
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 
 from core.pagination import StandardPagination
@@ -21,6 +23,7 @@ from apps.portfolio.models import Loans, Prospects, Feedback
 from apps.portfolio.serializers import (
     LoansSerializer, ProspectsSerializer, FeedbackSerializer,
 )
+from services.arrears_managers import LoansArrearsSummaryManager
 
 # Role gate: bank-wide executive data, so restrict to the executive groups
 # (superusers are always allowed by the InGroup factory). Applied here rather
@@ -44,12 +47,41 @@ class ExcoCustomersView(CeoCustomersView):
 
 @extend_schema(tags=["Exco Dashboard"])
 class ExcoLoansArrearsListView(generics.ListAPIView):
-    """Whole-bank arrears book — RM view is filtered by account_officer."""
+    """Whole-bank arrears book — RM view is filtered by account_officer.
+
+    Ordered by primary key, which matters more here than it looks. The queryset
+    had no ordering at all, and an unordered queryset paginated with
+    LIMIT/OFFSET gives Postgres no obligation to arrange rows the same way
+    twice. A client that walks all 800-odd pages of the arrears book therefore
+    collected some loans more than once and missed others, so anything summed
+    from the crawled list came out wrong — and wrong by a different amount on
+    each reload. Django warns about exactly this (UnorderedObjectListWarning).
+    """
 
     permission_classes = [ExcoAccess]
     serializer_class = LoansSerializer
     pagination_class = StandardPagination
-    queryset = Loans.objects.filter(days_in_arrears__gt=0)
+    queryset = Loans.objects.filter(days_in_arrears__gt=0).order_by("id")
+
+
+@extend_schema(tags=["Exco Dashboard"])
+class ExcoLoansArrearsSummaryView(APIView):
+    """Whole-bank arrears totals, computed in the database.
+
+    The Exco arrears KPI cards used to be summed in the browser from the list
+    endpoint above. That could never be right: the frontend's page crawler stops
+    at 500 pages of 10, so it saw at most 5,000 of the ~8,200 accounts actually
+    in arrears, and the unordered pagination above shuffled which 5,000.
+
+    This is the same whole-bank query the CEO dashboard uses. It reads `loans`
+    directly with no joins, so there is nothing to fan out and nothing to
+    truncate — it is the ground truth the cards should have been showing.
+    """
+
+    permission_classes = [ExcoAccess]
+
+    def get(self, request):
+        return Response(LoansArrearsSummaryManager().high_level_summary())
 
 
 @extend_schema(tags=["Exco Dashboard"])
