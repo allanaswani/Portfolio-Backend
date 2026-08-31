@@ -8,6 +8,17 @@ Every arrears query joined three tables on a NON-unique key:
   allocation rows per customer;
 * ``bank_employee`` on ``bank_id``.
 
+Two more joins in the same queries were on keys that are equally unconstrained
+and were missed the first time round — both are ``managed = False`` warehouse
+mirrors, so nothing in the database stops the ETL leaving a second row:
+
+* ``hf_customer`` on ``cust_id`` — the model declares it a primary key, but the
+  table is not Django-managed so no constraint exists;
+* ``product_mapping`` on ``code``.
+
+The fixture below duplicates one row in each, so every assertion in this module
+now guards all five joins at once.
+
 The list endpoint therefore showed the same loan many times, and the Loan
 Balance / Arrears Balance / grade-bucket / product figures — which SUM over
 that join — were multiplied by the number of matches. With the fixture below
@@ -85,9 +96,14 @@ class ArrearsFanOutTests(TestCase):
               (2,'3914','Tony Cherono',250,'2026-01-01')""")
             cur.execute("""INSERT INTO bank_employee (bank_id, full_name)
               VALUES ('E1','Jane Doe'),('E1','Jane Doe')""")
+            # Customer 1 appears twice — hf_customer is a managed=False mirror with
+            # no unique constraint on cust_id, so the ETL can and does leave dupes.
             cur.execute("""INSERT INTO hf_customer (cust_id, latin_surname, banking_segment)
-              VALUES (1,'POPOTE NI KWAO','PB'),(2,'REFLEX FOOTWEAR','PB')""")
-            cur.execute("INSERT INTO product_mapping (code, product_description) VALUES (1,'MORTGAGE')")
+              VALUES (1,'POPOTE NI KWAO','PB'),(1,'POPOTE NI KWAO','PB'),
+                     (2,'REFLEX FOOTWEAR','PB')""")
+            # …and so can product_mapping on `code`.
+            cur.execute("""INSERT INTO product_mapping (code, product_description)
+              VALUES (1,'MORTGAGE'),(1,'MORTGAGE')""")
             cur.execute("""INSERT INTO loans_mom_ifrs_movement
               (lns_account, pl_charge, int_adj, eom_date, prev_ifrs, current_ifrs,
                movt_in_ifrs, current_grade, cust_code_strategy, branch2, segment,
@@ -144,3 +160,18 @@ class ArrearsFanOutTests(TestCase):
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]["product_description"], "MORTGAGE")
                 self.assertEqual(int(rows[0]["total_arrears_amount"]), 200)
+
+    def test_segment_summary_is_not_multiplied_by_duplicate_customers(self):
+        """The segment scope filters through hf_customer, so a duplicated
+        customer row multiplies that scope's KPI cards and nothing else."""
+        s = LoansArrearsSummaryManager().high_level_summary_by_segment("PB")
+        self.assertEqual(int(s["total_outstanding_loan_amount"]), 2000)
+        self.assertEqual(int(s["total_arrears_amount"]), 200)
+        self.assertEqual(int(s["customers_in_arrears"]), 2)
+
+    def test_a_duplicated_product_row_does_not_split_or_double_the_book(self):
+        """product_mapping is joined for the product label only; a second row for
+        the same code used to emit the loan twice under the same description."""
+        rows = LoansProductArrearsSummaryManager().product_arrears_summary()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(int(rows[0]["total_arrears_amount"]), 200)

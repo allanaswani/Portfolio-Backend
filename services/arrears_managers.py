@@ -233,7 +233,13 @@ class LoansArrearsSummaryManager(models.Manager):
                             ELSE 0
                         END AS percent_portfolio_in_arrears
                     FROM loans lns
-                    INNER JOIN hf_customer c 
+                    INNER JOIN (
+                        SELECT DISTINCT ON (cust_id)
+                            cust_id, latin_surname, banking_segment, segment
+                        FROM hf_customer
+                        WHERE cust_id IS NOT NULL
+                        ORDER BY cust_id, ctid DESC
+                    ) c
                         ON c.cust_id = lns.cust_id
                     WHERE (UPPER(BTRIM(c.banking_segment)) = ANY(%s) OR UPPER(BTRIM(c.segment)) = ANY(%s))
                 )
@@ -299,14 +305,25 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -400,14 +417,25 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -502,14 +530,25 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -605,14 +644,25 @@ class LoansArrearsDPDBucketSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -718,14 +768,25 @@ class LoansProductArrearsSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -811,14 +872,25 @@ class LoansProductArrearsSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -905,14 +977,25 @@ class LoansProductArrearsSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -1000,14 +1083,25 @@ class LoansProductArrearsSummaryManager(models.Manager):
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
                 LEFT JOIN mov_latest
                     ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-                LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+                LEFT JOIN (
+                    SELECT DISTINCT ON (code) code, product_description
+                    FROM product_mapping
+                    WHERE code IS NOT NULL
+                    ORDER BY code, ctid DESC
+                ) pm ON lns.loan_product::integer = pm.code
                 LEFT JOIN (
                     SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap ON rap.cust_id = lns.cust_id
-                LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+                LEFT JOIN (
+                    SELECT DISTINCT ON (cust_id)
+                        cust_id, latin_surname, banking_segment, segment
+                    FROM hf_customer
+                    WHERE cust_id IS NOT NULL
+                    ORDER BY cust_id, ctid DESC
+                ) c ON c.cust_id = lns.cust_id
                 LEFT JOIN (
                     SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                     FROM branch_final_employee_dmc_data
@@ -1109,14 +1203,25 @@ class LoansArrearsAccountsListManager(models.Manager):
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-            LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+            LEFT JOIN (
+                SELECT DISTINCT ON (code) code, product_description
+                FROM product_mapping
+                WHERE code IS NOT NULL
+                ORDER BY code, ctid DESC
+            ) pm ON lns.loan_product::integer = pm.code
             LEFT JOIN (
                 SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                 FROM retail_allocated_portfolio
                 WHERE cust_id IS NOT NULL
                 ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
             ) rap ON rap.cust_id = lns.cust_id
-            LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id)
+                    cust_id, latin_surname, banking_segment, segment
+                FROM hf_customer
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, ctid DESC
+            ) c ON c.cust_id = lns.cust_id
             LEFT JOIN (
                 SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                 FROM branch_final_employee_dmc_data
@@ -1213,14 +1318,25 @@ class LoansArrearsAccountsListManager(models.Manager):
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-            LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+            LEFT JOIN (
+                SELECT DISTINCT ON (code) code, product_description
+                FROM product_mapping
+                WHERE code IS NOT NULL
+                ORDER BY code, ctid DESC
+            ) pm ON lns.loan_product::integer = pm.code
             LEFT JOIN (
                 SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                 FROM retail_allocated_portfolio
                 WHERE cust_id IS NOT NULL
                 ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
             ) rap ON rap.cust_id = lns.cust_id
-            LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id)
+                    cust_id, latin_surname, banking_segment, segment
+                FROM hf_customer
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, ctid DESC
+            ) c ON c.cust_id = lns.cust_id
             LEFT JOIN (
                 SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                 FROM branch_final_employee_dmc_data
@@ -1318,14 +1434,25 @@ class LoansArrearsAccountsListManager(models.Manager):
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-            LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+            LEFT JOIN (
+                SELECT DISTINCT ON (code) code, product_description
+                FROM product_mapping
+                WHERE code IS NOT NULL
+                ORDER BY code, ctid DESC
+            ) pm ON lns.loan_product::integer = pm.code
             LEFT JOIN (
                 SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                 FROM retail_allocated_portfolio
                 WHERE cust_id IS NOT NULL
                 ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
             ) rap ON rap.cust_id = lns.cust_id
-            LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id)
+                    cust_id, latin_surname, banking_segment, segment
+                FROM hf_customer
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, ctid DESC
+            ) c ON c.cust_id = lns.cust_id
             LEFT JOIN (
                 SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                 FROM branch_final_employee_dmc_data
@@ -1424,14 +1551,25 @@ class LoansArrearsAccountsListManager(models.Manager):
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_sum.loan_account_no
             LEFT JOIN mov_latest
                 ON REGEXP_REPLACE(TRIM(lns.loan_account_no), '^0+', '') = mov_latest.loan_account_no
-            LEFT JOIN product_mapping pm ON lns.loan_product::integer = pm.code
+            LEFT JOIN (
+                SELECT DISTINCT ON (code) code, product_description
+                FROM product_mapping
+                WHERE code IS NOT NULL
+                ORDER BY code, ctid DESC
+            ) pm ON lns.loan_product::integer = pm.code
             LEFT JOIN (
                 SELECT DISTINCT ON (cust_id) cust_id, rm_name, sales_code
                 FROM retail_allocated_portfolio
                 WHERE cust_id IS NOT NULL
                 ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
             ) rap ON rap.cust_id = lns.cust_id
-            LEFT JOIN hf_customer c ON lns.cust_id = c.cust_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (cust_id)
+                    cust_id, latin_surname, banking_segment, segment
+                FROM hf_customer
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, ctid DESC
+            ) c ON c.cust_id = lns.cust_id
             LEFT JOIN (
                 SELECT DISTINCT ON (brn_code) brn_code, staff_branch
                 FROM branch_final_employee_dmc_data
