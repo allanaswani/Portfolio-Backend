@@ -269,3 +269,39 @@ class HfdiAmendingUploaderTests(TestCase):
         bad = {"staff_pf_number": "9999", "sale_month": "2024-03-15", "mtd_volume": "3"}
         self.client.post(url, {"file": _model_csv(HfdiEmployeeDataSalesRecord, [bad])}, format="multipart")
         self.assertFalse(HfdiEmployeeDataSalesRecord.objects.filter(staff_pf_number=9999).exists())
+
+
+class HfdiTargetsWriteTests(TestCase):
+    """The Add New Target modal's exact payload must round-trip.
+
+    A create also writes a simple_history row, so this covers both tables the
+    write path touches. It passing against a freshly migrated schema while
+    production returns 500 means the production schema has drifted from the
+    migrations, not that the view is wrong.
+    """
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="hfdi_t", password="pw12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_create_target_with_the_modals_payload(self):
+        payload = {
+            "project_id": 1, "pm": "Lucy Gathoni", "rm": "Lucy Gathoni",
+            "sales_manager": "", "team_leader": "", "month": "",
+            "target_start_date": "2026-07-01",
+            "target_sales_end_date": "2028-06-30",
+            "target_collections_end_date": "2028-12-31",
+            # The modal posts numerics as strings and blanks as null.
+            "volume": "191", "value": "50", "income": "100000000",
+            "collections_value": "500000000", "historical_value": "0",
+            "current_sales_value": "500000000", "is_active": True,
+            # recording_date is omitted on purpose — the model defaults to today.
+        }
+        r = self.client.post(BASE + "hfdi-targets/", payload, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+
+        row = HfdiTargets.objects.get(pk=r.data["id"])
+        self.assertEqual(row.volume, 191)
+        self.assertEqual(row.recording_date, date.today())
+        self.assertEqual(row.history.count(), 1)          # history table wrote too
