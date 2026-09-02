@@ -151,10 +151,10 @@ class BranchCodeResolutionTests(TestCase):
 class DepartmentRollupTests(SimpleTestCase):
     def test_headcount_active_and_exits(self):
         staff = [
-            {"department": "Retail Banking", "active": True,  "exited": False, "role": "RM",     "in_hr_roster": True},
-            {"department": "Retail Banking", "active": True,  "exited": False, "role": "Teller", "in_hr_roster": True},
-            {"department": "Retail Banking", "active": False, "exited": True,  "role": "RM",     "in_hr_roster": False},
-            {"department": "Credit",         "active": True,  "exited": False, "role": "Analyst","in_hr_roster": True},
+            {"department": "Retail Banking", "active": True,  "exited": False, "role": "RM",     "in_hr_roster": True,  "org_unit": "BR-230", "grade": "5"},
+            {"department": "Retail Banking", "active": True,  "exited": False, "role": "Teller", "in_hr_roster": True,  "org_unit": "BR-230", "grade": "3"},
+            {"department": "Retail Banking", "active": False, "exited": True,  "role": "RM",     "in_hr_roster": False, "org_unit": "BR-231", "grade": "5"},
+            {"department": "Credit",         "active": True,  "exited": False, "role": "Analyst","in_hr_roster": True,  "org_unit": "HO-CR",  "grade": "6"},
         ]
         rows = sq.rollup_by_department(staff)
         self.assertEqual([r["department"] for r in rows], ["Retail Banking", "Credit"])
@@ -164,6 +164,19 @@ class DepartmentRollupTests(SimpleTestCase):
         self.assertEqual(retail["exited"], 1)
         self.assertEqual(retail["distinct_roles"], 2)   # RM counted once
         self.assertEqual(retail["in_hr_roster"], 2)
+        # The org units and grades behind the headcount are listed, not just counted.
+        self.assertEqual(retail["org_units"], ["BR-230", "BR-231"])
+        self.assertEqual(retail["grades"], ["3", "5"])
+
+    def test_rollup_tolerates_rows_without_org_unit_or_grade(self):
+        """Staff absent from the HR roster have neither; they must still count."""
+        rows = sq.rollup_by_department([
+            {"department": "Retail Banking", "active": True, "exited": False,
+             "role": "RM", "in_hr_roster": False},
+        ])
+        self.assertEqual(rows[0]["headcount"], 1)
+        self.assertEqual(rows[0]["org_units"], [])
+        self.assertEqual(rows[0]["grades"], [])
 
 
 class BranchAuthorisationTests(TestCase):

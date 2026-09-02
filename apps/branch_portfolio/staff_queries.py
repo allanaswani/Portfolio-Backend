@@ -191,6 +191,12 @@ def branch_staff(branch_name, codes, all_branches=False):
             "department":      department,
             "department_source": source,
             "division":        r["division"],
+            # org_unit is the HR org unit — in this roster it is the closest
+            # thing to a cost centre, so it is surfaced rather than dropped.
+            # `unit` is the finer HR unit; `staff_unit` is what the branch/sales
+            # roster calls the same person's unit and does not always agree.
+            "org_unit":        r["org_unit"],
+            "unit":            r["hr_unit"] or r["staff_unit"],
             "role":            (r["overlay_role"] or r["job_title"] or r["staff_role"] or ""),
             "grade":           r["grade"],
             "gender":          r["gender"],
@@ -217,7 +223,7 @@ def rollup_by_department(staff_rows):
         b = buckets.setdefault(s["department"], {
             "department": s["department"],
             "headcount": 0, "active": 0, "exited": 0, "in_hr_roster": 0,
-            "roles": set(),
+            "roles": set(), "org_units": set(), "grades": set(),
         })
         b["headcount"] += 1
         b["active"]    += 1 if s["active"] and not s["exited"] else 0
@@ -225,10 +231,18 @@ def rollup_by_department(staff_rows):
         b["in_hr_roster"] += 1 if s["in_hr_roster"] else 0
         if s["role"]:
             b["roles"].add(s["role"])
+        if s.get("org_unit"):
+            b["org_units"].add(s["org_unit"])
+        if s.get("grade"):
+            b["grades"].add(s["grade"])
 
     rows = []
     for b in buckets.values():
         b["distinct_roles"] = len(b.pop("roles"))
+        # Listed, not just counted: a branch manager reading a headcount wants
+        # to see WHICH cost centres and grades sit behind it.
+        b["org_units"] = sorted(b["org_units"])
+        b["grades"] = sorted(b["grades"])
         rows.append(b)
     rows.sort(key=lambda r: (-r["headcount"], r["department"]))
     return rows
