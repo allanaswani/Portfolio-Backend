@@ -1,4 +1,6 @@
 """Branch Portfolio views — all endpoints for the Branch Manager dashboard."""
+from decimal import Decimal
+
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -7,6 +9,8 @@ from drf_spectacular.utils import extend_schema
 from django.db.models import Sum, Count, Q
 from django.db import connection
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_date
+from rest_framework.utils.urls import replace_query_param, remove_query_param
 
 from apps.portfolio.models import (
     HfCustomer, Accounts, Loans, Feedback, Profile, Prospects, RetailAllocatedPortfolio,
@@ -16,7 +20,12 @@ from apps.portfolio.serializers import (
     BranchFeedbackSerializer, ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
 )
 from apps.portfolio.rm_rollup import fetch_rm_rollup
+from apps.staff_management.models import BranchDepartmentCost
+from apps.gceo_dashboard.departments import standardize_department
+from core.branch_codes import branch_codes_for, normalize_branch
 from . import legacy_queries as lq
+from . import drawdown_queries as dq
+from . import staff_queries as sq
 from services.arrears_managers import (
     LoansArrearsSummaryManager, LoansArrearsDPDBucketSummaryManager,
     LoansProductArrearsSummaryManager, LoansArrearsAccountsListManager,
@@ -990,3 +999,301 @@ class BranchPropertyHoldingsListView(APIView):
             }
             for i, r in enumerate(rows)
         ])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Drawdowns + Staff & Costs — the branch-scoped halves of two screens that
+# previously existed only organisation-wide.
+#
+# Both reuse `_branch_filter` for authorisation, so the rules are unchanged: a
+# branch manager is pinned to their own branch, only EXCO/CEO/superuser may pass
+# a /<branch> drill-down or see the all-branch roll-up, and a caller with no
+# branch on their profile is denied rather than served the whole bank.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _branch_scope(request, branch=None):
+    """``(branch_name, unit_codes, all_branches)`` for the caller.
+
+    ``unit_codes`` is ``None`` for the privileged all-branch roll-up, and an
+    EMPTY LIST when the branch name resolves to no code at all — which the query
+    layer treats as "match nothing", never as "no filter".
+    """
+    profile = _get_profile(request.user)
+    name = _branch_filter(profile, branch)
+    if not name:
+        # _branch_filter returns "" only for a privileged caller; it raises
+        # PermissionDenied for anyone else without a branch.
+        return "", None, True
+    return name, branch_codes_for(name), False
+
+
+def _date_param(request, key):
+    raw = (request.query_params.get(key) or "").strip()
+    return parse_date(raw) if raw else None
+
+
+def _page_link(request, page_number):
+    """Absolute URL for another page of the current request."""
+    url = request.build_absolute_uri()
+    if page_number <= 1:
+        return remove_query_param(url, "page")
+    return replace_query_param(url, "page", page_number)
+
+
+@extend_schema(tags=["Branch Portfolio — Drawdowns"])
+class BranchDrawdownsSummaryView(APIView):
+    """drawdowns/summary/ — KPI tiles, aggregated in the database.
+
+    Summing in the browser would under-count: the list endpoint is paged, so the
+    page only ever holds a slice of the branch book.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        name, codes, all_branches = _branch_scope(request, branch)
+        data = dq.summary(codes, _date_param(request, "date_from"), _date_param(request, "date_to"))
+        data["branch"] = name or "ALL BRANCHES"
+        data["unit_codes"] = codes
+        # Surfaced so a branch whose codes cannot be resolved reads as an
+        # explicit data gap in the UI rather than as "no drawdowns this month".
+        data["branch_resolved"] = bool(all_branches or codes)
+        return Response(data)
+
+
+@extend_schema(tags=["Branch Portfolio — Drawdowns"])
+class BranchDrawdownsListView(APIView):
+    """drawdowns/list/ — server-paginated drawdown book for the branch."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        _, codes, _ = _branch_scope(request, branch)
+
+        paginator = StandardPagination()
+        try:
+            page_number = max(1, int(request.query_params.get("page") or 1))
+        except (TypeError, ValueError):
+            page_number = 1
+        try:
+            page_size = int(request.query_params.get("page_size") or paginator.page_size)
+        except (TypeError, ValueError):
+            page_size = paginator.page_size
+        page_size = max(1, min(page_size, paginator.max_page_size))
+
+        rows, total = dq.page(
+            codes,
+            date_from=_date_param(request, "date_from"),
+            date_to=_date_param(request, "date_to"),
+            search=request.query_params.get("search"),
+            limit=page_size,
+            offset=(page_number - 1) * page_size,
+        )
+        # The `next` link is not decoration: the frontend's fetchAllPages stops
+        # crawling the moment it is null, so hard-coding None here would cap
+        # every Export at the first page — the bug this codebase has already
+        # shipped once (see docs / the export-limit note).
+        has_next = page_number * page_size < total
+        return Response({
+            "count": total,
+            "next": _page_link(request, page_number + 1) if has_next else None,
+            "previous": _page_link(request, page_number - 1) if page_number > 1 else None,
+            "results": rows,
+        })
+
+
+@extend_schema(tags=["Branch Portfolio — Drawdowns"])
+class BranchDrawdownsByProductView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        _, codes, _ = _branch_scope(request, branch)
+        return Response(dq.by_product(
+            codes, _date_param(request, "date_from"), _date_param(request, "date_to")))
+
+
+@extend_schema(tags=["Branch Portfolio — Drawdowns"])
+class BranchDrawdownsBySellerView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        _, codes, _ = _branch_scope(request, branch)
+        return Response(dq.by_seller(
+            codes, _date_param(request, "date_from"), _date_param(request, "date_to")))
+
+
+@extend_schema(tags=["Branch Portfolio — Drawdowns"])
+class BranchDrawdownsMonthlyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        _, codes, _ = _branch_scope(request, branch)
+        try:
+            months = int(request.query_params.get("months") or 24)
+        except (TypeError, ValueError):
+            months = 24
+        return Response(dq.monthly(codes, max(1, min(months, 60))))
+
+
+# ── Staff & departmental cost ────────────────────────────────────────────────
+
+def _cost_branch_filter(name):
+    """Match a cost row to a branch across the spellings in use.
+
+    The cost table stores the branch NAME. "HEAD OFFICE" and "HEAD OFFICE
+    BRANCH" are the same branch, so match both plus whatever the caller passed.
+    """
+    key = normalize_branch(name)
+    candidates = {name, key, f"{key} BRANCH"}
+    q = Q()
+    for candidate in candidates:
+        if candidate:
+            q |= Q(branch__iexact=candidate)
+    return q
+
+
+def _resolve_cost_period(request, branch_q):
+    """(year, month, available) — the period to report cost for.
+
+    Explicit ?year=&month= wins; otherwise the most recent month that actually
+    has data for this branch. No data at all → (None, None, []).
+    """
+    qs = (BranchDepartmentCost.objects.filter(branch_q) if branch_q is not None
+          else BranchDepartmentCost.objects.all())
+    available = sorted(
+        {(r["year"], r["month"]) for r in qs.values("year", "month")}, reverse=True
+    )
+
+    raw_year, raw_month = request.query_params.get("year"), request.query_params.get("month")
+    if raw_year and raw_month:
+        try:
+            return int(raw_year), int(raw_month), available
+        except (TypeError, ValueError):
+            pass
+    if available:
+        return available[0][0], available[0][1], available
+    return None, None, available
+
+
+@extend_schema(tags=["Branch Portfolio — Staff & Costs"])
+class BranchStaffDepartmentsView(APIView):
+    """staff/departments/ — headcount per department at the branch, plus cost.
+
+    Headcount is real: the branch posting comes from the sales/branch DMC
+    tables and the department from the HR roster, joined on PF number (see
+    ``staff_queries``).
+
+    Cost is whatever Finance has captured in ``branch_department_cost`` for the
+    period. **No cost figure is ever derived or apportioned** — the warehouse
+    holds no cost data at any grain, so an unloaded month reports
+    ``has_cost_data: false`` and null cost columns rather than a made-up number.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        name, codes, all_branches = _branch_scope(request, branch)
+
+        staff = sq.branch_staff(name, codes, all_branches=all_branches)
+        include_exited = (request.query_params.get("include_exited") or "").lower() in ("1", "true", "yes")
+        if not include_exited:
+            staff = [s for s in staff if not s["exited"]]
+        departments = sq.rollup_by_department(staff)
+
+        branch_q = None if all_branches else _cost_branch_filter(name)
+        year, month, available = _resolve_cost_period(request, branch_q)
+
+        cost_by_department = {}
+        if year and month:
+            qs = BranchDepartmentCost.objects.filter(year=year, month=month)
+            if branch_q is not None:
+                qs = qs.filter(branch_q)
+            for row in qs.values("department", "amount", "staff_cost", "other_cost"):
+                key = standardize_department(row["department"]).casefold()
+                bucket = cost_by_department.setdefault(
+                    key, {"amount": Decimal("0"), "staff_cost": None, "other_cost": None})
+                bucket["amount"] += row["amount"] or Decimal("0")
+                for part in ("staff_cost", "other_cost"):
+                    if row[part] is not None:
+                        bucket[part] = (bucket[part] or Decimal("0")) + row[part]
+
+        matched_cost = Decimal("0")
+        for dept in departments:
+            cost = cost_by_department.get(dept["department"].casefold())
+            dept["total_cost"] = cost["amount"] if cost else None
+            dept["staff_cost"] = cost["staff_cost"] if cost else None
+            dept["other_cost"] = cost["other_cost"] if cost else None
+            dept["cost_per_head"] = (
+                (cost["amount"] / dept["headcount"]) if cost and dept["headcount"] else None
+            )
+            if cost:
+                matched_cost += cost["amount"]
+
+        # Cost booked to a department with nobody posted to this branch would
+        # otherwise vanish from the totals; report it rather than dropping it.
+        known = {d["department"].casefold() for d in departments}
+        unmatched_cost = sum(
+            (c["amount"] for key, c in cost_by_department.items() if key not in known),
+            Decimal("0"),
+        )
+
+        headcount = len(staff)
+        total_cost = matched_cost + unmatched_cost
+        return Response({
+            "branch": name or "ALL BRANCHES",
+            "branch_resolved": bool(all_branches or codes),
+            "period": {
+                "year": year,
+                "month": month,
+                "label": f"{year}-{month:02d}" if year and month else None,
+                "has_cost_data": bool(cost_by_department),
+                "available_periods": [f"{y}-{m:02d}" for y, m in available],
+            },
+            "totals": {
+                "headcount": headcount,
+                "active": sum(1 for s in staff if s["active"] and not s["exited"]),
+                "exited": sum(1 for s in staff if s["exited"]),
+                "departments": len(departments),
+                "in_hr_roster": sum(1 for s in staff if s["in_hr_roster"]),
+                "total_cost": total_cost if cost_by_department else None,
+                "unmatched_cost": unmatched_cost if unmatched_cost else None,
+                "cost_per_head": (total_cost / headcount) if cost_by_department and headcount else None,
+            },
+            "departments": departments,
+        })
+
+
+@extend_schema(tags=["Branch Portfolio — Staff & Costs"])
+class BranchStaffListView(APIView):
+    """staff/list/ — one row per employee posted to the branch.
+
+    Optional ``?department=`` narrows to one canonical department so the page
+    can drill from the rollup into the people behind a number.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        name, codes, all_branches = _branch_scope(request, branch)
+        rows = sq.branch_staff(name, codes, all_branches=all_branches)
+
+        if (request.query_params.get("include_exited") or "").lower() not in ("1", "true", "yes"):
+            rows = [r for r in rows if not r["exited"]]
+
+        department = (request.query_params.get("department") or "").strip()
+        if department:
+            wanted = standardize_department(department).casefold()
+            rows = [r for r in rows if r["department"].casefold() == wanted]
+
+        search = (request.query_params.get("search") or "").strip().lower()
+        if search:
+            rows = [
+                r for r in rows
+                if any(search in str(r.get(f) or "").lower()
+                       for f in ("staff_name", "role", "department", "email",
+                                 "sales_code", "staff_pf_number"))
+            ]
+
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)

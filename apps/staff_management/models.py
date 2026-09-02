@@ -936,6 +936,64 @@ class TeamLeaderBranch(models.Model):
         return f"{self.branch} → {self.team_leader}"
 
 
+class BranchDepartmentCost(models.Model):
+    """Operating cost for one department at one branch, for one month.
+
+    **There is no cost column anywhere in the warehouse.** The organisation-wide
+    "costs per department" figures on the GCEO deck are hard-coded constants in
+    the frontend, and they carry no branch dimension at all — so a branch
+    manager's cost line cannot be derived from existing data, only captured.
+
+    This table is that capture point: Finance types a month in or uploads the
+    CSV, and the branch Staff & Costs page reads it back scoped to the branch.
+    Until a month is loaded the page shows real headcount with the cost columns
+    blank — it never apportions the org-wide figure across branches, because
+    that number would be invented rather than measured.
+
+    ``branch`` is stored as the branch NAME (matching Profile.BRANCH_CHOICES)
+    and matched suffix-insensitively on read, so "HEAD OFFICE" and "HEAD OFFICE
+    BRANCH" resolve to the same branch. ``department`` should be a canonical
+    name from apps.gceo_dashboard.departments.STANDARD_DEPARTMENT_MAP.
+    """
+
+    branch = models.CharField(max_length=120, db_index=True, verbose_name="Branch")
+    department = models.CharField(max_length=120, db_index=True, verbose_name="Department")
+    year = models.IntegerField(validators=[MinValueValidator(2000)])
+    month = models.IntegerField(
+        validators=[MinValueValidator(1)], help_text="1-12"
+    )
+    # Total cost booked to the department at this branch for the month.
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    # Optional split — staff cost is the line branch managers ask for by name.
+    staff_cost = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True)
+    other_cost = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True)
+    notes = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+
+    class Meta:
+        managed = True
+        db_table = "branch_department_cost"
+        # One figure per branch/department/month — re-uploading a month updates
+        # rather than stacking a second row on top of the first.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["branch", "department", "year", "month"],
+                name="uniq_branch_department_cost_period",
+            ),
+            models.CheckConstraint(
+                check=Q(month__gte=1) & Q(month__lte=12),
+                name="branch_department_cost_month_range",
+            ),
+        ]
+        ordering = ["branch", "department", "-year", "-month"]
+        verbose_name = "Branch department cost"
+        verbose_name_plural = "Branch department costs"
+
+    def __str__(self):
+        return f"{self.branch} · {self.department} · {self.year}-{self.month:02d}"
+
+
 # ── Scorecard automation engine (parallel subsystem) ───────────────────────────
 # Imported here so Django discovers these models under the staff_management app.
 # Their tables are namespaced sc_* and do NOT collide with the redesigned

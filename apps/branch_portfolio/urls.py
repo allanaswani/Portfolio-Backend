@@ -66,6 +66,23 @@ urlpatterns = [
     # Profile
     path("profile/",                      views.BranchProfileView.as_view()),
 
+    # Drawdowns (drawdown_daily, scoped by unit_code — see drawdown_queries.py).
+    # The /<branch> forms are the EXCO/CEO drill-down, same rule as the customer
+    # routes above: _branch_filter ignores the URL branch for everyone else.
+    path("drawdowns/summary/",            views.BranchDrawdownsSummaryView.as_view()),
+    path("drawdowns/summary/<str:branch>", views.BranchDrawdownsSummaryView.as_view()),
+    path("drawdowns/list/",               views.BranchDrawdownsListView.as_view()),
+    path("drawdowns/list/<str:branch>",   views.BranchDrawdownsListView.as_view()),
+    path("drawdowns/by_product/",         views.BranchDrawdownsByProductView.as_view()),
+    path("drawdowns/by_seller/",          views.BranchDrawdownsBySellerView.as_view()),
+    path("drawdowns/monthly/",            views.BranchDrawdownsMonthlyView.as_view()),
+
+    # Staff & departmental cost
+    path("staff/departments/",            views.BranchStaffDepartmentsView.as_view()),
+    path("staff/departments/<str:branch>", views.BranchStaffDepartmentsView.as_view()),
+    path("staff/list/",                   views.BranchStaffListView.as_view()),
+    path("staff/list/<str:branch>",       views.BranchStaffListView.as_view()),
+
     # Property Holdings ("amounts sold" — org-wide today, see views.py note)
     path("property_holdings/summary/",    views.BranchPropertyHoldingsSummaryView.as_view()),
     path("property_holdings/by_project/", views.BranchPropertyHoldingsByProjectView.as_view()),

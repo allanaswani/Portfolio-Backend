@@ -104,6 +104,12 @@ urlpatterns = [
     path("branch_final_employee_dmc_data/<int:pk>/",   lv.BranchFinalEmployeeDmcDetailView.as_view()),
     path("branch_final_employee_dmc_data/",            lv.BranchFinalEmployeeDmcListCreateView.as_view()),
 
+    # Branch department cost (Finance capture — the only source of per-branch
+    # departmental cost; nothing in the warehouse carries one)
+    path("branch-department-costs/upload-csv/", lv.BranchDepartmentCostCsvUploadView.as_view()),
+    path("branch-department-costs/<int:pk>/",   lv.BranchDepartmentCostDetailView.as_view()),
+    path("branch-department-costs/",            lv.BranchDepartmentCostListCreateView.as_view()),
+
     # Drawdowns (managed Drawdown + warehouse DrawdownDaily read-only)
     path("drawdowns/upload-csv/",   lv.DrawdownCsvUploadView.as_view()),
     path("drawdowns/<int:pk>/",     lv.DrawdownDetailView.as_view()),

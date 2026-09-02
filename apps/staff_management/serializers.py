@@ -10,7 +10,7 @@ from .models import (
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
     # Managed mirror tables for manual uploads of warehouse datasets
     DailySalesAccountsWithCtoUpload, DailyDormancyConvertedAccountUpload,
-    MerchantBankTillManualUpload,
+    MerchantBankTillManualUpload, BranchDepartmentCost,
 )
 from apps.portfolio.models import RetailAllocatedPortfolioUpload
 
@@ -229,3 +229,45 @@ class RetailAllocatedPortfolioUploadSerializer(serializers.ModelSerializer):
     class Meta:
         model = RetailAllocatedPortfolioUpload
         fields = "__all__"
+
+
+# ── Branch department cost (manually captured — no warehouse source) ───────────
+
+class BranchDepartmentCostSerializer(serializers.ModelSerializer):
+    """Cost for one department at one branch for one month.
+
+    ``period`` is a convenience read-only "YYYY-MM" so the frontend can key rows
+    without reassembling year/month itself.
+    """
+
+    period = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BranchDepartmentCost
+        fields = "__all__"
+        read_only_fields = ("updated_at",)
+        # DRF 3.15 auto-derives a UniqueTogetherValidator from the model's
+        # UniqueConstraint, which would 400 a re-submitted month before the view
+        # got the chance to UPDATE it. Correcting a month must be allowed; the
+        # database constraint still guarantees one row per branch/dept/period.
+        validators = []
+
+    def get_period(self, obj) -> str:
+        return f"{obj.year}-{obj.month:02d}"
+
+    def validate_month(self, value):
+        if not 1 <= int(value) <= 12:
+            raise serializers.ValidationError("month must be between 1 and 12")
+        return value
+
+    def validate_branch(self, value):
+        cleaned = " ".join(str(value or "").split()).upper()
+        if not cleaned:
+            raise serializers.ValidationError("branch is required")
+        return cleaned
+
+    def validate_department(self, value):
+        cleaned = " ".join(str(value or "").split())
+        if not cleaned:
+            raise serializers.ValidationError("department is required")
+        return cleaned

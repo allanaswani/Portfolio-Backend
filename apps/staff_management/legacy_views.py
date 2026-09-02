@@ -32,6 +32,7 @@ from .models import (
     DailyDormancyConvertedAccount, MerchantBankTillManualData, IapplyLoanApproval,
     Product, StaffEmployeeData, LeaveRecord, EmployeeRoleHistory, RmKPIBaseSummary,
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
+    BranchDepartmentCost,
 )
 from apps.portfolio.models import RetailAllocatedPortfolio
 from .serializers import (
@@ -43,7 +44,7 @@ from .serializers import (
     ProductSerializer, StaffEmployeeDataSerializer, LeaveRecordSerializer,
     EmployeeRoleHistorySerializer, RmKPIBaseSummarySerializer,
     MissingEmployeeActualSerializer, TelesalesStaffSerializer,
-    TelesalesDormantTillsAllocationSerializer,
+    TelesalesDormantTillsAllocationSerializer, BranchDepartmentCostSerializer,
 )
 
 TAG = ["Staff Management — Legacy Data"]
@@ -793,5 +794,82 @@ class RetailAllocatedPortfolioUploadCsvView(AmendingCsvUploadView):
         RetailAllocatedPortfolio.objects.update_or_create(
             cust_id=serializer.validated_data.get("cust_id"),
             defaults=serializer.validated_data,
+        )
+        return None
+
+
+# ── Branch department cost (manually captured — no warehouse source) ───────────
+# The organisation has no cost table at any grain: the "costs per department"
+# figures on the CEO deck are hard-coded constants in the frontend with no branch
+# dimension. These endpoints are the capture point for the real numbers, so the
+# branch Staff & Costs page can show a measured figure instead of an apportioned
+# guess. See apps/staff_management/models.py::BranchDepartmentCost.
+
+
+@extend_schema(tags=TAG)
+class BranchDepartmentCostListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = BranchDepartmentCostSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ["branch", "department", "year", "month"]
+    search_fields = ["branch", "department", "notes"]
+    queryset = BranchDepartmentCost.objects.all()
+
+    def perform_create(self, serializer):
+        data = serializer.validated_data
+        # Upsert: re-submitting a month corrects it rather than stacking a second
+        # row that would silently double the department's cost.
+        obj, _ = BranchDepartmentCost.objects.update_or_create(
+            branch=data["branch"], department=data["department"],
+            year=data["year"], month=data["month"],
+            defaults={**data, "updated_by": self.request.user.get_username()},
+        )
+        serializer.instance = obj
+
+
+@extend_schema(tags=TAG)
+class BranchDepartmentCostDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = BranchDepartmentCostSerializer
+    queryset = BranchDepartmentCost.objects.all()
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user.get_username())
+
+
+@extend_schema(tags=TAG)
+class BranchDepartmentCostCsvUploadView(AmendingCsvUploadView):
+    """CSV: branch, department, year, month, amount[, staff_cost, other_cost, notes].
+
+    Upserts on (branch, department, year, month), so Finance can re-send a
+    corrected month without creating duplicates.
+    """
+
+    model = BranchDepartmentCost
+    serializer_class = BranchDepartmentCostSerializer
+    result_filename = "branch_department_cost_upload_results"
+    excluded_columns = ("id", "updated_at", "updated_by")
+
+    def required_columns(self):
+        return ["branch", "department", "year", "month", "amount"]
+
+    def amend_row(self, row):
+        # Excel exports money as "1,234,567.00"; the serializer would reject it.
+        for field in ("amount", "staff_cost", "other_cost"):
+            value = row.get(field)
+            if isinstance(value, str):
+                cleaned = value.replace(",", "").replace('"', "").strip()
+                # amount is NOT NULL with a 0 default; the optional split
+                # columns are nullable, so a blank there stays blank.
+                row[field] = cleaned or ("0" if field == "amount" else None)
+        return row
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        BranchDepartmentCost.objects.update_or_create(
+            branch=data["branch"], department=data["department"],
+            year=data["year"], month=data["month"],
+            defaults={**data, "updated_by": self.request.user.get_username()},
         )
         return None
