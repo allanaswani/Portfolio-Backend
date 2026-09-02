@@ -33,7 +33,9 @@ from rest_framework.test import APIClient
 from apps.branch_portfolio import drawdown_queries as dq
 from apps.branch_portfolio import staff_queries as sq
 from apps.portfolio.models import Profile
-from apps.staff_management.models import BranchDepartmentCost, BranchFinalEmployeeDmcData
+from apps.staff_management.models import (
+    BranchDepartmentCost, BranchFinalEmployeeDmcData, Drawdown,
+)
 from core import branch_codes
 
 BM = "/branch_portfolio/"
@@ -108,6 +110,42 @@ class BranchCodeResolutionTests(TestCase):
     def test_an_unknown_branch_resolves_to_nothing(self):
         self.assertEqual(branch_codes.branch_codes_for("NO SUCH BRANCH"), [])
         self.assertEqual(branch_codes.branch_codes_for(""), [])
+
+    def test_the_drawdown_table_is_a_source(self):
+        """`drawdown` pairs unit_code with branch, so it maps codes the staff
+        roster has never seen."""
+        Drawdown.objects.create(unit_code=901, branch="KISII BRANCH")
+        branch_codes.reset_cache()
+        self.assertEqual(branch_codes.branch_codes_for("KISII BRANCH"), [901])
+
+    def test_a_code_belongs_to_exactly_one_branch(self):
+        """A handful of mislabelled rows must not hand one branch another
+        branch's code — that is precisely how a scope leaks."""
+        for _ in range(20):
+            Drawdown.objects.create(unit_code=902, branch="NYERI BRANCH")
+        Drawdown.objects.create(unit_code=902, branch="MOMBASA BRANCH")   # mislabelled
+        branch_codes.reset_cache()
+
+        # 510 is NYERI in the static map, so it keeps that too — the point is
+        # that 902 lands in exactly one branch, not in both.
+        self.assertEqual(branch_codes.branch_codes_for("NYERI BRANCH"), [510, 902])
+        self.assertNotIn(902, branch_codes.branch_codes_for("MOMBASA BRANCH"))
+        self.assertEqual(branch_codes.branch_name_for_code(902), "NYERI")
+
+    def test_live_rows_win_over_the_static_fallback(self):
+        """The static map is a gap filler; the bank's own data decides."""
+        self.assertEqual(branch_codes.branch_codes_for("BURUBURU BRANCH"), [230])
+        for _ in range(5):
+            Drawdown.objects.create(unit_code=230, branch="RONGAI BRANCH")
+        branch_codes.reset_cache()
+        self.assertEqual(branch_codes.branch_codes_for("BURUBURU BRANCH"), [])
+        self.assertIn(230, branch_codes.branch_codes_for("RONGAI BRANCH"))
+
+    def test_hf_customer_branch_code_is_not_a_source(self):
+        """It is not 1:1 with branch — on production one branch's codes matched
+        32 branches and 99.6% of the book (tests_branch_scoping.py)."""
+        self.assertNotIn(
+            "hf_customer", [table for table, _, _ in branch_codes._LIVE_SOURCES])
 
 
 class DepartmentRollupTests(SimpleTestCase):

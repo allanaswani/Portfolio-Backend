@@ -72,10 +72,34 @@ visible where a department name came from.
 
 ## If a branch shows nothing
 
-`drawdown_daily` has no branch column — only `unit_code`. `core/branch_codes.py`
-resolves a branch name to its set of codes from the live DMC roster
-(`brn_code` ↔ `staff_branch`) plus a static fallback transcribed from
-`BRANCH_CODE_CASE` in the CEO dashboard. If a branch resolves to no code the
-endpoints return **nothing**, never the whole bank, and the page shows an amber
-notice. The fix is to give that branch at least one staff row carrying its
-`brn_code`.
+`drawdown_daily` has no branch column — only `unit_code`. The branches do carry
+codes, but they live in several tables, so `core/branch_codes.py` combines them:
+
+1. **`drawdown`** — the ETL-built sibling of `drawdown_daily`, which carries
+   `unit_code` and `branch` side by side. Primary source: it is the warehouse's
+   own pairing for exactly the data being scoped.
+2. the DMC staff rosters (`brn_code` ↔ `staff_branch`).
+3. the static `BRANCH_CODE_CASE` list from the CEO dashboard, for codes no live
+   table knows.
+
+`hf_customer.branch_code` is deliberately excluded — it is not 1:1 with
+`hf_customer.branch`; on production one branch's codes matched 32 branches and
+99.6% of the book (`tests_branch_scoping.py`).
+
+**Each code is assigned to exactly one branch**, by majority vote across live
+rows, so a handful of mislabelled rows can never hand one branch another
+branch's book. If a branch still resolves to no code the endpoints return
+**nothing**, never the whole bank, and the page shows an amber notice.
+
+Inspect the live mapping instead of guessing:
+
+```bash
+docker exec hf-backend python manage.py branch_codes              # the whole map
+docker exec hf-backend python manage.py branch_codes --branch "MOMBASA BRANCH"
+docker exec hf-backend python manage.py branch_codes --conflicts  # codes two branches claim
+docker exec hf-backend python manage.py branch_codes --unmapped   # unit_codes on no branch page
+```
+
+`--unmapped` is the one to run after deploying: it lists any `unit_code` in
+`drawdown_daily` that resolves to no branch, with its row count and value, so
+drawdowns that would be invisible to every branch page are visible to you.
