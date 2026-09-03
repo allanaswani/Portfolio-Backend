@@ -1,15 +1,22 @@
 """Guards for the HR employee-master upload (``employee-data/upload-csv/``).
 
-The rule this endpoint has to keep is that an upload can only ever ADD to what
-HR already has. It keys on ``staff_id`` so a re-upload updates in place; a blank
-cell leaves the stored value alone; and nobody who is absent from the file is
-touched. Get any of those wrong and one partial extract silently wipes columns
-across the whole 1,271-row roster.
+This endpoint is a port of the data team's
+``cleaning_and_updating_staff_information.py``, so the tests pin the script's
+contract rather than a convenient one:
+
+* ``full_list`` **inserts only** — a person already on the roster is left alone,
+  which is what makes re-uploading last month's workbook safe;
+* ``exits`` / ``promotions`` update **ten columns and no others** — a promotion
+  file must not overwrite an email or a date of birth;
+* ``age``, ``service_years``, ``exit``, ``promotion``, ``new``, ``grade`` and
+  ``division`` are DERIVED, never taken from the sheet;
+* nobody is ever deleted;
+* the same workbook maintains ``hfdi_employee_data``.
 
 ``employee_table`` is a ``managed = False`` warehouse mirror, so a test database
-has no such table. It is built here from the model Django already carries for it
-so the writes run against a real schema rather than a mock — which is also what
-proves the column names in the loader exist.
+has no such table. It is built here from the model Django already carries for it,
+so the loader runs against a real schema — which is also what proves its column
+names exist.
 """
 
 import io
@@ -20,10 +27,14 @@ from django.db import connection
 from django.test import SimpleTestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
-from apps.gceo_dashboard.models import EmployeeRosterOverlay, EmployeeTable
+from apps.gceo_dashboard.models import EmployeeTable
+from apps.hfdi.models import HfdiEmployeeData
 from apps.staff_management import employee_master_views as emv
 
 URL = "/staff_management/employee-data/upload-csv/"
+
+# HR's own header row, in HR's own spelling.
+HEADER = emv.WORKBOOK_COLUMNS
 
 
 def employees():
@@ -35,64 +46,161 @@ def employees():
     """
     return EmployeeTable.objects.using(emv.employee_db())
 
-FULL_HEADER = ",".join(emv.TEMPLATE_COLUMNS)
 
+def workbook(sheets, name="staff.xlsx"):
+    """An .xlsx of ``{sheet_name: [row dict, ...]}``, columns in HR's order."""
+    import pandas as pd
 
-def csv_file(text, name="employees.csv"):
-    buf = io.BytesIO(text.encode("utf-8"))
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for sheet, rows in sheets.items():
+            frame = pd.DataFrame(rows, columns=HEADER)
+            frame.to_excel(writer, sheet_name=sheet, index=False)
+    buf.seek(0)
     buf.name = name
     return buf
 
 
-class TemplateColumnTests(SimpleTestCase):
-    """The template has to carry every field the roster page shows."""
-
-    def test_every_employee_table_column_is_in_the_template(self):
-        skip = {"id", "updated_at"}
-        model_columns = [
-            f.name for f in EmployeeTable._meta.concrete_fields if f.name not in skip
-        ]
-        missing = [c for c in model_columns if c not in emv.TEMPLATE_COLUMNS]
-        self.assertEqual(missing, [], f"template is missing {missing}")
-
-    def test_the_three_hand_maintained_columns_are_in_the_template(self):
-        # standard_department / current_role / previous_role live in the overlay,
-        # not in employee_table — one upload must still maintain both tables.
-        for col in ("standard_department", "current_role", "previous_role"):
-            self.assertIn(col, emv.TEMPLATE_COLUMNS)
-
-    def test_staff_id_leads_and_nothing_repeats(self):
-        self.assertEqual(emv.TEMPLATE_COLUMNS[0], "staff_id")
-        self.assertEqual(len(emv.TEMPLATE_COLUMNS), len(set(emv.TEMPLATE_COLUMNS)))
+def person(staffid, name, **overrides):
+    row = {column: None for column in HEADER}
+    row.update({"staffid": staffid, "name": name})
+    row.update(overrides)
+    return row
 
 
-class ParsingTests(SimpleTestCase):
+class WorkbookShapeTests(SimpleTestCase):
+    """The template has to match the file HR actually produces."""
+
+    def test_the_header_is_hrs_spelling_not_the_databases(self):
+        # The source workbook misspells this one; renaming it would silently
+        # stop the column matching.
+        self.assertIn("date of employement", emv.WORKBOOK_COLUMNS)
+        for column in ("staffid", "idno", "org unit", "service yrs", "effective date"):
+            self.assertIn(column, emv.WORKBOOK_COLUMNS)
+
+    def test_every_header_maps_to_a_real_employee_table_column(self):
+        model_fields = {f.name for f in EmployeeTable._meta.concrete_fields}
+        for column in emv.WORKBOOK_COLUMNS:
+            mapped = emv.normalize_header(column)
+            self.assertIn(mapped, model_fields, f"{column} -> {mapped}")
+
+    def test_the_three_sheets_are_the_scripts_three_sheets(self):
+        self.assertEqual(emv.SHEETS, ("full_list", "exits", "promotions"))
+
+    def test_sheet_names_are_matched_loosely(self):
+        for raw in ("full_list", "Full List", " FULL-LIST "):
+            self.assertEqual(emv.normalize_sheet_name(raw), "full_list")
+
+    def test_the_update_touches_only_the_scripts_ten_columns(self):
+        self.assertEqual(sorted(emv.UPDATE_COLUMNS), sorted([
+            "exit", "staff_exit_date", "promotion", "promotion_date",
+            "service_code", "department", "unit", "org_unit", "grade", "job_title",
+        ]))
+
+
+class CleanerTests(SimpleTestCase):
+    """The derivations, straight out of the script."""
+
+    def clean(self, rows):
+        import pandas as pd
+        return emv.clean_staff_list(pd.DataFrame(rows, columns=HEADER))
+
+    def test_a_row_with_no_name_is_dropped(self):
+        rows = self.clean([person(1, "Grace Kanja"), person(2, None)])
+        self.assertEqual([r["name"] for r in rows], ["Grace Kanja"])
+
+    def test_age_and_service_years_are_recomputed_not_read(self):
+        rows = self.clean([person(
+            1, "Grace Kanja", **{"date of birth": "1990-01-01",
+                                 "date of employement": "2020-01-01",
+                                 "age": 999, "service yrs": 999})])
+        self.assertNotEqual(rows[0]["age"], 999)
+        self.assertNotEqual(rows[0]["service_years"], 999)
+        self.assertGreater(rows[0]["age"], 30)
+        self.assertGreaterEqual(rows[0]["service_years"], 5)
+
+    def test_grade_is_mapped_then_padded_to_two_digits(self):
+        rows = self.clean([
+            person(1, "A", grade="O2"), person(2, "B", grade="UNC"),
+            person(3, "C", grade="5"),  person(4, "D", grade="10"),
+        ])
+        self.assertEqual([r["grade"] for r in rows], ["02", "01", "05", "10"])
+
+    def test_division_follows_the_department_for_hfbi_and_hfdi(self):
+        rows = self.clean([
+            person(1, "A", department="HFDI", division="Retail"),
+            person(2, "B", department="HFBI", division="Retail"),
+            person(3, "C", department="Retail Banking", division="Retail"),
+        ])
+        self.assertEqual([r["division"] for r in rows], ["HFDI", "HFBI", "Retail"])
+
+    def test_the_flags_come_from_the_dates(self):
+        rows = self.clean([
+            person(1, "Exited", **{"staff_exit_date": "2026-02-01"}),
+            person(2, "Promoted", **{"effective date": "2026-03-01"}),
+            person(3, "Neither"),
+        ])
+        self.assertEqual([r["exit"] for r in rows], [1, 0, 0])
+        self.assertEqual([r["promotion"] for r in rows], [0, 1, 0])
+
+    def test_new_is_set_only_for_this_years_hires(self):
+        import datetime as dt
+        this_year = dt.date.today().year
+        rows = self.clean([
+            person(1, "Fresh", **{"date of employement": f"{this_year}-02-01"}),
+            person(2, "Old",   **{"date of employement": "2015-02-01"}),
+        ])
+        self.assertEqual([r["new"] for r in rows], [1, 0])
+
+    def test_a_missing_optional_column_does_not_abort_the_sheet(self):
+        """The script would KeyError and abandon the file, telling nobody why."""
+        import pandas as pd
+        rows = emv.clean_staff_list(pd.DataFrame([{"staffid": 1, "name": "Grace"}]))
+        self.assertEqual(rows[0]["staff_id"], 1)
+        self.assertIsNone(rows[0]["department"])
+
+    def test_a_sheet_with_no_name_column_is_reported_not_silently_empty(self):
+        import pandas as pd
+        with self.assertRaises(ValueError):
+            emv.clean_staff_list(pd.DataFrame([{"staffid": 1}]))
+
     def test_staff_id_shapes_collapse_to_one_key(self):
-        for raw in ("4022", "4022.0", " 4022.00000 ", "4,022"):
-            self.assertEqual(emv.canon_staff_id(raw), "4022")
-        self.assertEqual(emv.canon_staff_id(""), "")
-        self.assertEqual(emv.canon_staff_id(None), "")
+        for raw in ("4022", "4022.0", " 4022.00000 ", "4,022", 4022.0):
+            self.assertEqual(emv.canon_staff_id(raw), 4022)
+        for blank in ("", "  ", "nan", None):
+            self.assertIsNone(emv.canon_staff_id(blank))
 
-    def test_dates_parse_in_the_shapes_excel_exports(self):
-        for raw in ("2020-01-15", "15/01/2020", "15-Jan-2020", "15 Jan 2020"):
-            parsed = emv.parse_date(raw)
-            self.assertIsNotNone(parsed, raw)
-            self.assertEqual((parsed.year, parsed.month, parsed.day), (2020, 1, 15))
-        for blank in ("", "  ", "NaT", "-", "not a date"):
-            self.assertIsNone(emv.parse_date(blank))
 
-    def test_flags_accept_yes_no_as_well_as_1_0(self):
-        self.assertEqual(emv.parse_int("Yes"), 1)
-        self.assertEqual(emv.parse_int("no"), 0)
-        self.assertEqual(emv.parse_int("1"), 1)
-        self.assertEqual(emv.parse_int("1,200"), 1200)
-        self.assertIsNone(emv.parse_int(""))
+class HfdiReshapeTests(SimpleTestCase):
+    def test_only_hfdi_rows_are_taken_and_the_name_is_cleaned(self):
+        rows = [
+            {"staff_id": 1, "name": "  grace   KANJA ", "department": "HFDI",
+             "unit": "Sales", "job_title": "Agent", "date_of_employment": None,
+             "staff_exit_date": None},
+            {"staff_id": 2, "name": "John", "department": "Retail Banking",
+             "unit": None, "job_title": None, "date_of_employment": None,
+             "staff_exit_date": None},
+        ]
+        out = emv.clean_department_staff_list(rows, "HFDI")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["staff_name"], "Grace Kanja")
+        self.assertEqual(out[0]["sales_code"], "1")
+        self.assertEqual(out[0]["active"], 1)
 
-    def test_headers_are_matched_tolerantly(self):
-        self.assertEqual(emv.normalize_header(" Staff ID "), "staff_id")
-        self.assertEqual(emv.normalize_header("PF Number"), "staff_id")
-        self.assertEqual(emv.normalize_header("Date Of Employment"), "date_of_employment")
-        self.assertEqual(emv.normalize_header("Exit Date"), "staff_exit_date")
+    def test_an_exit_date_makes_the_hfdi_record_inactive(self):
+        import datetime as dt
+        rows = [{"staff_id": 1, "name": "Grace", "department": "HFDI", "unit": None,
+                 "job_title": None, "date_of_employment": None,
+                 "staff_exit_date": dt.date(2026, 2, 1)}]
+        out = emv.clean_department_staff_list(rows, "HFDI")
+        self.assertEqual((out[0]["active"], out[0]["staff_exit"]), (0, 1))
+
+    def test_start_date_is_january_for_anyone_hired_before_this_year(self):
+        import datetime as dt
+        today = dt.date(2026, 6, 1)
+        self.assertEqual(emv._hfdi_start_date(dt.date(2020, 5, 9), today), dt.date(2026, 1, 1))
+        self.assertEqual(emv._hfdi_start_date(dt.date(2026, 5, 9), today), dt.date(2026, 5, 1))
+        self.assertIsNone(emv._hfdi_start_date(None, today))
 
 
 class UploadTests(TransactionTestCase):
@@ -114,134 +222,199 @@ class UploadTests(TransactionTestCase):
         with connection.schema_editor() as editor:
             editor.delete_model(EmployeeTable)
 
-    def post(self, text):
-        return self.client.post(URL, {"file": csv_file(text)}, format="multipart")
+    def post(self, sheets, name="staff.xlsx"):
+        return self.client.post(URL, {"file": workbook(sheets, name)}, format="multipart")
 
-    # ── the happy path ───────────────────────────────────────────────────────
+    # ── full_list ────────────────────────────────────────────────────────────
     def test_a_full_row_lands_in_every_column(self):
-        row = {c: "" for c in emv.TEMPLATE_COLUMNS}
-        row.update({
-            "staff_id": "4022", "name": "Grace Kanja", "national_id": "12345678",
-            "email": "grace@hfgroup.co.ke", "gender": "F", "service_code": "SC1",
-            "division": "Retail", "department": "Retail Banking", "unit": "Branch",
-            "org_unit": "BR-230", "grade": "5", "job_title": "Relationship Manager",
-            "date_of_birth": "1990-05-04", "age": "36",
-            "date_of_employment": "15/01/2020", "service_years": "6",
-            "exit": "0", "promotion": "1", "promotion_date": "01/07/2025",
-            "new": "0", "hfdi_erp_id": "77",
-            "standard_department": "Retail Banking",
-            "current_role": "Relationship Manager", "previous_role": "Teller",
-        })
-        text = FULL_HEADER + "\n" + ",".join(row[c] for c in emv.TEMPLATE_COLUMNS) + "\n"
+        resp = self.post({"full_list": [person(
+            4022, "Grace Kanja", **{
+                "idno": "12345678", "email": "grace@hfgroup.co.ke",
+                "date of birth": "1990-05-04", "gender": "F",
+                "date of employement": "2020-01-15", "service code": "SC1",
+                "division": "Retail", "department": "Retail Banking",
+                "unit": "Branch", "org unit": "BR-230", "grade": "5",
+                "job title": "Relationship Manager"})]})
 
-        resp = self.post(text)
         self.assertEqual(resp.status_code, 200, resp.data)
-        self.assertEqual(resp.data["created"], 1)
+        self.assertEqual(resp.data["inserted"], 1)
         self.assertEqual(resp.data["error_count"], 0, resp.data["errors"])
 
         emp = employees().get()
         self.assertEqual(int(emp.staff_id), 4022)
         self.assertEqual(emp.name, "Grace Kanja")
+        self.assertEqual(emp.national_id, "12345678")
+        self.assertEqual(emp.email, "grace@hfgroup.co.ke")
         self.assertEqual(emp.department, "Retail Banking")
         self.assertEqual(emp.org_unit, "BR-230")
-        self.assertEqual(emp.grade, "5")
+        self.assertEqual(emp.grade, "05")           # padded
         self.assertEqual(emp.job_title, "Relationship Manager")
-        self.assertEqual(emp.age, 36)
-        self.assertEqual(emp.service_years, 6)
-        self.assertEqual(emp.hfdi_erp_id, 77)
         self.assertEqual(emp.date_of_employment.date().isoformat(), "2020-01-15")
-        self.assertEqual(emp.promotion_date.isoformat(), "2025-07-01")
+        self.assertEqual(emp.hfdi_erp_id, 0)
+        self.assertEqual(emp.exit, 0)
 
-        # The three hand-maintained columns went to the overlay, not employee_table.
-        overlay = EmployeeRosterOverlay.objects.get(staff_id="4022")
-        self.assertEqual(overlay.standard_department, "Retail Banking")
-        self.assertEqual(overlay.previous_role, "Teller")
-        self.assertEqual(overlay.updated_by, "hradmin")
+    def test_full_list_inserts_only_and_leaves_existing_people_alone(self):
+        """Re-uploading last month's workbook must not rewrite the roster."""
+        self.post({"full_list": [person(4022, "Grace Kanja", grade="5",
+                                        **{"job title": "Relationship Manager"})]})
+        resp = self.post({"full_list": [
+            person(4022, "SOMEONE ELSE", grade="9", **{"job title": "Cleaner"}),
+            person(5001, "John Mwangi"),
+        ]})
 
-    # ── the rules that protect existing HR data ──────────────────────────────
-    def test_reupload_updates_in_place_and_never_duplicates(self):
-        first = f"{FULL_HEADER}\n" + "4022," + ",".join(
-            ["Grace Kanja"] + [""] * (len(emv.TEMPLATE_COLUMNS) - 2)) + "\n"
-        self.post(first)
-        self.assertEqual(employees().count(), 1)
+        self.assertEqual(resp.data["inserted"], 1)          # only the new person
+        self.assertEqual(resp.data["already_present"], 1)
+        self.assertEqual(employees().count(), 2)
 
-        second = "staff_id,name,grade\n4022,Grace Kanja Mwangi,6\n"
-        resp = self.post(second)
-        self.assertEqual(resp.data["updated"], 1)
-        self.assertEqual(resp.data["created"], 0)
-        self.assertEqual(employees().count(), 1)
-
-        emp = employees().get()
-        self.assertEqual(emp.name, "Grace Kanja Mwangi")
-        self.assertEqual(emp.grade, "6")
-
-    def test_a_blank_cell_leaves_the_stored_value_alone(self):
-        """A partial extract must not wipe the columns it does not carry."""
-        self.post("staff_id,name,department,grade\n4022,Grace Kanja,Retail Banking,5\n")
-
-        # Same person, department blank, only the grade filled in.
-        resp = self.post("staff_id,name,department,grade\n4022,Grace Kanja,,6\n")
-        self.assertEqual(resp.data["updated"], 1)
-
-        emp = employees().get()
-        self.assertEqual(emp.department, "Retail Banking")  # untouched
-        self.assertEqual(emp.grade, "6")
+        emp = employees().get(staff_id=4022)
+        self.assertEqual(emp.name, "Grace Kanja")           # untouched
+        self.assertEqual(emp.job_title, "Relationship Manager")
 
     def test_nobody_absent_from_the_file_is_removed(self):
-        self.post("staff_id,name\n4022,Grace Kanja\n5001,John Mwangi\n")
+        self.post({"full_list": [person(4022, "Grace Kanja"),
+                                 person(5001, "John Mwangi")]})
+        self.post({"full_list": [person(4022, "Grace Kanja")]})
         self.assertEqual(employees().count(), 2)
 
-        self.post("staff_id,name\n4022,Grace Kanja\n")
-        self.assertEqual(employees().count(), 2)
-
-    def test_a_column_absent_from_the_csv_is_never_written(self):
-        self.post("staff_id,name,job_title\n4022,Grace Kanja,Relationship Manager\n")
-        self.post("staff_id,name\n4022,Grace Kanja\n")
-        self.assertEqual(employees().get().job_title, "Relationship Manager")
-
-    def test_an_unchanged_row_reports_unchanged_rather_than_updated(self):
-        self.post("staff_id,name,grade\n4022,Grace Kanja,5\n")
-        resp = self.post("staff_id,name,grade\n4022,Grace Kanja,5\n")
-        self.assertEqual(resp.data["unchanged"], 1)
-        self.assertEqual(resp.data["updated"], 0)
-
-    def test_rows_with_no_staff_id_are_skipped_not_imported(self):
-        resp = self.post("staff_id,name\n,Nobody\n4022,Grace Kanja\n")
-        self.assertEqual(resp.data["skipped"], 1)
-        self.assertEqual(resp.data["created"], 1)
+    def test_a_duplicate_staff_id_inside_one_sheet_is_inserted_once(self):
+        resp = self.post({"full_list": [person(4022, "Grace Kanja"),
+                                        person(4022, "Grace Kanja")]})
+        self.assertEqual(resp.data["inserted"], 1)
         self.assertEqual(employees().count(), 1)
 
-    def test_one_bad_row_does_not_abort_the_import(self):
-        text = ("staff_id,name,age\n"
-                "4022,Grace Kanja,36\n"
-                "ABC,Bad Row,x\n"          # staff_id is not a number
-                "5001,John Mwangi,41\n")
-        resp = self.post(text)
-        self.assertEqual(resp.data["created"], 2)
-        self.assertEqual(resp.data["error_count"], 1)
-        self.assertEqual(resp.data["errors"][0]["row"], 3)
-        self.assertEqual(employees().count(), 2)
+    def test_promotion_is_never_set_from_the_full_list_sheet(self):
+        resp = self.post({"full_list": [person(
+            4022, "Grace Kanja", **{"effective date": "2026-03-01"})]})
+        self.assertEqual(resp.data["inserted"], 1)
+        emp = employees().get()
+        self.assertEqual(emp.promotion, 0)
+        self.assertIsNone(emp.promotion_date)
 
-    def test_headers_from_hrs_own_export_still_match(self):
-        resp = self.post("Staff ID,Full Name,Date Of Employment,Exit Date\n"
-                         "4022,Grace Kanja,15/01/2020,\n")
-        self.assertEqual(resp.data["created"], 1, resp.data)
+    # ── exits / promotions ───────────────────────────────────────────────────
+    def test_the_exits_sheet_marks_the_person_exited(self):
+        self.post({"full_list": [person(4022, "Grace Kanja")]})
+        resp = self.post({"exits": [person(
+            4022, "Grace Kanja", **{"staff_exit_date": "2026-02-01"})]})
+
+        self.assertEqual(resp.data["updated"], 1)
+        emp = employees().get()
+        self.assertEqual(emp.exit, 1)
+        self.assertEqual(emp.staff_exit_date.isoformat(), "2026-02-01")
+
+    def test_the_promotions_sheet_moves_the_role(self):
+        self.post({"full_list": [person(4022, "Grace Kanja",
+                                        **{"job title": "Teller"})]})
+        resp = self.post({"promotions": [person(
+            4022, "Grace Kanja", **{"job title": "Relationship Manager",
+                                    "effective date": "2026-03-01",
+                                    "grade": "6", "org unit": "BR-230"})]})
+
+        self.assertEqual(resp.data["updated"], 1)
+        emp = employees().get()
+        self.assertEqual(emp.job_title, "Relationship Manager")
+        self.assertEqual(emp.grade, "06")
+        self.assertEqual(emp.org_unit, "BR-230")
+        self.assertEqual(emp.promotion, 1)
+        self.assertEqual(emp.promotion_date.isoformat(), "2026-03-01")
+
+    def test_an_update_touches_only_the_ten_columns(self):
+        """A promotions file must not overwrite an email or a date of birth."""
+        self.post({"full_list": [person(
+            4022, "Grace Kanja", **{"email": "grace@hfgroup.co.ke",
+                                    "date of birth": "1990-05-04"})]})
+        self.post({"promotions": [person(
+            4022, "WRONG NAME", **{"email": "wrong@example.com",
+                                   "date of birth": "1970-01-01",
+                                   "job title": "Relationship Manager",
+                                   "effective date": "2026-03-01"})]})
+
         emp = employees().get()
         self.assertEqual(emp.name, "Grace Kanja")
-        self.assertEqual(emp.date_of_employment.date().isoformat(), "2020-01-15")
+        self.assertEqual(emp.email, "grace@hfgroup.co.ke")
+        self.assertEqual(emp.date_of_birth.date().isoformat(), "1990-05-04")
+        self.assertEqual(emp.job_title, "Relationship Manager")
 
-    # ── request-level guards ─────────────────────────────────────────────────
-    def test_a_csv_without_staff_id_is_rejected_whole(self):
-        resp = self.post("name,department\nGrace Kanja,Retail Banking\n")
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("staff_id", resp.data["error"])
+    def test_a_person_in_both_sheets_keeps_both_flags(self):
+        self.post({"full_list": [person(4022, "Grace Kanja")]})
+        resp = self.post({
+            "exits": [person(4022, "Grace Kanja", **{"staff_exit_date": "2026-04-01"})],
+            "promotions": [person(4022, "Grace Kanja", **{"effective date": "2026-03-01"})],
+        })
+        self.assertEqual(resp.data["updated"], 1)
+        emp = employees().get()
+        self.assertEqual((emp.exit, emp.promotion), (1, 1))
+        self.assertEqual(emp.staff_exit_date.isoformat(), "2026-04-01")
+        self.assertEqual(emp.promotion_date.isoformat(), "2026-03-01")
+
+    def test_an_update_for_somebody_not_on_the_roster_is_counted_not_inserted(self):
+        resp = self.post({"exits": [person(9999, "Ghost",
+                                           **{"staff_exit_date": "2026-02-01"})]})
+        self.assertEqual(resp.data["not_found"], 1)
         self.assertEqual(employees().count(), 0)
 
-    def test_no_file_and_non_csv_are_rejected(self):
+    def test_all_three_sheets_in_one_pass(self):
+        self.post({"full_list": [person(4022, "Grace Kanja")]})
+        resp = self.post({
+            "full_list":  [person(5001, "John Mwangi")],
+            "exits":      [person(4022, "Grace Kanja", **{"staff_exit_date": "2026-02-01"})],
+            "promotions": [person(4022, "Grace Kanja", **{"effective date": "2026-01-05"})],
+        })
+        self.assertEqual(resp.data["inserted"], 1)
+        self.assertEqual(resp.data["updated"], 1)
+        self.assertEqual(sorted(resp.data["sheets"]["used"]),
+                         ["exits", "full_list", "promotions"])
+
+    # ── hfdi_employee_data ───────────────────────────────────────────────────
+    def test_the_same_workbook_maintains_hfdi_employee_data(self):
+        resp = self.post({"full_list": [
+            person(7001, "  amina   OMAR ", department="HFDI", unit="Sales",
+                   **{"job title": "Sales Agent", "date of employement": "2020-03-04"}),
+            person(4022, "Grace Kanja", department="Retail Banking"),
+        ]})
+        self.assertEqual(resp.data["hfdi"]["inserted"], 1)
+
+        row = HfdiEmployeeData.objects.get()
+        self.assertEqual(row.staff_pf_number, 7001)
+        self.assertEqual(row.staff_name, "Amina Omar")
+        self.assertEqual(row.staff_role, "Sales Agent")
+        self.assertEqual(row.input_user, "Strategy Employee Update")
+        self.assertEqual(row.active, 1)
+
+    def test_an_hfdi_exit_deactivates_rather_than_duplicates(self):
+        self.post({"full_list": [person(7001, "Amina Omar", department="HFDI")]})
+        resp = self.post({"exits": [person(7001, "Amina Omar", department="HFDI",
+                                           **{"staff_exit_date": "2026-02-01"})]})
+        self.assertEqual(HfdiEmployeeData.objects.count(), 1)
+        self.assertEqual(resp.data["hfdi"]["exits_updated"], 1)
+
+        row = HfdiEmployeeData.objects.get()
+        self.assertEqual((row.active, row.staff_exit), (0, 1))
+        self.assertEqual(row.exit_date.isoformat(), "2026-02-01")
+
+    # ── file-level guards ────────────────────────────────────────────────────
+    def test_a_single_csv_is_read_as_a_full_list(self):
+        text = ",".join(HEADER) + "\n" + "4022,Grace Kanja" + "," * (len(HEADER) - 2) + "\n"
+        buf = io.BytesIO(text.encode("utf-8"))
+        buf.name = "staff.csv"
+        resp = self.client.post(URL, {"file": buf}, format="multipart")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["inserted"], 1)
+
+    def test_a_workbook_with_no_recognised_sheet_is_rejected_whole(self):
+        resp = self.post({"Sheet1": [person(4022, "Grace Kanja")]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("full_list", resp.data["error"])
+        self.assertEqual(employees().count(), 0)
+
+    def test_an_unrecognised_sheet_alongside_a_good_one_is_reported_not_loaded(self):
+        resp = self.post({"full_list": [person(4022, "Grace Kanja")],
+                          "notes": [person(5001, "John Mwangi")]})
+        self.assertEqual(resp.data["inserted"], 1)
+        self.assertEqual(resp.data["sheets"]["ignored"], ["notes"])
+
+    def test_no_file_and_a_wrong_extension_are_rejected(self):
         self.assertEqual(self.client.post(URL, {}, format="multipart").status_code, 400)
-        resp = self.client.post(
-            URL, {"file": csv_file("staff_id\n4022\n", name="employees.xlsx")},
-            format="multipart")
+        resp = self.post({"full_list": [person(4022, "Grace Kanja")]}, name="staff.txt")
         self.assertEqual(resp.status_code, 400)
 
     def test_only_staff_management_may_upload(self):
@@ -249,13 +422,13 @@ class UploadTests(TransactionTestCase):
         outsider = User.objects.create_user("someone", password="x")
         client = APIClient()
         client.force_authenticate(outsider)
-        resp = client.post(URL, {"file": csv_file("staff_id,name\n4022,Grace\n")},
+        resp = client.post(URL, {"file": workbook({"full_list": [person(4022, "G")]})},
                            format="multipart")
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(employees().count(), 0)
 
     def test_anonymous_is_rejected(self):
-        client = APIClient()
-        resp = client.post(URL, {"file": csv_file("staff_id,name\n4022,Grace\n")},
-                           format="multipart")
+        resp = APIClient().post(
+            URL, {"file": workbook({"full_list": [person(4022, "G")]})},
+            format="multipart")
         self.assertIn(resp.status_code, (401, 403))

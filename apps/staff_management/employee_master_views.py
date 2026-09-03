@@ -1,49 +1,60 @@
-"""Employee master upload — the full HR roster (``employee_table``).
+"""Employee master upload — the HR staff workbook (``employee_table``).
 
-This is the port of the old backend's
-``staff_management.views.UploadAndProcessEmployeeData``, still mounted at the
-same path: ``employee-data/upload-csv/``.
+Port of the old backend's ``staff_management.views.UploadAndProcessEmployeeData``,
+still mounted at the same path: ``employee-data/upload-csv/``.
 
-WHY IT LOADS THE FILE INSTEAD OF SHELLING OUT
----------------------------------------------
-The original view did three things: clear ``../etls/temp_files``, drop the
-uploaded file there, then ``bash ../etls/initiate_update_employee_information.sh
-<file>`` and hand the script's stdout back to the browser. That worked because
-the old backend ran ON the ETL host. This backend runs in a container that has
-neither the ``etls`` tree nor the data team's python3.6 (see
-``core/script_trigger`` and [[container-deploy]]), so a verbatim port would
-return ``Failed to execute processing script`` on every upload — a dead button.
+WHAT THE OLD ENDPOINT ACTUALLY DID
+----------------------------------
+It saved the upload into ``../etls/temp_files`` and ran
+``initiate_update_employee_information.sh``, which is a thin wrapper around the
+data team's ``cleaning_and_updating_staff_information.py`` (``datawarehouse-etls``).
+That script is the real contract, and this module is a port of it. The shell-out
+itself cannot survive the move: this backend runs in a container with neither the
+``etls`` tree nor the host's python3.6, so a verbatim port of the *view* would
+answer "Failed to execute processing script" on every upload. (The
+queue-a-request-file pattern in ``core/script_trigger`` is for the report
+scripts, which email their own output; this button has to report how many rows
+landed, so it does the load itself.)
 
-The script's job was to load the file into ``employee_table``. That is what this
-view does directly, in the same database, with the semantics the old loader had:
+THE FILE HR UPLOADS
+-------------------
+An Excel workbook with up to three sheets, each carrying the same header row:
 
-* **Upsert on ``staff_id``** — re-uploading the same file updates in place; it
-  never duplicates a person and never deletes anyone who is absent from the file.
-* **A blank cell leaves the stored value alone.** HR routinely uploads a partial
-  extract (say only departments and grades filled in). Writing NULL for every
-  empty cell would wipe columns nobody intended to touch.
-* Dates and numbers arrive in whatever shape Excel exported, so both are parsed
-  leniently rather than rejected.
+* ``full_list``   — the whole company. Only people **not already in**
+  ``employee_table`` are INSERTED from it. Nobody is updated from this sheet and
+  nobody is ever deleted, which is why re-uploading last month's file is safe.
+* ``exits``       — people who have left.
+* ``promotions``  — people who moved role.
 
-``employee_table`` is a ``managed = False`` warehouse mirror; writing it from the
-manual admin endpoint is the same thing the other manual warehouse uploads in
-``legacy_views`` do. Two production quirks are handled explicitly:
+``exits`` and ``promotions`` are combined and UPDATE ten columns on the existing
+row: ``exit``, ``staff_exit_date``, ``promotion``, ``promotion_date``,
+``service_code``, ``department``, ``unit``, ``org_unit``, ``grade``,
+``job_title``. A lone CSV is read as a single ``full_list`` sheet.
 
-* the table's ``id`` can have no sequence/identity default (see
-  [[prod-schema-drift]] — reads work, inserts 500 with *null value in column
-  "id"*). When it has none the view supplies the id itself;
-* the table can hold repeat rows for one ``staff_id`` — the most recent row
-  (highest id) is the one updated.
+Headers are HR's own, not the database's — ``staffid``, ``idno``, ``date of
+employement`` (sic), ``service yrs``, ``org unit``, ``effective date`` — and
+several columns are DERIVED rather than read: ``age`` and ``service_years`` are
+recomputed from the dates, ``exit`` / ``promotion`` / ``new`` are flags off those
+dates, ``grade`` is normalised to two digits, and ``division`` is forced to match
+``department`` for HFBI and HFDI. All of that is ported from the script, so a
+file that loaded before loads the same way.
 
-The three columns the roster page maintains by hand — ``standard_department``,
-``current_role``, ``previous_role`` — do not exist in ``employee_table``. When
-the CSV carries them they are written to the managed ``employee_roster_overlay``
-companion, so ONE upload maintains the whole page rather than two.
+The script also maintains ``hfdi_employee_data`` from the HFDI rows of the same
+workbook (insert the new ones, mark the exits inactive); that runs here too.
+
+Two production quirks the host script never had to think about are handled:
+
+* ``employee_table.id`` may have no sequence or identity default (see
+  [[prod-schema-drift]]) — Postgres then substitutes NULL and only INSERTs fail.
+  The view checks once and supplies the id itself when there is no default.
+* the router reads unmanaged models from ``datawarehouse`` and writes them to
+  ``default``. Those are one physical database on production, but "insert the
+  people who are not already there" reads and writes in a single pass, which is
+  only correct if both halves see the same table — so both are pinned.
 """
 
-import csv
-from datetime import datetime, timezone as dt_timezone
-from decimal import Decimal, InvalidOperation
+import re
+from datetime import date, datetime, timezone as dt_timezone
 
 from django.conf import settings
 from django.db import connections, router, transaction
@@ -56,119 +67,110 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.gceo_dashboard.models import EmployeeRosterOverlay, EmployeeTable
-from core.csv_upload import decode_csv_bytes
+from apps.gceo_dashboard.models import EmployeeTable
+from apps.hfdi.models import HfdiEmployeeData
 from core.permissions import DataManagementPermissions
 
 TAG = ["Staff Management — Employee Master"]
 
-# ── The template, in the order the download hands it to HR ───────────────────
-# Everything except staff_id is optional per row; a blank cell means "leave the
-# stored value alone". Keep this list in step with the frontend
-# CSVUploadModal TEMPLATES["employee_master_data"] entry.
-TEXT_COLUMNS = [
-    "name", "national_id", "email", "gender", "service_code",
-    "division", "department", "unit", "org_unit", "grade", "job_title",
-]
-INT_COLUMNS = ["age", "service_years", "hfdi_erp_id", "exit", "promotion", "new"]
-DATETIME_COLUMNS = ["date_of_birth", "date_of_employment"]
-DATE_COLUMNS = ["staff_exit_date", "promotion_date"]
-OVERLAY_COLUMNS = ["standard_department", "current_role", "previous_role"]
+# ── The workbook, exactly as the ETL script expects it ────────────────────────
+SHEET_FULL_LIST = "full_list"
+SHEET_EXITS = "exits"
+SHEET_PROMOTIONS = "promotions"
+SHEETS = (SHEET_FULL_LIST, SHEET_EXITS, SHEET_PROMOTIONS)
 
-TEMPLATE_COLUMNS = (
-    ["staff_id"]
-    + TEXT_COLUMNS
-    + ["date_of_birth", "age", "date_of_employment", "service_years"]
-    + ["exit", "staff_exit_date", "promotion", "promotion_date", "new", "hfdi_erp_id"]
-    + OVERLAY_COLUMNS
-)
-# The above interleaves for readability; de-duplicate while keeping first order.
-TEMPLATE_COLUMNS = list(dict.fromkeys(TEMPLATE_COLUMNS))
-
-_DATE_FORMATS = [
-    "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y",
-    "%d/%m/%y", "%m/%d/%Y", "%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%b %d, %Y",
-    "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y %H:%M",
+# HR's own header row (lower-cased and stripped, which is all the script does).
+# "date of employement" is misspelled in the source file — kept, or the column
+# would stop matching.
+WORKBOOK_COLUMNS = [
+    "staffid", "name", "idno", "email", "date of birth", "age", "gender",
+    "date of employement", "service code", "service yrs", "division",
+    "department", "unit", "org unit", "grade", "job title", "staff_exit_date",
+    "effective date",
 ]
 
-# Header aliases: HR's extract does not always use the model's column names.
-_ALIASES = {
-    "staff_no": "staff_id", "staff_number": "staff_id", "pf_number": "staff_id",
-    "pf_no": "staff_id", "staff_pf_number": "staff_id", "employee_id": "staff_id",
-    "employee_number": "staff_id",
-    "full_name": "name", "staff_name": "name", "employee_name": "name",
-    "id_number": "national_id", "id_no": "national_id",
-    "e_mail": "email", "email_address": "email",
-    "dob": "date_of_birth", "birth_date": "date_of_birth",
-    "employment_date": "date_of_employment", "date_employed": "date_of_employment",
-    "years_of_service": "service_years", "service_yrs": "service_years",
-    "exit_date": "staff_exit_date", "date_of_exit": "staff_exit_date",
-    "exited": "exit", "promoted": "promotion",
-    "std_department": "standard_department", "prev_role": "previous_role",
-    "hfdi_erp": "hfdi_erp_id",
+# Header -> model field. "new job title" is the alternative spelling the script
+# also accepts on the promotions sheet.
+COLUMN_MAPPING = {
+    "staffid": "staff_id",
+    "idno": "national_id",
+    "date of birth": "date_of_birth",
+    "date of employement": "date_of_employment",
+    "service code": "service_code",
+    "service yrs": "service_years",
+    "org unit": "org_unit",
+    "job title": "job_title",
+    "new job title": "job_title",
+    "effective date": "promotion_date",
 }
+
+# Columns the INSERT writes, in the script's order.
+INSERT_COLUMNS = [
+    "staff_id", "name", "national_id", "email", "date_of_birth", "age", "gender",
+    "date_of_employment", "service_code", "service_years", "division", "department",
+    "unit", "org_unit", "grade", "job_title", "exit", "promotion", "new",
+    "staff_exit_date", "promotion_date", "hfdi_erp_id",
+]
+
+# Columns the exits/promotions UPDATE touches — and only these.
+UPDATE_COLUMNS = [
+    "exit", "staff_exit_date", "promotion", "promotion_date",
+    "service_code", "department", "unit", "org_unit", "grade", "job_title",
+]
+
+# Department -> division override (the script's own two-entry map).
+DEPARTMENT_TO_DIVISION = {"HFBI": "HFBI", "HFDI": "HFDI"}
+
+# Grade normalisation, then zero-padded to two characters.
+GRADE_MAPPING = {"O2": "02", "UNC": "01", "O3": "03", "Tempor": "01", "O1": "01"}
+
+HFDI_DEPARTMENT = "HFDI"
+
+DATE_FIELDS = ["date_of_birth", "date_of_employment", "staff_exit_date", "promotion_date"]
+
+# Every field the cleaner guarantees on a row, so a sheet missing an optional
+# column loads with that column blank instead of raising.
+GUARANTEED_FIELDS = [
+    "staff_id", "national_id", "date_of_birth", "date_of_employment",
+    "service_code", "service_years", "org_unit", "job_title", "promotion_date",
+    "email", "age", "gender", "division", "department", "unit", "grade",
+    "staff_exit_date",
+]
+
+
+def normalize_sheet_name(name):
+    """"Full List", "full_list" and " FULL-LIST " are one sheet."""
+    return re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
 
 
 def normalize_header(name):
-    """"Date Of Employment", " date_of_employment " and a BOM'd header all match."""
-    if name is None:
-        return ""
-    text = str(name).replace("﻿", "").replace("​", "")
-    text = text.strip().strip('"').strip("'").strip().lower()
-    text = "_".join(text.split())
-    return _ALIASES.get(text, text)
+    """Lower-case and collapse whitespace, then apply the script's rename map."""
+    text = str(name or "").replace("﻿", "").replace("​", "")
+    text = " ".join(text.strip().strip('"').strip("'").lower().split())
+    return COLUMN_MAPPING.get(text, text.replace(" ", "_"))
 
 
 def canon_staff_id(value):
-    """``4022``, ``4022.0`` and ``4022.00000`` are all the same person → "4022"."""
+    """``4022``, ``4022.0`` and ``4022.00000`` are all the same person -> 4022."""
     if value is None:
-        return ""
-    text = str(value).strip().replace(",", "")
-    if not text:
-        return ""
-    try:
-        return str(int(float(text)))
-    except (TypeError, ValueError):
-        return text
-
-
-def parse_int(value):
-    text = str(value or "").strip().replace(",", "")
-    if not text:
         return None
-    # "Yes"/"No" show up in the exit / promotion columns.
-    lowered = text.lower()
-    if lowered in ("yes", "y", "true"):
-        return 1
-    if lowered in ("no", "n", "false"):
-        return 0
+    text = str(value).strip().replace(",", "")
+    if not text or text.lower() in ("nan", "none", "null"):
+        return None
     try:
         return int(float(text))
     except (TypeError, ValueError):
         return None
 
 
-def parse_date(value):
-    text = str(value or "").strip()
-    if not text or text.lower() in ("nan", "nat", "none", "null", "-"):
-        return None
-    for fmt in _DATE_FORMATS:
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-    return None
-
-
 def employee_db():
-    """The one alias every employee_table statement in this view uses.
+    """The one alias every ``employee_table`` statement here uses.
 
-    The router sends unmanaged models to ``datawarehouse`` for reads and returns
-    ``None`` for writes (which falls through to ``default``). On production both
-    aliases point at the SAME physical database, so that split is invisible —
-    but a read-then-write upsert that reads one alias and writes the other is
-    only accidentally correct. Pinning both to the write alias makes the upsert
-    read back exactly what it wrote, wherever the two aliases point.
+    The router reads unmanaged models from ``datawarehouse`` and returns ``None``
+    for their writes, which falls through to ``default``. On production both
+    aliases are the same database, so the split is invisible — but "insert the
+    people who are not already there" reads and writes in one pass, and that is
+    only correct if both halves see the same table.
     """
     return router.db_for_write(EmployeeTable) or "default"
 
@@ -178,9 +180,8 @@ def _id_is_database_generated():
 
     Postgres substitutes NULL when a NOT NULL pk has neither a ``nextval``
     default nor an identity, and BigAutoField deliberately omits id from the
-    INSERT — the exact shape of the hfdi target 500 (see [[prod-schema-drift]]).
+    INSERT — the shape of the hfdi target 500 (see [[prod-schema-drift]]).
     """
-    table = EmployeeTable._meta.db_table
     try:
         with connections[employee_db()].cursor() as cur:
             cur.execute(
@@ -190,7 +191,7 @@ def _id_is_database_generated():
                 FROM   information_schema.columns
                 WHERE  table_name = %s AND column_name = 'id'
                 """,
-                [table],
+                [EmployeeTable._meta.db_table],
             )
             row = cur.fetchone()
     except Exception:
@@ -198,12 +199,213 @@ def _id_is_database_generated():
     return True if row is None else bool(row[0])
 
 
+# ── Reading the workbook ──────────────────────────────────────────────────────
+
+def read_sheets(upload):
+    """``{sheet_name: DataFrame}`` from an .xlsx/.xls workbook, or a lone .csv.
+
+    A CSV has no sheets, so it is read as a single ``full_list`` — which is what
+    a one-tab file means. ``grade`` is read as text, or "02" arrives as the
+    number 2.
+    """
+    import pandas as pd  # heavy; only needed on an actual upload
+
+    name = (getattr(upload, "name", "") or "").lower()
+    try:
+        upload.seek(0)
+    except Exception:
+        pass
+    if name.endswith(".csv"):
+        return {SHEET_FULL_LIST: pd.read_csv(upload, dtype={"grade": "str"})}
+    sheets = pd.read_excel(upload, sheet_name=None, engine="openpyxl",
+                           dtype={"grade": "str"})
+    return {normalize_sheet_name(k): v for k, v in sheets.items()}
+
+
+def clean_staff_list(frame):
+    """The script's ``clean_staff_list``, for one sheet.
+
+    Returns a list of row dicts keyed by model field name, every derived column
+    already computed.
+    """
+    import numpy as np
+    import pandas as pd
+
+    frame = frame.copy()
+    frame.columns = [normalize_header(c) for c in frame.columns]
+
+    # A row with no name is a spacer or total line in HR's sheet, not a person.
+    if "name" not in frame.columns:
+        raise ValueError("the sheet has no 'name' column")
+    frame = frame[~frame["name"].isna()].copy()
+
+    # A missing optional column is added empty rather than raising: the script
+    # would KeyError and abandon the whole file, which tells the uploader nothing.
+    for field in GUARANTEED_FIELDS:
+        if field not in frame.columns:
+            frame[field] = None
+
+    # Division follows the department for the two entities that are their own
+    # division.
+    frame["division"] = frame.apply(
+        lambda row: DEPARTMENT_TO_DIVISION.get(str(row["department"]).strip(), row["division"]),
+        axis=1,
+    )
+
+    frame["grade"] = frame["grade"].map(_normalize_grade)
+
+    for field in DATE_FIELDS:
+        frame[field] = pd.to_datetime(frame[field], errors="coerce")
+
+    # age and service_years are RECOMPUTED — the sheet's own values are ignored,
+    # exactly as the script does, so the roster cannot drift from the dates.
+    now = pd.Timestamp.now()
+    frame["age"] = (now - frame["date_of_birth"]).dt.days // 365
+    frame["service_years"] = (now - frame["date_of_employment"]).dt.days // 365
+
+    frame["national_id"] = (
+        pd.to_numeric(frame["national_id"], errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .astype("Int64").astype("object")
+    )
+
+    frame["hfdi_erp_id"] = 0
+    frame["exit"] = frame["staff_exit_date"].notna().astype(int)
+    frame["promotion"] = frame["promotion_date"].notna().astype(int)
+    frame["new"] = (
+        frame["date_of_employment"].notna()
+        & (frame["date_of_employment"].dt.year == now.year)
+    ).astype(int)
+
+    rows = []
+    for record in frame.to_dict("records"):
+        row = {key: _py(value) for key, value in record.items()}
+        row["staff_id"] = canon_staff_id(row.get("staff_id"))
+        rows.append(row)
+    return rows
+
+
+def _normalize_grade(value):
+    """``O2`` -> ``02``, ``5`` -> ``05`` — the script's map, then two digits."""
+    import pandas as pd
+
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text:
+        return None
+    return GRADE_MAPPING.get(text, text).zfill(2)
+
+
+def _py(value):
+    """A pandas scalar -> a plain Python value the ORM will accept."""
+    import pandas as pd
+
+    if value is None or value is pd.NaT:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if hasattr(value, "item"):  # a numpy scalar
+        value = value.item()
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
+def _as_datetime(value):
+    """A date-only value going into a timestamp column.
+
+    Anchored to UTC midnight so the calendar day survives the round trip; local
+    (EAT) midnight would be stored as 21:00 the PREVIOUS day and read back a day
+    early.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime(value.year, value.month, value.day)
+    else:
+        return None
+    if settings.USE_TZ and timezone.is_naive(parsed):
+        parsed = parsed.replace(tzinfo=dt_timezone.utc)
+    return parsed
+
+
+def _as_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+# ── hfdi_employee_data ────────────────────────────────────────────────────────
+
+def clean_department_staff_list(rows, department):
+    """The script's ``clean_department_staff_list`` — one department's rows,
+    reshaped into the ``hfdi_employee_data`` columns."""
+    wanted = (department or "").strip().lower()
+    today = date.today()
+    out = []
+    for row in rows:
+        if str(row.get("department") or "").strip().lower() != wanted:
+            continue
+        employment_date = _as_date(row.get("date_of_employment"))
+        exit_date = _as_date(row.get("staff_exit_date"))
+        staff_id = row.get("staff_id")
+        out.append({
+            "staff_pf_number": staff_id,
+            "lead_officer_id": 0,
+            "staff_name": _proper_case(row.get("name")),
+            "staff_unit": row.get("unit"),
+            "staff_role": row.get("job_title"),
+            "sales_code": None if staff_id is None else str(staff_id),
+            "primary_project": "",
+            "team_leader": "",
+            "employment_date": employment_date,
+            "start_date": _hfdi_start_date(employment_date, today),
+            "exit_date": exit_date,
+            "active": 0 if exit_date else 1,
+            "staff_exit": 1 if exit_date else 0,
+            "target_sales": 0,
+            "target_collections": 0,
+            "input_user": "Strategy Employee Update",
+        })
+    return out
+
+
+def _proper_case(name):
+    """"  grace   KANJA " -> "Grace Kanja" (the script's own cleanup)."""
+    if not name:
+        return None
+    return " ".join(str(name).split()).title()
+
+
+def _hfdi_start_date(employment_date, today):
+    """1 January for anyone employed before this year, else the 1st of their
+    employment month — the script's rule for where the sales year starts."""
+    if employment_date is None:
+        return None
+    if employment_date.year < today.year:
+        return date(today.year, 1, 1)
+    return date(employment_date.year, employment_date.month, 1)
+
+
 @extend_schema(tags=TAG)
 class UploadAndProcessEmployeeData(APIView):
-    """Bulk upsert the HR employee master from a CSV (multipart field ``file``).
+    """Load the HR staff workbook (multipart field ``file``).
 
-    Response: ``{created, updated, unchanged, skipped, overlay_created,
-    overlay_updated, errors[:50], error_count}``.
+    Response: ``{sheets, inserted, already_present, updated, not_found, hfdi,
+    errors[:50], error_count}``.
     """
 
     permission_classes = [IsAuthenticated, DataManagementPermissions]
@@ -212,176 +414,223 @@ class UploadAndProcessEmployeeData(APIView):
     def post(self, request, *args, **kwargs):
         upload = request.FILES.get("file")
         if not upload:
-            return Response({"error": "No file uploaded. Send a CSV in the 'file' field."},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if not upload.name.lower().endswith(".csv"):
-            return Response({"error": "File must be a CSV."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "No file uploaded. Send the staff workbook in the 'file' field."},
+                status=status.HTTP_400_BAD_REQUEST)
+        if not upload.name.lower().endswith((".xlsx", ".xls", ".csv")):
+            return Response(
+                {"error": "File must be an .xlsx workbook (or a single-sheet .csv)."},
+                status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            text = decode_csv_bytes(upload.read())
-        except Exception as exc:  # noqa: BLE001 — surface the decode failure
+            sheets = read_sheets(upload)
+        except Exception as exc:  # noqa: BLE001 — surface the parse failure
             return Response({"error": f"Could not read the file: {exc}"},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        reader = csv.DictReader(text.splitlines())
-        raw_headers = reader.fieldnames or []
-        if not raw_headers:
-            return Response({"error": "CSV has no header row."}, status=status.HTTP_400_BAD_REQUEST)
-
-        header_map = {raw: normalize_header(raw) for raw in raw_headers}
-        if "staff_id" not in header_map.values():
+        recognised = {name: frame for name, frame in sheets.items() if name in SHEETS}
+        if not recognised:
             return Response(
-                {"error": f"The CSV must carry a staff_id column. Columns found: {raw_headers}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+                {"error": f"No usable sheet. Expected one of {list(SHEETS)}; "
+                          f"found {list(sheets)}."},
+                status=status.HTTP_400_BAD_REQUEST)
 
-        who = getattr(request.user, "username", "") or getattr(request.user, "email", "") or ""
-        db_generates_id = _id_is_database_generated()
-        next_id = None
-        if not db_generates_id:
-            next_id = (EmployeeTable.objects.using(employee_db())
-                       .aggregate(m=Max("id"))["m"] or 0) + 1
-
-        created = updated = unchanged = skipped = 0
-        overlay_created = overlay_updated = 0
         errors, error_count = [], 0
-
-        line_no = 1  # the header
-        for raw_row in reader:
-            line_no += 1
-            row = {header_map.get(k, normalize_header(k)): v for k, v in raw_row.items()}
-            staff_id = canon_staff_id(row.get("staff_id"))
-            if not staff_id:
-                skipped += 1
-                continue
-
+        cleaned = {}
+        for name, frame in recognised.items():
             try:
-                with transaction.atomic(using=employee_db()):
-                    outcome, next_id = self._upsert_employee(row, staff_id, next_id, db_generates_id)
-                    if outcome == "created":
-                        created += 1
-                    elif outcome == "updated":
-                        updated += 1
-                    else:
-                        unchanged += 1
-
-                    ov = self._upsert_overlay(row, staff_id, who)
-                    if ov == "created":
-                        overlay_created += 1
-                    elif ov == "updated":
-                        overlay_updated += 1
-            except Exception as exc:  # noqa: BLE001 — one bad row must not stop the import
+                cleaned[name] = clean_staff_list(frame)
+            except Exception as exc:  # noqa: BLE001 — one bad sheet, not the file
                 error_count += 1
-                if len(errors) < 50:
-                    errors.append({"row": line_no, "staff_id": staff_id, "error": str(exc)[:300]})
+                errors.append({"sheet": name, "error": str(exc)[:300]})
 
-        if created + updated + unchanged + skipped + error_count == 0:
-            return Response({"error": "CSV has no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+        if not cleaned:
+            return Response({"error": errors[0]["error"] if errors else "Nothing to load."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        alias = employee_db()
+        inserted, already_present, insert_errors = self._insert_new(
+            cleaned.get(SHEET_FULL_LIST, []), alias)
+        updated, not_found, update_errors = self._update_exits_and_promotions(
+            cleaned.get(SHEET_EXITS, []) + cleaned.get(SHEET_PROMOTIONS, []), alias)
+
+        for problem in insert_errors + update_errors:
+            error_count += 1
+            if len(errors) < 50:
+                errors.append(problem)
+
+        hfdi = self._sync_hfdi(cleaned)
 
         return Response(
             {
-                "created": created,
+                "sheets": {"used": sorted(cleaned),
+                           "ignored": sorted(set(sheets) - set(cleaned))},
+                "inserted": inserted,
+                "already_present": already_present,
                 "updated": updated,
-                "unchanged": unchanged,
-                "skipped": skipped,
-                "overlay_created": overlay_created,
-                "overlay_updated": overlay_updated,
-                "errors": errors,
+                "not_found": not_found,
+                "hfdi": hfdi,
+                "errors": errors[:50],
                 "error_count": error_count,
             },
             status=status.HTTP_200_OK,
         )
 
-    # ── row → employee_table ─────────────────────────────────────────────────
-    def _employee_values(self, row):
-        """Only the columns the row actually supplies a value for."""
-        values = {}
-        for col in TEXT_COLUMNS:
-            if col in row:
-                text = (row.get(col) or "").strip()
-                if text:
-                    values[col] = text
-        for col in INT_COLUMNS:
-            if col in row:
-                parsed = parse_int(row.get(col))
-                if parsed is not None:
-                    values[col] = parsed
-        for col in DATETIME_COLUMNS:
-            if col in row:
-                parsed = parse_date(row.get(col))
-                if parsed is not None:
-                    # date_of_birth / date_of_employment are calendar dates stored
-                    # in a timestamp column. Anchoring them to UTC midnight keeps
-                    # the day intact on read-back; local (EAT) midnight would be
-                    # stored as 21:00 the PREVIOUS day and read back a day early.
-                    if settings.USE_TZ and timezone.is_naive(parsed):
-                        parsed = parsed.replace(tzinfo=dt_timezone.utc)
-                    values[col] = parsed
-        for col in DATE_COLUMNS:
-            if col in row:
-                parsed = parse_date(row.get(col))
-                if parsed is not None:
-                    values[col] = parsed.date()
-        return values
+    # ── full_list -> insert the people who are not already on the roster ─────
+    def _insert_new(self, rows, alias):
+        rows = [r for r in rows if r.get("staff_id") is not None]
+        if not rows:
+            return 0, 0, []
 
-    def _upsert_employee(self, row, staff_id, next_id, db_generates_id):
-        values = self._employee_values(row)
+        existing = {
+            int(v) for v in EmployeeTable.objects.using(alias)
+            .exclude(staff_id=None).values_list("staff_id", flat=True)
+        }
 
-        # staff_id is a numeric in the warehouse; match on the number, not the text.
-        try:
-            key = Decimal(staff_id)
-        except (InvalidOperation, ValueError):
-            raise ValueError(f"staff_id {staff_id!r} is not a number")
+        db_generates_id = _id_is_database_generated()
+        next_id = None
+        if not db_generates_id:
+            next_id = (EmployeeTable.objects.using(alias)
+                       .aggregate(m=Max("id"))["m"] or 0) + 1
 
-        # The table can carry repeat rows for one person — update the latest.
-        alias = employee_db()
-        existing = (EmployeeTable.objects.using(alias)
-                    .filter(staff_id=key).order_by("-id").first())
-        if existing is None:
-            fields = dict(values, staff_id=key, updated_at=timezone.now())
-            if not db_generates_id:
-                fields["id"] = next_id
-                next_id += 1
-            EmployeeTable(**fields).save(using=alias, force_insert=True)
-            return "created", next_id
+        inserted = already_present = 0
+        errors = []
+        seen = set()
+        for row in rows:
+            staff_id = row["staff_id"]
+            if staff_id in existing or staff_id in seen:
+                already_present += 1
+                continue
+            seen.add(staff_id)
+            try:
+                fields = self._employee_fields(row)
+                # The script blanks promotion_date on the full_list insert — a
+                # promotion is recorded from the promotions sheet, not here.
+                fields["promotion_date"] = None
+                fields["promotion"] = 0
+                fields["updated_at"] = timezone.now()
+                if not db_generates_id:
+                    fields["id"] = next_id
+                    next_id += 1
+                with transaction.atomic(using=alias):
+                    EmployeeTable(**fields).save(using=alias, force_insert=True)
+                inserted += 1
+            except Exception as exc:  # noqa: BLE001 — keep loading the rest
+                if len(errors) < 50:
+                    errors.append({"sheet": SHEET_FULL_LIST, "staff_id": staff_id,
+                                   "error": str(exc)[:300]})
+        return inserted, already_present, errors
 
-        changed = [f for f, v in values.items() if getattr(existing, f) != v]
-        if not changed:
-            return "unchanged", next_id
-        for field in changed:
-            setattr(existing, field, values[field])
-        existing.updated_at = timezone.now()
-        existing.save(using=alias, update_fields=changed + ["updated_at"])
-        return "updated", next_id
+    @staticmethod
+    def _employee_fields(row):
+        fields = {}
+        for column in INSERT_COLUMNS:
+            value = row.get(column)
+            if column in ("date_of_birth", "date_of_employment"):
+                value = _as_datetime(value)
+            elif column in ("staff_exit_date", "promotion_date"):
+                value = _as_date(value)
+            elif column in ("staff_id", "age", "service_years", "exit",
+                            "promotion", "new", "hfdi_erp_id"):
+                value = None if value is None else int(value)
+            elif value is not None and not isinstance(value, str):
+                value = str(value)
+            fields[column] = value
+        return fields
 
-    # ── row → employee_roster_overlay ────────────────────────────────────────
-    def _upsert_overlay(self, row, staff_id, who):
-        defaults = {}
-        for col in OVERLAY_COLUMNS:
-            text = (row.get(col) or "").strip()
-            if text:
-                defaults[col] = text
-        if not defaults:
-            return None
-        defaults["updated_by"] = who
-        _, was_created = EmployeeRosterOverlay.objects.update_or_create(
-            staff_id=staff_id, defaults=defaults,
-        )
-        return "created" if was_created else "updated"
+    # ── exits + promotions -> update the ten columns, nothing else ───────────
+    def _update_exits_and_promotions(self, rows, alias):
+        rows = [r for r in rows if r.get("staff_id") is not None]
+        if not rows:
+            return 0, 0, []
+
+        # One row per person: the flags take the max (present in either sheet
+        # wins) and everything else takes the first non-null.
+        merged = {}
+        for row in rows:
+            target = merged.setdefault(row["staff_id"], {})
+            for column in UPDATE_COLUMNS:
+                value = row.get(column)
+                if column in ("exit", "promotion"):
+                    target[column] = max(int(target.get(column) or 0), int(value or 0))
+                elif target.get(column) is None and value is not None:
+                    target[column] = value
+
+        updated = not_found = 0
+        errors = []
+        for staff_id, values in merged.items():
+            try:
+                fields = {}
+                for column in UPDATE_COLUMNS:
+                    value = values.get(column)
+                    if column in ("staff_exit_date", "promotion_date"):
+                        value = _as_date(value)
+                    elif column in ("exit", "promotion"):
+                        value = int(value or 0)
+                    elif value is not None and not isinstance(value, str):
+                        value = str(value)
+                    fields[column] = value
+                fields["updated_at"] = timezone.now()
+                with transaction.atomic(using=alias):
+                    count = (EmployeeTable.objects.using(alias)
+                             .filter(staff_id=staff_id).update(**fields))
+                if count:
+                    updated += count
+                else:
+                    not_found += 1
+            except Exception as exc:  # noqa: BLE001
+                if len(errors) < 50:
+                    errors.append({"sheet": "exits/promotions", "staff_id": staff_id,
+                                   "error": str(exc)[:300]})
+        return updated, not_found, errors
+
+    # ── the same workbook also maintains hfdi_employee_data ──────────────────
+    def _sync_hfdi(self, cleaned):
+        all_rows = [row for rows in cleaned.values() for row in rows]
+        candidates = [c for c in clean_department_staff_list(all_rows, HFDI_DEPARTMENT)
+                      if c["staff_pf_number"] is not None]
+
+        existing = set(HfdiEmployeeData.objects.values_list("staff_pf_number", flat=True))
+        inserted = 0
+        seen = set()
+        for row in candidates:
+            pf = row["staff_pf_number"]
+            if pf in existing or pf in seen:
+                continue
+            seen.add(pf)
+            HfdiEmployeeData.objects.create(**row)
+            inserted += 1
+
+        # An exit marks the HFDI record inactive; only the exits sheet does this.
+        exits = clean_department_staff_list(cleaned.get(SHEET_EXITS, []), HFDI_DEPARTMENT)
+        updated = 0
+        for row in exits:
+            if row["staff_pf_number"] is None:
+                continue
+            updated += HfdiEmployeeData.objects.filter(
+                staff_pf_number=row["staff_pf_number"]
+            ).update(staff_exit=row["staff_exit"], exit_date=row["exit_date"],
+                     active=row["active"])
+        return {"inserted": inserted, "exits_updated": updated}
 
 
 @extend_schema(tags=TAG)
 class EmployeeMasterTemplateView(APIView):
-    """The exact column list the upload accepts, so the template can never drift
-    from the loader (the frontend keeps a copy for its offline validation)."""
+    """The workbook shape the upload expects, so the template can never drift
+    from the loader (the frontend keeps a copy for its offline header check)."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         return Response({
-            "columns": TEMPLATE_COLUMNS,
-            "required": ["staff_id"],
-            "overlay_columns": OVERLAY_COLUMNS,
-            "note": "staff_id keys the upsert. A blank cell leaves the stored "
-                    "value unchanged; nobody absent from the file is deleted.",
+            "columns": WORKBOOK_COLUMNS,
+            "sheets": list(SHEETS),
+            "required": ["staffid", "name"],
+            "derived": ["age", "service_years", "exit", "promotion", "new",
+                        "grade (padded to 2 digits)", "division (HFBI/HFDI)"],
+            "note": "One .xlsx with a full_list sheet (inserts people not yet on "
+                    "the roster) and optional exits / promotions sheets (which "
+                    "update exit, promotion, service code, department, unit, org "
+                    "unit, grade and job title). Nobody is ever deleted. A single "
+                    "CSV is read as a lone full_list sheet.",
         })
