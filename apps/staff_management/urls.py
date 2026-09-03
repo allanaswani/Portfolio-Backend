@@ -7,6 +7,7 @@ from . import legacy_views as lv
 from . import dsr_views as dsr
 from . import tl_views as tl
 from . import targets_views as tv
+from . import employee_master_views as emv
 
 urlpatterns = [
     # ── DMC performance targets (feed the target-vs-actual KPI tiles) ─────────
@@ -35,6 +36,13 @@ urlpatterns = [
     path("sales_staff/",      views.SalesStaffListView.as_view()),
     path("all_staff/",        views.AllStaffListView.as_view()),
     path("staff/<int:pk>/",   views.StaffDetailView.as_view()),
+
+    # ── HR employee master (employee_table) — the full ~1,271-row roster the
+    # Administration "All Employees" page reads. Same path the old backend used.
+    path("employee-data/upload-csv/", emv.UploadAndProcessEmployeeData.as_view(),
+         name="upload-employee-data"),
+    path("employee-data/template/",   emv.EmployeeMasterTemplateView.as_view(),
+         name="employee-data-template"),
 
     # ── Staff master (old employees/ = staff_employee_data, NOT the DMC table) ─
     path("employees/upload-csv/", lv.StaffEmployeeCsvUploadView.as_view()),

@@ -209,3 +209,7 @@ TlCollectionPermissions = InGroup("tl_collection")
 RightsIssuePermissions = InGroup("rights_issue")
 TlRightsIssuePermissions = InGroup("TLrights_issue")
 HfdiAdminPermissions = InGroup("hfdi_admin")
+StaffMgtPermissions = InGroup("staff_mgt")
+# The old backend's name for the same gate (staff_management.views
+# DataManagementPermissions) — kept so ported views read like their originals.
+DataManagementPermissions = StaffMgtPermissions
