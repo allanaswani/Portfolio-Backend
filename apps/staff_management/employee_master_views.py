@@ -66,6 +66,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+import pandas as pd
 
 from apps.gceo_dashboard.models import EmployeeTable
 from apps.hfdi.models import HfdiEmployeeData
@@ -121,10 +122,13 @@ UPDATE_COLUMNS = [
 # Department -> division override (the script's own two-entry map).
 DEPARTMENT_TO_DIVISION = {"HFBI": "HFBI", "HFDI": "HFDI"}
 
+DIVISION_RENAME = {"HFBI": "HFCB Insurance", "HFDI": "HFCB Properties", "HFC": "HFCB Limited", "HF Group": "HFCB Group"}
+
 # Grade normalisation, then zero-padded to two characters.
 GRADE_MAPPING = {"O2": "02", "UNC": "01", "O3": "03", "Tempor": "01", "O1": "01"}
 
 HFDI_DEPARTMENT = "HFDI"
+PROPERTIES_DIVISION = "HFCB Properties"
 
 DATE_FIELDS = ["date_of_birth", "date_of_employment", "staff_exit_date", "promotion_date"]
 
@@ -350,14 +354,14 @@ def _as_date(value):
 
 # ── hfdi_employee_data ────────────────────────────────────────────────────────
 
-def clean_department_staff_list(rows, department):
-    """The script's ``clean_department_staff_list`` — one department's rows,
+def clean_division_staff_list(rows, division):
+    """The script's ``clean_division_staff_list`` — one division's rows,
     reshaped into the ``hfdi_employee_data`` columns."""
-    wanted = (department or "").strip().lower()
+    wanted = (division or "").strip().lower()
     today = date.today()
     out = []
     for row in rows:
-        if str(row.get("department") or "").strip().lower() != wanted:
+        if str(row.get("division") or "").strip().lower() != wanted:
             continue
         employment_date = _as_date(row.get("date_of_employment"))
         exit_date = _as_date(row.get("staff_exit_date"))
@@ -384,7 +388,7 @@ def clean_department_staff_list(rows, department):
 
 
 def _proper_case(name):
-    """"  grace   KANJA " -> "Grace Kanja" (the script's own cleanup)."""
+    """" (the script's own cleanup)."""
     if not name:
         return None
     return " ".join(str(name).split()).title()
@@ -397,7 +401,7 @@ def _hfdi_start_date(employment_date, today):
         return None
     if employment_date.year < today.year:
         return date(today.year, 1, 1)
-    return date(employment_date.year, employment_date.month, 1)
+    return date(employment_date.year, employment_date.month, 1) + pd.DateOffset(months=1)
 
 
 @extend_schema(tags=TAG)
@@ -483,9 +487,10 @@ class UploadAndProcessEmployeeData(APIView):
             return 0, 0, []
 
         existing = {
-            int(v) for v in EmployeeTable.objects.using(alias)
+            canon_staff_id(v) for v in EmployeeTable.objects.using(alias)
             .exclude(staff_id=None).values_list("staff_id", flat=True)
         }
+        existing.discard(None)
 
         db_generates_id = _id_is_database_generated()
         next_id = None
@@ -587,7 +592,7 @@ class UploadAndProcessEmployeeData(APIView):
     # ── the same workbook also maintains hfdi_employee_data ──────────────────
     def _sync_hfdi(self, cleaned):
         all_rows = [row for rows in cleaned.values() for row in rows]
-        candidates = [c for c in clean_department_staff_list(all_rows, HFDI_DEPARTMENT)
+        candidates = [c for c in clean_division_staff_list(all_rows, PROPERTIES_DIVISION)
                       if c["staff_pf_number"] is not None]
 
         existing = set(HfdiEmployeeData.objects.values_list("staff_pf_number", flat=True))
@@ -602,7 +607,7 @@ class UploadAndProcessEmployeeData(APIView):
             inserted += 1
 
         # An exit marks the HFDI record inactive; only the exits sheet does this.
-        exits = clean_department_staff_list(cleaned.get(SHEET_EXITS, []), HFDI_DEPARTMENT)
+        exits = clean_division_staff_list(cleaned.get(SHEET_EXITS, []), PROPERTIES_DIVISION)
         updated = 0
         for row in exits:
             if row["staff_pf_number"] is None:
