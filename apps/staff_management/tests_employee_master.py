@@ -132,7 +132,17 @@ class CleanerTests(SimpleTestCase):
             person(2, "B", department="HFBI", division="Retail"),
             person(3, "C", department="Retail Banking", division="Retail"),
         ])
-        self.assertEqual([r["division"] for r in rows], ["HFDI", "HFBI", "Retail"])
+        self.assertEqual([r["division"] for r in rows],
+                         ["HFCB Properties", "HFCB Insurance", "Retail"])
+
+    def test_the_old_division_names_are_stored_under_their_hfcb_names(self):
+        rows = self.clean([
+            person(1, "A", department="Retail Banking", division="HFC"),
+            person(2, "B", department="Retail Banking", division="HF Group"),
+            person(3, "C", department="Retail Banking", division="Mortgage"),
+        ])
+        self.assertEqual([r["division"] for r in rows],
+                         ["HFCB Limited", "HFCB Group", "Mortgage"])
 
     def test_the_flags_come_from_the_dates(self):
         rows = self.clean([
@@ -174,14 +184,14 @@ class CleanerTests(SimpleTestCase):
 class HfdiReshapeTests(SimpleTestCase):
     def test_only_hfdi_rows_are_taken_and_the_name_is_cleaned(self):
         rows = [
-            {"staff_id": 1, "name": "  grace   KANJA ", "department": "HFDI",
+            {"staff_id": 1, "name": "  grace   KANJA ", "division": "HFCB Properties",
              "unit": "Sales", "job_title": "Agent", "date_of_employment": None,
              "staff_exit_date": None},
-            {"staff_id": 2, "name": "John", "department": "Retail Banking",
+            {"staff_id": 2, "name": "John", "division": "HFCB Limited",
              "unit": None, "job_title": None, "date_of_employment": None,
              "staff_exit_date": None},
         ]
-        out = emv.clean_department_staff_list(rows, "HFDI")
+        out = emv.clean_division_staff_list(rows, emv.PROPERTIES_DIVISION)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["staff_name"], "Grace Kanja")
         self.assertEqual(out[0]["sales_code"], "1")
@@ -189,17 +199,20 @@ class HfdiReshapeTests(SimpleTestCase):
 
     def test_an_exit_date_makes_the_hfdi_record_inactive(self):
         import datetime as dt
-        rows = [{"staff_id": 1, "name": "Grace", "department": "HFDI", "unit": None,
-                 "job_title": None, "date_of_employment": None,
+        rows = [{"staff_id": 1, "name": "Grace", "division": "HFCB Properties",
+                 "unit": None, "job_title": None, "date_of_employment": None,
                  "staff_exit_date": dt.date(2026, 2, 1)}]
-        out = emv.clean_department_staff_list(rows, "HFDI")
+        out = emv.clean_division_staff_list(rows, emv.PROPERTIES_DIVISION)
         self.assertEqual((out[0]["active"], out[0]["staff_exit"]), (0, 1))
 
     def test_start_date_is_january_for_anyone_hired_before_this_year(self):
         import datetime as dt
         today = dt.date(2026, 6, 1)
         self.assertEqual(emv._hfdi_start_date(dt.date(2020, 5, 9), today), dt.date(2026, 1, 1))
-        self.assertEqual(emv._hfdi_start_date(dt.date(2026, 5, 9), today), dt.date(2026, 5, 1))
+        # This year's hires start the month AFTER they joined — a part month is
+        # not a sales month — and December rolls into January.
+        self.assertEqual(emv._hfdi_start_date(dt.date(2026, 5, 9), today), dt.date(2026, 6, 1))
+        self.assertEqual(emv._hfdi_start_date(dt.date(2026, 12, 9), today), dt.date(2027, 1, 1))
         self.assertIsNone(emv._hfdi_start_date(None, today))
 
 

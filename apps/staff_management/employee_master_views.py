@@ -250,10 +250,15 @@ def clean_staff_list(frame):
             frame[field] = None
 
     # Division follows the department for the two entities that are their own
-    # division.
+    # division, then every division takes its rebranded HFCB name. The rename
+    # has to happen here: _sync_hfdi selects on the new name, and HR's sheet
+    # still carries the old one.
     frame["division"] = frame.apply(
         lambda row: DEPARTMENT_TO_DIVISION.get(str(row["department"]).strip(), row["division"]),
         axis=1,
+    )
+    frame["division"] = frame["division"].map(
+        lambda value: DIVISION_RENAME.get(str(value).strip(), value)
     )
 
     frame["grade"] = frame["grade"].map(_normalize_grade)
@@ -395,13 +400,17 @@ def _proper_case(name):
 
 
 def _hfdi_start_date(employment_date, today):
-    """1 January for anyone employed before this year, else the 1st of their
-    employment month — the script's rule for where the sales year starts."""
+    """1 January for anyone employed before this year, else the 1st of the
+    month after they joined — where their sales year starts."""
     if employment_date is None:
         return None
     if employment_date.year < today.year:
         return date(today.year, 1, 1)
-    return date(employment_date.year, employment_date.month, 1) + pd.DateOffset(months=1)
+    # The month after the hire month: a partial first month is not a sales month.
+    year, month = employment_date.year, employment_date.month + 1
+    if month == 13:
+        year, month = year + 1, 1
+    return date(year, month, 1)
 
 
 @extend_schema(tags=TAG)
