@@ -75,21 +75,16 @@ Ported verbatim from the script, so a file that loaded before loads the same way
 | `promotion` | 1 when `effective date` is present — and forced to 0 on a `full_list` insert |
 | `new` | 1 when the employment date falls in the current year |
 | `grade` | `O2→02, UNC→01, O3→03, Tempor→01, O1→01`, then padded to two digits |
-| `division` | forced to `HFBI` / `HFDI` when that is the department, then renamed to its HFCB name: `HFBI→HFCB Insurance`, `HFDI→HFCB Properties`, `HFC→HFCB Limited`, `HF Group→HFCB Group` |
+| `division` | forced to `HFBI` / `HFDI` when that is the department |
 | `hfdi_erp_id` | 0 |
 
 ## hfdi_employee_data
 
-The same workbook maintains it, as the script does: rows in the **`HFCB Properties`
-division** (the renamed HFDI) that are not yet in `hfdi_employee_data` are
-inserted (name proper-cased, `sales_code` = the PF number, `input_user` =
-"Strategy Employee Update", `start_date` = 1 January for anyone hired before this
-year else the 1st of the month *after* they joined — a part month is not a sales
-month), and rows on the `exits` sheet are marked `active = 0` / `staff_exit = 1`.
-
-The selection is on the renamed division, so `clean_staff_list` has to apply
-`DIVISION_RENAME` before `_sync_hfdi` looks — otherwise nothing ever matches and
-the sync silently reports zero.
+The same workbook maintains it, as the script does: HFDI-department rows that are
+not yet in `hfdi_employee_data` are inserted (name proper-cased, `sales_code` =
+the PF number, `input_user` = "Strategy Employee Update", `start_date` = 1 January
+for anyone hired before this year else the 1st of their employment month), and
+rows on the `exits` sheet are marked `active = 0` / `staff_exit = 1`.
 
 ## Response
 
