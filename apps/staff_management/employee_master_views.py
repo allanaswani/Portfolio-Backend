@@ -486,6 +486,9 @@ class UploadAndProcessEmployeeData(APIView):
         if not rows:
             return 0, 0, []
 
+        # staff_id is decimal(990,5) on the warehouse mirror, so the roster
+        # comes back as Decimal('4028.00000') -> str '4028.0'. int() rejects
+        # that; canon_staff_id is the one place that knows the shape.
         existing = {
             canon_staff_id(v) for v in EmployeeTable.objects.using(alias)
             .exclude(staff_id=None).values_list("staff_id", flat=True)
