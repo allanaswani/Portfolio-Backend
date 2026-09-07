@@ -14,7 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.authentication.views import IsAdministrator
+from core.permissions import IsAdministrationUser
 
 from . import audit, health, metrics
 
@@ -22,7 +22,10 @@ TAG_AUDIT = ["Observability — Audit Trail"]
 TAG_HEALTH = ["Observability — Data Health"]
 TAG_PERF = ["Observability — Performance"]
 
-ADMIN = [IsAuthenticated, IsAdministrator]
+# Superuser, is_staff, OR the staff_mgt group — the same set the
+# Administration menu is shown to. Gating on is_staff alone meant an
+# administrator saw the menu item and got 403s behind it.
+ADMIN = [IsAuthenticated, IsAdministrationUser]
 
 
 def _int(request, name, default, low, high):

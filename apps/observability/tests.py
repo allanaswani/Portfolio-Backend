@@ -10,6 +10,7 @@ pinned on its permissions.
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -301,6 +302,31 @@ class PermissionTests(TestCase):
         client.force_authenticate(user)
         for url in self.ENDPOINTS:
             self.assertEqual(client.get(url).status_code, 403, url)
+
+    def test_a_staff_mgt_administrator_is_let_in(self):
+        """The Administration menu is shown to the staff_mgt GROUP.
+
+        Gating the API on is_staff alone meant an administrator saw the menu
+        item and was refused behind it — which renders as a page of zeros, not
+        as an error anyone can act on.
+        """
+        User = get_user_model()
+        user = User.objects.create_user(username="staffmgt", password="x")
+        user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
+        client = APIClient()
+        client.force_authenticate(user)
+        for url in self.ENDPOINTS:
+            if url == "/observability/data-health/":
+                continue  # reads the warehouse, which a test DB mirrors away
+            self.assertEqual(client.get(url).status_code, 200, url)
+
+    def test_a_user_in_some_other_group_is_still_refused(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="othergroup", password="x")
+        user.groups.add(Group.objects.get_or_create(name="tl_collection")[0])
+        client = APIClient()
+        client.force_authenticate(user)
+        self.assertEqual(client.get("/observability/audit/feed/").status_code, 403)
 
     def test_anonymous_is_refused(self):
         client = APIClient()

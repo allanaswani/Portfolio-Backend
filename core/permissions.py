@@ -213,3 +213,29 @@ StaffMgtPermissions = InGroup("staff_mgt")
 # The old backend's name for the same gate (staff_management.views
 # DataManagementPermissions) — kept so ported views read like their originals.
 DataManagementPermissions = StaffMgtPermissions
+
+
+class IsAdministrationUser(BasePermission):
+    """The gate every Administration screen should share.
+
+    ``authentication.views.IsAdministrator`` accepts only ``is_staff`` or a
+    superuser, but the Administration menu is shown to the ``staff_mgt``
+    **group** — so a staff_mgt administrator saw the menu item and was refused
+    by the API behind it, which renders as a page of zeros rather than as an
+    error anyone can act on.
+
+    This accepts all three, matching what ``staff_management.dsr_views._is_admin``
+    and the trade-register admin gate already do.
+    """
+
+    message = "Administrator privileges are required."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated and user.is_active):
+            return False
+        return bool(
+            user.is_superuser
+            or user.is_staff
+            or user.groups.filter(name="staff_mgt").exists()
+        )
