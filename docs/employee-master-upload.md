@@ -80,11 +80,17 @@ Ported verbatim from the script, so a file that loaded before loads the same way
 
 ## hfdi_employee_data
 
-The same workbook maintains it, as the script does: HFDI-department rows that are
-not yet in `hfdi_employee_data` are inserted (name proper-cased, `sales_code` =
-the PF number, `input_user` = "Strategy Employee Update", `start_date` = 1 January
-for anyone hired before this year else the 1st of their employment month), and
-rows on the `exits` sheet are marked `active = 0` / `staff_exit = 1`.
+The same workbook maintains it: rows whose **division** is `HFCB Properties` —
+the rebranded HFDI — and that are not yet in `hfdi_employee_data` are inserted
+(name proper-cased, `sales_code` = the PF number, `input_user` = "Strategy
+Employee Update", `start_date` = 1 January for anyone hired before this year,
+else the 1st of the month *after* they joined, since a part month is not a sales
+month), and rows on the `exits` sheet are marked `active = 0` / `staff_exit = 1`.
+
+The selector is `clean_division_staff_list(rows, PROPERTIES_DIVISION)`, so the
+sheet has to carry the new division name. A row whose *department* is literally
+`HFDI` is not picked up: `DEPARTMENT_TO_DIVISION` rewrites its division back to
+`HFDI` on the way in.
 
 ## Response
 

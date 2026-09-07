@@ -172,16 +172,20 @@ class CleanerTests(SimpleTestCase):
 
 
 class HfdiReshapeTests(SimpleTestCase):
-    def test_only_hfdi_rows_are_taken_and_the_name_is_cleaned(self):
+    """The reshape selects on the DIVISION — post-rebrand HFDI is the
+    ``HFCB Properties`` division, and the department column no longer decides."""
+
+    def test_only_properties_rows_are_taken_and_the_name_is_cleaned(self):
         rows = [
-            {"staff_id": 1, "name": "  grace   KANJA ", "department": "HFDI",
+            {"staff_id": 1, "name": "  grace   KANJA ",
+             "division": emv.PROPERTIES_DIVISION,
              "unit": "Sales", "job_title": "Agent", "date_of_employment": None,
              "staff_exit_date": None},
-            {"staff_id": 2, "name": "John", "department": "Retail Banking",
+            {"staff_id": 2, "name": "John", "division": "HFCB Limited",
              "unit": None, "job_title": None, "date_of_employment": None,
              "staff_exit_date": None},
         ]
-        out = emv.clean_department_staff_list(rows, "HFDI")
+        out = emv.clean_division_staff_list(rows, emv.PROPERTIES_DIVISION)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["staff_name"], "Grace Kanja")
         self.assertEqual(out[0]["sales_code"], "1")
@@ -189,18 +193,26 @@ class HfdiReshapeTests(SimpleTestCase):
 
     def test_an_exit_date_makes_the_hfdi_record_inactive(self):
         import datetime as dt
-        rows = [{"staff_id": 1, "name": "Grace", "department": "HFDI", "unit": None,
-                 "job_title": None, "date_of_employment": None,
+        rows = [{"staff_id": 1, "name": "Grace", "division": emv.PROPERTIES_DIVISION,
+                 "unit": None, "job_title": None, "date_of_employment": None,
                  "staff_exit_date": dt.date(2026, 2, 1)}]
-        out = emv.clean_department_staff_list(rows, "HFDI")
+        out = emv.clean_division_staff_list(rows, emv.PROPERTIES_DIVISION)
         self.assertEqual((out[0]["active"], out[0]["staff_exit"]), (0, 1))
 
     def test_start_date_is_january_for_anyone_hired_before_this_year(self):
         import datetime as dt
         today = dt.date(2026, 6, 1)
         self.assertEqual(emv._hfdi_start_date(dt.date(2020, 5, 9), today), dt.date(2026, 1, 1))
-        self.assertEqual(emv._hfdi_start_date(dt.date(2026, 5, 9), today), dt.date(2026, 5, 1))
         self.assertIsNone(emv._hfdi_start_date(None, today))
+
+    def test_this_years_hires_start_the_month_after_they_joined(self):
+        import datetime as dt
+        today = dt.date(2026, 6, 1)
+        # A part month is not a sales month, so May's joiner starts in June.
+        # DateOffset hands back a Timestamp; compare on the date it carries.
+        started = emv._hfdi_start_date(dt.date(2026, 5, 9), today)
+        self.assertEqual(started.year, 2026)
+        self.assertEqual((started.month, started.day), (6, 1))
 
 
 class UploadTests(TransactionTestCase):
@@ -365,11 +377,16 @@ class UploadTests(TransactionTestCase):
                          ["exits", "full_list", "promotions"])
 
     # ── hfdi_employee_data ───────────────────────────────────────────────────
+    # Selection is on the division HR now writes ("HFCB Properties"), not the
+    # department. The department is deliberately not "HFDI" here: that value
+    # still overrides the division column back to "HFDI" on the way in.
     def test_the_same_workbook_maintains_hfdi_employee_data(self):
         resp = self.post({"full_list": [
-            person(7001, "  amina   OMAR ", department="HFDI", unit="Sales",
+            person(7001, "  amina   OMAR ", department="Property Sales",
+                   division=emv.PROPERTIES_DIVISION, unit="Sales",
                    **{"job title": "Sales Agent", "date of employement": "2020-03-04"}),
-            person(4022, "Grace Kanja", department="Retail Banking"),
+            person(4022, "Grace Kanja", department="Retail Banking",
+                   division="HFCB Limited"),
         ]})
         self.assertEqual(resp.data["hfdi"]["inserted"], 1)
 
@@ -381,8 +398,10 @@ class UploadTests(TransactionTestCase):
         self.assertEqual(row.active, 1)
 
     def test_an_hfdi_exit_deactivates_rather_than_duplicates(self):
-        self.post({"full_list": [person(7001, "Amina Omar", department="HFDI")]})
-        resp = self.post({"exits": [person(7001, "Amina Omar", department="HFDI",
+        self.post({"full_list": [person(7001, "Amina Omar", department="Property Sales",
+                                        division=emv.PROPERTIES_DIVISION)]})
+        resp = self.post({"exits": [person(7001, "Amina Omar", department="Property Sales",
+                                           division=emv.PROPERTIES_DIVISION,
                                            **{"staff_exit_date": "2026-02-01"})]})
         self.assertEqual(HfdiEmployeeData.objects.count(), 1)
         self.assertEqual(resp.data["hfdi"]["exits_updated"], 1)
