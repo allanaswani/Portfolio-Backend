@@ -1,6 +1,6 @@
 # Trade desk feedback — what changed
 
-Five things the desk raised about the Trade Register / Trade Finance form.
+Nine things the desk raised about the Trade Register / Trade Finance form.
 
 ## 1. The RM list — not searchable, incomplete, and out of date
 
@@ -85,14 +85,86 @@ Gulf and Asian trade currencies, and the East African neighbours (`UGX`, `TZS`,
 is now a row. A currency on an existing record that has since been deactivated
 is still shown on that record.
 
-## 5. Missing fields
+## 5. The tariff book
+
+`trade_register_tariff` is the bank's tariff book: a line carries
+`commission_basis`, `commission_rate`, `minimum_commission` and `excise_rate`,
+and products map to it. Repricing one line reprices every product on it, which
+is the point of the mapping — the alternative is the same rate edited product
+by product until the copies drift apart.
+
+**A rate set on the product wins over its tariff.** A tariff is the general
+charge for a family; a rate typed against one product is a deliberate exception.
+If the mapping overruled it, somebody would set a rate, watch nothing happen and
+have no way to see why. So the tariff answers only where the product does not —
+which also means mapping a product to a tariff never reprices it.
+
+Migration 0007 seeds three lines (`TRF-GTE`, `TRF-ILC`, `TRF-ELC`) and maps every
+product to one. **They are seeded unpriced**, on the basis that calculates
+nothing: seeding an invented rate would put wrong money on real transactions.
+The structure is there; the desk supplies the numbers.
+
+Each entry records the `tariff_code` it was charged under at save time, so a
+record still says what it was charged under after the tariff is reprised.
+
+Maintained at `GET/POST /trade_register/tariffs/`, `PATCH .../<id>/` (admin), and
+in Django admin. Every change is in the audit trail.
+
+## 6. Excise duty
+
+`excise_duty` on each entry = `excise_rate` % of the commission, worked out on
+save and shown as its own column beside `total_charge` (commission + duty).
+
+It is computed from the commission **on the record** — including an overridden
+one. The duty is owed on the fee actually charged, not on the fee the tariff
+would have produced.
+
+> **The rate needs confirming.** It defaults to 20%, Kenya's excise duty on fees
+> charged by financial institutions, applied to the commission alone. Nobody has
+> confirmed either the rate or the base for this desk. It is a field on the
+> tariff line, so correcting it is one edit in Administration — not a deploy.
+
+## 7. Customer id fills in the name and segment
+
+`GET /trade_register/customer-lookup/?customer_id=` reads `hf_customer` and
+returns the name (`latin_surname`) and segment. The desk was typing the id, then
+typing the name and picking the segment again by hand — three chances to
+disagree with the core system about one customer.
+
+`hf_customer` has two segment columns that often disagree: `banking_segment` and
+`segment`. The register has always carried the banking segment, so that is what
+is filled in, and the other is **shown beside it** rather than silently
+discarded, so the desk can correct it.
+
+In the form the lookup is debounced and only ever fills blanks or replaces what
+a previous lookup put there — typing an id never overwrites a name somebody
+edited on purpose, and never rewrites an existing record.
+
+## 8. Diary of expired items
+
+`GET /trade_register/diary/?window=&include_live=1`, and a **Diary** tab on the
+Trade Register page with a count of what has expired.
+
+An expired guarantee is not a dead row — it is something somebody has to
+release, renew or call up, and nothing surfaced them. The register is regrouped
+by expiry into shelves: Expired, then within 7 / 30 / 90 days, then live,
+open-ended, and **undated**.
+
+Undated is its own shelf on purpose. An instrument that is neither open-ended
+nor dated is a gap in the register; filing it under "live" would hide exactly
+the records most likely to be wrong.
+
+Thresholds live on the model (`TradeRegisterEntry.diary_status`), so the API,
+the page and any report say the same thing about a record.
+
+## 9. Missing fields
 
 **Still open — the desk has not said which fields.** The form currently carries:
-originating branch, RM name and code, reference, product, amendment type and
-parent reference, customer id, segment, customer, beneficiary, currency, amount
-(FCY), FX rate, commission, reporting date, issue date, open-ended flag, expiry
-date, security type, cash cover amount and percentage, other security, month and
-year.
+originating branch, RM name and code, reference, product and tariff, amendment
+type and parent reference, customer id, segment, customer, beneficiary,
+currency, amount (FCY), FX rate, commission, excise duty, reporting date, issue
+date, open-ended flag, expiry date, security type, cash cover amount and
+percentage, other security, month and year.
 
 Adding a field is a model field, a migration, a serializer entry and a form
 input; it is not blocked on anything except knowing which fields.

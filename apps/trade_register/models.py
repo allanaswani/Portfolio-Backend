@@ -26,6 +26,98 @@ from simple_history.models import HistoricalRecords
 from . import references as refs
 
 
+# Excise duty on fees charged by a financial institution, as a percentage of
+# the fee. Kenya's rate at the time of writing; it is a DEFAULT for new tariff
+# rows and not a constant the calculation reads, so a Finance Act change is an
+# edit in Administration rather than a deploy. Confirm the rate and the base
+# with the trade desk before relying on the figures.
+DEFAULT_EXCISE_RATE = Decimal("20")
+
+
+def _dec_early(value, default=None):
+    """``_dec`` is defined below for readability; tariffs need it above."""
+    if value is None or value == "":
+        return default
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+
+
+class TradeTariff(models.Model):
+    """A line in the bank's trade tariff book.
+
+    Products map to a tariff, and the tariff carries the charge. That is the
+    point of the mapping: one tariff change reprices every product on it,
+    instead of the same rate being edited product by product and drifting.
+
+    A product with no tariff falls back to its own rate fields, which is how
+    every product behaved before tariffs existed — so nothing is repriced by
+    the mere act of adding this table.
+    """
+
+    BASIS_FLAT = "flat"
+    BASIS_PER_QUARTER = "per_quarter"
+    BASIS_PER_ANNUM = "per_annum"
+    BASIS_NONE = "none"
+    BASIS_CHOICES = [
+        (BASIS_FLAT, "Flat % of the amount"),
+        (BASIS_PER_QUARTER, "% per quarter (or part) of the tenor"),
+        (BASIS_PER_ANNUM, "% per annum over the tenor"),
+        (BASIS_NONE, "Not calculated — entered by hand"),
+    ]
+
+    code = models.CharField(max_length=30, unique=True, db_index=True)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    commission_basis = models.CharField(
+        max_length=16, choices=BASIS_CHOICES, default=BASIS_NONE,
+    )
+    commission_rate = models.DecimalField(
+        max_digits=9, decimal_places=6, default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Percent. 0.5 means 0.5%.",
+    )
+    minimum_commission = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Floor in local currency, applied after the rate.",
+    )
+    excise_rate = models.DecimalField(
+        max_digits=9, decimal_places=6, default=DEFAULT_EXCISE_RATE,
+        validators=[MinValueValidator(0)],
+        help_text="Excise duty as a percent OF THE COMMISSION. 20 means 20%.",
+    )
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=100)
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "trade_register_tariff"
+        ordering = ["sort_order", "code"]
+        verbose_name = "Trade Tariff"
+        verbose_name_plural = "Trade Tariffs"
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
+
+    def excise_on(self, commission):
+        """Duty payable on a commission actually charged.
+
+        Always computed from the fee on the record, not from the fee the tariff
+        would have produced — when the desk overrides a negotiated commission,
+        the duty is owed on what was charged.
+        """
+        fee = _dec_early(commission, Decimal("0")) or Decimal("0")
+        rate = _dec_early(self.excise_rate, Decimal("0")) or Decimal("0")
+        if fee <= 0 or rate <= 0:
+            return Decimal("0.00")
+        return (fee * rate / Decimal("100")).quantize(Decimal("0.01"))
+
+
 class TradeProduct(models.Model):
     """A trade-finance product the desk can issue, with its own code.
 
@@ -61,6 +153,16 @@ class TradeProduct(models.Model):
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
 
+    # The tariff line this product is charged under. When set, the tariff's
+    # rate wins and the product's own rate fields below are ignored — that is
+    # what makes the mapping worth having: repricing a tariff reprices every
+    # product on it at once. A product with no tariff keeps using its own
+    # fields, so nothing is repriced merely by this table existing.
+    tariff = models.ForeignKey(
+        TradeTariff, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="products",
+    )
+
     # The desk's pricing, kept as data so a rate change is an edit rather than a
     # deploy. A product left on BASIS_NONE calculates nothing and the figure is
     # typed, which is exactly how every product behaved before this existed.
@@ -88,44 +190,103 @@ class TradeProduct(models.Model):
     def __str__(self):
         return f"{self.code} — {self.name}"
 
+    # ── Where the charge comes from ─────────────────────────────────────────
+    @property
+    def pricing(self):
+        """Whichever of the product or its tariff actually prices this.
+
+        **A rate set on the product wins.** A tariff line is the general charge
+        for a family; a rate typed against one product is a deliberate exception
+        to it, and an exception that a mapping silently overruled would be a
+        trap — somebody would set a rate, watch nothing happen, and have no way
+        to see why. So the tariff answers only where the product does not, which
+        also means mapping a product to a tariff never reprices it.
+
+        Both objects expose the same rate fields, so the calculation does not
+        care which answered; ``pricing_source`` tells the reader which did.
+        """
+        if self.commission_basis != self.BASIS_NONE:
+            return self
+        return self.tariff or self
+
+    @property
+    def pricing_source(self):
+        if self.commission_basis != self.BASIS_NONE:
+            return "product"
+        return "tariff" if self.tariff_id else "product"
+
+    @property
+    def excise_rate(self):
+        """Excise is a tariff-book figure. A product with no tariff falls back
+        to the statutory default rather than silently charging no duty."""
+        if self.tariff_id:
+            return self.tariff.excise_rate
+        return DEFAULT_EXCISE_RATE
+
+    def excise_on(self, commission):
+        """Duty on the commission actually charged (see TradeTariff.excise_on)."""
+        if self.tariff_id:
+            return self.tariff.excise_on(commission)
+        fee = _dec(commission, Decimal("0")) or Decimal("0")
+        rate = _dec(DEFAULT_EXCISE_RATE, Decimal("0")) or Decimal("0")
+        if fee <= 0 or rate <= 0:
+            return Decimal("0.00")
+        return (fee * rate / Decimal("100")).quantize(Decimal("0.01"))
+
     def quote(self, amount_fcy, fx_rate=1, issue_date=None, expiry_date=None,
               is_open_ended=False):
         """What this product's commission comes to, and how it got there.
 
         Returns ``{commission, periods, basis, rate, minimum_applied,
-        calculable, explanation}``. ``calculable`` is False when the product
-        prices by hand or the tenor needed for a per-period rate is unknown — in
-        that case the caller keeps whatever the user typed rather than
-        overwriting it with a guess.
+        calculable, explanation, source, tariff_code}``. ``calculable`` is False
+        when the charge is entered by hand, or the tenor a per-period rate needs
+        is unknown — in that case the caller keeps whatever the user typed
+        rather than overwriting it with a guess.
+
+        The rate is read from the mapped tariff when the product has one.
         """
+        pricing = self.pricing
+        source = self.pricing_source
+        # The line it is MAPPED to, reported whether or not it priced this —
+        # the mapping is what the desk asked for, and a product priced by an
+        # exception still belongs to its tariff family.
+        tariff_code = self.tariff.code if self.tariff_id else ""
+
         amount = _dec(amount_fcy, Decimal("0")) or Decimal("0")
         rate_fx = _dec(fx_rate, Decimal("0")) or Decimal("0")
         # Everything is quoted in local currency, as commission_lcy always was.
         amount_lcy = amount * rate_fx if rate_fx > 0 else amount
-        rate = _dec(self.commission_rate, Decimal("0")) or Decimal("0")
-        minimum = _dec(self.minimum_commission, Decimal("0")) or Decimal("0")
+        rate = _dec(pricing.commission_rate, Decimal("0")) or Decimal("0")
+        minimum = _dec(pricing.minimum_commission, Decimal("0")) or Decimal("0")
+        basis = pricing.commission_basis
 
-        if self.commission_basis == self.BASIS_NONE or rate <= 0:
+        if basis == self.BASIS_NONE or rate <= 0:
             return {
-                "commission": None, "periods": None, "basis": self.commission_basis,
+                "commission": None, "periods": None, "basis": basis,
                 "rate": rate, "minimum_applied": False, "calculable": False,
-                "explanation": "This product's commission is entered by hand.",
+                "source": source, "tariff_code": tariff_code,
+                "explanation": (
+                    f"Neither this product nor tariff {tariff_code} prices it; "
+                    "the commission is entered by hand." if tariff_code
+                    else "This product's commission is entered by hand."
+                ),
             }
 
         periods = Decimal("1")
-        if self.commission_basis in (self.BASIS_PER_QUARTER, self.BASIS_PER_ANNUM):
+        if basis in (self.BASIS_PER_QUARTER, self.BASIS_PER_ANNUM):
             days = self._tenor_days(issue_date, expiry_date, is_open_ended)
             if days is None:
                 return {
                     "commission": None, "periods": None,
-                    "basis": self.commission_basis, "rate": rate,
+                    "basis": basis, "rate": rate,
                     "minimum_applied": False, "calculable": False,
+                    "source": source, "tariff_code": tariff_code,
                     "explanation": (
                         "An expiry date is needed before a per-period rate can "
                         "be worked out."
                     ),
                 }
-            if self.commission_basis == self.BASIS_PER_QUARTER:
+            if basis == self.BASIS_PER_QUARTER:
                 # A part quarter is charged as a whole one, as the desk prices it.
                 periods = Decimal(max(1, -(-days // 90)))
                 unit = "quarter"
@@ -146,11 +307,16 @@ class TradeProduct(models.Model):
         return {
             "commission": commission,
             "periods": periods,
-            "basis": self.commission_basis,
+            "basis": basis,
             "rate": rate,
             "minimum_applied": bool(minimum > 0 and gross < minimum),
             "calculable": True,
-            "explanation": how + (f", floored at {minimum}" if minimum > 0 else ""),
+            "source": source,
+            "tariff_code": tariff_code,
+            "explanation": (
+                (f"Tariff {tariff_code}: " if source == "tariff" else "")
+                + how + (f", floored at {minimum}" if minimum > 0 else "")
+            ),
         }
 
     @staticmethod
@@ -252,6 +418,16 @@ class TradeRegisterEntry(models.Model):
     # record never quietly undoes a deliberate correction.
     commission_override = models.BooleanField(default=False)
 
+    # Excise duty on the commission. Always derived from the commission ON THIS
+    # RECORD, including an overridden one — the duty is owed on the fee actually
+    # charged, not on the fee the tariff would have produced.
+    excise_duty = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+    )
+    # The tariff line this was charged under, captured at save time so the
+    # record still says what it was charged under after the tariff is reprised.
+    tariff_code = models.CharField(max_length=30, blank=True, db_index=True)
+
     # Reporting date — when the transaction is captured/reported. Auto-defaults to
     # the system date (Stacy's request); editable per record.
     reporting_date = models.DateField(default=timezone.localdate)
@@ -309,6 +485,53 @@ class TradeRegisterEntry(models.Model):
         family = self.product.ref_family if self.product else refs.FAMILY_GUARANTEE
         self.guarantee_ref = refs.generate_reference(family, self.issue_date)
 
+    # ── Expiry diary ────────────────────────────────────────────────────────
+    # How the desk reads its own book: what has run out, what is about to, and
+    # what never will. The thresholds are here rather than in the view so the
+    # API, the page and any report all say the same thing about a record.
+    DIARY_EXPIRED = "expired"
+    DIARY_DUE_7 = "due_7"
+    DIARY_DUE_30 = "due_30"
+    DIARY_DUE_90 = "due_90"
+    DIARY_LIVE = "live"
+    DIARY_OPEN_ENDED = "open_ended"
+    DIARY_UNDATED = "undated"
+
+    DIARY_LABELS = {
+        DIARY_EXPIRED: "Expired",
+        DIARY_DUE_7: "Expires within 7 days",
+        DIARY_DUE_30: "Expires within 30 days",
+        DIARY_DUE_90: "Expires within 90 days",
+        DIARY_LIVE: "Live",
+        DIARY_OPEN_ENDED: "Open-ended",
+        DIARY_UNDATED: "No expiry date recorded",
+    }
+
+    def days_to_expiry(self, today=None):
+        """Days until expiry — negative once past. None when there is none."""
+        if self.is_open_ended or not self.expiry_date:
+            return None
+        return (self.expiry_date - (today or timezone.localdate())).days
+
+    def diary_status(self, today=None):
+        """Which shelf of the diary this record sits on."""
+        if self.is_open_ended:
+            return self.DIARY_OPEN_ENDED
+        if not self.expiry_date:
+            # An instrument that is neither open-ended nor dated is a gap in the
+            # register, not a live item — it is surfaced, not hidden in "live".
+            return self.DIARY_UNDATED
+        days = self.days_to_expiry(today)
+        if days < 0:
+            return self.DIARY_EXPIRED
+        if days <= 7:
+            return self.DIARY_DUE_7
+        if days <= 30:
+            return self.DIARY_DUE_30
+        if days <= 90:
+            return self.DIARY_DUE_90
+        return self.DIARY_LIVE
+
     def quote_commission(self):
         """The product's own commission for this transaction (or None)."""
         if not self.product:
@@ -331,6 +554,10 @@ class TradeRegisterEntry(models.Model):
             quoted = self.quote_commission()
             if quoted and quoted["calculable"]:
                 self.commission = quoted["commission"]
+        # Duty follows the commission on the record, override or not.
+        if self.product:
+            self.tariff_code = self.product.tariff.code if self.product.tariff_id else ""
+            self.excise_duty = self.product.excise_on(self.commission)
         self.assign_reference()
         super().save(*args, **kwargs)
         # Keep the mirrored Trade Finance row in step (same transaction as the

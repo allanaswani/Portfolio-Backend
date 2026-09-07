@@ -1,8 +1,9 @@
 """Trade Register API — CRUD for entries, plus the dropdown/reference helpers
 the form needs (products, RM/DSR lookup, live reference preview)."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -13,12 +14,13 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 
 from . import references as refs
-from .models import TradeCurrency, TradeProduct, TradeRegisterEntry
+from .models import TradeCurrency, TradeProduct, TradeRegisterEntry, TradeTariff
 from .serializers import (
     TradeCurrencySerializer,
     TradeProductAdminSerializer,
     TradeProductSerializer,
     TradeRegisterEntrySerializer,
+    TradeTariffSerializer,
 )
 
 TAG = ["Trade Register"]
@@ -297,6 +299,144 @@ class ProductLookupView(APIView):
                 "rate": str(quote["rate"]),
             }
         return Response(payload)
+
+
+@extend_schema(tags=TAG)
+class CustomerLookupView(APIView):
+    """Resolve a customer id to the name and segment the register should carry.
+
+    The desk was typing the customer id, then typing the name and picking the
+    segment again by hand — three chances to disagree with the core system about
+    the same customer. ``?customer_id=12345`` answers from ``hf_customer``.
+
+    ``segment`` and ``banking_segment`` are different columns on that table and
+    the register has historically carried the banking segment, so that is what
+    is offered first, with the other returned alongside rather than silently
+    collapsed into it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def customer_db():
+        """The alias this lookup reads ``hf_customer`` from.
+
+        The router sends unmanaged models to ``datawarehouse`` for reads and
+        returns ``None`` for their writes, which falls through to ``default``.
+        On production the two aliases are the same physical database, so the
+        split is invisible — and pinning to the write alias is what
+        ``apps.staff_management.employee_master_views.employee_db`` already does
+        for the same reason: it is the alias a test can reach.
+        """
+        from django.db import router as db_router
+
+        from apps.portfolio.models import HfCustomer
+
+        return db_router.db_for_write(HfCustomer) or "default"
+
+    def get(self, request):
+        from apps.portfolio.models import HfCustomer
+
+        raw = (request.query_params.get("customer_id") or "").strip()
+        if not raw:
+            return Response({"detail": "customer_id is required."}, status=400)
+        try:
+            customer_id = int(float(raw.replace(",", "")))
+        except (TypeError, ValueError):
+            return Response({"found": False, "detail": "That is not a customer id."},
+                            status=400)
+
+        row = (
+            HfCustomer.objects.using(self.customer_db())
+            .filter(cust_id=customer_id)
+            .values("cust_id", "latin_surname", "segment", "banking_segment", "branch")
+            .first()
+        )
+        if not row:
+            return Response({"found": False, "customer_id": customer_id,
+                             "detail": "No customer with that id."}, status=404)
+
+        return Response({
+            "found": True,
+            "customer_id": customer_id,
+            "name": (row["latin_surname"] or "").strip(),
+            "segment": (row["banking_segment"] or row["segment"] or "").strip(),
+            "banking_segment": (row["banking_segment"] or "").strip(),
+            "portfolio_segment": (row["segment"] or "").strip(),
+            "branch": (row["branch"] or "").strip(),
+        })
+
+
+@extend_schema(tags=TAG)
+class TradeDiaryView(APIView):
+    """The desk's diary: what has expired, and what is about to.
+
+    A guarantee that has run out is not a dead row — it is an item somebody has
+    to release, renew or call up. Nothing in the register surfaced them, so they
+    were found by scrolling.
+
+    Returns the whole watchlist grouped into shelves, newest expiry first within
+    each. ``?window=`` narrows the "expiring" horizon (default 90 days);
+    ``?include_live=1`` adds items further out than that.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.utils import timezone
+
+        try:
+            window = max(1, min(365, int(request.query_params.get("window", 90))))
+        except (TypeError, ValueError):
+            window = 90
+        include_live = request.query_params.get("include_live") == "1"
+        today = timezone.localdate()
+
+        qs = TradeRegisterEntry.objects.select_related("product").all()
+        if not include_live:
+            # Everything except items comfortably in the future: expired,
+            # expiring inside the window, open-ended, and undated.
+            qs = qs.filter(
+                Q(expiry_date__lte=today + timedelta(days=window))
+                | Q(is_open_ended=True)
+                | Q(expiry_date__isnull=True)
+            )
+
+        rows = list(qs.order_by("expiry_date", "-issue_date")[:2000])
+        serialized = TradeRegisterEntrySerializer(rows, many=True).data
+
+        buckets = {key: [] for key in TradeRegisterEntry.DIARY_LABELS}
+        for entry, payload in zip(rows, serialized):
+            buckets[entry.diary_status(today)].append(payload)
+
+        return Response({
+            "as_of": today,
+            "window_days": window,
+            "labels": TradeRegisterEntry.DIARY_LABELS,
+            "counts": {key: len(value) for key, value in buckets.items()},
+            "buckets": buckets,
+        })
+
+
+@extend_schema(tags=TAG)
+class TradeTariffListView(generics.ListCreateAPIView):
+    """The tariff book. Reading is open; changing a rate is admin-only.
+
+    Repricing one line reprices every product mapped to it — which is the point
+    of having tariffs at all, and the reason this is gated.
+    """
+
+    permission_classes = [_TradeAdmin]
+    serializer_class = TradeTariffSerializer
+    pagination_class = None
+    queryset = TradeTariff.objects.prefetch_related("products").all()
+
+
+@extend_schema(tags=TAG)
+class TradeTariffDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [_TradeAdmin]
+    serializer_class = TradeTariffSerializer
+    queryset = TradeTariff.objects.prefetch_related("products").all()
 
 
 @extend_schema(tags=TAG)
