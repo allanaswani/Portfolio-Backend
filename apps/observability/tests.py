@@ -321,6 +321,39 @@ class DataHealthJudgementTests(TestCase):
         # Every table unreadable here, and the response says so per table.
         self.assertTrue(all(t["status"] == "error" for t in res.data["tables"]))
 
+    def test_the_endpoint_cannot_500_whatever_the_scan_does(self):
+        """A screen that reports failures must not fail opaquely.
+
+        A 500 here tells the reader nothing they can act on — which is the one
+        thing this page must never do. Whatever the scan throws, the endpoint
+        answers 200 and names it.
+        """
+        from unittest.mock import patch
+
+        client = APIClient()
+        client.force_authenticate(admin_user("scan_admin"))
+        with patch("apps.observability.health.table_health",
+                   side_effect=RuntimeError("something nobody predicted")):
+            res = client.get("/observability/data-health/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("RuntimeError", res.data["scan_error"])
+        self.assertIn("something nobody predicted", res.data["scan_error"])
+        self.assertEqual(res.data["tables"], [])
+
+    def test_a_payload_that_will_not_serialise_is_caught_here_not_in_the_renderer(self):
+        """Otherwise it surfaces as a bare 500 with nothing attributable."""
+        from unittest.mock import patch
+
+        client = APIClient()
+        client.force_authenticate(admin_user("json_admin"))
+        with patch("apps.observability.health.table_health",
+                   return_value=[{"status": "ok", "rows": 1, "oops": object()}]):
+            res = client.get("/observability/data-health/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["scan_error"])
+
     def test_every_warehouse_table_is_in_scope(self):
         tables = {m._meta.db_table for m in health.warehouse_models()}
         self.assertIn("employee_table", tables)

@@ -4,9 +4,13 @@ Everything here is administrator-only: it exposes who changed what across the
 whole application, and the shape of the warehouse behind it.
 """
 
+import json
+import logging
+import traceback
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Count, Max
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -26,6 +30,8 @@ TAG_PERF = ["Observability — Performance"]
 # Administration menu is shown to. Gating on is_staff alone meant an
 # administrator saw the menu item and got 403s behind it.
 ADMIN = [IsAuthenticated, IsAdministrationUser]
+
+logger = logging.getLogger(__name__)
 
 
 def _int(request, name, default, low, high):
@@ -202,16 +208,41 @@ class DataHealthView(APIView):
     permission_classes = ADMIN
 
     def get(self, request):
-        rows = health.table_health(
-            app_label=(request.query_params.get("app") or "").strip() or None
-        )
-        status_filter = (request.query_params.get("status") or "").strip()
-        summary = health.summarise(rows)
-        if status_filter:
-            rows = [r for r in rows if r["status"] == status_filter]
+        # This endpoint must not be capable of a 500. Its entire purpose is to
+        # report that something could not be read — answering with an opaque
+        # server error is the one failure mode it cannot have, and a 500 here
+        # tells the reader nothing they can act on. So the scan, the summary
+        # and the serialisation all happen inside one guard, and anything that
+        # still gets through is returned AS THE ANSWER: 200, with the exception
+        # named, so the page can show it.
+        scan_error = ""
+        rows = []
+        summary = {}
+        try:
+            rows = health.table_health(
+                app_label=(request.query_params.get("app") or "").strip() or None
+            )
+            summary = health.summarise(rows)
+            status_filter = (request.query_params.get("status") or "").strip()
+            if status_filter:
+                rows = [r for r in rows if r["status"] == status_filter]
+            # Force the payload through the JSON encoder here, where the failure
+            # is still attributable, rather than in the renderer where it would
+            # surface as a bare 500 with no context.
+            json.dumps(rows, cls=DjangoJSONEncoder)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Data health scan failed")
+            scan_error = (
+                f"{type(exc).__name__}: {exc}\n"
+                + "".join(traceback.format_tb(exc.__traceback__)[-3:])
+            )[:2000]
+            rows = []
+            summary = health.summarise([])
+
         return Response({
             "summary": summary,
             "thresholds": {"warning_days": health.WARN_DAYS, "stale_days": health.STALE_DAYS},
+            "scan_error": scan_error,
             "tables": rows,
         })
 
