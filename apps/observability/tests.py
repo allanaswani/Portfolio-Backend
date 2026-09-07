@@ -276,6 +276,51 @@ class DataHealthJudgementTests(TestCase):
         field = health._freshness_field(TradeFinanceData)
         self.assertEqual(field.name, "updated_at")
 
+    def test_one_unreadable_table_does_not_take_the_scan_down(self):
+        """The whole point of the page is to report a table it cannot read.
+
+        The scan used to wrap all thirty-six probes in a single
+        `except DatabaseError`. Django's InterfaceError is a SIBLING of
+        DatabaseError, not a subclass, so a dropped connection — or any other
+        exception from one odd column — escaped and 500'd the entire screen.
+        """
+        # A test database refuses the warehouse alias outright, which raises
+        # DatabaseOperationForbidden — itself neither a DatabaseError nor an
+        # InterfaceError. That is the same shape as the production failure, so
+        # it is the fixture: the scan must survive whatever it is handed.
+        rows = health.table_health()
+
+        self.assertTrue(rows, "the scan should still return a row per table")
+        self.assertTrue(all(r["status"] == "error" for r in rows))
+        self.assertTrue(rows[0]["error"], "the row must say why it could not be read")
+        # And it must name the exception, so the page can be acted on.
+        self.assertIn(":", rows[0]["error"])
+
+    def test_a_table_that_reads_but_will_not_aggregate_keeps_its_row(self):
+        """Losing freshness must cost the row its age, not its whole entry."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("apps.observability.health.connections", MagicMock()),              patch("apps.observability.health._estimate_rows",
+                   return_value=(True, 100, True)),              patch("django.db.models.QuerySet.aggregate",
+                   side_effect=TypeError("not a date")):
+            rows = health.table_health()
+
+        dated = [r for r in rows if r["freshness_column"]]
+        self.assertTrue(dated)
+        # The size survived; only the age was lost.
+        self.assertEqual(dated[0]["rows"], 100)
+        self.assertIsNone(dated[0]["age_days"])
+        self.assertIn("not a date", dated[0]["error"])
+
+    def test_the_endpoint_answers_even_when_the_warehouse_is_unreachable(self):
+        client = APIClient()
+        client.force_authenticate(admin_user("health_admin"))
+        res = client.get("/observability/data-health/")
+        self.assertEqual(res.status_code, 200, "the scan must answer, not 500")
+        self.assertGreater(res.data["summary"]["tables"], 0)
+        # Every table unreadable here, and the response says so per table.
+        self.assertTrue(all(t["status"] == "error" for t in res.data["tables"]))
+
     def test_every_warehouse_table_is_in_scope(self):
         tables = {m._meta.db_table for m in health.warehouse_models()}
         self.assertIn("employee_table", tables)

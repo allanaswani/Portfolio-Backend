@@ -98,7 +98,12 @@ def warehouse_models():
 
 
 def table_health(app_label=None):
-    """One row per warehouse table: existence, size, freshness, verdict."""
+    """One row per warehouse table: existence, size, freshness, verdict.
+
+    Never raises. A scan that reports on thirty-six tables must not be
+    all-or-nothing — the one table that cannot be read is usually the very
+    thing the reader opened this page to find out about.
+    """
     now = timezone.now()
     today = now.date()
     rows = []
@@ -107,28 +112,54 @@ def table_health(app_label=None):
         if app_label and model._meta.app_label != app_label:
             continue
         table = model._meta.db_table
-        alias = router.db_for_read(model) or "default"
-        field = _freshness_field(model)
+        try:
+            alias = router.db_for_read(model) or "default"
+        except Exception:  # noqa: BLE001 — a router that objects to this model
+            alias = "default"
+        try:
+            field = _freshness_field(model)
+        except Exception:  # noqa: BLE001
+            field = None
 
         exists, count, is_estimate = False, 0, False
         last_seen = None
         error = ""
+
+        # Every table is probed inside its own guard, and the guard catches
+        # Exception rather than DatabaseError. Two reasons, both learned the
+        # hard way: Django's InterfaceError is a SIBLING of DatabaseError, not a
+        # subclass, so a dropped connection escaped; and a single odd column
+        # (an absurd numeric precision, an unreadable type) could raise
+        # something else entirely. Either way one bad table used to take the
+        # whole scan down with a 500 — from the screen whose entire job is to
+        # report that kind of failure. A table that cannot be read is now a row
+        # that SAYS it cannot be read.
         try:
             with connections[alias].cursor() as cursor:
                 exists, count, is_estimate = _estimate_rows(cursor, table)
-            if exists and count and field is not None:
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"[:300]
+
+        if not error and exists and count and field is not None:
+            # Freshness is a second, separate probe: a table can be perfectly
+            # readable while its date column is not aggregatable, and that
+            # should cost the row its age, not its whole entry.
+            try:
                 last_seen = (
                     model.objects.using(alias)
                     .exclude(**{f"{field.name}__isnull": True})
                     .aggregate(m=models.Max(field.name))["m"]
                 )
-        except DatabaseError as exc:
-            error = str(exc)[:200]
+            except Exception as exc:  # noqa: BLE001
+                error = f"{field.name}: {type(exc).__name__}: {exc}"[:300]
 
         age_days = None
         if last_seen is not None:
-            seen_date = last_seen.date() if hasattr(last_seen, "date") else last_seen
-            age_days = (today - seen_date).days
+            try:
+                seen_date = last_seen.date() if hasattr(last_seen, "date") else last_seen
+                age_days = (today - seen_date).days
+            except Exception:  # noqa: BLE001 — a column that is not really a date
+                age_days = None
 
         rows.append({
             "app_label": model._meta.app_label,
