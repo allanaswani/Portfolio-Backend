@@ -876,6 +876,9 @@ class DSRSalesCode(models.Model):
     allocation_date = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # A seller code decides whose name a sale is credited to, and codes are now
+    # editable and deletable from Administration — so every correction is kept.
+    history = HistoricalRecords()
 
     class Meta:
         managed = True
@@ -900,6 +903,7 @@ class DSRRoleTeamLeader(models.Model):
     sort_order = models.PositiveIntegerField(default=0)
     active = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
+    history = HistoricalRecords()
 
     class Meta:
         managed = True
@@ -926,6 +930,8 @@ class TeamLeaderBranch(models.Model):
     role = models.CharField(max_length=60, blank=True, default="PB DSR")
     active = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Who owns which branch drives target attribution, so reassignments are kept.
+    history = HistoricalRecords()
 
     class Meta:
         managed = True

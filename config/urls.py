@@ -31,6 +31,7 @@ urlpatterns = [
     path("trade_register/", include("apps.trade_register.urls")),
     path("business_performance/", include("apps.business_performance.urls")),
     path("referrals/", include("apps.referrals.urls")),
+    path("observability/", include("apps.observability.urls")),
 
     # New feature APIs (v1 prefix for new frontend)
     path("api/v1/analytics/", include("apps.analytics.urls")),

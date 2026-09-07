@@ -13,8 +13,13 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 
 from . import references as refs
-from .models import TradeProduct, TradeRegisterEntry
-from .serializers import TradeProductSerializer, TradeRegisterEntrySerializer
+from .models import TradeCurrency, TradeProduct, TradeRegisterEntry
+from .serializers import (
+    TradeCurrencySerializer,
+    TradeProductAdminSerializer,
+    TradeProductSerializer,
+    TradeRegisterEntrySerializer,
+)
 
 TAG = ["Trade Register"]
 
@@ -58,6 +63,43 @@ class TradeProductListView(generics.ListAPIView):
     queryset = TradeProduct.objects.filter(is_active=True)
 
 
+class _TradeAdmin(IsAuthenticated):
+    """Read for anyone signed in; changing the desk's pricing is admin-only."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return True
+        user = request.user
+        return bool(
+            user.is_superuser
+            or user.is_staff
+            or user.groups.filter(name="staff_mgt").exists()
+        )
+
+
+@extend_schema(tags=TAG)
+class TradeProductAdminListView(generics.ListCreateAPIView):
+    """Maintain the product list and, with it, the commission each one prices at.
+
+    Rates are data rather than constants so that changing one is an edit here,
+    not a code change and a deploy.
+    """
+
+    permission_classes = [_TradeAdmin]
+    serializer_class = TradeProductAdminSerializer
+    pagination_class = None
+    queryset = TradeProduct.objects.all()
+
+
+@extend_schema(tags=TAG)
+class TradeProductAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [_TradeAdmin]
+    serializer_class = TradeProductAdminSerializer
+    queryset = TradeProduct.objects.all()
+
+
 @extend_schema(tags=TAG)
 class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
@@ -85,40 +127,176 @@ class TradeRegisterEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=TAG)
 class RMLookupView(APIView):
-    """RM/DSR name+code options for the dropdown.
+    """RM / DSR options for the transaction form — searchable, and current.
 
-    Merges the active staff roster (``staff_employee_data``) with DSR seller-code
-    allocations (``dsr_sales_codes``), de-duplicated on (name, code).
+    This used to read ``staff_employee_data``, a partial list that nothing keeps
+    in step with HR: RMs the desk needed were simply absent, and people who had
+    been promoted or had left were still offered. The roster is
+    ``employee_table`` — the list the employee-master upload maintains — so that
+    is what it reads now, with anyone carrying an exit date left out and each
+    person's current job title shown.
+
+    Searching happens here rather than in the browser: the form was a plain
+    dropdown the desk had to scroll, and shipping the whole roster down to
+    filter it client-side is what made that necessary.
+
+    Query: ``?search=&limit=&include_exited=1``. Sales codes are merged in from
+    the DSR allocations and the sales-staff table, keyed on the PF number, and
+    only for the rows actually being returned.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    DEFAULT_LIMIT = 50
+    MAX_LIMIT = 500
+
+    def get(self, request):
+        from django.db import router as db_router
+        from django.db.models import Q
+
+        from apps.gceo_dashboard.models import EmployeeTable
+        from apps.staff_management.models import DSRSalesCode, StaffEmployeeData
+
+        search = (request.query_params.get("search") or "").strip()
+        include_exited = request.query_params.get("include_exited") == "1"
+        try:
+            limit = int(request.query_params.get("limit", self.DEFAULT_LIMIT))
+        except (TypeError, ValueError):
+            limit = self.DEFAULT_LIMIT
+        limit = max(1, min(self.MAX_LIMIT, limit))
+
+        alias = db_router.db_for_read(EmployeeTable) or "default"
+        qs = EmployeeTable.objects.using(alias).exclude(name__isnull=True).exclude(name="")
+        if not include_exited:
+            # Either marker alone can carry the exit, depending on which sheet
+            # the HR upload recorded it on, so both are honoured.
+            qs = qs.filter(staff_exit_date__isnull=True).exclude(exit=1)
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(job_title__icontains=search)
+                | Q(department__icontains=search)
+            )
+
+        rows = list(
+            qs.order_by("name").values(
+                "staff_id", "name", "job_title", "department", "unit", "org_unit",
+                "staff_exit_date",
+            )[:limit]
+        )
+
+        # Sales codes live in other tables; look them up only for this page.
+        pfs = {self.pf_number(r["staff_id"]) for r in rows}
+        pfs.discard(None)
+        codes = {}
+        if pfs:
+            for pf, code in DSRSalesCode.objects.filter(
+                pf_number__in=[str(pf) for pf in pfs]
+            ).values_list("pf_number", "sales_code"):
+                key = self.pf_number(pf)
+                if key is not None and code:
+                    codes.setdefault(key, code)
+            for pf, code in StaffEmployeeData.objects.filter(
+                staff_pf_number__in=pfs
+            ).values_list("staff_pf_number", "sales_code"):
+                if pf is not None and code:
+                    codes.setdefault(int(pf), code)
+
+        out = []
+        for row in rows:
+            pf = self.pf_number(row["staff_id"])
+            out.append({
+                "name": (row["name"] or "").strip(),
+                "code": codes.get(pf, ""),
+                "pf_number": str(pf) if pf is not None else "",
+                "job_title": (row["job_title"] or "").strip(),
+                "department": (row["department"] or "").strip(),
+                "unit": (row["unit"] or row["org_unit"] or "").strip(),
+                "exited": row["staff_exit_date"] is not None,
+                "source": "roster",
+            })
+        return Response({"count": len(out), "limit": limit, "results": out})
+
+    @staticmethod
+    def pf_number(value):
+        """``Decimal('4028.00000')`` and ``'4028'`` are the same PF number."""
+        if value is None:
+            return None
+        try:
+            return int(float(str(value).strip().replace(",", "")))
+        except (TypeError, ValueError):
+            return None
+
+
+@extend_schema(tags=TAG)
+class TradeCurrencyListView(generics.ListAPIView):
+    """Currencies the desk may write in — a table, not a hard-coded list.
+
+    The form used to offer ten currencies compiled into the frontend bundle,
+    which is why the desk found currencies missing: adding one meant a deploy.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = TradeCurrencySerializer
+    pagination_class = None
+    queryset = TradeCurrency.objects.filter(is_active=True)
+
+
+@extend_schema(tags=TAG)
+class ProductLookupView(APIView):
+    """Resolve a typed product code to its name and pricing, and quote it.
+
+    This is what makes "type the product ID and the rest fills in" work.
+    ``?code=BG`` answers with the product; adding ``&amount_fcy=&fx_rate=
+    &issue_date=&expiry_date=&is_open_ended=`` also answers with the commission
+    that product prices at and how it was arrived at — so the desk sees the
+    working and can disagree with it rather than being handed a bare number.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from apps.staff_management.models import DSRSalesCode, StaffEmployeeData
+        code = (request.query_params.get("code") or "").strip()
+        product_id = (request.query_params.get("product") or "").strip()
+        if not code and not product_id:
+            return Response({"detail": "code or product is required."}, status=400)
 
-        seen = set()
-        out = []
+        product = None
+        if product_id.isdigit():
+            product = TradeProduct.objects.filter(pk=int(product_id)).first()
+        if product is None and code:
+            product = TradeProduct.objects.filter(code__iexact=code).first()
+        if product is None:
+            return Response({"found": False, "detail": "No product with that code."},
+                            status=404)
 
-        def add(name, code, source):
-            name = (name or "").strip()
-            code = (code or "").strip()
-            if not name:
-                return
-            key = (name.upper(), code.upper())
-            if key in seen:
-                return
-            seen.add(key)
-            out.append({"name": name, "code": code, "source": source})
+        def _date(name):
+            raw = (request.query_params.get(name) or "").strip()
+            if not raw:
+                return None
+            try:
+                return datetime.strptime(raw[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
 
-        for name, code in StaffEmployeeData.objects.filter(
-            is_active=True
-        ).values_list("staff_name", "sales_code"):
-            add(name, code, "staff")
-        for name, code in DSRSalesCode.objects.values_list("salesperson", "sales_code"):
-            add(name, code, "dsr")
-
-        out.sort(key=lambda r: r["name"])
-        return Response(out)
+        payload = {"found": True, "product": TradeProductSerializer(product).data}
+        if request.query_params.get("amount_fcy"):
+            quote = product.quote(
+                request.query_params.get("amount_fcy"),
+                request.query_params.get("fx_rate") or 1,
+                _date("issue_date"),
+                _date("expiry_date"),
+                request.query_params.get("is_open_ended") in ("1", "true", "True"),
+            )
+            payload["quote"] = {
+                **quote,
+                "commission": (str(quote["commission"])
+                               if quote["commission"] is not None else None),
+                "periods": (str(quote["periods"])
+                            if quote["periods"] is not None else None),
+                "rate": str(quote["rate"]),
+            }
+        return Response(payload)
 
 
 @extend_schema(tags=TAG)

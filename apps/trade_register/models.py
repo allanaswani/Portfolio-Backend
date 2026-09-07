@@ -43,17 +43,147 @@ class TradeProduct(models.Model):
         (FAMILY_EXPORT_LC, "Export LC (HFCB/ELC/…)"),
     ]
 
+    # ── How this product's commission is worked out ─────────────────────────
+    BASIS_FLAT = "flat"
+    BASIS_PER_QUARTER = "per_quarter"
+    BASIS_PER_ANNUM = "per_annum"
+    BASIS_NONE = "none"
+    BASIS_CHOICES = [
+        (BASIS_FLAT, "Flat % of the amount"),
+        (BASIS_PER_QUARTER, "% per quarter (or part) of the tenor"),
+        (BASIS_PER_ANNUM, "% per annum over the tenor"),
+        (BASIS_NONE, "Not calculated — entered by hand"),
+    ]
+
     code = models.CharField(max_length=20, unique=True, db_index=True)
     name = models.CharField(max_length=255, unique=True)
     ref_family = models.CharField(max_length=16, choices=FAMILY_CHOICES)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
 
+    # The desk's pricing, kept as data so a rate change is an edit rather than a
+    # deploy. A product left on BASIS_NONE calculates nothing and the figure is
+    # typed, which is exactly how every product behaved before this existed.
+    commission_basis = models.CharField(
+        max_length=16, choices=BASIS_CHOICES, default=BASIS_NONE,
+    )
+    commission_rate = models.DecimalField(
+        max_digits=9, decimal_places=6, default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Percent. 0.5 means 0.5%.",
+    )
+    minimum_commission = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Floor in local currency, applied after the rate.",
+    )
+    history = HistoricalRecords()
+
     class Meta:
         managed = True
         db_table = "trade_register_product"
         ordering = ["sort_order", "name"]
         verbose_name = "Trade Product"
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
+
+    def quote(self, amount_fcy, fx_rate=1, issue_date=None, expiry_date=None,
+              is_open_ended=False):
+        """What this product's commission comes to, and how it got there.
+
+        Returns ``{commission, periods, basis, rate, minimum_applied,
+        calculable, explanation}``. ``calculable`` is False when the product
+        prices by hand or the tenor needed for a per-period rate is unknown — in
+        that case the caller keeps whatever the user typed rather than
+        overwriting it with a guess.
+        """
+        amount = _dec(amount_fcy, Decimal("0")) or Decimal("0")
+        rate_fx = _dec(fx_rate, Decimal("0")) or Decimal("0")
+        # Everything is quoted in local currency, as commission_lcy always was.
+        amount_lcy = amount * rate_fx if rate_fx > 0 else amount
+        rate = _dec(self.commission_rate, Decimal("0")) or Decimal("0")
+        minimum = _dec(self.minimum_commission, Decimal("0")) or Decimal("0")
+
+        if self.commission_basis == self.BASIS_NONE or rate <= 0:
+            return {
+                "commission": None, "periods": None, "basis": self.commission_basis,
+                "rate": rate, "minimum_applied": False, "calculable": False,
+                "explanation": "This product's commission is entered by hand.",
+            }
+
+        periods = Decimal("1")
+        if self.commission_basis in (self.BASIS_PER_QUARTER, self.BASIS_PER_ANNUM):
+            days = self._tenor_days(issue_date, expiry_date, is_open_ended)
+            if days is None:
+                return {
+                    "commission": None, "periods": None,
+                    "basis": self.commission_basis, "rate": rate,
+                    "minimum_applied": False, "calculable": False,
+                    "explanation": (
+                        "An expiry date is needed before a per-period rate can "
+                        "be worked out."
+                    ),
+                }
+            if self.commission_basis == self.BASIS_PER_QUARTER:
+                # A part quarter is charged as a whole one, as the desk prices it.
+                periods = Decimal(max(1, -(-days // 90)))
+                unit = "quarter"
+            else:
+                periods = Decimal(days) / Decimal("365")
+                unit = "year"
+        else:
+            unit = None
+
+        gross = amount_lcy * rate / Decimal("100") * periods
+        commission = max(gross, minimum) if minimum > 0 else gross
+        commission = commission.quantize(Decimal("0.01"))
+
+        if unit:
+            how = f"{rate}% per {unit} x {periods} {unit}(s)"
+        else:
+            how = f"{rate}% of the amount"
+        return {
+            "commission": commission,
+            "periods": periods,
+            "basis": self.commission_basis,
+            "rate": rate,
+            "minimum_applied": bool(minimum > 0 and gross < minimum),
+            "calculable": True,
+            "explanation": how + (f", floored at {minimum}" if minimum > 0 else ""),
+        }
+
+    @staticmethod
+    def _tenor_days(issue_date, expiry_date, is_open_ended):
+        """Days between issue and expiry, or None when that is not knowable.
+
+        An open-ended instrument has no tenor at all, so a per-period rate
+        cannot be applied to it and the caller is told so.
+        """
+        if is_open_ended or not issue_date or not expiry_date:
+            return None
+        days = (expiry_date - issue_date).days
+        return days if days > 0 else None
+
+
+class TradeCurrency(models.Model):
+    """A currency the desk may write a transaction in.
+
+    A hard-coded list in the frontend is why currencies went missing: adding one
+    meant a deploy. This is the list, and Administration can extend it.
+    """
+
+    code = models.CharField(max_length=3, unique=True, db_index=True)
+    name = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=100)
+
+    class Meta:
+        managed = True
+        db_table = "trade_register_currency"
+        ordering = ["sort_order", "code"]
+        verbose_name = "Trade Currency"
+        verbose_name_plural = "Trade Currencies"
 
     def __str__(self):
         return f"{self.code} — {self.name}"
@@ -116,6 +246,11 @@ class TradeRegisterEntry(models.Model):
     commission = models.DecimalField(
         max_digits=20, decimal_places=6, default=0, validators=[MinValueValidator(0)],
     )
+    # Set when the desk types a commission that differs from the product's own
+    # pricing — a negotiated rate, or a figure the rate table cannot express.
+    # While it is set the calculation leaves the number alone, so re-saving a
+    # record never quietly undoes a deliberate correction.
+    commission_override = models.BooleanField(default=False)
 
     # Reporting date — when the transaction is captured/reported. Auto-defaults to
     # the system date (Stacy's request); editable per record.
@@ -174,6 +309,15 @@ class TradeRegisterEntry(models.Model):
         family = self.product.ref_family if self.product else refs.FAMILY_GUARANTEE
         self.guarantee_ref = refs.generate_reference(family, self.issue_date)
 
+    def quote_commission(self):
+        """The product's own commission for this transaction (or None)."""
+        if not self.product:
+            return None
+        return self.product.quote(
+            self.amount_fcy, self.fx_rate, self.issue_date,
+            self.expiry_date, self.is_open_ended,
+        )
+
     def save(self, *args, **kwargs):
         if self.product:
             self.product_type = self.product.name
@@ -182,6 +326,11 @@ class TradeRegisterEntry(models.Model):
         if self.issue_date:
             self.month = self.issue_date.strftime("%B").upper()
             self.year = str(self.issue_date.year)
+        # Price the product unless the desk has deliberately overridden it.
+        if not self.commission_override:
+            quoted = self.quote_commission()
+            if quoted and quoted["calculable"]:
+                self.commission = quoted["commission"]
         self.assign_reference()
         super().save(*args, **kwargs)
         # Keep the mirrored Trade Finance row in step (same transaction as the

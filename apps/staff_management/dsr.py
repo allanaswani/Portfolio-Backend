@@ -25,6 +25,15 @@ def next_sales_code() -> str:
     return f"DSR{max_n + 1}"
 
 
+def is_valid_sales_code(code) -> bool:
+    """True for a well-formed ``DSR###``.
+
+    Used when an administrator corrects an allocation by hand — the generator
+    only ever produces valid codes, but a typed one has to be checked.
+    """
+    return bool(_CODE_RE.fullmatch(str(code or "").strip().upper()))
+
+
 def _to_int(value):
     try:
         return int(str(value).strip())

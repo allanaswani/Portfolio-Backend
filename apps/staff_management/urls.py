@@ -30,6 +30,7 @@ urlpatterns = [
     path("dsr-sales-codes/allocate/",   dsr.DSRSalesCodeAllocateView.as_view()),
     path("dsr-sales-codes/upload-csv/", dsr.DSRSalesCodeCSVUploadView.as_view()),
     path("dsr-sales-codes/",            dsr.DSRSalesCodeListView.as_view()),
+    path("dsr-sales-codes/<int:pk>/",   dsr.DSRSalesCodeDetailView.as_view()),
 
     # ── Existing staff endpoints ──────────────────────────────────────────────
     path("branch_managers/",  views.BranchManagersListView.as_view()),

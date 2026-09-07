@@ -55,6 +55,7 @@ LOCAL_APPS = [
     "apps.trade_register",
     "apps.business_performance",
     "apps.referrals",
+    "apps.observability",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -75,6 +76,11 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "simple_history.middleware.HistoryRequestMiddleware",
+    # Times every request into observability_request_metric (buffered per
+    # worker, flushed in batches) so the Data Health dashboard has real
+    # latency, throughput and error-rate numbers to draw. Last in the list:
+    # it measures the whole stack below it, including auth.
+    "apps.observability.middleware.RequestMetricsMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"

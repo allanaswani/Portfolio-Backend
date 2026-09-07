@@ -6,6 +6,7 @@ Endpoints:
   not, autofilled name/branch/department + the next code that would be issued.
 * ``POST dsr-sales-codes/allocate/``   — allocate a code to a PF (idempotent per PF).
 * ``POST dsr-sales-codes/upload-csv/`` — bulk import the listing (upsert on PF).
+* ``GET/PATCH/DELETE dsr-sales-codes/<pk>/`` — correct or withdraw one allocation.
 
 The code-generation and PF rules live in :mod:`apps.staff_management.dsr`.
 """
@@ -24,16 +25,31 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 
 from .branches import normalize_branch
-from .dsr import autofill_from_roster, next_sales_code
+from .dsr import autofill_from_roster, is_valid_sales_code, next_sales_code
 from .models import DSRSalesCode, DSRRoleTeamLeader
 
 
 class DSRSalesCodeSerializer(serializers.ModelSerializer):
-    # Show the team leader who currently owns the DSR's branch. If a value was
-    # stored at allocation time we keep it; otherwise we derive it live from the
-    # branch→TL mapping, so rows auto-fill the moment a mapping exists (and follow
-    # a branch's reassignment) instead of staying blank forever.
+    """One allocation, with its team leader resolved for display.
+
+    A DSR's leader can be known three ways, and the table used to consult only
+    one of them — the branch map — so every DSR whose leader is set by ROLE
+    rather than branch (BANCA DSR, SME DSR) showed an empty Team Leader column
+    even though the mapping existed. The order is now:
+
+    1. the value stored on the allocation,
+    2. the team leader who owns the DSR's branch (``TeamLeaderBranch``), which
+       keeps rows following a branch reassignment,
+    3. the team leader(s) mapped to the DSR's role (``DSRRoleTeamLeader``).
+
+    ``team_leader_source`` says which one answered, so the page can show a
+    derived value differently from a stored one. Where a role has more than one
+    leader the names are joined — the honest answer is "one of these two", and a
+    blank cell reads as "not mapped", which would be wrong.
+    """
+
     team_leader = serializers.SerializerMethodField()
+    team_leader_source = serializers.SerializerMethodField()
 
     class Meta:
         model = DSRSalesCode
@@ -41,11 +57,24 @@ class DSRSalesCodeSerializer(serializers.ModelSerializer):
         # sales_code is system-generated on allocate; never accept it from the body.
         read_only_fields = ["sales_code", "created_at", "updated_at"]
 
-    def get_team_leader(self, obj):
+    def _resolve_team_leader(self, obj):
+        """(name, source) for the DSR's leader."""
         stored = (getattr(obj, "team_leader", "") or "").strip()
         if stored:
-            return stored
-        return self._branch_tl_map().get(normalize_branch(obj.branch), "")
+            return stored, "stored"
+        by_branch = self._branch_tl_map().get(normalize_branch(obj.branch), "")
+        if by_branch:
+            return by_branch, "branch"
+        by_role = self._role_tl_map().get((obj.role or "").strip().upper(), [])
+        if by_role:
+            return " / ".join(by_role), "role"
+        return "", ""
+
+    def get_team_leader(self, obj):
+        return self._resolve_team_leader(obj)[0]
+
+    def get_team_leader_source(self, obj):
+        return self._resolve_team_leader(obj)[1]
 
     def _branch_tl_map(self):
         """Cache the (small) branch→team-leader map once per serialization pass."""
@@ -53,13 +82,97 @@ class DSRSalesCodeSerializer(serializers.ModelSerializer):
         if cache is None:
             from .models import TeamLeaderBranch
 
-            cache = dict(
-                TeamLeaderBranch.objects.filter(active=True).values_list(
-                    "branch", "team_leader"
-                )
-            )
+            # Key on the canonical branch name. A mapping stored as "THIKA"
+            # must still answer for a DSR whose branch reads "Thika Branch" —
+            # keying on the raw value silently loses those rows.
+            cache = {
+                normalize_branch(branch): tl
+                for branch, tl in TeamLeaderBranch.objects.filter(
+                    active=True
+                ).values_list("branch", "team_leader")
+            }
             self._tl_map_cache = cache
         return cache
+
+    def _role_tl_map(self):
+        """Cache the role→team-leaders map once per serialization pass."""
+        cache = getattr(self, "_role_map_cache", None)
+        if cache is None:
+            cache = {}
+            for role, tl in (
+                DSRRoleTeamLeader.objects.filter(active=True)
+                .order_by("role", "sort_order", "team_leader")
+                .values_list("role", "team_leader")
+            ):
+                cache.setdefault((role or "").strip().upper(), []).append(tl)
+            self._role_map_cache = cache
+        return cache
+
+
+class DSRSalesCodeEditSerializer(DSRSalesCodeSerializer):
+    """The allocation as an administrator may correct it.
+
+    ``sales_code`` becomes writable here — the desk does occasionally need to fix
+    a code that was allocated against the wrong person — but it is validated, and
+    a code is still never silently reused: changing it to one another DSR already
+    holds is rejected, as is anything that is not a ``DSR###``.
+
+    ``team_leader`` is a SerializerMethodField on the parent (it falls back to the
+    branch→TL map), so it is redeclared here as a real, writable field. Without
+    that, an edit could never store a team leader at all.
+    """
+
+    team_leader = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta(DSRSalesCodeSerializer.Meta):
+        read_only_fields = ["created_at", "updated_at"]
+
+    def validate_sales_code(self, value):
+        code = (value or "").strip().upper()
+        if not code:
+            raise serializers.ValidationError("A sales code is required.")
+        if not is_valid_sales_code(code):
+            raise serializers.ValidationError(
+                "A sales code looks like DSR123 — letters DSR followed by a number."
+            )
+        clash = DSRSalesCode.objects.filter(sales_code__iexact=code)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                f"{code} already belongs to another DSR. Codes are never shared."
+            )
+        return code
+
+    def validate_pf_number(self, value):
+        pf = (value or "").strip()
+        if not pf:
+            raise serializers.ValidationError("A PF number is required.")
+        clash = DSRSalesCode.objects.filter(pf_number=pf)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                f"PF {pf} already has an allocation. One code per person."
+            )
+        return pf
+
+
+class DSRSalesCodeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Read, correct or withdraw one allocation (writes are admin-only).
+
+    Deleting frees the person, not the number: :func:`dsr.next_sales_code` always
+    takes ``max + 1``, so a withdrawn code is never handed to somebody else.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = DSRSalesCodeEditSerializer
+    queryset = DSRSalesCode.objects.all()
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not _is_admin(request.user):
+            self.permission_denied(request, message="Administrators only.")
 
 
 def _is_admin(user) -> bool:
