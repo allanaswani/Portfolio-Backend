@@ -256,6 +256,14 @@ class AuditTests(TestCase):
 class DataHealthJudgementTests(TestCase):
     """The verdict logic, pinned as the pure function it is."""
 
+    def setUp(self):
+        # The scan is cached; a result from a neighbouring test would make
+        # these pass or fail on ordering rather than on behaviour.
+        from django.core.cache import cache
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+
     def test_a_table_that_is_not_there_is_missing_not_empty(self):
         self.assertEqual(health._classify(False, 0, None), "missing")
 
@@ -288,7 +296,7 @@ class DataHealthJudgementTests(TestCase):
         # DatabaseOperationForbidden — itself neither a DatabaseError nor an
         # InterfaceError. That is the same shape as the production failure, so
         # it is the fixture: the scan must survive whatever it is handed.
-        rows = health.table_health()
+        rows = health.table_health(use_cache=False)
 
         self.assertTrue(rows, "the scan should still return a row per table")
         self.assertTrue(all(r["status"] == "error" for r in rows))
@@ -300,10 +308,10 @@ class DataHealthJudgementTests(TestCase):
         """Losing freshness must cost the row its age, not its whole entry."""
         from unittest.mock import MagicMock, patch
 
-        with patch("apps.observability.health.connections", MagicMock()),              patch("apps.observability.health._estimate_rows",
-                   return_value=(True, 100, True)),              patch("django.db.models.QuerySet.aggregate",
+        with patch("apps.observability.health.connections", MagicMock()),              patch("apps.observability.health.transaction", MagicMock()),              patch("apps.observability.health._estimate_rows",
+                   return_value=(True, 100, True)),              patch("apps.observability.health._last_seen",
                    side_effect=TypeError("not a date")):
-            rows = health.table_health()
+            rows = health.table_health(use_cache=False)
 
         dated = [r for r in rows if r["freshness_column"]]
         self.assertTrue(dated)
@@ -312,10 +320,53 @@ class DataHealthJudgementTests(TestCase):
         self.assertIsNone(dated[0]["age_days"])
         self.assertIn("not a date", dated[0]["error"])
 
+    def test_a_freshness_probe_that_times_out_says_why_in_plain_words(self):
+        """The real cause: MAX() on an unindexed column reads the whole table."""
+        from unittest.mock import MagicMock, patch
+
+        from django.db.utils import OperationalError
+
+        with patch("apps.observability.health.connections", MagicMock()),              patch("apps.observability.health.transaction", MagicMock()),              patch("apps.observability.health._estimate_rows",
+                   return_value=(True, 100, True)),              patch("apps.observability.health._last_seen",
+                   side_effect=OperationalError(
+                       "canceling statement due to statement timeout")):
+            rows = health.table_health(use_cache=False)
+
+        dated = [r for r in rows if r["freshness_column"]]
+        self.assertIn("too slow to measure", dated[0]["error"])
+        self.assertIn("no index", dated[0]["error"])
+
+    def test_the_scan_stops_when_it_runs_out_of_time(self):
+        """A page that never loads is worse than one that says it gave up."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("apps.observability.health.connections", MagicMock()),              patch("apps.observability.health.transaction", MagicMock()),              patch("apps.observability.health.TOTAL_BUDGET_SECONDS", -1):
+            rows = health.table_health(use_cache=False)
+
+        self.assertTrue(rows, "the tables it did not reach are still reported")
+        self.assertTrue(all(r["status"] == "skipped" for r in rows))
+        self.assertIn("ran out of time", rows[0]["error"])
+
+    def test_the_scan_is_cached_so_a_page_load_does_not_reprobe(self):
+        from unittest.mock import MagicMock, patch
+
+        from django.core.cache import cache
+
+        cache.clear()
+        with patch("apps.observability.health.connections", MagicMock()),              patch("apps.observability.health.transaction", MagicMock()),              patch("apps.observability.health._last_seen", return_value=None),              patch("apps.observability.health._estimate_rows",
+                   return_value=(True, 5, False)) as probe:
+            health.table_health(use_cache=False)
+            first = probe.call_count
+            health.table_health()          # served from cache
+            self.assertEqual(probe.call_count, first)
+            health.table_health(use_cache=False)   # forced
+            self.assertGreater(probe.call_count, first)
+        cache.clear()
+
     def test_the_endpoint_answers_even_when_the_warehouse_is_unreachable(self):
         client = APIClient()
         client.force_authenticate(admin_user("health_admin"))
-        res = client.get("/observability/data-health/")
+        res = client.get("/observability/data-health/?refresh=1")
         self.assertEqual(res.status_code, 200, "the scan must answer, not 500")
         self.assertGreater(res.data["summary"]["tables"], 0)
         # Every table unreadable here, and the response says so per table.

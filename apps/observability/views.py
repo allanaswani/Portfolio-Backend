@@ -220,7 +220,9 @@ class DataHealthView(APIView):
         summary = {}
         try:
             rows = health.table_health(
-                app_label=(request.query_params.get("app") or "").strip() or None
+                app_label=(request.query_params.get("app") or "").strip() or None,
+                # The Retry button means "actually go and look again".
+                use_cache=request.query_params.get("refresh") != "1",
             )
             summary = health.summarise(rows)
             status_filter = (request.query_params.get("status") or "").strip()
@@ -241,7 +243,12 @@ class DataHealthView(APIView):
 
         return Response({
             "summary": summary,
-            "thresholds": {"warning_days": health.WARN_DAYS, "stale_days": health.STALE_DAYS},
+            "thresholds": {
+                "warning_days": health.WARN_DAYS,
+                "stale_days": health.STALE_DAYS,
+                "probe_timeout_ms": health.PROBE_TIMEOUT_MS,
+                "cache_seconds": health.CACHE_SECONDS,
+            },
             "scan_error": scan_error,
             "tables": rows,
         })

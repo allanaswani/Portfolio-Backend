@@ -64,6 +64,39 @@ one in the UI. A zero estimate is confirmed with a `LIMIT 1` probe, because
 `reltuples` is `-1` on a table that has never been analysed — "empty" is
 measured, never guessed.
 
+### It hangs unless you stop it
+
+The first version had no timeouts and **hung** — no exception, no traceback,
+nothing in the log. The worker ran until gunicorn killed it and the proxy
+reported a 500, which sent three rounds of debugging after an exception that
+never existed.
+
+The cause is `MAX(date_column)`. On a warehouse table of tens of millions of
+rows with no index on that column, PostgreSQL reads the whole table. Doing that
+for thirty-six tables is a batch job, not a page load.
+
+So:
+
+* every probe runs under `SET LOCAL statement_timeout = 2500`, enforced by
+  PostgreSQL. **`SET LOCAL` only works inside a transaction** — outside one it
+  is ignored with a warning, which would leave the cap silently absent, so the
+  probe is wrapped in `transaction.atomic` (which also reverts the setting, so
+  no stray timeout leaks onto a pooled connection);
+* freshness is raw SQL on that same capped cursor. Through the ORM it would
+  open its own connection with no cap, which is exactly how this hung;
+* the scan as a whole has a 25-second budget, after which remaining tables are
+  reported `skipped` — "not probed, the scan ran out of time" is a true
+  statement, and better than a page that never loads;
+* a probe that times out reports *"too slow to measure (no index on this
+  column)"*, which names the fix;
+* the result is cached for five minutes; `?refresh=1` (the Retry button)
+  forces a fresh scan.
+
+The endpoint also cannot return 500 at all: the scan, the summary and the JSON
+serialisation run inside one guard, and anything that escapes comes back as
+`200` with `scan_error` carrying the exception and its last frames. A screen
+that reports failures must not fail opaquely.
+
 Freshness picks the best date column by name (`updated_at`, `last_updated`,
 `report_date`, `snapshot_date`, …) and reports which column answered.
 
