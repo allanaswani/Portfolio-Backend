@@ -1,5 +1,20 @@
 # Deployment Guide — hf_group_backend
 
+> **Just deploying? Run `./deploy.sh` on the host.**
+>
+> It does the whole sequence — pull, build, replace the container, migrate, and
+> the same for the frontend — with the container names, `--network=host`, the
+> env file and the `etl_requests` mount fixed where they cannot be mistyped. It
+> stops at the first failure rather than leaving a half-deployed pair, and it
+> only replaces the running container after the build succeeds, so a broken
+> build does not take the site down.
+>
+> `./deploy.sh backend` · `./deploy.sh frontend` · `./deploy.sh --no-pull`
+>
+> The rest of this document is what that script does and why, for when
+> something goes wrong.
+
+
 _Last updated: 2026-07-13._
 
 This is the **single, authoritative** guide for deploying the new backend to production.
