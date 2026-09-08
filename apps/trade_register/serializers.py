@@ -169,7 +169,7 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
         return obj.effective_expiry_date
 
     def get_amendment_count(self, obj):
-        return obj.amendments.count() if obj.pk else 0
+        return obj.amendment_count
 
     def get_total_charge(self, obj):
         """Commission plus duty — what the customer is actually billed."""
@@ -184,8 +184,24 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
     def get_days_to_expiry(self, obj):
         return obj.days_to_expiry()
 
+    def _tariff_line(self, obj):
+        """The tariff line for this (product, action), resolved once per page.
+
+        The charge depends on the product and the action, not on the amount or
+        the dates — so a page of transactions shares very few lines, and looking
+        one up per row was the last query still scaling with the row count.
+        """
+        cache = getattr(self, "_line_cache", None)
+        if cache is None:
+            cache = self._line_cache = {}
+        key = (obj.product_id, obj.action)
+        if key not in cache:
+            cache[key] = (TradeTariff.resolve(obj.product, obj.action)
+                          if obj.product_id else None)
+        return cache[key]
+
     def get_commission_quote(self, obj):
-        quote = obj.quote_commission()
+        quote = obj.quote_commission(tariff_line=self._tariff_line(obj))
         if not quote:
             return None
         return {

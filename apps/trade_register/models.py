@@ -33,6 +33,10 @@ from . import references as refs
 # with the trade desk before relying on the figures.
 DEFAULT_EXCISE_RATE = Decimal("20")
 
+# "Nothing was passed" — distinct from a caller passing None to mean "the book
+# has no line for this", which is a real answer worth honouring.
+_UNSET = object()
+
 
 def _dec_early(value, default=None):
     """``_dec`` is defined below for readability; tariffs need it above."""
@@ -303,7 +307,7 @@ class TradeProduct(models.Model):
         return f"{self.code} — {self.name}"
 
     # ── Where the charge comes from ─────────────────────────────────────────
-    def pricing_for(self, action=None):
+    def pricing_for(self, action=None, tariff_line=_UNSET):
         """The tariff line that prices this product doing ``action``.
 
         Charges live in the tariff book, keyed on (category, action) with
@@ -314,7 +318,10 @@ class TradeProduct(models.Model):
         """
         if self.commission_basis != self.BASIS_NONE:
             return self, "product"
-        line = TradeTariff.resolve(self, action)
+        # A caller serialising a page has already resolved the line for this
+        # (product, action) and passes it in, so the lookup runs once for the
+        # page instead of once per row.
+        line = TradeTariff.resolve(self, action) if tariff_line is _UNSET else tariff_line
         if line is not None:
             return line, "tariff"
         # Last fallback: the tariff a product was mapped to before charges moved
@@ -352,7 +359,7 @@ class TradeProduct(models.Model):
         return (fee * rate / Decimal("100")).quantize(Decimal("0.01"))
 
     def quote(self, amount_fcy, fx_rate=1, issue_date=None, expiry_date=None,
-              is_open_ended=False, action=None):
+              is_open_ended=False, action=None, tariff_line=_UNSET):
         """What this transaction's commission comes to, and how it got there.
 
         The charge depends on the ACTION as well as the product — issuing a
@@ -365,7 +372,7 @@ class TradeProduct(models.Model):
         a per-period rate needs is unknown; the caller then keeps whatever the
         user typed rather than overwriting it with a guess.
         """
-        pricing, source = self.pricing_for(action)
+        pricing, source = self.pricing_for(action, tariff_line)
         tariff_code = getattr(pricing, "code", "") if source == "tariff" else ""
         tariff_name = getattr(pricing, "name", "") if source == "tariff" else ""
         charge_currency = getattr(pricing, "charge_currency", "KES")
@@ -517,8 +524,31 @@ def _dec(value, default=None):
         return default
 
 
+class TradeRegisterEntryQuerySet(models.QuerySet):
+    def with_position(self):
+        """Annotate each instrument's live position in ONE query.
+
+        Without this, serialising a list asks the database for each row's
+        amendment total, latest expiry and count separately — and the expiry
+        several times over, because the diary status, the label and the days to
+        expiry each read it. A page of ten was issuing dozens of aggregates.
+        """
+        return self.annotate(
+            _amendment_delta=models.Sum("amendments__amount_delta"),
+            _amendment_expiry=models.Max("amendments__new_expiry_date"),
+            _amendment_count=models.Count("amendments", distinct=True),
+            _cancellation_count=models.Count(
+                "amendments",
+                filter=models.Q(amendments__action=refs.ACTION_CANCELLATION),
+                distinct=True,
+            ),
+        )
+
+
 class TradeRegisterEntry(models.Model):
     """One trade transaction in the register (mirrors one ``trade_finance_data`` row)."""
+
+    objects = TradeRegisterEntryQuerySet.as_manager()
 
     # ── What this transaction does ──────────────────────────────────────────
     # The desk's six actions. ISSUANCE creates an instrument and draws a fresh
@@ -722,10 +752,18 @@ class TradeRegisterEntry(models.Model):
     def is_amendment(self):
         return bool(self.parent_id or self.parent_ref) and self.action != refs.ACTION_ISSUANCE
 
+    # Each of these reads its amendments. Serialising a list calls them several
+    # times per row — current_amount, the expiry, the diary status, the days to
+    # expiry — so a page of ten was issuing dozens of aggregates. When the
+    # queryset has been through ``with_position()`` the figures are already
+    # annotated and no query is made; the fallbacks below keep a lone instance
+    # correct on its own.
     @property
     def current_amount(self):
         """Issued amount plus every amendment's increase or reduction."""
         base = _dec(self.amount_fcy, Decimal("0")) or Decimal("0")
+        if hasattr(self, "_amendment_delta"):
+            return base + (_dec(self._amendment_delta, Decimal("0")) or Decimal("0"))
         if not self.pk:
             return base
         delta = self.amendments.aggregate(d=models.Sum("amount_delta"))["d"]
@@ -742,18 +780,30 @@ class TradeRegisterEntry(models.Model):
         if self.is_open_ended:
             return None
         latest = self.expiry_date
-        if self.pk:
+        if hasattr(self, "_amendment_expiry"):
+            moved = self._amendment_expiry
+        elif self.pk:
             moved = (
                 self.amendments.exclude(new_expiry_date=None)
                 .aggregate(m=models.Max("new_expiry_date"))["m"]
             )
-            if moved and (latest is None or moved > latest):
-                latest = moved
+        else:
+            moved = None
+        if moved and (latest is None or moved > latest):
+            latest = moved
         return latest
+
+    @property
+    def amendment_count(self):
+        if hasattr(self, "_amendment_count"):
+            return self._amendment_count or 0
+        return self.amendments.count() if self.pk else 0
 
     @property
     def is_cancelled(self):
         """A cancelled instrument is closed, whatever its expiry says."""
+        if hasattr(self, "_cancellation_count"):
+            return (self._cancellation_count or 0) > 0
         if not self.pk:
             return False
         return self.amendments.filter(action=refs.ACTION_CANCELLATION).exists()
@@ -784,7 +834,7 @@ class TradeRegisterEntry(models.Model):
             return self.DIARY_DUE_90
         return self.DIARY_LIVE
 
-    def quote_commission(self):
+    def quote_commission(self, tariff_line=_UNSET):
         """What the tariff charges for this transaction (or None).
 
         The action is passed through, because the charge for amending an
@@ -795,6 +845,7 @@ class TradeRegisterEntry(models.Model):
         return self.product.quote(
             self.amount_fcy, self.fx_rate, self.issue_date,
             self.expiry_date, self.is_open_ended, action=self.action,
+            tariff_line=tariff_line,
         )
 
     def save(self, *args, **kwargs):

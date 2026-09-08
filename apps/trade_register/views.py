@@ -227,8 +227,8 @@ class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         qs = (TradeRegisterEntry.objects
-              .select_related("product", "product__category")
-              .prefetch_related("amendments"))
+              .select_related("product", "product__category", "product__tariff")
+              .with_position())
         return filter_entries(qs, self.request.query_params)
 
     def perform_create(self, serializer):
@@ -241,8 +241,8 @@ class TradeRegisterEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TradeRegisterEntrySerializer
     queryset = (TradeRegisterEntry.objects
-                .select_related("product", "product__category")
-                .prefetch_related("amendments"))
+                .select_related("product", "product__category", "product__tariff")
+                .with_position())
 
 
 @extend_schema(tags=TAG)
@@ -259,6 +259,12 @@ class RMLookupView(APIView):
     Searching happens here rather than in the browser: the form was a plain
     dropdown the desk had to scroll, and shipping the whole roster down to
     filter it client-side is what made that necessary.
+
+    The roster is not the only source, though. Moving to ``employee_table``
+    found the RMs that ``staff_employee_data`` was missing — and lost the DSRs
+    and sales staff whose record never made it onto the HR roster. Swapping one
+    incomplete list for another is not a fix, so both are searched and merged,
+    each result saying which source it came from.
 
     Query: ``?search=&limit=&include_exited=1``. Sales codes are merged in from
     the DSR allocations and the sales-staff table, keyed on the PF number, and
@@ -285,7 +291,12 @@ class RMLookupView(APIView):
             limit = self.DEFAULT_LIMIT
         limit = max(1, min(self.MAX_LIMIT, limit))
 
-        alias = db_router.db_for_read(EmployeeTable) or "default"
+        # The write alias, not the read one: the router sends unmanaged models
+        # to ``datawarehouse`` for reads and falls through to ``default`` for
+        # writes. On production the two are the same database, and the write
+        # alias is the one a test can reach — the same pinning as
+        # ``employee_master_views.employee_db``.
+        alias = db_router.db_for_write(EmployeeTable) or "default"
         qs = EmployeeTable.objects.using(alias).exclude(name__isnull=True).exclude(name="")
         if not include_exited:
             # Either marker alone can carry the exit, depending on which sheet
@@ -323,10 +334,13 @@ class RMLookupView(APIView):
                     codes.setdefault(int(pf), code)
 
         out = []
+        seen = set()
         for row in rows:
             pf = self.pf_number(row["staff_id"])
+            name = (row["name"] or "").strip()
+            seen.add(name.upper())
             out.append({
-                "name": (row["name"] or "").strip(),
+                "name": name,
                 "code": codes.get(pf, ""),
                 "pf_number": str(pf) if pf is not None else "",
                 "job_title": (row["job_title"] or "").strip(),
@@ -335,6 +349,54 @@ class RMLookupView(APIView):
                 "exited": row["staff_exit_date"] is not None,
                 "source": "roster",
             })
+
+        # ── Anyone the HR roster does not carry ─────────────────────────────
+        # Moving to employee_table fixed the RMs that were missing from
+        # staff_employee_data, and lost anyone who is in the sales tables but
+        # NOT on the HR roster — DSRs and sales staff whose record never made it
+        # into employee_table. Swapping one incomplete source for another is not
+        # a fix, so both are searched and the results merged, each labelled with
+        # where it came from.
+        remaining = limit - len(out)
+        if remaining > 0:
+            extra = []
+            dsr = DSRSalesCode.objects.all()
+            staff = StaffEmployeeData.objects.filter(is_active=True)
+            if search:
+                dsr = dsr.filter(
+                    Q(salesperson__icontains=search) | Q(sales_code__icontains=search)
+                )
+                staff = staff.filter(
+                    Q(staff_name__icontains=search)
+                    | Q(sales_code__icontains=search)
+                    | Q(job_title__icontains=search)
+                )
+            for name, code, dept in dsr.values_list(
+                "salesperson", "sales_code", "department"
+            )[: remaining * 3]:
+                name = (name or "").strip()
+                if name and name.upper() not in seen:
+                    seen.add(name.upper())
+                    extra.append({
+                        "name": name, "code": (code or "").strip(), "pf_number": "",
+                        "job_title": "DSR", "department": (dept or "").strip(),
+                        "unit": "", "exited": False, "source": "dsr",
+                    })
+            for name, code, title, pf in staff.values_list(
+                "staff_name", "sales_code", "job_title", "staff_pf_number"
+            )[: remaining * 3]:
+                name = (name or "").strip()
+                if name and name.upper() not in seen:
+                    seen.add(name.upper())
+                    extra.append({
+                        "name": name, "code": (code or "").strip(),
+                        "pf_number": str(pf) if pf is not None else "",
+                        "job_title": (title or "").strip(), "department": "",
+                        "unit": "", "exited": False, "source": "sales_staff",
+                    })
+            extra.sort(key=lambda r: r["name"])
+            out.extend(extra[:remaining])
+
         return Response({"count": len(out), "limit": limit, "results": out})
 
     @staticmethod
@@ -540,8 +602,8 @@ class TradeDiaryView(APIView):
         # act on. ?archived=all shows both.
         archived = (request.query_params.get("archived") or "").strip().lower()
         qs = (TradeRegisterEntry.objects
-              .select_related("product", "product__category")
-              .prefetch_related("amendments"))
+              .select_related("product", "product__category", "product__tariff")
+              .with_position())
         if archived in ("1", "true", "yes"):
             qs = qs.filter(is_archived=True)
         elif archived != "all":
