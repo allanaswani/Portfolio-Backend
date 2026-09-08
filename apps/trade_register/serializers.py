@@ -1,24 +1,71 @@
 from rest_framework import serializers
 
-from .models import TradeCurrency, TradeProduct, TradeRegisterEntry, TradeTariff
+from . import references as refs
+from .models import (
+    TradeCurrency, TradeProduct, TradeProductCategory, TradeRegisterEntry,
+    TradeTariff,
+)
+
+
+class TradeProductCategorySerializer(serializers.ModelSerializer):
+    product_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TradeProductCategory
+        fields = ["id", "code", "name", "description", "is_active",
+                  "sort_order", "product_count"]
+        read_only_fields = ["id"]
+
+    def get_product_count(self, obj):
+        return obj.products.filter(is_active=True).count()
 
 
 class TradeTariffSerializer(serializers.ModelSerializer):
     products = serializers.SerializerMethodField()
 
+    category_name = serializers.CharField(source="category.name", read_only=True, default="")
+    product_code = serializers.CharField(source="product.code", read_only=True, default="")
+    charge_summary = serializers.SerializerMethodField()
+
     class Meta:
         model = TradeTariff
         fields = [
             "id", "code", "name", "description",
-            "commission_basis", "commission_rate", "minimum_commission",
+            "category", "category_name", "action", "product", "product_code",
+            "commission_basis", "commission_rate", "fixed_amount",
+            "minimum_commission", "charge_currency", "manual_note",
             "excise_rate", "is_active", "sort_order", "products",
+            "charge_summary",
         ]
         read_only_fields = ["id"]
 
     def get_products(self, obj):
         """Which products this line prices — the point of the mapping is being
         able to see what a rate change would reach."""
-        return list(obj.products.values_list("code", flat=True))
+        if obj.product_id:
+            return [obj.product.code]
+        if obj.category_id:
+            return list(obj.category.products.filter(is_active=True)
+                        .values_list("code", flat=True))
+        return []
+
+    def get_charge_summary(self, obj):
+        """The line as the tariff book states it, in one string."""
+        if obj.manual_note:
+            return obj.manual_note
+        bits = []
+        if obj.commission_rate:
+            unit = {
+                TradeTariff.BASIS_PER_QUARTER: " per quarter",
+                TradeTariff.BASIS_PER_ANNUM: " per annum",
+                TradeTariff.BASIS_PER_MONTH: " per month",
+            }.get(obj.commission_basis, "")
+            bits.append(f"{obj.commission_rate.normalize()}%{unit}")
+        if obj.fixed_amount:
+            bits.append(f"{obj.charge_currency} {obj.fixed_amount:,.2f}")
+        if obj.minimum_commission:
+            bits.append(f"Min. {obj.charge_currency} {obj.minimum_commission:,.2f}")
+        return "; ".join(bits) or "Not priced — entered by hand"
 
 
 class TradeProductSerializer(serializers.ModelSerializer):
@@ -26,6 +73,8 @@ class TradeProductSerializer(serializers.ModelSerializer):
     tariff_code = serializers.CharField(source="tariff.code", read_only=True, default="")
     tariff_name = serializers.CharField(source="tariff.name", read_only=True, default="")
     pricing_source = serializers.CharField(read_only=True)
+    category_code = serializers.CharField(source="category.code", read_only=True, default="")
+    category_name = serializers.CharField(source="category.name", read_only=True, default="")
     effective_excise_rate = serializers.DecimalField(
         source="excise_rate", max_digits=9, decimal_places=6, read_only=True,
     )
@@ -33,7 +82,8 @@ class TradeProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = TradeProduct
         fields = [
-            "id", "code", "name", "ref_family", "is_active", "sort_order",
+            "id", "code", "name", "category", "category_code", "category_name",
+            "ref_family", "is_active", "sort_order",
             "tariff", "tariff_code", "tariff_name", "pricing_source",
             "commission_basis", "commission_rate", "minimum_commission",
             "effective_excise_rate",
@@ -73,6 +123,17 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
     diary_status = serializers.SerializerMethodField()
     diary_label = serializers.SerializerMethodField()
     days_to_expiry = serializers.SerializerMethodField()
+    product_category = serializers.PrimaryKeyRelatedField(
+        source="product.category", read_only=True,
+    )
+    product_category_name = serializers.CharField(
+        source="product.category.name", read_only=True, default="",
+    )
+    # The instrument's LIVE position: what was issued plus what its amendments
+    # did to it. The issued figures stay on the record untouched.
+    current_amount = serializers.SerializerMethodField()
+    effective_expiry_date = serializers.SerializerMethodField()
+    amendment_count = serializers.SerializerMethodField()
 
     class Meta:
         model = TradeRegisterEntry
@@ -81,13 +142,16 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
             "originating_branch", "rm_name", "rm_code",
             "guarantee_ref",
             "product", "product_code", "product_type", "ref_family",
-            "amendment_type", "parent_ref",
+            "product_category", "product_category_name",
+            "action", "parent", "parent_ref", "amount_delta", "new_expiry_date",
+            "current_amount", "effective_expiry_date", "amendment_count",
             "customer_id", "segment", "our_customer", "beneficiary",
             "currency", "amount_fcy", "fx_rate",
             "commission", "commission_override", "commission_quote",
             "excise_duty", "total_charge", "tariff_code",
             "reporting_date", "issue_date", "is_open_ended", "expiry_date",
             "diary_status", "diary_label", "days_to_expiry",
+            "is_archived", "archived_on",
             "security_type", "cash_cover_amount", "cash_cover_percentage",
             "other_security",
             "month", "year",
@@ -95,8 +159,17 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "tf", "product_type", "month", "year", "created_at", "updated_at",
-            "excise_duty", "tariff_code",
+            "excise_duty", "tariff_code", "parent", "archived_on",
         ]
+
+    def get_current_amount(self, obj):
+        return str(obj.current_amount)
+
+    def get_effective_expiry_date(self, obj):
+        return obj.effective_expiry_date
+
+    def get_amendment_count(self, obj):
+        return obj.amendments.count() if obj.pk else 0
 
     def get_total_charge(self, obj):
         """Commission plus duty — what the customer is actually billed."""
@@ -128,13 +201,34 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
             "tariff_code": quote.get("tariff_code", ""),
         }
 
+    def validate_action(self, value):
+        """Only the desk's six actions may be recorded on a NEW transaction.
+
+        Rows written before the list existed keep whatever they hold — the
+        register says what happened — so this validates what is being written,
+        not what is already there.
+        """
+        action = (value or "").strip().upper()
+        if not action:
+            return refs.ACTION_ISSUANCE
+        if action not in refs.ACTIONS:
+            # An unchanged legacy value on an existing row is left alone; only a
+            # genuinely new value has to be one of the six.
+            if self.instance is not None and action == (self.instance.action or "").upper():
+                return self.instance.action
+            allowed = ", ".join(refs.ACTIONS)
+            raise serializers.ValidationError(f"Action must be one of: {allowed}.")
+        return action
+
     def validate(self, attrs):
-        """Same shape of validation the desk needs — an amendment must name its
-        parent; a non-open-ended item should have an expiry date."""
-        amendment = attrs.get("amendment_type", getattr(self.instance, "amendment_type", ""))
+        """An action on an existing instrument must say which one."""
+        action = attrs.get("action", getattr(self.instance, "action", "")) or ""
         parent = attrs.get("parent_ref", getattr(self.instance, "parent_ref", ""))
-        if amendment and not parent:
-            raise serializers.ValidationError(
-                {"parent_ref": "An amendment/extension must reference the original guarantee/LC number."}
-            )
+        if action.upper() in refs.ACTIONS_ON_EXISTING and not parent:
+            raise serializers.ValidationError({
+                "parent_ref": (
+                    f"{action.title()} acts on an instrument that already exists — "
+                    "give the original guarantee/LC reference."
+                )
+            })
         return attrs

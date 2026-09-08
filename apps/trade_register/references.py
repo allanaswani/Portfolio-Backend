@@ -15,9 +15,10 @@ the desk switched the guarantee/export prefix from ``HFC/`` to ``HFCB/`` in 2026
                 these are the bank's LC numbers, so the tool only *suggests* the
                 next one and the user can overwrite it with the real core number.
 
-Amendments/extensions/settlements of an existing guarantee or export item reuse
-the parent's reference with an action suffix (e.g. ``HFCB/GTE/260630/01 - EXT``)
-rather than drawing a fresh number — see :func:`amend_reference`.
+Amendments, cancellations, advisings, bill acceptances and settlements of an
+existing item reuse the parent's reference with the action as a suffix (e.g.
+``HFCB/GTE/260630/01 - AMENDMENT``) rather than drawing a fresh number — see
+:func:`amend_reference`. Only an issuance draws a new number.
 
 Every lookup scans BOTH the register table and the legacy ``trade_finance_data``
 table so a generated number never collides with a historical one.
@@ -38,10 +39,40 @@ DATED_PREFIX = {
     FAMILY_EXPORT_LC: "HFCB/ELC",
 }
 
-# Action suffixes an amendment can carry, mirrored from the historical data.
-AMENDMENT_SUFFIXES = [
-    "EXT", "AMENDMENT", "SETTLEMENT", "CANCELLATION", "CALL UP",
-    "PAYMENT", "ADVISING", "RELEASE ON INDEMNITY", "REDUCTION", "RETIREMENT",
+# ── What a transaction DOES ───────────────────────────────────────────────────
+# The desk's six actions (their list, 2026-09-08). ISSUANCE is a new instrument
+# and draws a fresh reference; the other five act on one that already exists and
+# reuse its reference with the action as a suffix.
+#
+# The tariff is organised the same way — the charge for a transaction is a
+# function of (product category, action), not of the product alone. "LC
+# Amendment Charges", "Cancellation Commission" and "LC Advising Charges" are
+# separate lines in the tariff book, so the action is what selects the charge.
+ACTION_ISSUANCE = "ISSUANCE"
+ACTION_AMENDMENT = "AMENDMENT"
+ACTION_CANCELLATION = "CANCELLATION"
+ACTION_ADVISING = "ADVISING"
+ACTION_BILL_ACCEPTANCE = "BILL ACCEPTANCE"
+ACTION_SETTLEMENT = "SETTLEMENT"
+
+ACTIONS = [
+    ACTION_ISSUANCE,
+    ACTION_AMENDMENT,
+    ACTION_CANCELLATION,
+    ACTION_ADVISING,
+    ACTION_BILL_ACCEPTANCE,
+    ACTION_SETTLEMENT,
+]
+
+# Only ISSUANCE creates a new instrument. Everything else needs a parent.
+ACTIONS_ON_EXISTING = [a for a in ACTIONS if a != ACTION_ISSUANCE]
+
+# Historical values that predate the six-action list. They are NOT offered for
+# new entries, but rows already carrying them keep them — a register is a record
+# of what happened, and rewriting a settled transaction's action to make an old
+# row fit a new dropdown would be falsifying it.
+LEGACY_ACTIONS = [
+    "EXT", "CALL UP", "PAYMENT", "RELEASE ON INDEMNITY", "REDUCTION", "RETIREMENT",
 ]
 
 _HF_SEQ_RE = re.compile(r"^HF(\d+)\b")
@@ -107,6 +138,16 @@ def generate_reference(family: str, issue_date: date | None) -> str:
     return next_dated_ref(family, issue_date)
 
 
+def base_reference(ref: str) -> str:
+    """The reference without any action suffix.
+
+    ``"HFCB/GTE/260630/01 - AMENDMENT"`` and ``"HFCB/GTE/260630/01"`` name the
+    same instrument, so amending an amendment still resolves to the original
+    rather than building a chain nothing can total.
+    """
+    return re.split(r"\s+-\s+", (ref or "").strip(), maxsplit=1)[0].strip()
+
+
 def amend_reference(parent_ref: str, suffix: str) -> str:
     """Reference for an amendment/extension of an existing item.
 
@@ -114,6 +155,6 @@ def amend_reference(parent_ref: str, suffix: str) -> str:
     desk's convention ("HFCB/GTE/260630/01 - EXT"). If the parent already
     carries a suffix, it is replaced rather than stacked.
     """
-    base = re.split(r"\s+-\s+", parent_ref.strip(), maxsplit=1)[0]
+    base = base_reference(parent_ref)
     suffix = (suffix or "").strip().upper()
     return f"{base} - {suffix}" if suffix else base

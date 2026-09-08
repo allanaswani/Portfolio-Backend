@@ -7,6 +7,8 @@ urlpatterns = [
     path("entries/<int:pk>/",   v.TradeRegisterEntryDetailView.as_view()),
     # Expiry diary — what has run out and what is about to.
     path("diary/",              v.TradeDiaryView.as_view()),
+    path("categories/",         v.TradeProductCategoryListView.as_view()),
+    path("actions/",            v.TradeActionListView.as_view()),
     path("products/",           v.TradeProductListView.as_view()),
     path("products/manage/",    v.TradeProductAdminListView.as_view()),
     path("products/<int:pk>/",  v.TradeProductAdminDetailView.as_view()),

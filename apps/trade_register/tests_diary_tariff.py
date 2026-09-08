@@ -27,46 +27,47 @@ def entry(**kw):
     )
     base.update(kw)
     if "product" not in base:
-        base["product"] = TradeProduct.objects.get(code="GTE-BID")
+        # Not the bid bond: it has a product-specific line, so a category rate
+        # set by a test would never reach it.
+        base["product"] = TradeProduct.objects.get(code="14117")
     return TradeRegisterEntry.objects.create(**base)
 
 
 class TariffMappingTests(APITestCase):
-    """A tariff line prices every product mapped to it."""
+    """A tariff line prices every product mapped to it.
+
+    Written against the placeholder tariff that scaffolded this; the bank's
+    real book has since replaced it, so these now exercise the real lines. The
+    two cases that asserted the scaffolding — that products pointed at a
+    placeholder, and that nothing was priced — describe nothing true any more
+    and are gone; ``tests_catalogue`` pins what the book actually charges.
+    """
 
     def setUp(self):
-        self.tariff = TradeTariff.objects.get(code="TRF-GTE")
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.tariff = TradeTariff.objects.get(code="TRF-LG-ISSUE")
+        self.product = TradeProduct.objects.get(code="14117")
 
-    def test_the_seed_maps_products_to_their_tariff_line(self):
-        self.assertEqual(self.product.tariff, self.tariff)
-        self.assertEqual(
-            TradeProduct.objects.get(code="ILC-SIGHT").tariff.code, "TRF-ILC"
-        )
-        self.assertEqual(
-            TradeProduct.objects.get(code="ELC-SIGHT").tariff.code, "TRF-ELC"
-        )
-
-    def test_the_seed_prices_nothing(self):
-        """Seeding a made-up rate would put wrong money on real transactions."""
-        for tariff in TradeTariff.objects.all():
-            self.assertEqual(tariff.commission_basis, TradeTariff.BASIS_NONE)
-            self.assertEqual(tariff.commission_rate, Decimal("0"))
-        quote = self.product.quote(1_000_000, 1, date(2026, 1, 1), date(2026, 12, 31))
-        self.assertFalse(quote["calculable"])
+    def test_every_product_is_priced_through_its_category(self):
+        for code in ("14116", "14117", "TR-LC-IMP-SIGHT", "TR-BDC-EXP-SIGHT"):
+            product = TradeProduct.objects.get(code=code)
+            line = TradeTariff.resolve(product, "ISSUANCE")
+            self.assertIsNotNone(line, code)
 
     def test_pricing_the_tariff_prices_every_product_on_it(self):
         self.tariff.commission_basis = TradeTariff.BASIS_FLAT
         self.tariff.commission_rate = "0.5"
+        self.tariff.minimum_commission = 0
         self.tariff.save()
 
-        for code in ("GTE-BID", "GTE-PBG", "GTE-SBLC"):
+        # Not the bid bond: it has its own line, which is the point of having one.
+        for code in ("14117", "14123", "14104"):
             product = TradeProduct.objects.get(code=code)
-            quote = product.quote(1_000_000, 1, date(2026, 1, 1), date(2026, 6, 30))
+            quote = product.quote(1_000_000, 1, date(2026, 1, 1), date(2026, 6, 30),
+                                  action="ISSUANCE")
             self.assertTrue(quote["calculable"], code)
             self.assertEqual(str(quote["commission"]), "5000.00", code)
             self.assertEqual(quote["source"], "tariff")
-            self.assertEqual(quote["tariff_code"], "TRF-GTE")
+            self.assertEqual(quote["tariff_code"], "TRF-LG-ISSUE")
 
     def test_a_rate_set_on_the_product_beats_the_tariff(self):
         """A product rate is a deliberate exception to the general line.
@@ -76,6 +77,7 @@ class TariffMappingTests(APITestCase):
         """
         self.tariff.commission_basis = TradeTariff.BASIS_FLAT
         self.tariff.commission_rate = "0.5"
+        self.tariff.minimum_commission = 0
         self.tariff.save()
         self.product.commission_basis = TradeProduct.BASIS_FLAT
         self.product.commission_rate = "1"
@@ -86,8 +88,13 @@ class TariffMappingTests(APITestCase):
         )
         self.assertEqual(str(quote["commission"]), "10000.00")
         self.assertEqual(quote["source"], "product")
-        # It still belongs to its tariff family, and says so.
-        self.assertEqual(quote["tariff_code"], "TRF-GTE")
+        # tariff_code names the line that ACTUALLY priced this, so it is blank
+        # when the product's own rate did. Yesterday it named the line the
+        # product was mapped to even when that line charged nothing, which
+        # would tell an auditor a transaction was charged under a tariff it
+        # was not. The product's category still says which family it belongs to.
+        self.assertEqual(quote["tariff_code"], "")
+        self.assertEqual(self.product.category.code, "LG")
 
     def test_mapping_a_product_to_a_tariff_never_reprices_it(self):
         self.product.tariff = None
@@ -98,6 +105,7 @@ class TariffMappingTests(APITestCase):
 
         self.tariff.commission_basis = TradeTariff.BASIS_FLAT
         self.tariff.commission_rate = "0.5"
+        self.tariff.minimum_commission = 0
         self.tariff.save()
         self.product.tariff = self.tariff
         self.product.save()
@@ -118,26 +126,28 @@ class TariffMappingTests(APITestCase):
     def test_the_explanation_names_the_tariff_it_was_charged_under(self):
         self.tariff.commission_basis = TradeTariff.BASIS_FLAT
         self.tariff.commission_rate = "0.5"
+        self.tariff.minimum_commission = 0
         self.tariff.save()
         quote = TradeProduct.objects.get(pk=self.product.pk).quote(
             1_000_000, 1, date(2026, 1, 1), date(2026, 6, 30)
         )
-        self.assertIn("TRF-GTE", quote["explanation"])
+        self.assertIn("TRF-LG-ISSUE", quote["explanation"])
 
     def test_the_entry_records_which_tariff_it_was_charged_under(self):
         row = entry()
-        self.assertEqual(row.tariff_code, "TRF-GTE")
+        self.assertEqual(row.tariff_code, "TRF-LG-ISSUE")
 
 
 class ExciseDutyTests(APITestCase):
     """Duty is owed on the fee that was actually charged."""
 
     def setUp(self):
-        self.tariff = TradeTariff.objects.get(code="TRF-GTE")
+        self.tariff = TradeTariff.objects.get(code="TRF-LG-ISSUE")
         self.tariff.commission_basis = TradeTariff.BASIS_FLAT
         self.tariff.commission_rate = "0.5"
+        self.tariff.minimum_commission = 0
         self.tariff.save()
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.product = TradeProduct.objects.get(code="14117")
 
     def test_excise_is_a_percentage_of_the_commission(self):
         row = entry()
@@ -159,10 +169,11 @@ class ExciseDutyTests(APITestCase):
         self.assertEqual(float(row.excise_duty), 2000.0)
 
     def test_no_commission_means_no_duty(self):
-        other = TradeProduct.objects.get(code="ELC-SIGHT")
-        other.tariff = None
-        other.save()
-        row = entry(product=other, commission=0)
+        unpriced = TradeProduct.objects.create(
+            code="TR-TEST-NODUTY", name="NO DUTY TEST PRODUCT",
+            ref_family="guarantee", category=None,
+        )
+        row = entry(product=unpriced, commission=0)
         self.assertEqual(str(row.excise_duty), "0.00")
 
     def test_the_rate_is_editable_not_compiled_in(self):
@@ -174,7 +185,7 @@ class ExciseDutyTests(APITestCase):
         self.assertEqual(str(row.excise_duty), "800.00")
 
     def test_a_product_off_the_tariff_book_still_charges_the_statutory_rate(self):
-        product = TradeProduct.objects.get(code="GTE-PBG")
+        product = TradeProduct.objects.get(code="14117")
         product.tariff = None
         product.commission_basis = TradeProduct.BASIS_FLAT
         product.commission_rate = "0.5"
@@ -190,7 +201,7 @@ class ExciseDutyTests(APITestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(float(res.data["excise_duty"]), 1000.0)
         self.assertEqual(float(res.data["total_charge"]), 6000.0)
-        self.assertEqual(res.data["tariff_code"], "TRF-GTE")
+        self.assertEqual(res.data["tariff_code"], "TRF-LG-ISSUE")
 
     def test_a_client_cannot_post_a_duty_that_does_not_match_the_fee(self):
         user = User.objects.create_user(username="excise2", password="x")
@@ -379,7 +390,7 @@ class TariffAdminTests(APITestCase):
             username="tariffadmin", password="x", is_staff=True
         )
         self.plain = User.objects.create_user(username="tariffplain", password="x")
-        self.tariff = TradeTariff.objects.get(code="TRF-GTE")
+        self.tariff = TradeTariff.objects.get(code="TRF-LG-ISSUE")
 
     def test_an_admin_can_reprice_a_line(self):
         self.client.force_authenticate(self.admin)
@@ -400,8 +411,8 @@ class TariffAdminTests(APITestCase):
     def test_the_line_says_which_products_it_reaches(self):
         self.client.force_authenticate(self.admin)
         res = self.client.get("/trade_register/tariffs/")
-        row = next(r for r in res.data if r["code"] == "TRF-GTE")
-        self.assertIn("GTE-BID", row["products"])
+        row = next(r for r in res.data if r["code"] == "TRF-LG-ISSUE")
+        self.assertIn("14116", row["products"])
 
     def test_a_reprice_is_kept_in_the_audit_trail(self):
         self.client.force_authenticate(self.admin)

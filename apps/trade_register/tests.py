@@ -12,9 +12,9 @@ from . import references as refs
 class ReferenceGeneratorTests(APITestCase):
     def setUp(self):
         # Products are seeded by migration 0002 — fetch them.
-        self.bid = TradeProduct.objects.get(code="GTE-BID")
-        self.elc = TradeProduct.objects.get(code="ELC-SIGHT")
-        self.ilc = TradeProduct.objects.get(code="ILC-SIGHT")
+        self.bid = TradeProduct.objects.get(code="14116")
+        self.elc = TradeProduct.objects.get(code="TR-LC-EXP-SIGHT")
+        self.ilc = TradeProduct.objects.get(code="TR-LC-IMP-SIGHT")
 
     def _entry(self, product, **kw):
         base = dict(
@@ -48,7 +48,7 @@ class ReferenceGeneratorTests(APITestCase):
         # A historical TF row already used sequence 01 that day.
         TradeFinanceData.objects.create(
             originating_branch="X", rm_name="Y", guarantee_ref="HFCB/GTE/260813/01",
-            product_type="BID BOND", customer_id=1, segment="C", our_customer="Z",
+            product_type="BID BOND GUARANTEE", customer_id=1, segment="C", our_customer="Z",
             beneficiary="B", currency="KES", amount_fcy=0, issue_date="2026-08-13",
             expiry_date="", commission_lcy=0, month="AUGUST", fx_rate=0, year="2026",
         )
@@ -56,8 +56,8 @@ class ReferenceGeneratorTests(APITestCase):
         self.assertEqual(e.guarantee_ref, "HFCB/GTE/260813/02")
 
     def test_amendment_reuses_parent_reference(self):
-        e = self._entry(self.bid, amendment_type="EXT", parent_ref="HFCB/GTE/260630/01")
-        self.assertEqual(e.guarantee_ref, "HFCB/GTE/260630/01 - EXT")
+        e = self._entry(self.bid, action="AMENDMENT", parent_ref="HFCB/GTE/260630/01")
+        self.assertEqual(e.guarantee_ref, "HFCB/GTE/260630/01 - AMENDMENT")
 
     def test_manual_reference_is_kept(self):
         e = self._entry(self.ilc, guarantee_ref="HF99999")
@@ -66,7 +66,7 @@ class ReferenceGeneratorTests(APITestCase):
 
 class SyncTests(APITestCase):
     def setUp(self):
-        self.bid = TradeProduct.objects.get(code="GTE-BID")
+        self.bid = TradeProduct.objects.get(code="14116")
 
     def test_creating_entry_mirrors_to_trade_finance(self):
         e = TradeRegisterEntry.objects.create(
@@ -78,7 +78,7 @@ class SyncTests(APITestCase):
         self.assertIsNotNone(e.tf_id)
         tf = TradeFinanceData.objects.get(pk=e.tf_id)
         self.assertEqual(tf.guarantee_ref, e.guarantee_ref)
-        self.assertEqual(tf.product_type, "BID BOND")
+        self.assertEqual(tf.product_type, "BID BOND GUARANTEE")
         self.assertEqual(str(tf.customer_id), "777")
 
     def test_editing_trade_finance_reflects_back_to_entry(self):
@@ -132,7 +132,7 @@ class ApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user("u", "u@x.com", "pw")
         self.client.force_authenticate(self.user)
-        self.bid = TradeProduct.objects.get(code="GTE-BID")
+        self.bid = TradeProduct.objects.get(code="14116")
 
     def test_create_entry_via_api_generates_reference(self):
         resp = self.client.post("/trade_register/entries/", {
@@ -143,12 +143,12 @@ class ApiTests(APITestCase):
         }, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(resp.data["guarantee_ref"], "HFCB/GTE/260813/01")
-        self.assertEqual(resp.data["product_type"], "BID BOND")
+        self.assertEqual(resp.data["product_type"], "BID BOND GUARANTEE")
 
     def test_products_dropdown(self):
         resp = self.client.get("/trade_register/products/")
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(any(p["code"] == "GTE-BID" for p in resp.data))
+        self.assertTrue(any(p["code"] == "14116" for p in resp.data))
 
     def test_reference_preview(self):
         resp = self.client.get(

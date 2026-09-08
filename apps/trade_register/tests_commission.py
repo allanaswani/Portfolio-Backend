@@ -18,7 +18,7 @@ class CommissionPricingTests(APITestCase):
     """What a product charges, and when it declines to guess."""
 
     def setUp(self):
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.product = TradeProduct.objects.get(code="14116")
 
     def _priced(self, basis, rate, minimum=0):
         self.product.commission_basis = basis
@@ -28,8 +28,17 @@ class CommissionPricingTests(APITestCase):
         return self.product
 
     def test_a_product_with_no_pricing_calculates_nothing(self):
-        """Every product starts this way, and must keep working this way."""
-        quote = self.product.quote(1_000_000, 1, date(2026, 1, 1), date(2026, 12, 31))
+        """A product the book does not reach is typed, not guessed.
+
+        Every seeded product is now priced through its category, so this needs
+        a product outside the book — which is exactly what a newly added one is
+        until somebody prices it.
+        """
+        unpriced = TradeProduct.objects.create(
+            code="TR-TEST-UNPRICED", name="UNPRICED TEST PRODUCT",
+            ref_family="guarantee", category=None,
+        )
+        quote = unpriced.quote(1_000_000, 1, date(2026, 1, 1), date(2026, 12, 31))
         self.assertFalse(quote["calculable"])
         self.assertIsNone(quote["commission"])
 
@@ -97,7 +106,7 @@ class CommissionOnEntryTests(APITestCase):
     """The calculation applied to a real transaction, and the override."""
 
     def setUp(self):
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.product = TradeProduct.objects.get(code="14116")
         self.product.commission_basis = TradeProduct.BASIS_FLAT
         self.product.commission_rate = "0.5"
         self.product.save()
@@ -141,8 +150,11 @@ class CommissionOnEntryTests(APITestCase):
         self.assertEqual(float(entry.commission), 10000.0)
 
     def test_a_product_without_pricing_leaves_the_typed_figure_alone(self):
-        other = TradeProduct.objects.get(code="ELC-SIGHT")
-        entry = self._entry(product=other, commission=777)
+        unpriced = TradeProduct.objects.create(
+            code="TR-TEST-UNPRICED-2", name="UNPRICED TEST PRODUCT 2",
+            ref_family="guarantee", category=None,
+        )
+        entry = self._entry(product=unpriced, commission=777)
         self.assertEqual(float(entry.commission), 777.0)
 
     def test_the_worked_commission_reaches_trade_finance(self):
@@ -168,7 +180,7 @@ class CommissionEditViaApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="deskedit", password="x")
         self.client.force_authenticate(self.user)
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.product = TradeProduct.objects.get(code="14116")
         self.product.commission_basis = TradeProduct.BASIS_FLAT
         self.product.commission_rate = "0.5"
         self.product.save()
@@ -217,19 +229,20 @@ class ProductLookupTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="desk", password="x")
         self.client.force_authenticate(self.user)
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.product = TradeProduct.objects.get(code="14116")
         self.product.commission_basis = TradeProduct.BASIS_FLAT
         self.product.commission_rate = "0.5"
         self.product.save()
 
     def test_a_code_resolves_to_the_product_name(self):
-        res = self.client.get("/trade_register/product-lookup/?code=GTE-BID")
+        res = self.client.get("/trade_register/product-lookup/?code=14116")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data["found"])
         self.assertEqual(res.data["product"]["name"], self.product.name)
 
     def test_the_code_is_matched_regardless_of_case(self):
-        res = self.client.get("/trade_register/product-lookup/?code=gte-bid")
+        # A numeric code cannot show this; use one with letters in it.
+        res = self.client.get("/trade_register/product-lookup/?code=tr-lc-sblc")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data["found"])
 
@@ -240,7 +253,7 @@ class ProductLookupTests(APITestCase):
     def test_the_lookup_also_quotes_the_commission(self):
         res = self.client.get(
             "/trade_register/product-lookup/"
-            "?code=GTE-BID&amount_fcy=1000000&fx_rate=1"
+            "?code=14116&amount_fcy=1000000&fx_rate=1"
             "&issue_date=2026-01-01&expiry_date=2026-06-30"
         )
         self.assertEqual(res.data["quote"]["commission"], "5000.00")
@@ -248,7 +261,7 @@ class ProductLookupTests(APITestCase):
 
     def test_the_quote_explains_itself(self):
         res = self.client.get(
-            "/trade_register/product-lookup/?code=GTE-BID&amount_fcy=1000000&fx_rate=1"
+            "/trade_register/product-lookup/?code=14116&amount_fcy=1000000&fx_rate=1"
         )
         self.assertIn("0.5", res.data["quote"]["explanation"])
 
@@ -308,7 +321,7 @@ class ProductPricingAdminTests(APITestCase):
             username="ratesadmin", password="x", is_staff=True
         )
         self.plain = User.objects.create_user(username="rateplain", password="x")
-        self.product = TradeProduct.objects.get(code="GTE-BID")
+        self.product = TradeProduct.objects.get(code="14116")
 
     def test_an_admin_can_change_a_rate(self):
         self.client.force_authenticate(self.admin)

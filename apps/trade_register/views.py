@@ -14,10 +14,14 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 
 from . import references as refs
-from .models import TradeCurrency, TradeProduct, TradeRegisterEntry, TradeTariff
+from .models import (
+    TradeCurrency, TradeProduct, TradeProductCategory, TradeRegisterEntry,
+    TradeTariff,
+)
 from .serializers import (
     TradeCurrencySerializer,
     TradeProductAdminSerializer,
+    TradeProductCategorySerializer,
     TradeProductSerializer,
     TradeRegisterEntrySerializer,
     TradeTariffSerializer,
@@ -37,32 +41,72 @@ HFC_BRANCHES = [
 
 @extend_schema(tags=TAG)
 class BranchListView(APIView):
-    """Branch names for the Originating Branch dropdown — the known HFC branches
-    unioned with any branch already present in the trade data, de-duped + sorted."""
+    """Branch names for the Originating Branch dropdown.
+
+    The list used to be the known branches uppercased, unioned with whatever
+    spellings the data happened to hold — so "THIKA" and "THIKA BRANCH" were two
+    entries, and the desk saw its branches twice. Every name now goes through
+    ``normalize_branch``, the canonicaliser the rest of the application already
+    uses, so one branch appears once however it was typed.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from apps.staff_management.branches import normalize_branch
         from apps.staff_management.models import TradeFinanceData
         from .models import TradeRegisterEntry
 
-        names = {b.strip().upper() for b in HFC_BRANCHES}
-        for src in (
+        names = set()
+        for source in (
+            HFC_BRANCHES,
             TradeRegisterEntry.objects.values_list("originating_branch", flat=True),
             TradeFinanceData.objects.values_list("originating_branch", flat=True),
         ):
-            names.update((b or "").strip().upper() for b in src if (b or "").strip())
+            for raw in source:
+                canon = normalize_branch(raw)
+                if canon:
+                    names.add(canon)
         return Response(sorted(names))
 
 
 @extend_schema(tags=TAG)
+class TradeProductCategoryListView(generics.ListAPIView):
+    """The desk's four product categories, for the first dropdown.
+
+    Picking a category narrows the product dropdown to that category's
+    products — ``/products/?category=<id or code>``.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = TradeProductCategorySerializer
+    pagination_class = None
+    queryset = TradeProductCategory.objects.filter(is_active=True).prefetch_related("products")
+
+
+@extend_schema(tags=TAG)
 class TradeProductListView(generics.ListAPIView):
-    """Active products for the Product Type dropdown (each carries its code)."""
+    """Active products for the Product Type dropdown (each carries its code).
+
+    ``?category=`` takes a category id or its code, so the form can narrow the
+    list the moment a category is chosen. Retired products are excluded — they
+    stay readable on the transactions that reference them, but a product the
+    desk has dropped is not offered for a new one.
+    """
 
     permission_classes = [IsAuthenticated]
     serializer_class = TradeProductSerializer
     pagination_class = None
-    queryset = TradeProduct.objects.filter(is_active=True)
+
+    def get_queryset(self):
+        qs = TradeProduct.objects.filter(is_active=True).select_related("category")
+        category = (self.request.query_params.get("category") or "").strip()
+        if category:
+            if category.isdigit():
+                qs = qs.filter(category_id=int(category))
+            else:
+                qs = qs.filter(category__code__iexact=category)
+        return qs
 
 
 class _TradeAdmin(IsAuthenticated):
@@ -102,8 +146,73 @@ class TradeProductAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = TradeProduct.objects.all()
 
 
+def _parse_date(value):
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def filter_entries(qs, params):
+    """The filters every list of transactions shares.
+
+    Date range, category, product, branch and archive state — applied here once
+    so the register, the diary and the Trade Finance view cannot disagree about
+    what a filter means, and so an export covers exactly what the screen showed.
+
+    ``date_field`` chooses which date the range applies to. It defaults to the
+    issue date, but a report of what was CAPTURED in a period wants the
+    reporting date and one of what EXPIRES in it wants the expiry, so the caller
+    says which.
+    """
+    field = (params.get("date_field") or "issue_date").strip()
+    if field not in ("issue_date", "reporting_date", "expiry_date", "created_at"):
+        field = "issue_date"
+
+    start = _parse_date(params.get("date_from"))
+    end = _parse_date(params.get("date_to"))
+    if start:
+        qs = qs.filter(**{f"{field}__gte": start})
+    if end:
+        qs = qs.filter(**{f"{field}__lte": end})
+
+    category = (params.get("category") or "").strip()
+    if category:
+        if category.isdigit():
+            qs = qs.filter(product__category_id=int(category))
+        else:
+            qs = qs.filter(product__category__code__iexact=category)
+
+    product = (params.get("product") or "").strip()
+    if product.isdigit():
+        qs = qs.filter(product_id=int(product))
+
+    branch = (params.get("branch") or "").strip()
+    if branch:
+        qs = qs.filter(originating_branch__iexact=branch)
+
+    action = (params.get("action") or "").strip()
+    if action:
+        qs = qs.filter(action__iexact=action)
+
+    # The active register hides what has expired and been filed away; the
+    # Expired folder is exactly those rows. "all" asks for both.
+    archived = (params.get("archived") or "").strip().lower()
+    if archived in ("1", "true", "yes"):
+        qs = qs.filter(is_archived=True)
+    elif archived != "all":
+        qs = qs.filter(is_archived=False)
+    return qs
+
+
 @extend_schema(tags=TAG)
 class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
+    """The register. Filterable by date range, category, product and branch,
+    so an export covers exactly the period the screen was showing."""
+
     permission_classes = [IsAuthenticated]
     serializer_class = TradeRegisterEntrySerializer
     pagination_class = StandardPagination
@@ -112,8 +221,15 @@ class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
         "guarantee_ref", "our_customer", "beneficiary", "rm_name",
         "rm_code", "product_type", "originating_branch", "segment",
     ]
-    ordering_fields = ["issue_date", "expiry_date", "amount_fcy", "created_at"]
-    queryset = TradeRegisterEntry.objects.select_related("product").all()
+    ordering_fields = [
+        "issue_date", "expiry_date", "amount_fcy", "created_at", "reporting_date",
+    ]
+
+    def get_queryset(self):
+        qs = (TradeRegisterEntry.objects
+              .select_related("product", "product__category")
+              .prefetch_related("amendments"))
+        return filter_entries(qs, self.request.query_params)
 
     def perform_create(self, serializer):
         user = self.request.user if self.request.user.is_authenticated else None
@@ -124,7 +240,9 @@ class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
 class TradeRegisterEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TradeRegisterEntrySerializer
-    queryset = TradeRegisterEntry.objects.select_related("product").all()
+    queryset = (TradeRegisterEntry.objects
+                .select_related("product", "product__category")
+                .prefetch_related("amendments"))
 
 
 @extend_schema(tags=TAG)
@@ -231,6 +349,27 @@ class RMLookupView(APIView):
 
 
 @extend_schema(tags=TAG)
+class TradeActionListView(APIView):
+    """The desk's six actions, and which of them act on an existing instrument.
+
+    Served rather than hard-coded in the frontend so the two cannot drift, and
+    so the form knows which actions must be given a parent reference.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "actions": [
+                {"value": a, "label": a.title(),
+                 "needs_parent": a in refs.ACTIONS_ON_EXISTING}
+                for a in refs.ACTIONS
+            ],
+            "legacy": refs.LEGACY_ACTIONS,
+        })
+
+
+@extend_schema(tags=TAG)
 class TradeCurrencyListView(generics.ListAPIView):
     """Currencies the desk may write in — a table, not a hard-coded list.
 
@@ -289,6 +428,9 @@ class ProductLookupView(APIView):
                 _date("issue_date"),
                 _date("expiry_date"),
                 request.query_params.get("is_open_ended") in ("1", "true", "True"),
+                # Issuing, amending and cancelling are three different charges
+                # in the tariff book, so the action selects the line.
+                action=request.query_params.get("action") or refs.ACTION_ISSUANCE,
             )
             payload["quote"] = {
                 **quote,
@@ -392,15 +534,33 @@ class TradeDiaryView(APIView):
         include_live = request.query_params.get("include_live") == "1"
         today = timezone.localdate()
 
-        qs = TradeRegisterEntry.objects.select_related("product").all()
+        # The ACTIVE diary. What has expired has been filed away by the daily
+        # job and lives in the Expired folder — ?archived=1 — which is the
+        # point of the filing: the desk's working list is what it still has to
+        # act on. ?archived=all shows both.
+        archived = (request.query_params.get("archived") or "").strip().lower()
+        qs = (TradeRegisterEntry.objects
+              .select_related("product", "product__category")
+              .prefetch_related("amendments"))
+        if archived in ("1", "true", "yes"):
+            qs = qs.filter(is_archived=True)
+        elif archived != "all":
+            qs = qs.filter(is_archived=False)
+
+        qs = filter_entries(qs, {**request.query_params.dict(), "archived": archived or "0"})
+
         if not include_live:
             # Everything except items comfortably in the future: expired,
-            # expiring inside the window, open-ended, and undated.
+            # expiring inside the window, open-ended, and undated. An amendment
+            # can have moved the expiry, so new_expiry_date is honoured here as
+            # well as the instrument's own date.
+            horizon = today + timedelta(days=window)
             qs = qs.filter(
-                Q(expiry_date__lte=today + timedelta(days=window))
+                Q(expiry_date__lte=horizon)
                 | Q(is_open_ended=True)
                 | Q(expiry_date__isnull=True)
-            )
+                | Q(amendments__new_expiry_date__lte=horizon)
+            ).distinct()
 
         rows = list(qs.order_by("expiry_date", "-issue_date")[:2000])
         serialized = TradeRegisterEntrySerializer(rows, many=True).data
@@ -412,6 +572,7 @@ class TradeDiaryView(APIView):
         return Response({
             "as_of": today,
             "window_days": window,
+            "archived": archived or "0",
             "labels": TradeRegisterEntry.DIARY_LABELS,
             "counts": {key: len(value) for key, value in buckets.items()},
             "buckets": buckets,
@@ -429,14 +590,32 @@ class TradeTariffListView(generics.ListCreateAPIView):
     permission_classes = [_TradeAdmin]
     serializer_class = TradeTariffSerializer
     pagination_class = None
-    queryset = TradeTariff.objects.prefetch_related("products").all()
+
+    def get_queryset(self):
+        qs = (TradeTariff.objects
+              .select_related("category", "product")
+              .prefetch_related("category__products"))
+        category = (self.request.query_params.get("category") or "").strip()
+        if category:
+            if category.isdigit():
+                qs = qs.filter(category_id=int(category))
+            else:
+                qs = qs.filter(category__code__iexact=category)
+        action = (self.request.query_params.get("action") or "").strip()
+        if action:
+            qs = qs.filter(Q(action__iexact=action) | Q(action=""))
+        if self.request.query_params.get("active") != "all":
+            qs = qs.filter(is_active=True)
+        return qs
 
 
 @extend_schema(tags=TAG)
 class TradeTariffDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [_TradeAdmin]
     serializer_class = TradeTariffSerializer
-    queryset = TradeTariff.objects.prefetch_related("products").all()
+    queryset = (TradeTariff.objects
+                .select_related("category", "product")
+                .prefetch_related("category__products"))
 
 
 @extend_schema(tags=TAG)
