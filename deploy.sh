@@ -25,6 +25,8 @@ BACKEND_IMAGE="hf-backend:latest"
 BACKEND_NAME="hf-backend"
 FRONTEND_NAME="portfolio-frontend"
 FRONTEND_PORT="${FRONTEND_PORT:-5400}"
+FRONTEND_INTERNAL_PORT=3000
+FRONTEND_NODE_OPTIONS="--max-old-space-size=4096"
 
 TARGET="both"
 PULL=1
@@ -70,12 +72,20 @@ deploy_frontend() {
   [ "$PULL" -eq 1 ] && git pull --ff-only
 
   # A bind-mounted node:22 container, not a baked image — see docs/DEPLOY.md.
+  # This is the command the host actually uses. Three details are load-bearing:
+  #   * NODE_OPTIONS — the Next production build runs out of memory without it.
+  #   * 5400:3000    — Next listens on 3000 INSIDE the container and is
+  #                    published on 5400. Mapping 5400:5400 would leave nothing
+  #                    listening on the published port.
+  #   * npm install  — not `npm ci`, which aborts whenever the lockfile has
+  #                    drifted from package.json instead of installing.
   say "Restarting $FRONTEND_NAME (installs and builds inside the container)"
   docker rm -f "$FRONTEND_NAME" >/dev/null 2>&1 || true
   docker run -d --name "$FRONTEND_NAME" --restart unless-stopped \
-    -p "$FRONTEND_PORT:$FRONTEND_PORT" \
+    -e NODE_OPTIONS="$FRONTEND_NODE_OPTIONS" \
     -v "$FRONTEND_DIR:/app" -w /app \
-    node:22 sh -c "npm ci && npm run build && npm run start -- -p $FRONTEND_PORT"
+    -p "$FRONTEND_PORT:$FRONTEND_INTERNAL_PORT" \
+    node:22 sh -c "npm install && npm run build && npm run start"
 
   say "Frontend starting — the build runs inside the container, so give it a minute"
   echo "  follow it with:  docker logs -f $FRONTEND_NAME"
