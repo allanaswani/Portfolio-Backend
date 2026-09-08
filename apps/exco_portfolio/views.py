@@ -20,6 +20,8 @@ from core.pagination import StandardPagination
 from core.permissions import InGroup
 from apps.gceo_dashboard.views import CeoFixedDepositListView, CeoCustomersView
 from apps.portfolio.models import Loans, Prospects, Feedback
+from apps.portfolio.feedback_names import FeedbackNamesMixin
+from apps.portfolio.serializers import NamedFeedbackSerializer
 from apps.portfolio.serializers import (
     LoansSerializer, ProspectsSerializer, FeedbackSerializer,
 )
@@ -95,10 +97,10 @@ class ExcoProspectsListView(generics.ListAPIView):
 
 
 @extend_schema(tags=["Exco Dashboard"])
-class ExcoFeedbackListView(generics.ListAPIView):
+class ExcoFeedbackListView(FeedbackNamesMixin, generics.ListAPIView):
     """Whole-bank customer feedback — RM view is filtered by sales_code."""
 
     permission_classes = [ExcoAccess]
-    serializer_class = FeedbackSerializer
+    serializer_class = NamedFeedbackSerializer
     pagination_class = StandardPagination
     queryset = Feedback.objects.all()

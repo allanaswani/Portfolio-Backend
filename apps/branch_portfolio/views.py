@@ -15,6 +15,7 @@ from rest_framework.utils.urls import replace_query_param, remove_query_param
 from apps.portfolio.models import (
     HfCustomer, Accounts, Loans, Feedback, Profile, Prospects, RetailAllocatedPortfolio,
 )
+from apps.portfolio.feedback_names import FeedbackNamesMixin
 from apps.portfolio.serializers import (
     HfCustomerSerializer, AccountsSerializer, LoansSerializer, FeedbackSerializer,
     BranchFeedbackSerializer, ProspectsSerializer, ProfileSerializer, SegmentCustomerSerializer,
@@ -807,7 +808,14 @@ class BranchFixedDepositListView(APIView):
 # ── Feedback / Prospects ───────────────────────────────────────────────────
 
 @extend_schema(tags=["Branch Portfolio — Feedback"])
-class BranchFeedbackView(generics.ListAPIView):
+class BranchFeedbackView(FeedbackNamesMixin, generics.ListAPIView):
+    """The branch Feedback Log.
+
+    The name resolution this view used to carry inline now lives in
+    ``FeedbackNamesMixin``, so the RM, TL and EXCO logs get it too — they had
+    been rendering dashes for want of the same twenty lines.
+    """
+
     permission_classes = [IsAuthenticated]
     serializer_class = BranchFeedbackSerializer
 
@@ -817,34 +825,6 @@ class BranchFeedbackView(generics.ListAPIView):
             branch__icontains=_branch_filter(profile)
         ).values_list("cust_id", flat=True)
         return Feedback.objects.filter(cust_id__in=branch_cust_ids)
-
-    def list(self, request, *args, **kwargs):
-        # The Feedback Log shows the customer + RM name, but Feedback only stores
-        # cust_id + sales_code. Batch-resolve both for the current page (customer
-        # name from hf_customer, RM name from retail_allocated_portfolio) and hand
-        # them to the serializer via context — avoids an N+1 per row.
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        rows = page if page is not None else list(queryset)
-
-        cust_ids = {int(r.cust_id) for r in rows if r.cust_id is not None}
-        sales_codes = {r.sales_code for r in rows if r.sales_code}
-        cust_names = {
-            int(cid): name
-            for cid, name in HfCustomer.objects.filter(cust_id__in=cust_ids)
-            .values_list("cust_id", "latin_surname")
-        }
-        rm_names = dict(
-            RetailAllocatedPortfolio.objects.filter(sales_code__in=sales_codes)
-            .values_list("sales_code", "rm_name")
-        )
-
-        ctx = self.get_serializer_context()
-        ctx.update({"cust_names": cust_names, "rm_names": rm_names})
-        serializer = self.get_serializer(rows, many=True, context=ctx)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response(serializer.data)
 
 
 @extend_schema(tags=["Branch Portfolio — Prospects"])

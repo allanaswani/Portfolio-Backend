@@ -12,6 +12,8 @@ from apps.portfolio.models import (
     HfCustomer, Prospects, Feedback,
     Accounts, Profile,
 )
+from apps.portfolio.feedback_names import FeedbackNamesMixin
+from apps.portfolio.serializers import NamedFeedbackSerializer
 from apps.portfolio.serializers import (
     HfCustomerSerializer, ProspectsSerializer, FeedbackSerializer,
     AccountsSerializer, ProfileSerializer,
@@ -497,9 +499,11 @@ class TlFixedDepositListView(APIView):
 # ── Feedback ───────────────────────────────────────────────────────────────
 
 @extend_schema(tags=["TL Portfolio — Feedback"])
-class TlFeedbackListView(generics.ListCreateAPIView):
+class TlFeedbackListView(FeedbackNamesMixin, generics.ListCreateAPIView):
+    """The team leader's Feedback Log — customer and RM names resolved."""
+
     permission_classes = [IsAuthenticated]
-    serializer_class = FeedbackSerializer
+    serializer_class = NamedFeedbackSerializer
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)

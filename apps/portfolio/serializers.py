@@ -193,10 +193,20 @@ class FeedbackSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class BranchFeedbackSerializer(serializers.ModelSerializer):
-    """Feedback enriched with the customer name (by cust_id) and RM name (by
-    sales_code) for the branch Feedback Log, which renders both columns. The view
-    supplies batched ``cust_names`` / ``rm_names`` lookup maps via context."""
+class NamedFeedbackSerializer(serializers.ModelSerializer):
+    """Feedback with the customer and RM NAMES resolved.
+
+    ``Feedback`` stores only ``cust_id`` and ``sales_code``, but every Feedback
+    Log in the application renders a Customer and an RM Name column. Without
+    this the two columns render as dashes — which is what the RM, TL and EXCO
+    logs did for months while only the branch log had been given the lookup.
+
+    The view supplies batched ``cust_names`` / ``rm_names`` maps through
+    context; see :class:`~apps.portfolio.feedback_names.FeedbackNamesMixin`,
+    which every feedback list uses so this cannot be fixed on one page and
+    forgotten on the next.
+    """
+
     customer_name = serializers.SerializerMethodField()
     rm_name = serializers.SerializerMethodField()
 
@@ -211,6 +221,11 @@ class BranchFeedbackSerializer(serializers.ModelSerializer):
 
     def get_rm_name(self, obj):
         return (self.context.get("rm_names") or {}).get(obj.sales_code)
+
+
+# The branch log's original name for the same thing, kept so its import keeps
+# working.
+BranchFeedbackSerializer = NamedFeedbackSerializer
 
 
 class PortfolioRmDepositTrendsSerializer(serializers.ModelSerializer):

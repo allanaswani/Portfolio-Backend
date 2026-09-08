@@ -13,9 +13,11 @@ from .models import (
     PortfolioRmDepositTrends, PortfolioRmRevenue, Accounts, AccountsHistory,
     Loans, LoansMomIFRSMovement,
 )
+from .feedback_names import FeedbackNamesMixin
 from .serializers import (
     ProfileSerializer, UserSerializer, HfCustomerSerializer,
     RetailAllocatedPortfolioSerializer, ProspectsSerializer, FeedbackSerializer,
+    NamedFeedbackSerializer,
     PortfolioRmDepositTrendsSerializer, PortfolioRmRevenueSerializer,
     AccountsSerializer, AccountsHistorySerializer, LoansSerializer,
     LoansMomIFRSMovementSerializer, ChangePasswordSerializer, LogoutSerializer,
@@ -286,9 +288,16 @@ class ProspectsListView(generics.ListCreateAPIView):
 
 
 @extend_schema(tags=["Portfolio — Feedback"])
-class FeedbackListView(generics.ListCreateAPIView):
+class FeedbackListView(FeedbackNamesMixin, generics.ListCreateAPIView):
+    """The RM's Feedback Log.
+
+    Uses the naming serializer + mixin: Feedback stores only cust_id and
+    sales_code, and this log renders Customer and RM Name columns, which were
+    dashes until it did.
+    """
+
     permission_classes = [IsAuthenticated]
-    serializer_class = FeedbackSerializer
+    serializer_class = NamedFeedbackSerializer
 
     def get_queryset(self):
         profile = _get_profile(self.request.user)
@@ -334,14 +343,34 @@ class FeedbackCustomersNotContactedView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Subquery, OuterRef
         profile = _get_profile(request.user)
-        contacted = Feedback.objects.filter(
-            sales_code=profile.sales_code
-        ).values_list("cust_id", flat=True).distinct()
+        contacted = set(
+            Feedback.objects.filter(sales_code=profile.sales_code)
+            .values_list("cust_id", flat=True).distinct()
+        )
         qs = svc.customers(profile.sales_code)
         not_contacted = [c for c in qs if c.cust_id not in contacted]
-        return Response(HfCustomerSerializer(not_contacted, many=True).data)
+        rows = HfCustomerSerializer(not_contacted, many=True).data
+
+        # The page renders an "RM Allocation" column, and HfCustomer carries no
+        # RM — so it rendered as a dash on every row. Every customer here is by
+        # definition allocated to the RM asking, so the name is resolvable: look
+        # it up once from their own sales code rather than leaving the column
+        # empty and looking broken.
+        rm_name = (
+            RetailAllocatedPortfolio.objects
+            .filter(sales_code=profile.sales_code)
+            .values_list("rm_name", flat=True).first()
+        ) or ""
+        for row in rows:
+            row["rm_allocation"] = rm_name
+            row["sales_code"] = profile.sales_code
+            # These customers have no feedback entry — that is what puts them on
+            # this list. Saying so is the honest answer; a dash reads as missing
+            # data rather than as the point of the list.
+            row["last_contact_date"] = None
+            row["never_contacted"] = True
+        return Response(rows)
 
 
 @extend_schema(tags=["Portfolio — Feedback"])
