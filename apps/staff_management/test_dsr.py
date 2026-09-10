@@ -221,3 +221,86 @@ class DSRTeamLeaderColumnTests(APITestCase):
         row = self._row(role="TELESALES", branch="NOWHERE")
         self.assertEqual(row["team_leader"], "")
         self.assertEqual(row["team_leader_source"], "")
+
+
+class DSRAllocationOptionsTests(APITestCase):
+    """The allocator's two dropdowns read the same sources as the rest of the app.
+
+    The role dropdown held three hard-coded values while the Sales Staff page
+    listed every role the data actually holds, and the team leader was a
+    free-text box — so one person got typed three different ways.
+    """
+
+    URL = "/staff_management/dsr-allocation-options/"
+
+    def setUp(self):
+        from .models import BranchEmployeeDmcData, DSRRoleTeamLeader, TeamLeaderBranch
+
+        self.user = User.objects.create_user(username="opts", password="x")
+        self.client.force_authenticate(self.user)
+
+        # The roster the Sales Staff page's Staff Role filter is built from.
+        BranchEmployeeDmcData.objects.create(
+            staff_name="A", staff_role="PB DSR", team_leader_name="EMANUEL KIPROP")
+        BranchEmployeeDmcData.objects.create(
+            staff_name="B", staff_role="TELESALES", team_leader_name="IAN MUTUA")
+        BranchEmployeeDmcData.objects.create(
+            staff_name="C", staff_role="RELATIONSHIP MANAGER", team_leader_name="")
+        BranchEmployeeDmcData.objects.create(
+            staff_name="D", staff_role="  ", team_leader_name=None)
+
+        TeamLeaderBranch.objects.create(branch="THIKA", team_leader="BRANCH LEADER")
+        DSRRoleTeamLeader.objects.update_or_create(
+            role="BANCA DSR", team_leader="David Wambugu", defaults={"active": True})
+
+    def test_the_roles_are_the_ones_the_sales_staff_page_shows(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, 200)
+        roles = res.data["roles"]
+        self.assertIn("PB DSR", roles)
+        self.assertIn("TELESALES", roles)
+        self.assertIn("RELATIONSHIP MANAGER", roles)
+
+    def test_a_blank_role_is_not_offered(self):
+        self.assertNotIn("", self.client.get(self.URL).data["roles"])
+        self.assertNotIn("  ", self.client.get(self.URL).data["roles"])
+
+    def test_a_role_already_in_use_survives_even_if_the_roster_drops_it(self):
+        """An allocation carrying it has to stay editable."""
+        DSRSalesCode.objects.create(
+            pf_number="7001", sales_code="DSR700", role="LEGACY ROLE")
+        self.assertIn("LEGACY ROLE", self.client.get(self.URL).data["roles"])
+
+    def test_a_mapped_role_is_offered_even_with_nobody_on_the_roster(self):
+        self.assertIn("BANCA DSR", self.client.get(self.URL).data["roles"])
+
+    def test_the_team_leaders_come_from_every_source(self):
+        leaders = self.client.get(self.URL).data["team_leaders"]
+        self.assertIn("EMANUEL KIPROP", leaders)   # DMC roster
+        self.assertIn("IAN MUTUA", leaders)        # DMC roster
+        self.assertIn("BRANCH LEADER", leaders)    # branch mapping
+        self.assertIn("David Wambugu", leaders)    # role mapping
+
+    def test_a_leader_already_stored_on_an_allocation_is_offered(self):
+        DSRSalesCode.objects.create(
+            pf_number="7002", sales_code="DSR701", team_leader="TYPED LEADER")
+        self.assertIn("TYPED LEADER", self.client.get(self.URL).data["team_leaders"])
+
+    def test_a_blank_leader_is_not_offered(self):
+        leaders = self.client.get(self.URL).data["team_leaders"]
+        self.assertNotIn("", leaders)
+        self.assertEqual(len(leaders), len(set(leaders)))
+
+    def test_the_role_to_leader_map_is_still_served(self):
+        """So the form can put a role's own leaders at the top of the list."""
+        res = self.client.get(self.URL)
+        self.assertEqual(res.data["role_team_leaders"]["BANCA DSR"], ["David Wambugu"])
+
+    def test_both_lists_are_sorted(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.data["roles"], sorted(res.data["roles"]))
+        self.assertEqual(res.data["team_leaders"], sorted(res.data["team_leaders"]))
+
+    def test_it_needs_a_signed_in_user(self):
+        self.client.force_authenticate(None)
+        self.assertIn(self.client.get(self.URL).status_code, (401, 403))

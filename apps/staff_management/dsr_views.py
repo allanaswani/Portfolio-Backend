@@ -279,6 +279,87 @@ class DSRRoleTeamLeaderDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class DSRAllocationOptionsView(APIView):
+    """The roles and team leaders the allocator's dropdowns offer.
+
+    Both used to be typed or hard-coded: the role dropdown held three values
+    (PB DSR, BANCA DSR, SME DSR) while the Sales Staff page showed every role
+    the data actually holds, and the team leader was a free-text box whenever
+    the chosen role had no mapping — so the same person got entered three
+    different ways.
+
+    Both lists are now read from where the rest of the application reads them,
+    so they cannot drift:
+
+    * **roles** — the distinct ``staff_role`` on ``BranchEmployeeDmcData``,
+      which is exactly what the Sales Staff page's Staff Role filter lists,
+      unioned with any role already recorded against an allocation or a
+      role→leader mapping so nothing already in use disappears.
+    * **team_leaders** — every name the application knows: the DMC roster's
+      team leaders, the branch→leader mapping, the role→leader mapping, and
+      any leader already stored on an allocation.
+
+    ``role_team_leaders`` is kept so the form can still put a role's own
+    leaders at the top of the list once a role is chosen.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import BranchEmployeeDmcData, TeamLeaderBranch
+
+        def clean(values):
+            return {str(v).strip() for v in values if v and str(v).strip()}
+
+        # ── Roles ───────────────────────────────────────────────────────────
+        roles = clean(
+            BranchEmployeeDmcData.objects
+            .values_list("staff_role", flat=True).distinct()
+        )
+        # Never drop a role that is already in use, even if the roster no
+        # longer lists it — an allocation carrying it must stay editable.
+        roles |= clean(DSRSalesCode.objects.values_list("role", flat=True).distinct())
+        roles |= clean(
+            DSRRoleTeamLeader.objects.filter(active=True)
+            .values_list("role", flat=True).distinct()
+        )
+
+        # ── Team leaders ────────────────────────────────────────────────────
+        leaders = clean(
+            BranchEmployeeDmcData.objects
+            .values_list("team_leader_name", flat=True).distinct()
+        )
+        leaders |= clean(
+            BranchEmployeeDmcData.objects
+            .values_list("team_leader", flat=True).distinct()
+        )
+        leaders |= clean(
+            TeamLeaderBranch.objects.filter(active=True)
+            .values_list("team_leader", flat=True).distinct()
+        )
+        leaders |= clean(
+            DSRRoleTeamLeader.objects.filter(active=True)
+            .values_list("team_leader", flat=True).distinct()
+        )
+        leaders |= clean(
+            DSRSalesCode.objects.values_list("team_leader", flat=True).distinct()
+        )
+
+        role_leaders = {}
+        for role, tl in (
+            DSRRoleTeamLeader.objects.filter(active=True)
+            .order_by("role", "sort_order", "team_leader")
+            .values_list("role", "team_leader")
+        ):
+            role_leaders.setdefault(role, []).append(tl)
+
+        return Response({
+            "roles": sorted(roles),
+            "team_leaders": sorted(leaders),
+            "role_team_leaders": role_leaders,
+        })
+
+
 class DSRSalesCodeLookupView(APIView):
     """Check a PF before allocating: existing code, or an autofilled preview."""
 
