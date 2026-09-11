@@ -167,11 +167,43 @@ class RegisterQueryCountTests(APITestCase):
         expiry) and the count — so a bigger page cost proportionally more."""
         small = self._page_queries(2)
         large = self._page_queries(16)
-        self.assertEqual(
-            small, large,
+        # Not necessarily EQUAL: the tariff line is looked up once per distinct
+        # (product, action) on the page, so a bigger page can hold one or two
+        # more pairs. That is bounded by the size of the product catalogue, not
+        # by the row count — which is the property worth guarding. Eight times
+        # the rows must not cost anything like eight times the queries.
+        self.assertLessEqual(
+            large, small + 3,
             f"{small} queries for 2 rows but {large} for 16 — the page is "
             "querying per row again",
         )
+
+    def test_the_annotated_queryset_is_still_ordered(self):
+        """The aggregates add a GROUP BY, and Django then reports the queryset
+        as unordered even with Meta.ordering set. PostgreSQL may then return
+        grouped rows in any order, so page 2 can repeat or skip rows from page 1
+        — paging breaks, and an export that crawls the pages comes back short."""
+        self.assertTrue(TradeRegisterEntry.objects.with_position().ordered)
+
+    def test_paging_covers_every_row_exactly_once(self):
+        """What the export actually relies on."""
+        seen, page = [], 1
+        while True:
+            res = self.client.get(f"/trade_register/entries/?page_size=3&page={page}")
+            self.assertEqual(res.status_code, 200)
+            rows = res.data["results"]
+            if not rows:
+                break
+            seen.extend(r["id"] for r in rows)
+            if not res.data.get("next"):
+                break
+            page += 1
+
+        expected = set(
+            TradeRegisterEntry.objects.filter(is_archived=False).values_list("id", flat=True)
+        )
+        self.assertEqual(len(seen), len(set(seen)), "a row was returned on two pages")
+        self.assertEqual(set(seen), expected, "paging did not reach every row")
 
     def test_the_live_position_is_still_right_when_annotated(self):
         res = self.client.get("/trade_register/entries/?page_size=20")

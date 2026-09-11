@@ -542,7 +542,12 @@ class TradeRegisterEntryQuerySet(models.QuerySet):
                 filter=models.Q(amendments__action=refs.ACTION_CANCELLATION),
                 distinct=True,
             ),
-        )
+        # The aggregates add a GROUP BY, and Django then treats the queryset as
+        # UNORDERED even though Meta.ordering is set. PostgreSQL is free to
+        # return grouped rows in any order, so page 2 could repeat or skip rows
+        # from page 1 — which quietly breaks paging and makes an export that
+        # crawls the pages come back short. Ordering explicitly restores it.
+        ).order_by(*(self.model._meta.ordering or ["-id"]))
 
 
 class TradeRegisterEntry(models.Model):
