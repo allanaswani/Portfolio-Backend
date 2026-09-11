@@ -104,7 +104,7 @@ ACTION_CODES = {"created": "+", "updated": "~", "deleted": "-"}
 
 
 def external_feed(since=None, until=None, source=None, username=None,
-                  action=None, limit=100):
+                  action=None, model=None, limit=100):
     """Events pushed by another system, in the same shape as the local ones.
 
     ``source`` doubles as the app filter: the feed's app column shows the
@@ -125,8 +125,7 @@ def external_feed(since=None, until=None, source=None, username=None,
         wanted = {v: k for k, v in ACTION_CODES.items()}.get(action)
         if wanted:
             qs = qs.filter(action__iexact=wanted)
-
-    return [
+    rows = [
         {
             "app_label": row.source,
             "model": (row.model_label or "").lower().replace(" ", ""),
@@ -147,6 +146,13 @@ def external_feed(since=None, until=None, source=None, username=None,
         }
         for row in qs.order_by("-occurred_at")[:limit]
     ]
+    if model:
+        # Narrowing the feed to one record type has to narrow these too, or
+        # filtering to "Trade Entry" would still list everything Customer 360
+        # has ever pushed. Compared on the normalised key, because that is what
+        # the page sends back.
+        rows = [row for row in rows if row["model"] == model.lower().replace(" ", "")]
+    return rows
 
 
 def _render(value):
@@ -219,7 +225,7 @@ def feed(since=None, until=None, app_label=None, model=None, username=None,
     # point of an audit trail is that one place answers "who changed what".
     out += external_feed(
         since=since, until=until, source=app_label, username=username,
-        action=action, limit=limit,
+        action=action, model=model, limit=limit,
     )
     out.sort(key=lambda row: row["when"], reverse=True)
     out = out[:limit]
