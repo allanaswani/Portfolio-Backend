@@ -21,6 +21,16 @@ from apps.observability import alerts, audit, health, metrics
 from apps.observability.models import MonitoredService, ServiceProbe
 
 
+def _plain(text, limit=140):
+    """One short ASCII line. The body is printed to a console by --dry-run, and
+    a console that cannot encode an em dash must not crash the job that reports
+    on everything else."""
+    flat = " ".join(str(text or "").split())
+    flat = flat.replace("—", "-").replace("–", "-").replace("…", "...")
+    flat = flat.encode("ascii", "replace").decode("ascii")
+    return flat[: limit - 3] + "..." if len(flat) > limit else flat
+
+
 class Command(BaseCommand):
     help = "Email a 24-hour summary to the daily-digest recipients."
 
@@ -100,7 +110,11 @@ class Command(BaseCommand):
         if problems:
             lines.append(f"  Needing attention: {len(problems)}")
             for row in problems[:15]:
-                lines.append(f"    - {row['table']}: {row['status']}")
+                # "error" on its own tells the reader nothing they can act on.
+                # The reason is almost always MAX() over an unindexed column
+                # timing out, which is a different job from a stalled ETL.
+                why = f" - {_plain(row['error'])}" if row.get("error") else ""
+                lines.append(f"    - {row['table']}: {row['status']}{why}")
             if len(problems) > 15:
                 lines.append(f"    ... and {len(problems) - 15} more")
         else:

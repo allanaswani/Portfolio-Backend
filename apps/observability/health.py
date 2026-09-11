@@ -138,16 +138,55 @@ def _row(model, table, alias, field, exists, count, is_estimate, last_seen,
         "freshness_column": field.name if field else None,
         "last_seen": last_seen,
         "age_days": age_days,
-        "status": status or ("error" if error else _classify(exists, count, age_days)),
+        # An explicit status wins; otherwise classify on what was measured.
+        # Note that an error alone no longer forces "error": a table whose rows
+        # were counted but whose date column was too slow to read is present
+        # and populated, and calling that broken data would alert the team
+        # about four healthy tables, every day, forever. It is "unknown" —
+        # freshness could not be judged — with the reason attached.
+        "status": status or _classify(exists, count, age_days),
         "error": error,
     }
 
 
-def warehouse_models():
-    """The unmanaged models — the tables the ETLs are responsible for."""
+def warehouse_models(app_label=None):
+    """The unmanaged models — the tables the ETLs are responsible for.
+
+    One model per PHYSICAL table. Four warehouse tables are mapped twice
+    (``hf_customer``, ``accounts``, ``accounts_history`` by both portfolio and
+    gceo_dashboard; ``employee_table`` by gceo_dashboard and staff_management),
+    and without this the dashboard listed each of them twice, counted 36 tables
+    where there are 32, and probed every duplicate a second time for an answer
+    it already had. Two rows saying the same table is stale reads as two
+    problems.
+
+    Where a table is mapped twice the mapping with a usable date column wins —
+    it is the one that can answer "when was this last refreshed", which is the
+    question the page exists for. Failing that, the more complete mapping.
+    """
     out = [m for m in django_apps.get_models() if not m._meta.managed]
-    out.sort(key=lambda m: (m._meta.app_label, m._meta.db_table))
-    return out
+    if app_label:
+        out = [m for m in out if m._meta.app_label == app_label]
+
+    best = {}
+    for model in out:
+        table = model._meta.db_table
+        current = best.get(table)
+        if current is None or _mapping_rank(model) > _mapping_rank(current):
+            best[table] = model
+
+    chosen = list(best.values())
+    chosen.sort(key=lambda m: (m._meta.app_label, m._meta.db_table))
+    return chosen
+
+
+def _mapping_rank(model):
+    """How good a stand-in this model is for its table. Higher wins."""
+    try:
+        has_date = _freshness_field(model) is not None
+    except Exception:  # noqa: BLE001
+        has_date = False
+    return (1 if has_date else 0, len(model._meta.fields))
 
 
 # How long a pushed report stays trustworthy. A service that stops pushing has
@@ -216,9 +255,9 @@ def table_health(app_label=None, use_cache=True):
     started = time.monotonic()
     rows = []
 
-    for model in warehouse_models():
-        if app_label and model._meta.app_label != app_label:
-            continue
+    # Deduplicated AFTER the app filter, so narrowing to one app still picks
+    # that app's mapping of a shared table rather than dropping the table.
+    for model in warehouse_models(app_label=app_label):
         table = model._meta.db_table
         try:
             alias = router.db_for_read(model) or "default"
@@ -232,6 +271,10 @@ def table_health(app_label=None, use_cache=True):
         exists, count, is_estimate = False, 0, False
         last_seen = None
         error = ""
+        # "could not read the table at all" and "read it fine, could not date
+        # it" are different findings and must not share a verdict. Only the
+        # first is an error.
+        unreadable = False
 
         # Out of time: report the rest honestly rather than keep the reader
         # waiting for a page that will be killed before it arrives.
@@ -271,6 +314,7 @@ def table_health(app_label=None, use_cache=True):
                         )[:300]
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"[:300]
+            unreadable = True
 
         age_days = None
         if last_seen is not None:
@@ -281,7 +325,8 @@ def table_health(app_label=None, use_cache=True):
                 age_days = None
 
         rows.append(_row(model, table, alias, field, exists, count, is_estimate,
-                         last_seen, age_days, error))
+                         last_seen, age_days, error,
+                         status="error" if unreadable else None))
 
     # Tables in OTHER systems, as those systems last reported them. Customer
     # 360 owns its own database, so it pushes rather than being scanned — but

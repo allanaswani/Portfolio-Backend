@@ -46,7 +46,7 @@ reads them. When an ETL stops, nothing complains: the page renders zeros and the
 only signal is a user asking why a chart is empty. That is exactly how the loan
 trend charts stayed empty for weeks (`docs`/`loan-trends-empty-etl`).
 
-`health.table_health()` walks all 36 unmanaged models and reports, per table:
+`health.table_health()` walks the unmanaged models and reports, per table:
 
 | Verdict | Meaning |
 |---|---|
@@ -55,7 +55,21 @@ trend charts stayed empty for weeks (`docs`/`loan-trends-empty-etl`).
 | `stale` | last refreshed ≥ 7 days ago |
 | `warning` | last refreshed ≥ 2 days ago |
 | `ok` | refreshed within 2 days |
-| `unknown` | no date column to judge freshness by — never reported as healthy |
+| `unknown` | present and populated, but its freshness cannot be judged — no date column, or `MAX()` on it timed out — never reported as healthy |
+
+`error` means the table could not be read **at all**. It does not mean the
+freshness probe failed: four production tables are large with no index on their
+date column, so `MAX()` times out while the row count succeeds. Those are
+present and populated, and calling them broken would have emailed the team about
+four healthy tables every day forever. They report `unknown`, with the reason
+attached.
+
+**One row per physical table.** Four warehouse tables are mapped by two models
+each — `hf_customer`, `accounts` and `accounts_history` (portfolio and
+gceo_dashboard), and `employee_table` (gceo_dashboard and staff_management).
+Where a table is mapped twice, the mapping with a usable date column wins. Without
+this the dashboard listed each twice, counted 36 tables where there are 32, and
+one stale table read as two problems.
 
 Row counts come from PostgreSQL's `reltuples` planner statistic, **not**
 `COUNT(*)`: thirty-six sequential counts over warehouse-sized tables would make

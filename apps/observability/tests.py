@@ -9,6 +9,7 @@ pinned on its permissions.
 
 from datetime import timedelta
 
+from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.test import TestCase
@@ -409,6 +410,68 @@ class DataHealthJudgementTests(TestCase):
         tables = {m._meta.db_table for m in health.warehouse_models()}
         self.assertIn("employee_table", tables)
         self.assertGreater(len(tables), 20)
+
+    def test_a_table_mapped_twice_is_reported_once(self):
+        """Four warehouse tables carry two models each.
+
+        The first digest listed accounts_history and employee_table twice, so
+        one stale table read as two problems and the table count was four too
+        high. It also probed each duplicate a second time for an answer it had.
+        """
+        models_ = health.warehouse_models()
+        tables = [m._meta.db_table for m in models_]
+        self.assertEqual(len(tables), len(set(tables)), "a table is listed twice")
+        for shared in ("accounts_history", "employee_table", "hf_customer", "accounts"):
+            self.assertEqual(tables.count(shared), 1, shared)
+
+    def test_the_mapping_that_can_date_the_table_is_the_one_kept(self):
+        """Freshness is the question this page exists to answer."""
+        for model in health.warehouse_models():
+            twins = [
+                m for m in django_apps.get_models()
+                if not m._meta.managed and m._meta.db_table == model._meta.db_table
+            ]
+            if len(twins) < 2:
+                continue
+            if any(health._freshness_field(t) is not None for t in twins):
+                self.assertIsNotNone(
+                    health._freshness_field(model),
+                    f"{model._meta.label} kept over a twin that has a date column",
+                )
+
+    def test_a_table_that_is_only_slow_to_date_is_not_called_broken(self):
+        """It is present and populated. Only its freshness is unknown.
+
+        Four production tables land here — MAX() over an unindexed column times
+        out. Classified as "error" they alerted as broken data every day,
+        forever, which is precisely how an alert becomes something people
+        filter away.
+        """
+        row = health._row(
+            TradeFinanceData, "accounts_history", "default",
+            field=None, exists=True, count=5_000_000, is_estimate=True,
+            last_seen=None, age_days=None,
+            error="date_created: too slow to measure (no index on this column)",
+        )
+        self.assertEqual(row["status"], "unknown")
+        # The reason still travels with it — unknown without a why is no better.
+        self.assertIn("too slow", row["error"])
+
+    def test_a_table_that_could_not_be_read_at_all_is(self):
+        row = health._row(
+            TradeFinanceData, "gone", "default",
+            field=None, exists=False, count=0, is_estimate=False,
+            last_seen=None, age_days=None,
+            error="InterfaceError: connection already closed",
+            status="error",
+        )
+        self.assertEqual(row["status"], "error")
+
+    def test_narrowing_to_one_app_still_finds_a_shared_table(self):
+        """Deduplication must not hide a table from the app that also maps it."""
+        tables = {m._meta.db_table
+                  for m in health.warehouse_models(app_label="staff_management")}
+        self.assertIn("employee_table", tables)
 
 
 class PermissionTests(TestCase):
