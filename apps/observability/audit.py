@@ -100,6 +100,55 @@ def changed_fields(record):
     ]
 
 
+ACTION_CODES = {"created": "+", "updated": "~", "deleted": "-"}
+
+
+def external_feed(since=None, until=None, source=None, username=None,
+                  action=None, limit=100):
+    """Events pushed by another system, in the same shape as the local ones.
+
+    ``source`` doubles as the app filter: the feed's app column shows the
+    service name for an external row, so filtering by it has to reach these.
+    """
+    from .models import ExternalAuditEvent
+
+    qs = ExternalAuditEvent.objects.all()
+    if since is not None:
+        qs = qs.filter(occurred_at__gte=since)
+    if until is not None:
+        qs = qs.filter(occurred_at__lte=until)
+    if source:
+        qs = qs.filter(source__iexact=source)
+    if username:
+        qs = qs.filter(username__iexact=username)
+    if action:
+        wanted = {v: k for k, v in ACTION_CODES.items()}.get(action)
+        if wanted:
+            qs = qs.filter(action__iexact=wanted)
+
+    return [
+        {
+            "app_label": row.source,
+            "model": (row.model_label or "").lower().replace(" ", ""),
+            "model_label": row.model_label or "—",
+            "object_id": row.object_id,
+            "object_label": row.object_label,
+            "action": row.action or "changed",
+            "action_code": ACTION_CODES.get(row.action, "~"),
+            "user": row.username or None,
+            "username": row.username or None,
+            "reason": row.reason or "",
+            "when": row.occurred_at,
+            "changes": row.changes if isinstance(row.changes, list) else [],
+            # So the page can show where a row came from — a change made in
+            # Customer 360 must not read as one made here.
+            "external": True,
+            "source": row.source,
+        }
+        for row in qs.order_by("-occurred_at")[:limit]
+    ]
+
+
 def _render(value):
     if value is None:
         return None
@@ -123,6 +172,8 @@ def serialise(record, entry, with_changes=True):
         "reason": record.history_change_reason or "",
         "when": record.history_date,
         "changes": changed_fields(record) if with_changes else [],
+        "external": False,
+        "source": "portfolio",
     }
 
 
@@ -162,6 +213,16 @@ def feed(since=None, until=None, app_label=None, model=None, username=None,
 
     rows.sort(key=lambda pair: pair[0].history_date, reverse=True)
     out = [serialise(r, e, with_changes=with_changes) for r, e in rows[:limit]]
+
+    # Changes made in OTHER systems — Customer 360 pushes its own events here.
+    # They merge into this one feed rather than living on a second screen: the
+    # point of an audit trail is that one place answers "who changed what".
+    out += external_feed(
+        since=since, until=until, source=app_label, username=username,
+        action=action, limit=limit,
+    )
+    out.sort(key=lambda row: row["when"], reverse=True)
+    out = out[:limit]
     if search:
         needle = search.lower()
         out = [

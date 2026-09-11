@@ -138,6 +138,16 @@ not being measured.
 
 # Keep the metrics table bounded (30 days covers every window offered).
 0 3 * * * docker exec hf-backend python manage.py prune_request_metrics
+
+# Probe the other systems (Customer 360) from outside, every two minutes.
+*/2 * * * * docker exec hf-backend python manage.py probe_services
+
+# Decide whether anything changed enough to be worth an email.
+# --sensitive-minutes MUST match this interval or edits are seen twice or missed.
+*/10 * * * * docker exec hf-backend python manage.py run_alert_checks --sensitive-minutes 10
+
+# One summary a day, including on the days when nothing broke.
+0 7 * * * docker exec hf-backend python manage.py send_daily_digest
 ```
 
 ## Endpoints
@@ -155,9 +165,153 @@ not being measured.
 | `performance/errors/` | recent failing requests |
 | `performance/uptime/` | window uptime + per-day availability |
 | `performance/active-users/` | who is on the system now |
+| `services/` | the watched external systems - list, create |
+| `services/status/` | reachability, average latency and last probe per service - `?hours=` |
+| `services/<id>/` | edit or remove one |
+| `services/<id>/token/` | POST issues a fresh ingest token, shown once |
+| `alerts/recipients/` | who is emailed, and for which kinds |
+| `alerts/state/` | what each watched condition currently is |
+| `alerts/test/` | POST `{"kind": "..."}` - proves the mail path before an outage does |
+| `ingest/` | where another system pushes its audit events and table health |
 
 ## Deploy
 
-`manage.py migrate observability` creates the two tables. The middleware is
+`manage.py migrate observability` creates the tables (0002 adds alerting
+and the external feeds, 0003 registers Customer 360). The middleware is
 fail-soft: a missing table or a dead connection drops metrics rather than
 taking a request down, so the app is safe if the migration has not run yet.
+
+---
+
+# Alerting, and the systems that are not this one
+
+Two screens that nobody has open are two screens that report nothing. Everything
+below exists so that the first person to know is not a user.
+
+## Customer 360
+
+Customer 360 is a **separate resource server**. It trusts the JWT this backend
+mints, but it is its own repo with its own database, on its own deployment. This
+backend cannot read its tables and should not try — a direct database link
+between two services is the coupling that makes both of them one service.
+
+So it is watched two ways, and both are needed:
+
+* **From outside (probe).** `probe_services` requests its health URL on a
+  schedule and records the status code and how long it took. This is what
+  catches the case that matters most — the service is gone — and it needs
+  nothing from the Customer 360 repo, which is why it is the half that works
+  today.
+* **From inside (push).** Customer 360 posts its own audit events and table
+  health to `observability/ingest/`. This is the half that cannot be seen from
+  outside: who edited what over there, and whether its own feeds are loading.
+  It needs a small change in that repo, so it is built and waiting rather than
+  live.
+
+Migration 0003 registers the service **with no health URL and no token** on
+purpose. The URL is environment-specific and inventing one would probe nothing
+and then report Customer 360 as down; the token is generated on demand so no
+shared secret is committed. Until the URL is set the dashboard shows *not
+probed*, which is honest, where green would be a lie.
+
+### Turning the probe on
+
+Administration → Data Health → Other Systems → edit Customer 360, set the health
+URL (any cheap endpoint that returns 200 while the service is alive), save. The
+next `probe_services` run fills in the row.
+
+### Turning the push on
+
+1. Administration → the service → **Issue ingest token**. It is displayed once.
+2. Give it to the Customer 360 deployment as an environment variable.
+3. That service POSTs, whenever it likes:
+
+```http
+POST /observability/ingest/
+X-Observability-Token: <token>
+Content-Type: application/json
+
+{
+  "events": [
+    {"action": "~", "model_label": "c360.CustomerNote", "object_id": "812",
+     "object_label": "Note on 0100123", "username": "jane.doe",
+     "occurred_at": "2026-09-11T08:30:00Z", "external_id": "evt-88121",
+     "changes": {"body": ["old", "new"]}}
+  ],
+  "tables": [
+    {"table": "c360_customer_profile", "status": "ok", "row_count": 412331,
+     "last_loaded": "2026-09-11T02:10:00Z"}
+  ]
+}
+```
+
+Both keys are optional; send either, or both. `action` is `+` created,
+`~` updated, `-` deleted.
+
+**It is idempotent.** Events carry an `external_id` and are deduplicated on
+`(source, external_id)`; tables are upserted on `(source, table)`. A sender that
+retries after a timeout, or replays a batch, does not double-count. A batch is
+capped at 500 events and 500 tables so one client cannot post a day of history
+in a single request.
+
+Pushed rows then appear in the ordinary screens: events merge into the audit
+feed carrying `source` and `external: true`, and table health appears alongside
+the warehouse tables. A pushed table report that stops arriving goes to
+`unknown` after three hours rather than staying green forever — silence from a
+monitoring feed is not health.
+
+## Alerts are sent on change, not on state
+
+The whole design is one rule: **an alert fires when a condition changes, not
+while it persists.** `alerts.transition(key, state)` records a key's state and
+returns `True` only if it differs from what was recorded before. Every check
+goes through it. A service that has been down for six hours produced one email,
+not one every ten minutes, and the recovery produces exactly one more.
+
+A key's first sighting is only news if it is *bad*. Otherwise adding a new
+watched table would email everybody an all-clear about something they had not
+been worrying about.
+
+What is watched:
+
+| Condition | Threshold | Why that threshold |
+|---|---|---|
+| Service down | 3 consecutive failed probes | One failed probe is a blip. Alerting on it is how alerts become noise people filter away. |
+| Service slow | last probe over that service's `slow_ms` | Up but unusable is still an incident, and it is reported as *slow*, not *down*. |
+| Error rate | over 5% **and** at least 50 requests in the hour | Two failures out of three requests at 3 a.m. is not a 66% outage. |
+| Data health | any table `missing` / `empty` / `stale` / `error` | One key per table, so a second table breaking is its own email. |
+| Sensitive change | any deletion anywhere, plus edits to the models below | See the next section. |
+
+### What counts as a sensitive change
+
+Emailing every edit would produce a mailbox nobody reads, and then the one that
+mattered is in it. Only two things are mailed:
+
+* **Any deletion, on any audited model.** Deletions are the changes that cannot
+  be noticed later by looking at the data.
+* **Edits to the models that decide money or access**: sales codes, trade
+  tariffs and products, team-leader mappings, user profiles — and the alert
+  recipients and monitored services themselves. Whoever can quietly remove a
+  recipient can silence the alerting, so that removal is itself an alert.
+
+Everything else is in the audit trail, which is where an ordinary edit belongs.
+
+## Recipients
+
+Administration keeps the list — `alerts/recipients/`, one row per address, with
+a tick per kind: downtime, data health, sensitive changes, daily digest. Someone
+subscribed to nothing is rejected at validation rather than saved as a row that
+silently never receives anything.
+
+Sending never raises. If SMTP is down the failure is logged and the check
+returns 0 — a monitoring system that can crash the job it monitors from is worse
+than no monitoring. Which is also why `alerts/test/` exists: find out that SMTP
+is misconfigured now, not during the outage.
+
+## The daily digest
+
+Sent whether or not anything is wrong: requests served, median and p95, error
+rate, uptime (or an explicit *not measured*), each external service's
+reachability, warehouse tables needing attention, and the day's changes by user.
+The "nothing is on fire" message is the one that proves the alerting still
+works.

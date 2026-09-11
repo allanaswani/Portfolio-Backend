@@ -18,6 +18,7 @@ never guessed (``reltuples`` is -1 on a table that has never been analysed).
 """
 
 import time
+from datetime import timedelta
 
 from django.apps import apps as django_apps
 from django.core.cache import cache
@@ -149,6 +150,50 @@ def warehouse_models():
     return out
 
 
+# How long a pushed report stays trustworthy. A service that stops pushing has
+# stopped telling us anything, which is itself worth showing — silence must not
+# read as health.
+EXTERNAL_STALE_MINUTES = 180
+
+
+def external_rows(app_label=None):
+    """Tables another system reported, in the same shape as a scanned one."""
+    from .models import ExternalTableHealth
+
+    qs = ExternalTableHealth.objects.all()
+    if app_label:
+        qs = qs.filter(source__iexact=app_label)
+
+    cutoff = timezone.now() - timedelta(minutes=EXTERNAL_STALE_MINUTES)
+    out = []
+    for row in qs:
+        stale_report = row.reported_at < cutoff
+        out.append({
+            "app_label": row.source,
+            "model": row.table,
+            "label": row.label or row.table,
+            "table": row.table,
+            "database": f"{row.source} (reported)",
+            "exists": row.status != "missing",
+            "rows": row.rows,
+            "rows_are_estimate": row.rows_are_estimate,
+            "freshness_column": None,
+            "last_seen": row.last_seen,
+            "age_days": row.age_days,
+            # A report nobody has refreshed for hours is not evidence of health.
+            "status": "unknown" if stale_report else row.status,
+            "error": (
+                f"Last reported {row.reported_at:%Y-%m-%d %H:%M} — the service "
+                "has stopped pushing."
+                if stale_report else row.error
+            ),
+            "external": True,
+            "source": row.source,
+            "reported_at": row.reported_at,
+        })
+    return out
+
+
 def table_health(app_label=None, use_cache=True):
     """One row per warehouse table: existence, size, freshness, verdict.
 
@@ -237,6 +282,12 @@ def table_health(app_label=None, use_cache=True):
 
         rows.append(_row(model, table, alias, field, exists, count, is_estimate,
                          last_seen, age_days, error))
+
+    # Tables in OTHER systems, as those systems last reported them. Customer
+    # 360 owns its own database, so it pushes rather than being scanned — but
+    # it belongs on the same screen, because "is the data there" is one question
+    # across the estate, not one per system.
+    rows += external_rows(app_label=app_label)
 
     rows.sort(key=lambda r: (
         {"missing": 0, "error": 1, "empty": 2, "stale": 3, "warning": 4,
