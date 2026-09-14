@@ -13,8 +13,19 @@ a second event and a second email.
 from django.db import transaction
 from django.utils import timezone
 
+from . import notifications
 from .models import DeskSettings, Ticket, TicketComment, TicketEvent
 from .worktime import business_seconds
+
+
+def _after_commit(fn, *args, **kwargs):
+    """Run once the transaction has actually committed.
+
+    Mail sent inside the transaction would announce a resolution that a later
+    error rolled back, and the requester would be told their query was answered
+    when the database says it was not.
+    """
+    transaction.on_commit(lambda: fn(*args, **kwargs))
 
 
 def _label(user):
@@ -60,6 +71,27 @@ def _touch_first_response(ticket, actor, now):
     return True
 
 
+def _claim(ticket, actor, now):
+    """A handler who acts on an unowned ticket owns it.
+
+    There is no separate "assign" step to remember, which is the request: the
+    desk does not want an allocation ceremony. Whoever picks a query up is the
+    person answering it, and the ticket says so from that moment. An already
+    owned ticket is left alone — acting on a colleague's ticket must not
+    silently take it from them.
+    """
+    from .rbac import is_handler
+
+    if ticket.assigned_to_id or not is_handler(actor) or not getattr(actor, "pk", None):
+        return False
+    ticket.assigned_to = actor
+    ticket.assigned_at = ticket.assigned_at or now
+    if ticket.status == Ticket.STATUS_NEW:
+        ticket.status = Ticket.STATUS_IN_PROGRESS
+        ticket.started_at = ticket.started_at or now
+    return True
+
+
 @transaction.atomic
 def create(*, subject, body="", category=None, priority=Ticket.PRIORITY_NORMAL,
            raised_by=None, on_behalf_of="", requester_email="",
@@ -77,6 +109,7 @@ def create(*, subject, body="", category=None, priority=Ticket.PRIORITY_NORMAL,
     record(ticket, TicketEvent.KIND_CREATED, actor=actor or raised_by,
            to_status=ticket.status,
            note=f"Raised on behalf of {on_behalf_of}" if on_behalf_of else "")
+    _after_commit(notifications.ticket_raised, ticket, actor or raised_by)
     return ticket
 
 
@@ -96,6 +129,7 @@ def assign(ticket, to_user, actor=None, note=""):
     record(ticket, TicketEvent.KIND_ASSIGNED, actor=actor, at=now,
            from_status=was, to_status=ticket.status,
            note=note or f"Assigned to {_label(to_user)}")
+    _after_commit(notifications.ticket_assigned, ticket, actor)
     return ticket
 
 
@@ -126,9 +160,15 @@ def set_status(ticket, status, actor=None, note=""):
 
     ticket.status = status
     _touch_first_response(ticket, actor, now)
+    claimed = _claim(ticket, actor, now)
+    # _claim may have moved it to in_progress; the explicit request wins.
+    ticket.status = status
     ticket.save()
     record(ticket, TicketEvent.KIND_STATUS, actor=actor, at=now,
            from_status=was, to_status=status, note=note)
+    if claimed:
+        record(ticket, TicketEvent.KIND_ASSIGNED, actor=actor, at=now,
+               note=f"Picked up by {_label(actor)}")
     return ticket
 
 
@@ -138,13 +178,22 @@ def comment(ticket, author, body, is_internal=False):
     now = timezone.now()
     row = TicketComment.objects.create(
         ticket=ticket, author=author, body=body, is_internal=bool(is_internal))
+
     # An internal note is not an answer to the requester, so it must not stop
     # the response clock — that would let the desk meet its SLA by talking to
-    # itself.
-    if not is_internal and _touch_first_response(ticket, author, now):
-        ticket.save(update_fields=["first_response_at", "updated_at"])
+    # itself. It does still claim the ticket: a handler taking notes on it is
+    # working it.
+    responded = (not is_internal) and _touch_first_response(ticket, author, now)
+    claimed = _claim(ticket, author, now)
+    if responded or claimed:
+        ticket.save()
+    if claimed:
+        record(ticket, TicketEvent.KIND_ASSIGNED, actor=author, at=now,
+               note=f"Picked up by {_label(author)}")
+
     record(ticket, TicketEvent.KIND_COMMENT, actor=author, at=now,
            note=("[internal] " if is_internal else "") + body[:500])
+    _after_commit(notifications.ticket_replied, ticket, row, author)
     return row
 
 
@@ -162,9 +211,15 @@ def resolve(ticket, actor=None, note=""):
     ticket.resolved_at = now
     ticket.resolution_note = note or ticket.resolution_note
     _touch_first_response(ticket, actor, now)
+    claimed = _claim(ticket, actor, now)
+    ticket.status = Ticket.STATUS_RESOLVED  # _claim must not undo the resolution
     ticket.save()
     record(ticket, TicketEvent.KIND_RESOLVED, actor=actor, at=now,
            from_status=was, to_status=ticket.status, note=note)
+    if claimed:
+        record(ticket, TicketEvent.KIND_ASSIGNED, actor=actor, at=now,
+               note=f"Answered by {_label(actor)}")
+    _after_commit(notifications.ticket_resolved, ticket, actor)
     return ticket
 
 
@@ -188,6 +243,7 @@ def confirm(ticket, actor=None, satisfaction=None, note=""):
     record(ticket, TicketEvent.KIND_CLOSED, actor=actor, at=now,
            from_status=was, to_status=ticket.status,
            note=note or "Confirmed by the requester")
+    _after_commit(notifications.ticket_closed, ticket, actor)
     return ticket
 
 
@@ -213,6 +269,7 @@ def auto_close(ticket, at=None):
            from_status=was, to_status=ticket.status,
            note=f"Closed automatically — resolved {days} day(s) ago with no reply "
                 f"from the requester. Not confirmed.")
+    _after_commit(notifications.ticket_closed, ticket, None)
     return ticket
 
 
@@ -234,6 +291,7 @@ def reopen(ticket, actor=None, note=""):
     record(ticket, TicketEvent.KIND_REOPENED, actor=actor, at=now,
            from_status=was, to_status=ticket.status,
            note=note or "Reopened by the requester")
+    _after_commit(notifications.ticket_reopened, ticket, actor)
     return ticket
 
 
