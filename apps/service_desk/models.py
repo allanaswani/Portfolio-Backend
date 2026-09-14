@@ -146,6 +146,50 @@ class DeskSettings(models.Model):
         )
 
 
+class DeskRecipient(TimeStamped):
+    """Somebody who should hear from the desk but has no login on the tool.
+
+    The first design tied being notified to holding an account, on the
+    assumption that anyone on the desk would have one. Several of the people who
+    actually run this desk do not — and "create them a login so they can be
+    emailed" is a worse answer than simply writing down the address.
+
+    These addresses are added to the team's, never instead of it, so removing
+    the last account does not silently stop the queue reaching anybody.
+    """
+
+    email = models.EmailField(unique=True)
+    name = models.CharField(max_length=150, blank=True)
+
+    #: New queries, replies and reopens — the day-to-day queue.
+    queue = models.BooleanField(default=True)
+    #: Breaches and the periodic report — what a desk manager needs to see.
+    escalations = models.BooleanField(default=True)
+
+    is_active = models.BooleanField(default=True)
+    history = HistoricalRecords(table_name="service_desk_recipient_history")
+
+    class Meta:
+        db_table = "service_desk_recipient"
+        ordering = ["email"]
+
+    def __str__(self):
+        return f"{self.name or self.email}"
+
+    @classmethod
+    def addresses(cls, kind="queue"):
+        """Active addresses for one kind of mail. Never raises."""
+        try:
+            rows = cls.objects.filter(is_active=True)
+            if kind == "escalations":
+                rows = rows.filter(escalations=True)
+            else:
+                rows = rows.filter(queue=True)
+            return sorted({r.email.strip() for r in rows if r.email})
+        except Exception:  # noqa: BLE001 — before migrate, or a dead connection
+            return []
+
+
 class TicketCategory(TimeStamped):
     """What kind of query this is, and how quickly it is promised an answer.
 

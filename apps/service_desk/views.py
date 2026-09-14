@@ -18,10 +18,12 @@ from rest_framework.views import APIView
 
 from . import notifications, rbac, reports, workflow
 from .models import (
-    DeskSettings, Holiday, Ticket, TicketCategory, TicketComment, TicketEvent,
+    DeskRecipient, DeskSettings, Holiday, Ticket, TicketCategory, TicketComment,
+    TicketEvent,
 )
 from .serializers import (
-    DeskSettingsSerializer, HolidaySerializer, TicketCategorySerializer,
+    DeskRecipientSerializer, DeskSettingsSerializer, HolidaySerializer,
+    TicketCategorySerializer,
     TicketCommentSerializer, TicketCreateSerializer, TicketDetailSerializer,
     TicketListSerializer,
 )
@@ -350,6 +352,28 @@ class CategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
                            "their reporting line with it."},
                 status=400)
         return super().destroy(request, *args, **kwargs)
+
+
+@extend_schema(tags=TAG)
+class DeskRecipientListCreateView(generics.ListCreateAPIView):
+    """Addresses that are emailed without needing an account on the tool.
+
+    Several of the people who run this desk have no login. Requiring one before
+    they can be told about a query would mean creating logins purely so that
+    mail has somewhere to go.
+    """
+
+    permission_classes = [IsManager]
+    serializer_class = DeskRecipientSerializer
+    pagination_class = None
+    queryset = DeskRecipient.objects.all()
+
+
+@extend_schema(tags=TAG)
+class DeskRecipientDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsManager]
+    serializer_class = DeskRecipientSerializer
+    queryset = DeskRecipient.objects.all()
 
 
 @extend_schema(tags=TAG)

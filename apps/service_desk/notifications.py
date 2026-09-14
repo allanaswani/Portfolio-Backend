@@ -32,7 +32,7 @@ from django.core.mail import EmailMultiAlternatives, get_connection
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import DeskSettings
+from .models import DeskRecipient, DeskSettings
 from .rbac import AGENT_GROUP, MANAGER_GROUP
 from .worktime import describe
 
@@ -90,18 +90,34 @@ def _emails(predicate, exclude=None):
     return sorted(out)
 
 
-def handler_addresses(exclude=None):
-    """The desk team.
+def _plus_recipients(addresses, kind, exclude=None):
+    """Team accounts, plus the people who have no account at all.
 
-    Group membership only. A superuser may work any ticket, but being able to
-    administer the system is not the same as being on this desk, and the queue
-    should not arrive in the inbox of everybody who happens to hold the keys.
+    Added to the accounts, never instead of them: several of the people who run
+    this desk have no login, and requiring one before they can be emailed would
+    mean creating logins purely so that mail has somewhere to go.
     """
-    return _emails(Q(groups__name__in=TEAM_GROUPS), exclude)
+    out = set(addresses) | set(DeskRecipient.addresses(kind))
+    if exclude is not None and getattr(exclude, "email", None):
+        out.discard(exclude.email.strip())
+    return sorted(a for a in out if a)
+
+
+def handler_addresses(exclude=None):
+    """The desk: team accounts plus the account-free addresses.
+
+    Group membership rather than every superuser — a superuser may work any
+    ticket, but being able to administer the system is not the same as being on
+    this desk, and the queue should not arrive in the inbox of everybody who
+    happens to hold the keys.
+    """
+    return _plus_recipients(
+        _emails(Q(groups__name__in=TEAM_GROUPS), exclude), "queue", exclude)
 
 
 def manager_addresses(exclude=None):
-    return _emails(Q(groups__name__in=MANAGER_GROUPS), exclude)
+    return _plus_recipients(
+        _emails(Q(groups__name__in=MANAGER_GROUPS), exclude), "escalations", exclude)
 
 
 def requester_addresses(ticket, exclude=None):

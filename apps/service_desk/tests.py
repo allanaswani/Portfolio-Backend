@@ -509,10 +509,27 @@ class TeamCommandTests(TestCase):
         output = self.run_cmd("--add", "nobody@hfcb.co.ke")
         self.assertIn("No account matches", output)
 
-    def test_it_warns_when_the_desk_is_empty(self):
-        """A desk nobody is on emails every query into silence."""
+    def test_it_warns_only_when_the_desk_is_truly_empty(self):
+        """A desk nobody is on emails every query into silence.
+
+        Seeded addresses count: somebody with no login who receives the queue
+        is on the desk as far as this warning is concerned, which is the whole
+        point of having them.
+        """
+        from apps.service_desk.models import DeskRecipient
+
+        self.assertNotIn("Nobody is on the desk", self.run_cmd())
+
+        DeskRecipient.objects.all().delete()
+        self.assertIn("Nobody is on the desk", self.run_cmd())
+
+    def test_an_address_appears_in_the_listing(self):
+        from apps.service_desk.models import DeskRecipient
+
+        DeskRecipient.objects.create(email="nolog.in@hfcb.co.ke")
         output = self.run_cmd()
-        self.assertIn("Nobody is on the desk", output)
+        self.assertIn("Notified without an account", output)
+        self.assertIn("nolog.in@hfcb.co.ke", output)
 
     def test_removing_somebody_touches_nothing_else(self):
         person = user("benson.k", email="benson.k@hfcb.co.ke")

@@ -21,6 +21,9 @@ urlpatterns = [
     # Reference data.
     path("categories/",           v.CategoryListCreateView.as_view()),
     path("categories/<int:pk>/",  v.CategoryDetailView.as_view()),
+    # Addresses notified without an account — several of the desk have no login.
+    path("recipients/",           v.DeskRecipientListCreateView.as_view()),
+    path("recipients/<int:pk>/",  v.DeskRecipientDetailView.as_view()),
     path("holidays/",             v.HolidayListCreateView.as_view()),
     path("holidays/<int:pk>/",    v.HolidayDetailView.as_view()),
     path("settings/",             v.DeskSettingsView.as_view()),

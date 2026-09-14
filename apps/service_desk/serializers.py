@@ -8,7 +8,8 @@ would make the page that has to stay fast the slowest one.
 from rest_framework import serializers
 
 from .models import (
-    DeskSettings, Holiday, Ticket, TicketCategory, TicketComment, TicketEvent,
+    DeskRecipient, DeskSettings, Holiday, Ticket, TicketCategory, TicketComment,
+    TicketEvent,
 )
 from .worktime import describe
 
@@ -44,6 +45,34 @@ class TicketCategorySerializer(serializers.ModelSerializer):
                 "The response target cannot be later than the resolution target — "
                 "a ticket would breach its first reply after it was already due to "
                 "be finished."
+            )
+        return attrs
+
+
+class DeskRecipientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeskRecipient
+        fields = ["id", "email", "name", "queue", "escalations", "is_active"]
+
+    def validate(self, attrs):
+        """Somebody subscribed to nothing is on the list and never written to.
+
+        A field left out of the payload means "leave it as it is" on an edit,
+        and "use the model default" on a create — both of which are True here.
+        Reading an absent field as False would reject every request that simply
+        did not mention it.
+        """
+        def current(field):
+            if field in attrs:
+                return attrs[field]
+            if self.instance is not None:
+                return getattr(self.instance, field)
+            return DeskRecipient._meta.get_field(field).default
+
+        if not (current("queue") or current("escalations")):
+            raise serializers.ValidationError(
+                "Choose the queue, escalations, or both — otherwise this "
+                "address is on the list but will never be emailed."
             )
         return attrs
 

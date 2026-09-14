@@ -652,3 +652,103 @@ class EmailShapeTests(DeskTestCase):
             reports.digest_text(days=7))
         self.assertEqual(sent, 1)
         self.assertTrue(mail.outbox[-1].alternatives)
+
+
+class AccountFreeRecipientTests(DeskTestCase):
+    """People on the desk who have no login on the tool.
+
+    The first design tied being notified to holding an account. Several of the
+    people who actually run this desk do not have one and do not need one — and
+    creating logins purely so that mail has somewhere to go is a worse answer
+    than writing the address down.
+    """
+
+    def test_the_named_addresses_are_seeded(self):
+        from apps.service_desk.models import DeskRecipient
+
+        emails = set(DeskRecipient.objects.values_list("email", flat=True))
+        for address in ("trevor.william@hfcb.co.ke", "arthur.nyota@hfcb.co.ke",
+                        "jewell.karani@hfcb.co.ke"):
+            self.assertIn(address, emails)
+
+    def test_a_new_query_reaches_them_without_an_account(self):
+        mail.outbox.clear()
+        self.raise_ticket()
+        went_to = {a for m in mail.outbox for a in m.to}
+        self.assertIn("trevor.william@hfcb.co.ke", went_to)
+
+    def test_they_are_added_to_the_team_not_instead_of_it(self):
+        """Removing the last account must not silently stop the queue."""
+        mail.outbox.clear()
+        self.raise_ticket()
+        went_to = {a for m in mail.outbox for a in m.to}
+        self.assertIn("agt@hf.test", went_to)             # the account
+        self.assertIn("arthur.nyota@hfcb.co.ke", went_to)  # the address
+
+    def test_an_inactive_address_is_not_written_to(self):
+        from apps.service_desk.models import DeskRecipient
+
+        DeskRecipient.objects.filter(email="trevor.william@hfcb.co.ke").update(
+            is_active=False)
+        mail.outbox.clear()
+        self.raise_ticket()
+        went_to = {a for m in mail.outbox for a in m.to}
+        self.assertNotIn("trevor.william@hfcb.co.ke", went_to)
+
+    def test_queue_and_escalations_are_separate(self):
+        from apps.service_desk import notifications
+        from apps.service_desk.models import DeskRecipient
+
+        DeskRecipient.objects.create(
+            email="watcher@hfcb.co.ke", queue=False, escalations=True)
+        self.assertNotIn("watcher@hfcb.co.ke", notifications.handler_addresses())
+        self.assertIn("watcher@hfcb.co.ke", notifications.manager_addresses())
+
+    def test_a_manager_can_add_one_through_the_api(self):
+        res = self.as_(self.manager).post(
+            BASE + "recipients/",
+            {"email": "new.person@hfcb.co.ke", "name": "New Person"},
+            format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_an_ordinary_user_cannot(self):
+        res = self.as_(self.requester).post(
+            BASE + "recipients/", {"email": "sneaky@hfcb.co.ke"}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_an_address_subscribed_to_nothing_is_refused(self):
+        res = self.as_(self.manager).post(
+            BASE + "recipients/",
+            {"email": "nobody@hfcb.co.ke", "queue": False, "escalations": False},
+            format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_the_command_adds_an_address_without_an_account(self):
+        from io import StringIO
+
+        from apps.service_desk.models import DeskRecipient
+
+        out = StringIO()
+        call_command("service_desk_team", "--add-email", "extra@hfcb.co.ke",
+                     stdout=out, stderr=out)
+        self.assertTrue(
+            DeskRecipient.objects.filter(email="extra@hfcb.co.ke").exists())
+
+    def test_the_command_rejects_something_that_is_not_an_address(self):
+        from io import StringIO
+
+        out = StringIO()
+        call_command("service_desk_team", "--add-email", "trevor",
+                     stdout=out, stderr=out)
+        self.assertIn("not an email address", out.getvalue())
+
+    def test_adding_the_same_address_twice_is_not_a_second_row(self):
+        from io import StringIO
+
+        from apps.service_desk.models import DeskRecipient
+
+        for _ in range(2):
+            call_command("service_desk_team", "--add-email", "dup@hfcb.co.ke",
+                         stdout=StringIO(), stderr=StringIO())
+        self.assertEqual(
+            DeskRecipient.objects.filter(email="dup@hfcb.co.ke").count(), 1)

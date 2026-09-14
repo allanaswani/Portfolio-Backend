@@ -82,6 +82,26 @@ That distinction exists because there are superusers across the bank with nothin
 to do with Strategy. Treating every superuser as a member put the whole queue in
 their inbox and offered to hand them queries they would never look at.
 
+### People with no login
+
+Several of the people who run this desk have no account on the tool, and do not
+need one — they need the mail. `DeskRecipient` is a plain address that receives
+the queue, escalations, or both.
+
+```bash
+manage.py service_desk_team --add-email trevor.william@hfcb.co.ke
+manage.py service_desk_team --remove-email someone@hfcb.co.ke
+```
+
+Also at `recipients/` in the API, manager-only. These addresses are **added to**
+the team's, never instead of them, so removing the last account does not
+silently stop the queue reaching anybody. Migration `0006` seeds the three the
+desk named.
+
+This exists because the first design tied being notified to holding an account.
+Requiring a login before somebody can be emailed means creating logins purely so
+that mail has somewhere to go.
+
 ### Managing the team
 
 ```bash

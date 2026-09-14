@@ -25,6 +25,8 @@ from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 
+from apps.service_desk.models import DeskRecipient
+
 MANAGER_GROUP = "service_desk_manager"
 AGENT_GROUP = "service_desk_agent"
 
@@ -76,6 +78,12 @@ class Command(BaseCommand):
                                  "to others and edit the categories and SLAs.")
         parser.add_argument("--find", default="",
                             help="Search the accounts, changing nothing.")
+        parser.add_argument("--add-email", nargs="*", default=[], dest="add_email",
+                            help="Notify this address. No account needed — for "
+                                 "people on the desk who have no login.")
+        parser.add_argument("--remove-email", nargs="*", default=[],
+                            dest="remove_email",
+                            help="Stop notifying this address.")
 
     def handle(self, *args, **options):
         manager, _ = Group.objects.get_or_create(name=MANAGER_GROUP)
@@ -87,6 +95,33 @@ class Command(BaseCommand):
 
         target = agent if options["as_agent"] else manager
         changed = False
+
+        # Addresses first: this is the path that needs no account, and it is
+        # the one somebody reaches for when the desk is emailing nobody.
+        for address in options["add_email"]:
+            address = address.strip()
+            if "@" not in address:
+                self.stdout.write(self.style.ERROR(
+                    f"  skip  {address}: that is not an email address."))
+                continue
+            row, created = DeskRecipient.objects.get_or_create(
+                email__iexact=address, defaults={"email": address})
+            if not created and not row.is_active:
+                row.is_active = True
+                row.save(update_fields=["is_active", "updated_at"])
+            changed = True
+            self.stdout.write(self.style.SUCCESS(
+                f"  {'added' if created else 'already on'} {row.email}"))
+
+        for address in options["remove_email"]:
+            rows = DeskRecipient.objects.filter(email__iexact=address.strip())
+            if not rows:
+                self.stdout.write(self.style.ERROR(
+                    f"  skip  {address}: not on the notify list."))
+                continue
+            rows.delete()
+            changed = True
+            self.stdout.write(self.style.SUCCESS(f"  removed {address}"))
 
         for needle in options["add"]:
             person, problem = find_person(needle)
@@ -159,10 +194,22 @@ class Command(BaseCommand):
                 mail = person.email or self.style.WARNING("no email - will not be notified")
                 self.stdout.write(f"    {person.username:<28} {mail}")
 
-        if not get_user_model().objects.filter(
-                groups__name__in=[MANAGER_GROUP, AGENT_GROUP], is_active=True).exists():
+        addresses = DeskRecipient.objects.filter(is_active=True)
+        self.stdout.write("  Notified without an account:")
+        if not addresses:
+            self.stdout.write("    (none)")
+        for row in addresses:
+            kinds = ", ".join(
+                k for k, on in (("queue", row.queue), ("escalations", row.escalations))
+                if on) or "nothing"
+            self.stdout.write(f"    {row.email:<38} {kinds}")
+
+        has_account = get_user_model().objects.filter(
+            groups__name__in=[MANAGER_GROUP, AGENT_GROUP], is_active=True).exists()
+        if not has_account and not addresses:
             # Nobody on the desk means every query is raised into silence.
             self.stdout.write("")
             self.stdout.write(self.style.ERROR(
                 "Nobody is on the desk, so no query will be emailed to anyone. "
-                "Add somebody with --add, or use --find to see what accounts exist."))
+                "Add an account with --add, or an address with --add-email if "
+                "the person has no login."))
