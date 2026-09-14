@@ -337,13 +337,36 @@ class AssignmentTests(DeskTestCase):
             {"username": "nosy"}, format="json")
         self.assertEqual(res.status_code, 400)
 
-    def test_a_superuser_counts_as_the_desk(self):
-        """Strategy run this desk and are platform superusers already."""
+    def test_a_superuser_can_still_work_any_ticket(self):
+        """Being able to administer the system means being able to fix a ticket."""
         boss = user("super", superuser=True, email="super@hf.test")
         ticket = self.raise_ticket()
         res = self.as_(boss).get(BASE + f"tickets/{ticket.reference}/")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data["permissions"]["resolve"])
+
+    def test_a_superuser_is_not_on_the_desk_team(self):
+        """Superusers exist across the bank who have nothing to do with
+        Strategy. Mailing them the queue puts it in the inbox of people who
+        did not ask for it, and offering them in the assign list offers to
+        hand a query to somebody who will never look at it."""
+        from apps.service_desk import notifications
+
+        user("super2", superuser=True, email="super2@hf.test")
+        self.assertNotIn("super2@hf.test", notifications.handler_addresses())
+
+        res = self.as_(self.manager).get(BASE + "handlers/")
+        usernames = [h["username"] for h in res.data["handlers"]]
+        self.assertNotIn("super2", usernames)
+        self.assertIn("agt", usernames)
+
+    def test_the_queue_email_goes_to_the_team_only(self):
+        user("super3", superuser=True, email="super3@hf.test")
+        mail.outbox.clear()
+        self.raise_ticket()
+        went_to = {a for m in mail.outbox for a in m.to}
+        self.assertIn("agt@hf.test", went_to)
+        self.assertNotIn("super3@hf.test", went_to)
 
 
 class PermissionPayloadTests(DeskTestCase):
@@ -576,3 +599,56 @@ class MailFailureTests(DeskTestCase):
         self.assertEqual(res.status_code, 200)
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, Ticket.STATUS_RESOLVED)
+
+
+class EmailShapeTests(DeskTestCase):
+    """What lands in somebody's inbox.
+
+    The first version was plain text with column-aligned labels, which arrives
+    as ragged monospace in Outlook and reads like a machine fault report rather
+    than a bank's desk writing to a colleague.
+    """
+
+    def test_a_message_carries_an_html_alternative(self):
+        self.raise_ticket()
+        message = mail.outbox[0]
+        self.assertTrue(message.alternatives, "no HTML part was attached")
+        html, mime = message.alternatives[0]
+        self.assertEqual(mime, "text/html")
+        self.assertIn("<table", html)
+
+    def test_it_is_branded_hfcb_not_hf_group(self):
+        """The bank rebranded. An email still signed HF Group is wrong on the
+        one line every recipient reads."""
+        self.raise_ticket()
+        for message in mail.outbox:
+            blob = message.subject + message.body + message.alternatives[0][0]
+            self.assertNotIn("HF Group", blob)
+            self.assertIn("HFCB", blob)
+
+    def test_the_plain_text_alternative_still_says_everything(self):
+        """Some people read mail as text by choice, and some clients strip HTML."""
+        ticket = self.raise_ticket()
+        body = mail.outbox[0].body
+        self.assertIn(ticket.reference, body)
+        self.assertIn(ticket.subject, body)
+        self.assertIn("Status", body)
+
+    def test_the_resolution_note_is_escaped_not_injected(self):
+        """A note is typed by a person and lands inside an HTML document."""
+        ticket = self.raise_ticket()
+        mail.outbox.clear()
+        self.act(self.agent, f"tickets/{ticket.reference}/resolve/",
+                 {"note": "<script>alert(1)</script> fixed & checked"})
+        html = mail.outbox[0].alternatives[0][0]
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_the_report_email_is_html_too(self):
+        from apps.service_desk import notifications, reports
+
+        sent = notifications.report(
+            ["boss@hf.test"], "Weekly service desk report",
+            reports.digest_text(days=7))
+        self.assertEqual(sent, 1)
+        self.assertTrue(mail.outbox[-1].alternatives)

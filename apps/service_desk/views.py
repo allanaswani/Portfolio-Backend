@@ -16,7 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import rbac, reports, workflow
+from . import notifications, rbac, reports, workflow
 from .models import (
     DeskSettings, Holiday, Ticket, TicketCategory, TicketComment, TicketEvent,
 )
@@ -393,8 +393,11 @@ class HandlerListView(APIView):
     def get(self, request):
         if not rbac.is_handler(request.user):
             return Response({"handlers": []})
+        # The desk TEAM, by group membership. A superuser may work any ticket,
+        # but listing every superuser here would offer to hand a query to
+        # people who have nothing to do with this desk.
         people = (get_user_model().objects.filter(is_active=True)
-                  .filter(Q(groups__name__in=rbac.HANDLER_GROUPS) | Q(is_superuser=True))
+                  .filter(groups__name__in=notifications.TEAM_GROUPS)
                   .distinct().order_by("first_name", "username"))
         open_counts = dict(
             Ticket.objects.filter(status__in=reports.OPEN_STATUSES,

@@ -73,10 +73,18 @@ Authorisation is Django group membership by name, as elsewhere in this codebase.
 | Categories, SLAs, holidays, settings | — | — | ✅ |
 | Reports | — | ✅ | ✅ |
 
-**Superusers are managers**, and so is the existing `business_performance` role.
-The Strategy team who run this desk are already platform superusers, so the desk
-works for them on day one with no role assignment — and the queue emails reach
-them, which it would not if handlers were defined by group alone.
+**Acting on a ticket and being on the desk are different things.** A superuser
+can work any ticket — that is what a superuser is — and the `business_performance`
+role counts as a manager. But the **team** is group membership, explicitly, and
+it is the team that gets emailed and appears in the assign list.
+
+That distinction exists because there are superusers across the bank with nothing
+to do with Strategy. Treating every superuser as a member put the whole queue in
+their inbox and offered to hand them queries they would never look at.
+
+Migration `0004` seeds the desk team. To change it, add or remove people from
+the `service_desk_manager` / `service_desk_agent` groups in Administration — no
+deployment needed.
 
 Everyone else is a requester, including people with no group at all.
 
@@ -142,6 +150,12 @@ Nobody is copied on their own action. Mail is sent from
 announce itself; and every send is wrapped, because Office365 being slow must
 never roll back a resolution the handler would then do twice.
 
+Messages are **HTML with a plain-text alternative**, branded HFCB. The first
+version was plain text with column-aligned labels, which arrives as ragged
+monospace in Outlook and reads like a machine fault report rather than a bank's
+desk writing to a colleague. Everything a person typed — a query body, a
+resolution note — is HTML-escaped on the way in.
+
 ## Host cron
 
 ```cron
@@ -177,6 +191,8 @@ working minutes:
 | Access or permissions | 2h | 9h |
 | Report or data request | 4h | 18h (2 days) |
 | Clarification or explanation | 4h | 18h |
+| WHIZZ loan limit | 4h | 18h |
+| Commission | 4h | 18h |
 | Scorecard query | 4h | 27h (3 days) |
 | Targets and performance | 4h | 27h |
 | Something else | 4h | 27h |

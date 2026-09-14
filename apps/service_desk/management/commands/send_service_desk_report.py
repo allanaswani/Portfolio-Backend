@@ -44,10 +44,10 @@ class Command(BaseCommand):
             # Say so rather than exit 0 quietly. A reporting job that silently
             # sends to nobody is indistinguishable from one that is working.
             self.stdout.write(self.style.WARNING(
-                "Nobody to send to: no active superuser or service desk manager "
-                "has an email address on their account."))
+                "Nobody to send to: no active member of the service_desk_manager "
+                "group has an email address on their account."))
             return
 
         period = "Weekly" if days == 7 else f"{days}-day"
-        sent = notifications.send(to, f"{period} service desk report", body)
+        sent = notifications.report(to, f"{period} service desk report", body)
         self.stdout.write(f"report sent to {sent} recipient(s)")
