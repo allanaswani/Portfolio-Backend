@@ -1,0 +1,45 @@
+# HFCB Portfolio — scheduled jobs for the hf-backend container.
+#
+# Installed from this file rather than pasted, because a cron line is long
+# enough that a terminal or a chat client will wrap it, and a newline inside
+# one turns the whole crontab into "bad minute, errors in crontab file".
+#
+# To install (see docs/DEPLOY.md):
+#
+#   crontab -l > /tmp/cron.bak 2>/dev/null
+#   grep -v 'hf-backend python manage.py' /tmp/cron.bak > /tmp/cron.new
+#   cat docs/crontab.txt >> /tmp/cron.new
+#   crontab /tmp/cron.new
+#
+# The grep strips every job this file owns, so re-running it replaces them
+# rather than adding a second copy. Anything else in the crontab is untouched,
+# and /tmp/cron.bak is the way back.
+
+# ── Observability ────────────────────────────────────────────────────────────
+
+# Uptime heartbeat. Without this, uptime is not measured and the dashboard
+# says so rather than inventing a number from request traffic.
+* * * * * docker exec hf-backend python manage.py record_heartbeat
+
+# Keep the request-metrics table bounded; 30 days covers every window offered.
+0 3 * * * docker exec hf-backend python manage.py prune_request_metrics
+
+# Probe the other systems (Customer 360) from outside.
+*/2 * * * * docker exec hf-backend python manage.py probe_services
+
+# Decide whether anything changed enough to be worth an email.
+# --sensitive-minutes MUST match this interval, or edits in the gap are
+# either seen twice or never seen at all.
+*/10 * * * * docker exec hf-backend python manage.py run_alert_checks --sensitive-minutes 10
+
+# One summary a day, including on the days when nothing broke.
+0 7 * * * docker exec hf-backend python manage.py send_daily_digest
+
+# ── Service desk ─────────────────────────────────────────────────────────────
+
+# Auto-close what nobody confirmed, warn before a target passes, and escalate
+# a breach once. Idempotent: running it twice sends nothing twice.
+*/15 * * * * docker exec hf-backend python manage.py service_desk_maintenance
+
+# The weekly report to the desk managers, good week or bad.
+0 8 * * 1 docker exec hf-backend python manage.py send_service_desk_report --days 7

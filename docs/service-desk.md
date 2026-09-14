@@ -177,13 +177,23 @@ resolution note — is HTML-escaped on the way in.
 
 ## Host cron
 
-```cron
-# Auto-close, warn before a target passes, escalate a breach once.
-*/15 * * * * docker exec hf-backend python manage.py service_desk_maintenance
+The entries live in `docs/crontab.txt` and are installed from there, never
+pasted — a cron line is long enough that a terminal or a chat client will wrap
+it, and one newline inside a line turns the whole crontab into "bad minute,
+errors in crontab file".
 
-# The weekly report to the desk managers, good week or bad.
-0 8 * * 1 docker exec hf-backend python manage.py send_service_desk_report --days 7
+```bash
+cd /path/to/hf_group_backend && git pull
+crontab -l > /tmp/cron.bak 2>/dev/null
+grep -v 'hf-backend python manage.py' /tmp/cron.bak > /tmp/cron.new
+cat docs/crontab.txt >> /tmp/cron.new
+crontab /tmp/cron.new
+crontab -l | tail -12
 ```
+
+The grep strips every job that file owns, so re-running replaces rather than
+duplicates. Everything else in the crontab is untouched, and `/tmp/cron.bak`
+is the way back.
 
 Both are idempotent: running them twice, or after an outage against a backlog,
 does not double-send. The "already warned" marker is a timeline event rather
