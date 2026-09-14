@@ -381,3 +381,74 @@ class DeskSettingsTests(TestCase):
     def test_reading_the_settings_twice_gives_the_same_row(self):
         self.assertEqual(DeskSettings.get().pk, DeskSettings.get().pk)
         self.assertEqual(DeskSettings.objects.count(), 1)
+
+
+class TeamSeedMigrationTests(TestCase):
+    """The 0004 data migration, run against accounts that actually exist.
+
+    It passed every test run and then failed on the server, because the test
+    database is migrated before any user exists — so the loop that removes
+    people from the desk groups never had a row to act on. These tests call the
+    migration's own function with the accounts present, which is the state the
+    server was in.
+    """
+
+    def _seed(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        module = importlib.import_module(
+            "apps.service_desk.migrations.0004_desk_team_and_more_categories")
+        module.seed(django_apps, None)
+        return module
+
+    def test_it_runs_when_the_people_it_names_exist(self):
+        """Mixing a historical Group with the live User model raised
+        'Cannot query Group object: Must be a Group instance'."""
+        get_user_model().objects.create_user(
+            username="trevor.william", password="x",
+            email="trevor.william@hfcb.co.ke")
+        desk = Group.objects.get_or_create(name=rbac.MANAGER_GROUP)[0]
+        benson = get_user_model().objects.create_user(
+            username="benson.kiptoo", password="x", email="benson.kiptoo@hfcb.co.ke")
+        benson.groups.add(desk)
+
+        self._seed()  # must not raise
+
+        self.assertTrue(
+            get_user_model().objects.get(username="trevor.william")
+            .groups.filter(name=rbac.MANAGER_GROUP).exists())
+        self.assertFalse(
+            get_user_model().objects.get(username="benson.kiptoo")
+            .groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_a_missing_account_does_not_fail_the_deployment(self):
+        """Nobody named is guaranteed to exist yet when this runs."""
+        get_user_model().objects.filter(email__iendswith="@hfcb.co.ke").delete()
+        self._seed()  # must not raise
+
+    def test_running_it_twice_changes_nothing(self):
+        get_user_model().objects.create_user(
+            username="arthur.nyota", password="x", email="arthur.nyota@hfcb.co.ke")
+        self._seed()
+        self._seed()
+        self.assertEqual(
+            get_user_model().objects.get(username="arthur.nyota")
+            .groups.filter(name=rbac.MANAGER_GROUP).count(), 1)
+
+    def test_it_leaves_everything_else_about_the_account_alone(self):
+        """Removing somebody from this desk is not a change to their access."""
+        other = Group.objects.get_or_create(name="staff_mgt")[0]
+        person = get_user_model().objects.create_user(
+            username="clinton.ontweka", password="x", email="clinton.ontweka@hfcb.co.ke")
+        person.groups.add(other)
+        person.is_superuser = True
+        person.save()
+
+        self._seed()
+
+        person.refresh_from_db()
+        self.assertTrue(person.groups.filter(name="staff_mgt").exists())
+        self.assertTrue(person.is_superuser)
+        self.assertTrue(person.is_active)

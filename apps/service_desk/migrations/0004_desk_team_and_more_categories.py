@@ -45,12 +45,17 @@ NEW_CATEGORIES = [
 
 
 def seed(apps, schema_editor):
-    # This only reads users and edits their group membership — no schema and no
-    # field the historical model would protect us from — so the live model is
-    # both safe and far simpler than resolving the swappable one by hand.
+    # Live models for BOTH sides of the membership, deliberately.
+    #
+    # ``user.groups`` is a descriptor on the live User model and it validates
+    # what it is given: handing it a historical Group raises
+    # "Cannot query Group object: Must be a Group instance". Mixing the two is
+    # the whole bug this comment exists to prevent a repeat of. Nothing here
+    # touches schema or a field a historical model would protect, so the live
+    # pair is both correct and simpler than resolving the swappable User by hand.
     from django.contrib.auth import get_user_model
+    from django.contrib.auth.models import Group
 
-    Group = apps.get_model("auth", "Group")
     manager, _ = Group.objects.get_or_create(name=MANAGER_GROUP)
     agent, _ = Group.objects.get_or_create(name=AGENT_GROUP)
     User = get_user_model()
