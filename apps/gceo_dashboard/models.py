@@ -219,7 +219,11 @@ class HfCustomer(models.Model):
     internal = models.DecimalField(max_digits=990, decimal_places=5, blank=True, null=True)
     mobile = models.DecimalField(max_digits=990, decimal_places=5, blank=True, null=True)
     mortagage = models.DecimalField(max_digits=990, decimal_places=5, blank=True, null=True)
-    other = models.DecimalField(max_digits=990, decimal_places=5, blank=True, null=True)
+    # ``other`` was removed: the warehouse table has no such column, so every
+    # query for an HfCustomer instance selected a column that is not there and
+    # 500d. Nothing read it — it appeared in this model and in the initial
+    # migration and nowhere else — so there is no behaviour to preserve and no
+    # data to lose. The model is unmanaged, so the migration is state only.
     sa = models.DecimalField(max_digits=990, decimal_places=5, blank=True, null=True)
     registered_mobile = models.BooleanField(blank=True, null=True)
     total_depost_balance = models.DecimalField(max_digits=990, decimal_places=5, blank=True, null=True)

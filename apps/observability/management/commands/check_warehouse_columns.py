@@ -55,9 +55,21 @@ class Command(BaseCommand):
 
             try:
                 with connections[alias].cursor() as cursor:
+                    # pg_catalog, not information_schema.
+                    #
+                    # information_schema.columns does not list MATERIALIZED
+                    # views at all, and several of the CEO aggregates are
+                    # exactly that — so the first version of this command
+                    # reported eight populated tables as "do not exist", which
+                    # is a worse answer than not asking.
+                    #
+                    # to_regclass resolves whatever the search_path resolves,
+                    # matviews included, and is the same call data health uses,
+                    # so the two screens cannot disagree about what is there.
                     cursor.execute(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name = %s", [table])
+                        "SELECT attname FROM pg_attribute "
+                        "WHERE attrelid = to_regclass(%s) "
+                        "AND attnum > 0 AND NOT attisdropped", [table])
                     actual = {row[0].lower() for row in cursor.fetchall()}
             except Exception as exc:  # noqa: BLE001 — one bad table must not
                 # end the audit; reporting the rest is the point.
