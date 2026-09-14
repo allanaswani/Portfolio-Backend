@@ -157,3 +157,47 @@ class ApiTests(APITestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["reference"], "HFCB/GTE/260813/01")
+
+
+class MonthFormatTests(APITestCase):
+    """``trade_finance_data.month`` is consumed by the weekly report.
+
+    The report parses it with ``format='%m-%Y'``. A month NAME there raised
+    ``ValueError: time data 'SEPTEMBER-2026' does not match format '%m-%Y'``
+    and failed the whole report — and because the script runs on the host, the
+    desk's Send Report button simply delivered nothing, with no error anywhere
+    in the application.
+    """
+
+    def entry(self, issue_date):
+        return TradeRegisterEntry.objects.create(
+            originating_branch="HQ", rm_name="A", segment="COMMERCIAL",
+            our_customer="C", beneficiary="B", currency="KES",
+            amount_fcy=1000, customer_id=777,
+            issue_date=issue_date, expiry_date=issue_date,
+        )
+
+    def test_the_month_is_a_zero_padded_number(self):
+        entry = self.entry(date(2026, 9, 14))
+        self.assertEqual(entry.month, "09")
+        self.assertEqual(entry.year, "2026")
+
+    def test_december_is_twelve_not_a_name(self):
+        self.assertEqual(self.entry(date(2026, 12, 1)).month, "12")
+
+    def test_the_report_can_parse_what_the_register_writes(self):
+        """Exactly what the ETL does, so this test fails if the format drifts."""
+        from datetime import datetime
+
+        for month in range(1, 13):
+            entry = self.entry(date(2026, month, 5))
+            parsed = datetime.strptime(f"{entry.month}-{entry.year}", "%m-%Y")
+            self.assertEqual(parsed.month, month)
+            self.assertEqual(parsed.year, 2026)
+
+    def test_the_synced_trade_finance_row_carries_the_number(self):
+        entry = self.entry(date(2026, 9, 14))
+        entry.refresh_from_db()
+        self.assertIsNotNone(entry.tf_id)
+        self.assertEqual(
+            TradeFinanceData.objects.get(pk=entry.tf_id).month, "09")

@@ -859,7 +859,18 @@ class TradeRegisterEntry(models.Model):
         if self.is_open_ended:
             self.expiry_date = None
         if self.issue_date:
-            self.month = self.issue_date.strftime("%B").upper()
+            # Zero-padded month NUMBER, not the name.
+            #
+            # This value syncs into trade_finance_data.month, and the weekly
+            # trade finance report parses that column with
+            # pd.to_datetime(month + '-' + year, format='%m-%Y'). A name gets
+            #
+            #     ValueError: time data 'SEPTEMBER-2026' does not match
+            #     format '%m-%Y'
+            #
+            # which fails the whole report — the desk's Send Report button then
+            # silently delivers nothing, because the failure is on the host.
+            self.month = self.issue_date.strftime("%m")
             self.year = str(self.issue_date.year)
         if not self.action:
             self.action = refs.ACTION_ISSUANCE
