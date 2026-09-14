@@ -196,7 +196,13 @@ class LatestDailyView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        rec = CeoDepositMovementDaily.objects.order_by("-dates_eom").first()
+        # .values() rather than the model: the table has no id column, and any
+        # query for a model instance selects the implicit primary key Django
+        # added, which is not there.
+        rec = (CeoDepositMovementDaily.objects
+               .values("dates_eom", "sum")
+               .order_by("-dates_eom")
+               .first())
         if not rec:
             return Response({})
         return Response(CeoDepositMovementDailySerializer(rec).data)
@@ -285,7 +291,11 @@ class DepositMovementView(generics.ListAPIView):
 class DepositMovementDailyView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CeoDepositMovementDailySerializer
-    queryset = CeoDepositMovementDaily.objects.all()
+    # Same reason as LatestDailyView, plus an explicit order: paginating an
+    # unordered queryset hands out rows that can repeat or vanish between pages.
+    queryset = (CeoDepositMovementDaily.objects
+                .values("dates_eom", "sum")
+                .order_by("-dates_eom"))
 
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])

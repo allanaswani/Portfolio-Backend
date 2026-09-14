@@ -45,10 +45,20 @@ class CeoDepositMovementSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class CeoDepositMovementDailySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = CeoDepositMovementDaily
-        fields = "__all__"
+class CeoDepositMovementDailySerializer(serializers.Serializer):
+    """Deliberately NOT a ModelSerializer.
+
+    ``ceo_deposit_movement_daily`` has no ``id`` column — the ETL builds it with
+    two columns and nothing else — but the model declares no primary key, so
+    Django adds an implicit one and every query asked for a column that is not
+    there. ``fields = "__all__"`` then put that phantom id in the payload too.
+
+    A plain Serializer with the real columns works on the ``.values()`` rows the
+    views now pass it, and asserts nothing about the table that is not true.
+    """
+
+    dates_eom = serializers.DateField(required=False, allow_null=True)
+    sum = serializers.FloatField(required=False, allow_null=True)
 
 
 class RevenueSerializer(serializers.ModelSerializer):

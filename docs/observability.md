@@ -144,6 +144,29 @@ downtime; inferring one from the other would report a made-up number. With no
 heartbeats the API returns `measured: false` and the dashboard says uptime is
 not being measured.
 
+## Does the warehouse still look the way the models think?
+
+```bash
+docker exec hf-backend python manage.py check_warehouse_columns
+docker exec hf-backend python manage.py check_warehouse_columns --extra
+```
+
+The unmanaged models are this application's *belief* about the warehouse; the
+ETLs are what is true. When the two drift, nothing says so — the page 500s with
+`column x.y does not exist`, found one endpoint at a time by whoever opened it.
+
+That is how `ceo_deposit_movement_daily` surfaced. The model declares no primary
+key, so Django adds an implicit `id`, and the table has no such column. **Sixteen
+unmanaged models are in that position**, so the same 500 is waiting in any of
+their tables that was built without one.
+
+The command reports, per table: it does not exist; a column the model expects
+and the table lacks (the 500 waiting to happen); and the **phantom primary key**
+separately, because the fix differs — use `.values(<real columns>)`, or declare
+the real primary key on the model.
+
+Read-only, and safe on production at any time.
+
 ## Host cron entries
 
 ```cron
