@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from core.serializers import WarehouseModelSerializer
 from .models import (
     CeoDepositMovementMonthly, Accounts, Customers, CeoChannelReport,
     TransactionDiary, CeoDepositMovement, CeoDepositMovementDaily,
@@ -9,7 +11,7 @@ from .models import (
 )
 
 
-class CeoDepositMovementMonthlySerializer(serializers.ModelSerializer):
+class CeoDepositMovementMonthlySerializer(WarehouseModelSerializer):
     class Meta:
         model = CeoDepositMovementMonthly
         # Explicit, never "__all__": the table has no id column, so
@@ -18,19 +20,19 @@ class CeoDepositMovementMonthlySerializer(serializers.ModelSerializer):
         fields = ["dates_eom", "sum"]
 
 
-class AccountsSerializer(serializers.ModelSerializer):
+class AccountsSerializer(WarehouseModelSerializer):
     class Meta:
         model = Accounts
         fields = "__all__"
 
 
-class CustomersSerializer(serializers.ModelSerializer):
+class CustomersSerializer(WarehouseModelSerializer):
     class Meta:
         model = Customers
         fields = "__all__"
 
 
-class CeoChannelReportSerializer(serializers.ModelSerializer):
+class CeoChannelReportSerializer(WarehouseModelSerializer):
     class Meta:
         model = CeoChannelReport
         # Explicit, never "__all__": the table has no id column, so
@@ -39,7 +41,7 @@ class CeoChannelReportSerializer(serializers.ModelSerializer):
         fields = ["trx_date", "trx_channel", "cust_id"]
 
 
-class TransactionDiarySerializer(serializers.ModelSerializer):
+class TransactionDiarySerializer(WarehouseModelSerializer):
     class Meta:
         model = TransactionDiary
         fields = "__all__"
@@ -71,37 +73,37 @@ class CeoDepositMovementDailySerializer(serializers.Serializer):
     sum = serializers.FloatField(required=False, allow_null=True)
 
 
-class RevenueSerializer(serializers.ModelSerializer):
+class RevenueSerializer(WarehouseModelSerializer):
     class Meta:
         model = Revenue
         fields = "__all__"
 
 
-class MobileLoanDisbusementsSerializer(serializers.ModelSerializer):
+class MobileLoanDisbusementsSerializer(WarehouseModelSerializer):
     class Meta:
         model = MobileLoanDisbusements
         fields = "__all__"
 
 
-class HfCustomerSerializer(serializers.ModelSerializer):
+class HfCustomerSerializer(WarehouseModelSerializer):
     class Meta:
         model = HfCustomer
         fields = "__all__"
 
 
-class PhoneNumberSerializer(serializers.ModelSerializer):
+class PhoneNumberSerializer(WarehouseModelSerializer):
     class Meta:
         model = PhoneNumber
         fields = "__all__"
 
 
-class AccountsHistorySerializer(serializers.ModelSerializer):
+class AccountsHistorySerializer(WarehouseModelSerializer):
     class Meta:
         model = AccountsHistory
         fields = "__all__"
 
 
-class CeoLoanMovementMonthlyBySegmentSerializer(serializers.ModelSerializer):
+class CeoLoanMovementMonthlyBySegmentSerializer(WarehouseModelSerializer):
     class Meta:
         model = CeoLoanMovementMonthlyBySegment
         # Explicit, never "__all__": the table has no id column, so
@@ -110,7 +112,7 @@ class CeoLoanMovementMonthlyBySegmentSerializer(serializers.ModelSerializer):
         fields = ["segment", "dates_eom", "volume", "value"]
 
 
-class CeoDepositMovementMonthlyBySegmentSerializer(serializers.ModelSerializer):
+class CeoDepositMovementMonthlyBySegmentSerializer(WarehouseModelSerializer):
     class Meta:
         model = CeoDepositMovementMonthlyBySegment
         # Explicit, never "__all__": the table has no id column, so
@@ -119,25 +121,25 @@ class CeoDepositMovementMonthlyBySegmentSerializer(serializers.ModelSerializer):
         fields = ["segment", "dates_eom", "volume", "value"]
 
 
-class DailyBalanceMovementSerializer(serializers.ModelSerializer):
+class DailyBalanceMovementSerializer(WarehouseModelSerializer):
     class Meta:
         model = DailyBalanceMovement
         fields = "__all__"
 
 
-class LoanDailyBalanceMovementSerializer(serializers.ModelSerializer):
+class LoanDailyBalanceMovementSerializer(WarehouseModelSerializer):
     class Meta:
         model = LoanDailyBalanceMovement
         fields = "__all__"
 
 
-class EmployeeTableSerializer(serializers.ModelSerializer):
+class EmployeeTableSerializer(WarehouseModelSerializer):
     class Meta:
         model = EmployeeTable
         fields = "__all__"
 
 
-class LoansHistorySerializer(serializers.ModelSerializer):
+class LoansHistorySerializer(WarehouseModelSerializer):
     class Meta:
         model = LoansHistory
         fields = "__all__"

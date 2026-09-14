@@ -606,3 +606,70 @@ class KeylessWarehouseTableTests(TestCase):
                 if meta is None:
                     continue  # a plain Serializer names its fields directly
                 self.assertNotEqual(getattr(meta, "fields", None), "__all__", name)
+
+
+class SentinelDateTests(TestCase):
+    """Core banking writes 9999-12-31 for a facility with no maturity.
+
+    DRF asks whether a datetime is ambiguous under the active timezone, which
+    converts it to UTC; for 9999-12-31 in Africa/Nairobi that is three hours
+    past the largest datetime Python can hold. One such row 500d the whole of
+    /portfolio/customers/<id>/detail_loans — every other loan on the page was
+    lost to it.
+    """
+
+    def field(self):
+        from core.serializers import SafeDateTimeField
+
+        return SafeDateTimeField()
+
+    def test_the_end_of_time_serialises_instead_of_raising(self):
+        from datetime import datetime, timezone as tz
+
+        value = datetime(9999, 12, 31, 23, 59, 59, tzinfo=tz.utc)
+        out = self.field().to_representation(value)
+        self.assertIsNotNone(out)
+        self.assertIn("9999", str(out))
+
+    def test_the_beginning_of_time_does_too(self):
+        from datetime import datetime, timezone as tz
+
+        value = datetime(1, 1, 1, 0, 0, 0, tzinfo=tz.utc)
+        self.assertIsNotNone(self.field().to_representation(value))
+
+    def test_an_ordinary_date_is_unchanged(self):
+        """The safety net must not alter the normal case."""
+        from rest_framework import serializers as drf
+
+        from django.utils import timezone as dj
+
+        value = dj.now()
+        self.assertEqual(
+            self.field().to_representation(value),
+            drf.DateTimeField().to_representation(value),
+        )
+
+    def test_every_warehouse_serializer_uses_the_safe_base(self):
+        """Any of these tables can hold a sentinel; the application does not
+        choose what the ETLs load."""
+        import glob
+        import re
+
+        from django.db import models as dj_models
+
+        dated = {
+            m.__name__ for m in django_apps.get_models()
+            if not m._meta.managed and any(
+                isinstance(f, (dj_models.DateField, dj_models.DateTimeField))
+                for f in m._meta.concrete_fields)
+        }
+        pattern = re.compile(
+            r"class (\w+)\(serializers\.ModelSerializer\):\s+"
+            r"class Meta:\s+model = (\w+)")
+        offenders = []
+        for path in glob.glob("apps/*/serializers.py"):
+            with open(path, encoding="utf-8") as handle:
+                for cls, model in pattern.findall(handle.read()):
+                    if model in dated:
+                        offenders.append(f"{path}:{cls}")
+        self.assertEqual(offenders, [], "use WarehouseModelSerializer for these")

@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from core.serializers import WarehouseModelSerializer
 from .models import (
     BranchEmployeeData, ScorecardRole, ScorecardKPI, RoleKPIMapping,
     PerformanceActual, EmployeeMonthlyPerformance,
@@ -109,7 +111,7 @@ class DrawdownSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class DrawdownDailySerializer(serializers.ModelSerializer):
+class DrawdownDailySerializer(WarehouseModelSerializer):
     class Meta:
         model = DrawdownDaily
         fields = "__all__"
@@ -133,31 +135,31 @@ class CustMonthlyFtpSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class DailySalesAccountsWithCtoSerializer(serializers.ModelSerializer):
+class DailySalesAccountsWithCtoSerializer(WarehouseModelSerializer):
     class Meta:
         model = DailySalesAccountsWithCto
         fields = "__all__"
 
 
-class DailyDormancyConvertedAccountSerializer(serializers.ModelSerializer):
+class DailyDormancyConvertedAccountSerializer(WarehouseModelSerializer):
     class Meta:
         model = DailyDormancyConvertedAccount
         fields = "__all__"
 
 
-class MerchantBankTillManualDataSerializer(serializers.ModelSerializer):
+class MerchantBankTillManualDataSerializer(WarehouseModelSerializer):
     class Meta:
         model = MerchantBankTillManualData
         fields = "__all__"
 
 
-class IapplyLoanApprovalSerializer(serializers.ModelSerializer):
+class IapplyLoanApprovalSerializer(WarehouseModelSerializer):
     class Meta:
         model = IapplyLoanApproval
         fields = "__all__"
 
 
-class ProductSerializer(serializers.ModelSerializer):
+class ProductSerializer(WarehouseModelSerializer):
     class Meta:
         model = Product
         fields = "__all__"

@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from core.serializers import WarehouseModelSerializer
 from django.contrib.auth.models import User
 from django.db import models
 from .models import (
@@ -53,7 +55,7 @@ class UserSerializer(serializers.ModelSerializer):
         return prof.segment if prof else None
 
 
-class RetailAllocatedPortfolioSerializer(serializers.ModelSerializer):
+class RetailAllocatedPortfolioSerializer(WarehouseModelSerializer):
     class Meta:
         model = RetailAllocatedPortfolio
         fields = "__all__"
@@ -81,7 +83,7 @@ class SafeDecimalField(serializers.Field):
         return data
 
 
-class HfCustomerSerializer(serializers.ModelSerializer):
+class HfCustomerSerializer(WarehouseModelSerializer):
     class Meta:
         model = HfCustomer
         fields = "__all__"
@@ -228,7 +230,7 @@ class NamedFeedbackSerializer(serializers.ModelSerializer):
 BranchFeedbackSerializer = NamedFeedbackSerializer
 
 
-class PortfolioRmDepositTrendsSerializer(serializers.ModelSerializer):
+class PortfolioRmDepositTrendsSerializer(WarehouseModelSerializer):
     class Meta:
         model = PortfolioRmDepositTrends
         # Explicit: the table has no id column. See core/warehouse.py.
@@ -243,19 +245,19 @@ class PortfolioRmRevenueSerializer(serializers.ModelSerializer):
         fields = ["sales_code", "income_category", "value"]
 
 
-class AccountsSerializer(serializers.ModelSerializer):
+class AccountsSerializer(WarehouseModelSerializer):
     class Meta:
         model = Accounts
         fields = "__all__"
 
 
-class AccountsHistorySerializer(serializers.ModelSerializer):
+class AccountsHistorySerializer(WarehouseModelSerializer):
     class Meta:
         model = AccountsHistory
         fields = "__all__"
 
 
-class LoansSerializer(serializers.ModelSerializer):
+class LoansSerializer(WarehouseModelSerializer):
     class Meta:
         model = Loans
         fields = "__all__"

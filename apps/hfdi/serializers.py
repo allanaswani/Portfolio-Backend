@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from core.serializers import WarehouseModelSerializer
 from .models import (
     Project, Targets, Sales, ObligationSummary, CrmProject, CrmSalesRecord,
     LegacyProject, LegacySalesRecord, HfdiManualFinanceEntry, HfdiTargets,
@@ -129,13 +131,13 @@ class ProjectTitanPlotsAgentAllocationSerializer(serializers.ModelSerializer):
         read_only_fields = ("created_at", "updated_at")
 
 
-class HfdiProjectsDailyCollectionsDataSerializer(serializers.ModelSerializer):
+class HfdiProjectsDailyCollectionsDataSerializer(WarehouseModelSerializer):
     class Meta:
         model = HfdiProjectsDailyCollectionsData
         fields = "__all__"
 
 
-class HfdiProjectsInventorySalesDataSerializer(serializers.ModelSerializer):
+class HfdiProjectsInventorySalesDataSerializer(WarehouseModelSerializer):
     class Meta:
         model = HfdiProjectsInventorySalesData
         fields = "__all__"
