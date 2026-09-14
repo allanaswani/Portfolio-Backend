@@ -231,13 +231,16 @@ BranchFeedbackSerializer = NamedFeedbackSerializer
 class PortfolioRmDepositTrendsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PortfolioRmDepositTrends
-        fields = "__all__"
+        # Explicit: the table has no id column. See core/warehouse.py.
+        fields = ["product_type", "sales_code", "dates_eom", "volume",
+                  "number_of_customers", "value"]
 
 
 class PortfolioRmRevenueSerializer(serializers.ModelSerializer):
     class Meta:
         model = PortfolioRmRevenue
-        fields = "__all__"
+        # Explicit: the table has no id column. See core/warehouse.py.
+        fields = ["sales_code", "income_category", "value"]
 
 
 class AccountsSerializer(serializers.ModelSerializer):

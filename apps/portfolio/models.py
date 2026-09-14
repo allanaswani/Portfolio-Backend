@@ -242,7 +242,9 @@ class Feedback(models.Model):
 
 
 class PortfolioRmDepositTrends(models.Model):
-    id = models.IntegerField(blank=True, primary_key=True)
+    # No id field: the warehouse table has no such column, so declaring one
+    # made every query for an instance select something that is not there.
+    # Read it with core.warehouse.rows(), which never asks for a primary key.
     product_type = models.CharField(max_length=100, blank=True, null=True)
     sales_code = models.TextField(blank=True, null=True)
     dates_eom = models.DateTimeField(blank=True, null=True)

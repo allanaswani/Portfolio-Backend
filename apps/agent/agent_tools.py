@@ -17,6 +17,7 @@ environment) degrades gracefully and never raises a 500.
 import json
 from datetime import date, timedelta
 
+from core import warehouse
 from django.db.models import Count, Sum
 
 from apps.mortgages.models import (
@@ -338,18 +339,23 @@ def _trade_finance_summary(year=None):
 
 
 def _bank_deposits_movement(limit=MAX_ROWS):
+    # Dict rows, not model instances: these warehouse tables have no id column
+    # and asking for one 500s. See core/warehouse.py.
     return [{
-        "banking_segment": r.banking_segment, "segment": r.segment,
-        "prev_year_balance": r.end_previous_year_bal, "current_balance": r.current_bal,
-        "pct_movement": r.percentage_movement,
-    } for r in CeoDepositMovement.objects.all()[:_clamp(limit)]]
+        "banking_segment": r["banking_segment"], "segment": r["segment"],
+        "prev_year_balance": r["end_previous_year_bal"],
+        "current_balance": r["current_bal"],
+        "pct_movement": r["percentage_movement"],
+    } for r in warehouse.rows(CeoDepositMovement)[:_clamp(limit)]]
 
 
 def _bank_loans_movement(limit=MAX_ROWS):
-    rows = CeoLoanMovementMonthlyBySegment.objects.all().order_by("-dates_eom")[:_clamp(limit)]
+    rows = (warehouse.rows(CeoLoanMovementMonthlyBySegment)
+            .order_by("-dates_eom")[:_clamp(limit)])
     return [{
-        "segment": r.segment, "month": str(r.dates_eom) if r.dates_eom else None,
-        "volume": r.volume, "value": r.value,
+        "segment": r["segment"],
+        "month": str(r["dates_eom"]) if r["dates_eom"] else None,
+        "volume": r["volume"], "value": r["value"],
     } for r in rows]
 
 

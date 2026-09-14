@@ -10,6 +10,7 @@ from drf_spectacular.utils import extend_schema
 from django.db.models import Sum, Count, Q
 from django.db import connection
 
+from core import warehouse
 from core.pagination import StandardPagination, LargePagination
 from core.date_utils import (
     current_year, previous_year, year_before_last,
@@ -185,7 +186,7 @@ class LatestMonthlyView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        rec = CeoDepositMovementMonthly.objects.order_by("-dates_eom").first()
+        rec = warehouse.rows(CeoDepositMovementMonthly).order_by("-dates_eom").first()
         if not rec:
             return Response({})
         return Response(CeoDepositMovementMonthlySerializer(rec).data)
@@ -258,7 +259,7 @@ class NewCustomerTrendsView(APIView):
 class TransactingActivityView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CeoChannelReportSerializer
-    queryset = CeoChannelReport.objects.all()
+    queryset = warehouse.rows(CeoChannelReport).order_by("-trx_date")
     pagination_class = StandardPagination
 
 
@@ -284,7 +285,7 @@ class DigitalActive30View(APIView):
 class DepositMovementView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CeoDepositMovementSerializer
-    queryset = CeoDepositMovement.objects.all()
+    queryset = warehouse.rows(CeoDepositMovement).order_by("banking_segment", "segment")
 
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
@@ -637,7 +638,7 @@ class DigitalChannelsMoMView(APIView):
 class LoansBySegmentTrendView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CeoLoanMovementMonthlyBySegmentSerializer
-    queryset = CeoLoanMovementMonthlyBySegment.objects.all().order_by("dates_eom")
+    queryset = warehouse.rows(CeoLoanMovementMonthlyBySegment).order_by("dates_eom")
 
 
 @extend_schema(tags=["CEO Dashboard — Loans"])
@@ -1209,14 +1210,14 @@ class CeoLoansArrearsProductsView(APIView):
 class LoanMovementBySegmentView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CeoLoanMovementMonthlyBySegmentSerializer
-    queryset = CeoLoanMovementMonthlyBySegment.objects.all()
+    queryset = warehouse.rows(CeoLoanMovementMonthlyBySegment).order_by("-dates_eom")
 
 
 @extend_schema(tags=["CEO Dashboard — Movement"])
 class DepositMovementBySegmentView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = CeoDepositMovementMonthlyBySegmentSerializer
-    queryset = CeoDepositMovementMonthlyBySegment.objects.all()
+    queryset = warehouse.rows(CeoDepositMovementMonthlyBySegment).order_by("-dates_eom")
 
 
 # ── Balance movement ──────────────────────────────────────────────────────

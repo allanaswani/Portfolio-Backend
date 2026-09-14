@@ -532,3 +532,77 @@ class PermissionTests(TestCase):
             if url == "/observability/data-health/":
                 continue  # reads the warehouse, which a test DB mirrors away
             self.assertEqual(client.get(url).status_code, 200, url)
+
+
+class KeylessWarehouseTableTests(TestCase):
+    """Warehouse tables the ETL built with no id column.
+
+    Django adds a primary key to any model that declares none, and then every
+    query for a model instance selects a column that is not there. It is a 500
+    that only appears when somebody opens the page, and it was found that way
+    twice before check_warehouse_columns existed.
+    """
+
+    #: Confirmed against production by check_warehouse_columns.
+    KEYLESS = [
+        ("gceo_dashboard", "CeoChannelReport"),
+        ("gceo_dashboard", "CeoDepositMovement"),
+        ("gceo_dashboard", "CeoDepositMovementDaily"),
+        ("gceo_dashboard", "CeoDepositMovementMonthly"),
+        ("gceo_dashboard", "CeoDepositMovementMonthlyBySegment"),
+        ("gceo_dashboard", "CeoLoanMovementMonthlyBySegment"),
+        ("portfolio", "PortfolioRmDepositTrends"),
+        ("portfolio", "PortfolioRmRevenue"),
+    ]
+
+    def models(self):
+        return [django_apps.get_model(app, name) for app, name in self.KEYLESS]
+
+    def test_rows_never_selects_the_invented_primary_key(self):
+        """The one thing that makes these tables readable at all."""
+        from core import warehouse
+
+        for model in self.models():
+            table = model._meta.db_table
+            select = str(warehouse.rows(model).query).split(" FROM ")[0]
+            self.assertNotIn(f'"{table}"."id"', select, table)
+
+    def test_rows_still_returns_every_real_column(self):
+        """Dropping the phantom id must not drop the data with it."""
+        from core import warehouse
+
+        for model in self.models():
+            names = warehouse.real_field_names(model)
+            self.assertTrue(names, model._meta.label)
+            pk = model._meta.pk
+            if pk is not None and pk.auto_created:
+                self.assertNotIn(pk.name, names, model._meta.label)
+
+    def test_a_model_with_a_real_primary_key_keeps_it(self):
+        """The helper must not strip a key the table genuinely has."""
+        from core import warehouse
+
+        from apps.portfolio.models import HfCustomer
+
+        self.assertIn("cust_id", warehouse.real_field_names(HfCustomer))
+
+    def test_none_of_their_serializers_says_all(self):
+        """fields = "__all__" puts the phantom id back into the payload."""
+        from apps.gceo_dashboard import serializers as ceo
+        from apps.portfolio import serializers as pf
+
+        for module, names in (
+            (ceo, ["CeoChannelReportSerializer", "CeoDepositMovementSerializer",
+                   "CeoDepositMovementMonthlySerializer",
+                   "CeoDepositMovementDailySerializer",
+                   "CeoLoanMovementMonthlyBySegmentSerializer",
+                   "CeoDepositMovementMonthlyBySegmentSerializer"]),
+            (pf, ["PortfolioRmDepositTrendsSerializer",
+                  "PortfolioRmRevenueSerializer"]),
+        ):
+            for name in names:
+                serializer = getattr(module, name)
+                meta = getattr(serializer, "Meta", None)
+                if meta is None:
+                    continue  # a plain Serializer names its fields directly
+                self.assertNotEqual(getattr(meta, "fields", None), "__all__", name)

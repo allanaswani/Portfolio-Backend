@@ -12,7 +12,10 @@ from .models import (
 class CeoDepositMovementMonthlySerializer(serializers.ModelSerializer):
     class Meta:
         model = CeoDepositMovementMonthly
-        fields = "__all__"
+        # Explicit, never "__all__": the table has no id column, so
+        # naming everything would put the primary key Django invented
+        # into the payload and into the SELECT. See core/warehouse.py.
+        fields = ["dates_eom", "sum"]
 
 
 class AccountsSerializer(serializers.ModelSerializer):
@@ -30,7 +33,10 @@ class CustomersSerializer(serializers.ModelSerializer):
 class CeoChannelReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = CeoChannelReport
-        fields = "__all__"
+        # Explicit, never "__all__": the table has no id column, so
+        # naming everything would put the primary key Django invented
+        # into the payload and into the SELECT. See core/warehouse.py.
+        fields = ["trx_date", "trx_channel", "cust_id"]
 
 
 class TransactionDiarySerializer(serializers.ModelSerializer):
@@ -42,7 +48,11 @@ class TransactionDiarySerializer(serializers.ModelSerializer):
 class CeoDepositMovementSerializer(serializers.ModelSerializer):
     class Meta:
         model = CeoDepositMovement
-        fields = "__all__"
+        # Explicit, never "__all__": the table has no id column, so
+        # naming everything would put the primary key Django invented
+        # into the payload and into the SELECT. See core/warehouse.py.
+        fields = ["banking_segment", "segment", "end_previous_year_bal",
+                  "current_bal", "percentage_movement"]
 
 
 class CeoDepositMovementDailySerializer(serializers.Serializer):
@@ -94,13 +104,19 @@ class AccountsHistorySerializer(serializers.ModelSerializer):
 class CeoLoanMovementMonthlyBySegmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = CeoLoanMovementMonthlyBySegment
-        fields = "__all__"
+        # Explicit, never "__all__": the table has no id column, so
+        # naming everything would put the primary key Django invented
+        # into the payload and into the SELECT. See core/warehouse.py.
+        fields = ["segment", "dates_eom", "volume", "value"]
 
 
 class CeoDepositMovementMonthlyBySegmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = CeoDepositMovementMonthlyBySegment
-        fields = "__all__"
+        # Explicit, never "__all__": the table has no id column, so
+        # naming everything would put the primary key Django invented
+        # into the payload and into the SELECT. See core/warehouse.py.
+        fields = ["segment", "dates_eom", "volume", "value"]
 
 
 class DailyBalanceMovementSerializer(serializers.ModelSerializer):
