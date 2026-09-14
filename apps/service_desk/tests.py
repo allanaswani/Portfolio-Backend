@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
@@ -452,3 +453,87 @@ class TeamSeedMigrationTests(TestCase):
         self.assertTrue(person.groups.filter(name="staff_mgt").exists())
         self.assertTrue(person.is_superuser)
         self.assertTrue(person.is_active)
+
+
+class TeamCommandTests(TestCase):
+    """Managing the desk from a terminal.
+
+    The seed migration added nobody on the server because the accounts are not
+    spelled the way its hard-coded list guessed. This is the tool that fixes
+    that without a deploy, so it has to be forgiving about how an address is
+    written and honest when it cannot find somebody.
+    """
+
+    def run_cmd(self, *args):
+        from io import StringIO
+
+        out = StringIO()
+        call_command("service_desk_team", *args, stdout=out, stderr=out)
+        return out.getvalue()
+
+    def test_it_finds_somebody_by_their_email(self):
+        person = user("twilliam", email="trevor.william@hfcb.co.ke")
+        self.run_cmd("--add", "trevor.william@hfcb.co.ke")
+        self.assertTrue(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_it_finds_somebody_by_their_username(self):
+        person = user("trevor.william", email="t.w@hfcb.co.ke")
+        self.run_cmd("--add", "trevor.william")
+        self.assertTrue(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_it_finds_somebody_by_the_local_part_of_an_address(self):
+        """The address written down is not always the address on the account."""
+        person = user("arthur.nyota", email="arthur.nyota@hfgroup.co.ke")
+        self.run_cmd("--add", "arthur.nyota@hfcb.co.ke")
+        self.assertTrue(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_it_refuses_to_guess_between_two_people(self):
+        """Adding the wrong colleague to a desk is worse than adding nobody."""
+        a = user("john.smith", email="john.smith@hfcb.co.ke")
+        b = user("john.smithers", email="john.smithers@hfcb.co.ke")
+        output = self.run_cmd("--add", "john.smith")
+        # john.smith matches itself exactly, so that one IS resolved.
+        self.assertTrue(a.groups.filter(name=rbac.MANAGER_GROUP).exists())
+        self.assertFalse(b.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_an_ambiguous_name_is_reported_not_acted_on(self):
+        user("mary.a", email="mary.a@hfcb.co.ke")
+        user("mary.b", email="mary.b@hfcb.co.ke")
+        output = self.run_cmd("--add", "mary")
+        self.assertIn("matches several", output)
+        self.assertEqual(
+            get_user_model().objects.filter(
+                groups__name=rbac.MANAGER_GROUP).count(), 0)
+
+    def test_a_missing_account_says_so_rather_than_failing_quietly(self):
+        output = self.run_cmd("--add", "nobody@hfcb.co.ke")
+        self.assertIn("No account matches", output)
+
+    def test_it_warns_when_the_desk_is_empty(self):
+        """A desk nobody is on emails every query into silence."""
+        output = self.run_cmd()
+        self.assertIn("Nobody is on the desk", output)
+
+    def test_removing_somebody_touches_nothing_else(self):
+        person = user("benson.k", email="benson.k@hfcb.co.ke")
+        person.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
+        self.run_cmd("--add", "benson.k")
+        self.run_cmd("--remove", "benson.k")
+        person.refresh_from_db()
+        self.assertFalse(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+        self.assertTrue(person.groups.filter(name="staff_mgt").exists())
+        self.assertTrue(person.is_active)
+
+    def test_find_changes_nothing(self):
+        person = user("trevor.william", email="trevor.william@hfcb.co.ke")
+        output = self.run_cmd("--find", "trevor")
+        self.assertIn("trevor.william", output)
+        self.assertFalse(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_an_account_with_no_email_is_flagged(self):
+        """They would be on the desk and never hear about a query."""
+        # Built directly: the helper above substitutes a default for a blank
+        # address, which is exactly the case under test.
+        get_user_model().objects.create_user(username="silent", password="x", email="")
+        output = self.run_cmd("--add", "silent")
+        self.assertIn("no email", output)

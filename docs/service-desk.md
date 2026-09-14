@@ -82,9 +82,28 @@ That distinction exists because there are superusers across the bank with nothin
 to do with Strategy. Treating every superuser as a member put the whole queue in
 their inbox and offered to hand them queries they would never look at.
 
-Migration `0004` seeds the desk team. To change it, add or remove people from
-the `service_desk_manager` / `service_desk_agent` groups in Administration — no
-deployment needed.
+### Managing the team
+
+```bash
+manage.py service_desk_team                      # who is on it now
+manage.py service_desk_team --find trevor        # what accounts exist
+manage.py service_desk_team --add trevor.william@hfcb.co.ke
+manage.py service_desk_team --add someone --as-agent
+manage.py service_desk_team --remove benson.k
+```
+
+It resolves a person from an email, a username, or part of either, and
+**refuses to guess** when more than one account matches — adding the wrong
+colleague to a desk is worse than adding nobody. `--find` changes nothing and
+exists because "it added nobody" is a useless answer on its own.
+
+With no arguments it prints the team, and says so loudly when the desk is
+empty: nobody on it means every query is raised into silence.
+
+Migration `0004` seeded an initial list, but the names in it matched no account
+on the server, which is why this command exists. The same thing can be done in
+Administration by editing the `service_desk_manager` / `service_desk_agent`
+groups. Neither needs a deployment.
 
 Everyone else is a requester, including people with no group at all.
 
