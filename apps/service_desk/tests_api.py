@@ -34,7 +34,7 @@ def user(username, group=None, email=None, superuser=False):
 
 class DeskTestCase(APITestCase):
     def setUp(self):
-        self.category = TicketCategory.objects.get(slug="data-request")
+        self.category = TicketCategory.objects.get(slug="report-request")
         self.requester = user("req", email="req@hf.test")
         self.agent = user("agt", rbac.AGENT_GROUP, email="agt@hf.test")
         self.manager = user("mgr", rbac.MANAGER_GROUP, email="mgr@hf.test")

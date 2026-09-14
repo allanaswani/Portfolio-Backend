@@ -343,10 +343,28 @@ class DeskSettingsTests(TestCase):
 
     def test_the_seeded_categories_all_carry_a_promise(self):
         """A category with no SLA is a ticket with no promise attached."""
-        self.assertGreaterEqual(TicketCategory.objects.count(), 6)
+        self.assertGreaterEqual(TicketCategory.objects.count(), 8)
         for category in TicketCategory.objects.all():
             self.assertGreater(category.response_minutes, 0, category.slug)
             self.assertGreater(category.resolution_minutes, 0, category.slug)
+            self.assertTrue(category.description.strip(), category.slug)
+
+    def test_the_desk_covers_more_than_this_application(self):
+        """Most of what Strategy are asked is about the reports and scorecards
+        they publish, not about software. A list that does not describe
+        somebody's query sends them back to email, which is the behaviour this
+        desk exists to replace."""
+        slugs = set(TicketCategory.objects.filter(is_active=True)
+                    .values_list("slug", flat=True))
+        for expected in ("report-request", "clarification", "scorecard",
+                         "targets", "other"):
+            self.assertIn(expected, slugs)
+
+    def test_the_renamed_category_kept_its_slug_and_its_tickets(self):
+        """data-request became report-request by rename, not by replacement —
+        a new category would have orphaned every ticket already raised."""
+        self.assertFalse(TicketCategory.objects.filter(slug="data-request").exists())
+        self.assertTrue(TicketCategory.objects.filter(slug="report-request").exists())
 
     def test_a_saturday_is_not_a_working_day_by_default(self):
         week = DeskSettings.get().work_week()

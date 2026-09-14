@@ -172,12 +172,21 @@ working minutes:
 
 | Category | Reply | Resolve |
 |---|---|---|
-| System or dashboard not working | 1h | 9h (1 working day) |
-| Data looks wrong | 2h | 9h |
+| System or dashboard problem | 1h | 9h (1 working day) |
+| A figure looks wrong | 2h | 9h |
 | Access or permissions | 2h | 9h |
-| Data or report request | 4h | 18h (2 days) |
-| Targets and scorecards | 4h | 27h (3 days) |
+| Report or data request | 4h | 18h (2 days) |
+| Clarification or explanation | 4h | 18h |
+| Scorecard query | 4h | 27h (3 days) |
+| Targets and performance | 4h | 27h |
 | Something else | 4h | 27h |
+
+**The desk is not only about this application.** Most of what Strategy are asked
+concerns the reports and scorecards they publish, and much of it is somebody
+wanting a number explained rather than fixed. A category list that does not
+describe the query somebody actually has sends them back to email, which is the
+behaviour this desk replaces — so `clarification` and `scorecard` exist, and
+`other` is described as "use this rather than not raising it at all".
 
 Priority multiplies the target rather than replacing it: urgent ×0.25, high
 ×0.5, low ×2. One number to reason about instead of a matrix.
