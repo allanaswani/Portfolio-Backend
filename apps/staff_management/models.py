@@ -548,7 +548,12 @@ class MerchantBankTillManualData(models.Model):
 
     class Meta:
         managed = False
-        db_table = "weighted_sales_seller_bank_till_data_dump_manual"
+        # Renamed upstream: the warehouse dropped the "_manual" suffix. The old
+        # table is still present but no longer filled, which is why data health
+        # reported it empty rather than missing — the model was reading a table
+        # nothing writes to any more. The API route keeps its own name
+        # (merchant-bank-tills-manual/), so nothing on the frontend moves.
+        db_table = "weighted_sales_seller_bank_till_data_dump"
 
     def __str__(self):
         return f"{self.merchant_id or ''} — {self.account_name or ''}"
