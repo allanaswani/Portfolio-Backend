@@ -102,6 +102,12 @@ NEW_ROLES = (
     # access from this Users screen. Keep the names byte-identical to that file.
     "c360_management",
     "c360_rm",
+    # Service Desk (apps/service_desk) — the groups themselves are created by
+    # its migrations; registered here so an administrator can put somebody on
+    # the desk from the Users screen, and so the badge is not blank. The desk
+    # also has its own Team screen, which edits exactly these two groups.
+    "service_desk_manager",
+    "service_desk_agent",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -122,6 +128,8 @@ NEW_ROLE_DESCRIPTIONS = {
     # Wording mirrors c360/roles.py::C360_ROLE_DESCRIPTIONS.
     "c360_management": "Customer 360 — management / analytics (whole-book Level 1).",
     "c360_rm": "Customer 360 — relationship manager (own book).",
+    "service_desk_manager": "Service Desk — desk lead; assigns, edits query types, SLAs and the team.",
+    "service_desk_agent": "Service Desk — works the queue and answers queries.",
 }
 
 # Every role the system knows about (legacy + new).
@@ -170,6 +178,10 @@ ROLE_TO_TIER = {
     # own book by sales_code. Nothing in THIS backend is gated on these two.
     "c360_management": ROLE_MANAGER,
     "c360_rm": ROLE_OFFICER,
+    # Service desk — apps/service_desk gates on the group NAME, not the tier,
+    # so these only decide the badge on the Users screen.
+    "service_desk_manager": ROLE_MANAGER,
+    "service_desk_agent": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).
