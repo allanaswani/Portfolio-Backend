@@ -554,3 +554,82 @@ class TeamCommandTests(TestCase):
         get_user_model().objects.create_user(username="silent", password="x", email="")
         output = self.run_cmd("--add", "silent")
         self.assertIn("no email", output)
+
+
+class StrategyTeamSeedTests(TestCase):
+    """Migration 0008 puts the real Strategy roster on the desk.
+
+    The first attempt (0004) matched nothing because the names it guessed were
+    not how the accounts are spelled, and left the desk empty — every query
+    raised into silence while the requester still got a confirmation. These
+    pin the matching that fixes it.
+    """
+
+    def _seed(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        module = importlib.import_module(
+            "apps.service_desk.migrations.0008_seed_strategy_team")
+        module.seed(django_apps, None)
+        return module
+
+    def test_an_account_is_matched_on_its_exact_address(self):
+        person = get_user_model().objects.create_user(
+            username="sk", password="x", email="Stacy.Mwenda@hfgroup.co.ke")
+        self._seed()
+        self.assertTrue(person.groups.filter(name=rbac.AGENT_GROUP).exists())
+
+    def test_it_bridges_the_rebrand_by_the_local_part(self):
+        """The roster says @hfgroup.co.ke; the login may be @hfcb.co.ke."""
+        person = get_user_model().objects.create_user(
+            username="allan.aswani", password="x", email="allan.aswani@hfcb.co.ke")
+        self._seed()
+        self.assertTrue(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_the_heads_are_managers_and_the_rest_are_handlers(self):
+        eileen = get_user_model().objects.create_user(
+            username="eileen.ndegwa", password="x", email="e@hfcb.co.ke")
+        shekinah = get_user_model().objects.create_user(
+            username="shekinah.mwangi", password="x", email="s@hfcb.co.ke")
+        self._seed()
+        self.assertTrue(eileen.groups.filter(name=rbac.MANAGER_GROUP).exists())
+        self.assertTrue(shekinah.groups.filter(name=rbac.AGENT_GROUP).exists())
+
+    def test_benson_is_on_the_roster_but_not_on_this_desk(self):
+        person = get_user_model().objects.create_user(
+            username="benson.mbugua", password="x",
+            email="Benson.Mbugua@hfgroup.co.ke")
+        self._seed()
+        self.assertFalse(person.groups.filter(
+            name__in=[rbac.MANAGER_GROUP, rbac.AGENT_GROUP]).exists())
+
+    def test_somebody_with_no_login_is_emailed_instead_of_dropped(self):
+        """Being unreachable is what makes a desk look like it ignores people."""
+        from apps.service_desk.models import DeskRecipient
+
+        self._seed()
+        self.assertTrue(DeskRecipient.objects.filter(
+            email__iexact="Stacy.Mwenda@hfgroup.co.ke").exists())
+
+    def test_a_misspelt_roster_address_is_never_mailed(self):
+        """The roster spells one domain 'hfgoup'. Mail there bounces silently."""
+        from apps.service_desk.models import DeskRecipient
+
+        self._seed()
+        self.assertFalse(DeskRecipient.objects.filter(
+            email__icontains="hfgoup").exists())
+
+    def test_running_it_twice_changes_nothing(self):
+        person = get_user_model().objects.create_user(
+            username="stacy.mwenda", password="x", email="s2@hfcb.co.ke")
+        self._seed()
+        self._seed()
+        self.assertEqual(person.groups.filter(name=rbac.AGENT_GROUP).count(), 1)
+
+    def test_it_never_removes_anybody(self):
+        """A manager may have edited the team; a migration must not overrule."""
+        added_by_hand = user("someone.else", rbac.AGENT_GROUP)
+        self._seed()
+        self.assertTrue(added_by_hand.groups.filter(name=rbac.AGENT_GROUP).exists())
