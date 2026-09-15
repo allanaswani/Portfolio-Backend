@@ -209,6 +209,7 @@ def resolve(ticket, actor=None, note=""):
         ticket.on_hold_since = None
     ticket.status = Ticket.STATUS_RESOLVED
     ticket.resolved_at = now
+    ticket.resolved_by = actor if getattr(actor, "pk", None) else None
     ticket.resolution_note = note or ticket.resolution_note
     _touch_first_response(ticket, actor, now)
     claimed = _claim(ticket, actor, now)
@@ -282,6 +283,7 @@ def reopen(ticket, actor=None, note=""):
     was = ticket.status
     ticket.status = Ticket.STATUS_IN_PROGRESS
     ticket.resolved_at = None
+    ticket.resolved_by = None
     ticket.closed_at = None
     ticket.closed_by = None
     ticket.confirmed_by_requester = None

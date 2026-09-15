@@ -349,6 +349,12 @@ class Ticket(TimeStamped):
     resolution_minutes = models.PositiveIntegerField(default=0)
 
     resolution_note = models.TextField(blank=True)
+    # Who said it was answered. Recorded so that person can never also be the
+    # one who agrees it was answered — a desk confirming its own work is the
+    # exact failure this module exists to prevent, and it happened.
+    resolved_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="tickets_resolved")
     closed_by = models.ForeignKey(
         USER, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="tickets_closed")

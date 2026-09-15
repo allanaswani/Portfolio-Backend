@@ -752,3 +752,135 @@ class AccountFreeRecipientTests(DeskTestCase):
                          stdout=StringIO(), stderr=StringIO())
         self.assertEqual(
             DeskRecipient.objects.filter(email="dup@hfcb.co.ke").count(), 1)
+
+
+class ConfirmingYourOwnWorkTests(DeskTestCase):
+    """Nobody confirms their own resolution. Nobody.
+
+    The first version let a manager confirm any ticket raised on somebody's
+    behalf — and since the desk logs those itself, the same person resolved a
+    query and was then shown "The desk says this is answered. Do you agree?"
+    about their own work. That is the exact failure this module was built to
+    prevent, with a button on it.
+    """
+
+    def test_a_manager_cannot_confirm_a_ticket_they_resolved(self):
+        phoned = self.raise_ticket(
+            who=self.manager, on_behalf_of="Jewell", requester_email="j@hfcb.test")
+        workflow.resolve(phoned, actor=self.manager, note="done")
+        phoned.refresh_from_db()
+
+        self.assertFalse(rbac.can_confirm(self.manager, phoned))
+        res = self.as_(self.manager).get(BASE + f"tickets/{phoned.reference}/")
+        self.assertFalse(res.data["permissions"]["confirm"])
+
+    def test_the_api_refuses_it_too(self):
+        """The button being hidden is not the control; this is."""
+        phoned = self.raise_ticket(
+            who=self.manager, on_behalf_of="Jewell", requester_email="j@hfcb.test")
+        workflow.resolve(phoned, actor=self.manager, note="done")
+        res = self.as_(self.manager).post(
+            BASE + f"tickets/{phoned.reference}/confirm/", {}, format="json")
+        self.assertEqual(res.status_code, 403)
+        phoned.refresh_from_db()
+        self.assertEqual(phoned.status, Ticket.STATUS_RESOLVED)
+
+    def test_a_different_manager_may_confirm_a_phoned_in_query(self):
+        """It has no requester account, so somebody has to. Four eyes, not one."""
+        other = user("mgr2", rbac.MANAGER_GROUP, email="mgr2@hf.test")
+        phoned = self.raise_ticket(
+            who=self.manager, on_behalf_of="Jewell", requester_email="j@hfcb.test")
+        workflow.resolve(phoned, actor=self.manager, note="done")
+        phoned.refresh_from_db()
+        self.assertTrue(rbac.can_confirm(other, phoned))
+
+    def test_an_agent_still_cannot_confirm_anything_of_their_own(self):
+        ticket = self.raise_ticket()
+        workflow.resolve(ticket, actor=self.agent, note="done")
+        ticket.refresh_from_db()
+        self.assertFalse(rbac.can_confirm(self.agent, ticket))
+        self.assertTrue(rbac.can_confirm(self.requester, ticket))
+
+    def test_who_resolved_it_is_recorded(self):
+        ticket = self.raise_ticket()
+        workflow.resolve(ticket, actor=self.agent, note="done")
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.resolved_by, self.agent)
+
+    def test_reopening_clears_who_resolved_it(self):
+        """Otherwise the first answerer is barred from confirming a second
+        answer somebody else gave."""
+        ticket = self.raise_ticket()
+        workflow.resolve(ticket, actor=self.agent, note="done")
+        workflow.reopen(ticket, actor=self.requester, note="no")
+        ticket.refresh_from_db()
+        self.assertIsNone(ticket.resolved_by)
+
+
+class RequesterChoosesTheHandlerTests(DeskTestCase):
+    """The person raising a query picks who in Strategy handles it.
+
+    They usually know who owns the report or the scorecard concerned, and
+    waiting for somebody to route it adds a queue that exists only to move a
+    name from one field to another.
+    """
+
+    def test_the_strategy_list_is_readable_by_anyone_signed_in(self):
+        """They cannot choose from a list they are not allowed to see."""
+        res = self.as_(self.requester).get(BASE + "handlers/")
+        self.assertEqual(res.status_code, 200)
+        usernames = [h["username"] for h in res.data["handlers"]]
+        self.assertIn("agt", usernames)
+
+    def test_the_list_shows_the_team_and_nobody_else(self):
+        user("randomer", email="randomer@hf.test")
+        res = self.as_(self.requester).get(BASE + "handlers/")
+        usernames = [h["username"] for h in res.data["handlers"]]
+        self.assertNotIn("randomer", usernames)
+
+    def test_a_handler_can_be_named_when_the_query_is_raised(self):
+        ticket = self.raise_ticket(assigned_to="agt")
+        self.assertEqual(ticket.assigned_to, self.agent)
+
+    def test_naming_somebody_not_on_the_desk_still_raises_the_query(self):
+        """Losing the query over a bad routing choice would be the worse bug."""
+        ticket = self.raise_ticket(assigned_to="nosy")
+        self.assertIsNone(ticket.assigned_to)
+        self.assertEqual(ticket.status, Ticket.STATUS_NEW)
+
+    def test_the_requester_can_change_it_afterwards(self):
+        ticket = self.raise_ticket()
+        res = self.act(self.requester, f"tickets/{ticket.reference}/assign/",
+                       {"username": "agt"})
+        self.assertEqual(res.status_code, 200, res.data)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.assigned_to, self.agent)
+
+    def test_a_stranger_cannot_route_somebody_elses_query(self):
+        ticket = self.raise_ticket()
+        res = self.as_(self.stranger).post(
+            BASE + f"tickets/{ticket.reference}/assign/",
+            {"username": "agt"}, format="json")
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_handler_still_cannot_push_one_onto_a_colleague(self):
+        """Taking work is not the same as giving it away."""
+        other = user("agt2", rbac.AGENT_GROUP, email="agt2@hf.test")
+        ticket = self.raise_ticket(who=self.stranger)
+        res = self.as_(self.agent).post(
+            BASE + f"tickets/{ticket.reference}/assign/",
+            {"username": "agt2"}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_the_named_handler_is_emailed(self):
+        mail.outbox.clear()
+        self.raise_ticket(assigned_to="agt")
+        self.assertTrue(any("agt@hf.test" in m.to for m in mail.outbox))
+
+    def test_the_requester_is_offered_the_choice(self):
+        ticket = self.raise_ticket()
+        res = self.as_(self.requester).get(BASE + f"tickets/{ticket.reference}/")
+        perms = res.data["permissions"]
+        self.assertTrue(perms["assign_others"])
+        # But not the desk-only "take it for myself" action.
+        self.assertFalse(perms["take"])

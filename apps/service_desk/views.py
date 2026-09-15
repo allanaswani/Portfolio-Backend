@@ -7,6 +7,7 @@ is the failure this module exists to prevent.
 """
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -129,6 +130,19 @@ class TicketListCreateView(generics.ListCreateAPIView):
                 "on_behalf_of": "Only the desk can log a query for somebody else.",
             })
 
+        # Naming a handler at the moment of asking, rather than waiting for
+        # somebody to route it. The person raising a query usually knows which
+        # of the Strategy team owns the report or the scorecard concerned.
+        assignee = None
+        wanted = (request.data.get("assigned_to") or "").strip()
+        if wanted:
+            candidate = get_user_model().objects.filter(
+                username__iexact=wanted, is_active=True).first()
+            # A name that is not on the desk is ignored rather than rejected:
+            # the query still gets raised, which matters more than the routing.
+            if candidate is not None and rbac.is_handler(candidate):
+                assignee = candidate
+
         ticket = workflow.create(
             subject=data["subject"], body=data.get("body", ""),
             category=data.get("category"),
@@ -140,6 +154,11 @@ class TicketListCreateView(generics.ListCreateAPIView):
             requester_branch=data.get("requester_branch", ""),
             actor=request.user,
         )
+        if assignee is not None:
+            who = assignee.get_full_name() or assignee.username
+            workflow.assign(ticket, assignee, actor=request.user,
+                            note=f"Requested to be handled by {who}")
+            ticket.refresh_from_db()
         return Response(
             TicketDetailSerializer(ticket, context={"request": request}).data,
             status=status.HTTP_201_CREATED)
@@ -230,11 +249,15 @@ class TicketAssignView(_TicketAction):
     def act(self, request, ticket):
         username = (request.data.get("username") or "").strip()
         if not username:
+            if not rbac.is_handler(request.user):
+                return Response(
+                    {"username": "Choose who should handle this."}, status=400)
             target = request.user  # "take it"
-        elif not rbac.can_assign_to_others(request.user):
+        elif not rbac.can_assign_to_others(request.user, ticket):
             return Response(
-                {"username": "Only a desk manager can assign a ticket to "
-                             "somebody else. You can take it yourself."},
+                {"username": "You can take this ticket yourself, but only a desk "
+                             "manager or the person who raised it can hand it to "
+                             "somebody else."},
                 status=403)
         else:
             target = get_user_model().objects.filter(
@@ -355,6 +378,106 @@ class CategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @extend_schema(tags=TAG)
+class TeamView(APIView):
+    """Who is on the desk — read by anyone, changed by a manager.
+
+    Membership is the Django group, which is what every gate in this module
+    checks. Editing it from here rather than from a data migration matters:
+    the names were wrong the first time, and a team is not a thing that changes
+    only when somebody deploys.
+    """
+
+    def get_permissions(self):
+        return [IsManager()] if self.request.method != "GET" else [IsAuthenticated()]
+
+    def _rows(self):
+        User = get_user_model()
+        out = []
+        for name, role in ((rbac.MANAGER_GROUP, "manager"), (rbac.AGENT_GROUP, "agent")):
+            for person in (User.objects.filter(groups__name=name, is_active=True)
+                           .distinct().order_by("first_name", "username")):
+                out.append({
+                    "id": person.id,
+                    "username": person.username,
+                    "name": person.get_full_name() or person.username,
+                    "email": person.email or "",
+                    "role": role,
+                    # Somebody on the desk with no address never hears about a
+                    # query, which looks like the desk ignoring it.
+                    "reachable": bool(person.email),
+                })
+        return out
+
+    def get(self, request):
+        return Response({"team": self._rows()})
+
+    def post(self, request):
+        """Add somebody, by username or email."""
+        needle = (request.data.get("username") or request.data.get("email") or "").strip()
+        role = (request.data.get("role") or "agent").strip()
+        if not needle:
+            return Response({"username": "Who?"}, status=400)
+
+        User = get_user_model()
+        found = User.objects.filter(
+            Q(username__iexact=needle) | Q(email__iexact=needle), is_active=True)
+        if found.count() > 1:
+            return Response(
+                {"username": f"{needle} matches more than one account. Use the "
+                             f"exact username."}, status=400)
+        person = found.first()
+        if person is None:
+            return Response(
+                {"username": f"No active account matches {needle}."}, status=400)
+
+        group = Group.objects.get_or_create(
+            name=rbac.MANAGER_GROUP if role == "manager" else rbac.AGENT_GROUP)[0]
+        # One role at a time, or somebody shows up twice in the list.
+        person.groups.remove(*Group.objects.filter(
+            name__in=[rbac.MANAGER_GROUP, rbac.AGENT_GROUP]))
+        person.groups.add(group)
+        return Response({"team": self._rows()}, status=201)
+
+    def delete(self, request):
+        """Take somebody off the desk. Nothing else about the account changes."""
+        needle = (request.data.get("username") or "").strip()
+        person = get_user_model().objects.filter(username__iexact=needle).first()
+        if person is None:
+            return Response({"username": "No such account."}, status=400)
+        person.groups.remove(*Group.objects.filter(
+            name__in=[rbac.MANAGER_GROUP, rbac.AGENT_GROUP]))
+        return Response({"team": self._rows()})
+
+
+@extend_schema(tags=TAG)
+class StaffSearchView(APIView):
+    """Find an account to put on the desk. Managers only — it searches people."""
+
+    permission_classes = [IsManager]
+
+    def get(self, request):
+        term = (request.query_params.get("q") or "").strip()
+        if len(term) < 2:
+            return Response({"results": []})
+        people = (get_user_model().objects.filter(is_active=True).filter(
+            Q(username__icontains=term) | Q(email__icontains=term)
+            | Q(first_name__icontains=term) | Q(last_name__icontains=term)
+        ).distinct().order_by("first_name", "username")[:20])
+        on_desk = set(get_user_model().objects.filter(
+            groups__name__in=[rbac.MANAGER_GROUP, rbac.AGENT_GROUP]
+        ).values_list("id", flat=True))
+        return Response({"results": [
+            {
+                "username": p.username,
+                "name": p.get_full_name() or p.username,
+                "email": p.email or "",
+                "on_desk": p.id in on_desk,
+            }
+            for p in people
+        ]})
+
+
+@extend_schema(tags=TAG)
 class DeskRecipientListCreateView(generics.ListCreateAPIView):
     """Addresses that are emailed without needing an account on the tool.
 
@@ -410,13 +533,16 @@ class DeskSettingsView(APIView):
 
 @extend_schema(tags=TAG)
 class HandlerListView(APIView):
-    """Who can be assigned a ticket — for the manager's assign dropdown."""
+    """The Strategy team — who a query can be sent to.
+
+    Readable by anyone signed in, because the person raising a query chooses
+    who handles it. It exposes a name, a username and how many open tickets
+    each person is carrying, and nothing about anybody's tickets.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not rbac.is_handler(request.user):
-            return Response({"handlers": []})
         # The desk TEAM, by group membership. A superuser may work any ticket,
         # but listing every superuser here would offer to hand a query to
         # people who have nothing to do with this desk.

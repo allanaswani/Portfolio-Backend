@@ -28,6 +28,9 @@ urlpatterns = [
     path("holidays/<int:pk>/",    v.HolidayDetailView.as_view()),
     path("settings/",             v.DeskSettingsView.as_view()),
     path("handlers/",             v.HandlerListView.as_view()),
+    # Who is on the desk, and finding people to put on it.
+    path("team/",                 v.TeamView.as_view()),
+    path("team/search/",          v.StaffSearchView.as_view()),
 
     # Counts for the sidebar, and the reporting the desk is measured by.
     path("my-desk/", v.MyDeskView.as_view()),

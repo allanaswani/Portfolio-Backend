@@ -76,29 +76,63 @@ def can_resolve(user, ticket) -> bool:
 def can_confirm(user, ticket) -> bool:
     """Only the person who asked can agree that they got an answer.
 
-    This is the whole point of the module. A handler who could confirm their own
-    resolution would reproduce, exactly, the situation being complained about.
+    This is the whole point of the module, and the first version had a hole in
+    it: a manager could confirm any ticket logged on somebody's behalf. Since
+    the desk logs those itself, the same person resolved a query and was then
+    asked "do you agree?" about their own work — precisely the situation being
+    complained about, now with a button.
+
+    So the rule is stated as a prohibition first: **whoever resolved it can
+    never confirm it.** No exception, no role, no circumstance.
     """
-    if is_manager(user) and not ticket.raised_by_id:
-        # A ticket logged on behalf of someone who phoned in has no requester
-        # account to sign it off, so the desk lead may — and it is recorded as
-        # them, not as the requester.
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+
+    # The prohibition, before anything that might grant.
+    if ticket.resolved_by_id and ticket.resolved_by_id == user.id:
+        return False
+
+    if ticket.raised_by_id and ticket.raised_by_id == user.id:
         return True
-    if not user or not user.is_authenticated:
+    email = (user.email or "").strip().lower()
+    if email and (ticket.requester_email or "").strip().lower() == email:
+        return True
+
+    # A query phoned in by somebody with no account has nobody to sign it off,
+    # so a desk manager may — but only one who did not answer it, which the
+    # prohibition above has already guaranteed. Four eyes, not one.
+    return bool(is_manager(user) and not ticket.raised_by_id)
+
+
+def can_assign(user, ticket=None) -> bool:
+    """Who may set the handler.
+
+    The desk, and **the person who raised it**. Requesters here know which of
+    the Strategy team owns the report or the scorecard they are asking about,
+    and making them wait for somebody to route it adds a queue that exists only
+    to move a name from one field to another.
+    """
+    if is_handler(user):
+        return True
+    return bool(ticket is not None and user and getattr(user, "is_authenticated", False)
+                and can_view(user, ticket))
+
+
+def can_assign_to_others(user, ticket=None) -> bool:
+    """Naming somebody other than yourself.
+
+    A manager may do it anywhere. A requester may do it on their own ticket —
+    that is the whole point of letting them choose who handles it. A handler
+    may only take a ticket, not push it onto a colleague.
+    """
+    if is_manager(user):
+        return True
+    if ticket is None or not user or not getattr(user, "is_authenticated", False):
         return False
     if ticket.raised_by_id and ticket.raised_by_id == user.id:
         return True
     email = (user.email or "").strip().lower()
     return bool(email and (ticket.requester_email or "").strip().lower() == email)
-
-
-def can_assign(user, ticket=None) -> bool:
-    """Managers assign anyone; a handler may take a ticket for themselves."""
-    return is_handler(user)
-
-
-def can_assign_to_others(user) -> bool:
-    return is_manager(user)
 
 
 def can_cancel(user, ticket) -> bool:
