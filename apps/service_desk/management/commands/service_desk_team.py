@@ -84,6 +84,9 @@ class Command(BaseCommand):
         parser.add_argument("--remove-email", nargs="*", default=[],
                             dest="remove_email",
                             help="Stop notifying this address.")
+        parser.add_argument("--sync-roster", action="store_true", dest="sync_roster",
+                            help="Re-apply the Strategy roster and report who "
+                                 "could not be matched to a login.")
 
     def handle(self, *args, **options):
         manager, _ = Group.objects.get_or_create(name=MANAGER_GROUP)
@@ -92,6 +95,10 @@ class Command(BaseCommand):
         if options["find"]:
             self.find(options["find"])
             return
+
+        if options["sync_roster"]:
+            self.sync_roster()
+            self.stdout.write("")
 
         target = agent if options["as_agent"] else manager
         changed = False
@@ -154,6 +161,30 @@ class Command(BaseCommand):
         if changed:
             self.stdout.write("")
         self.show()
+
+    def sync_roster(self):
+        """Re-apply the department roster, and say who was missed.
+
+        Re-runnable on purpose: matching a roster row to a login is guesswork
+        that needs correcting, and "it added nobody" with no explanation is
+        what made the first attempt impossible to debug.
+        """
+        from apps.service_desk import roster
+
+        matched, unmatched = roster.apply()
+        self.stdout.write(f"Roster: {len(matched)} of {len(roster.TEAM)} matched "
+                          f"to a login.")
+        for name, person, role in matched:
+            self.stdout.write(self.style.SUCCESS(
+                f"  {name:<26} -> {person.username} <{person.email or 'no email'}>"
+                f"  [{role}]"))
+        for name, email, role in unmatched:
+            self.stdout.write(self.style.WARNING(
+                f"  {name:<26} -> no login found; emailed at {email} instead"))
+        if unmatched:
+            self.stdout.write(
+                "  Use --find <name> to see what accounts exist, then --add "
+                "<username> to put them on the desk by hand.")
 
     def find(self, needle):
         User = get_user_model()

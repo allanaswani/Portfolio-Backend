@@ -633,3 +633,112 @@ class StrategyTeamSeedTests(TestCase):
         added_by_hand = user("someone.else", rbac.AGENT_GROUP)
         self._seed()
         self.assertTrue(added_by_hand.groups.filter(name=rbac.AGENT_GROUP).exists())
+
+
+class RosterMatchingTests(TestCase):
+    """Matching a roster row to a portfolio login.
+
+    Two of the seven were silently missed the first time: the matcher used the
+    roster's LAST name, and Kenyan names carry three parts, so the surname on
+    the roster is often not the one the account uses.
+    """
+
+    def apply(self):
+        from apps.service_desk import roster
+
+        return roster.apply()
+
+    def test_stacy_signs_in_under_her_middle_name(self):
+        """Stacy Kendi Mwenda is 'Stacy Kendi' on the system."""
+        person = get_user_model().objects.create_user(
+            username="stacy.kendi", password="x", email="stacy.kendi@hfcb.co.ke",
+            first_name="Stacy", last_name="Kendi")
+        self.apply()
+        self.assertTrue(person.groups.filter(name=rbac.AGENT_GROUP).exists())
+
+    def test_bryan_does_too(self):
+        """Bryan Mwaura Kanyigi is 'Bryan Mwaura'."""
+        person = get_user_model().objects.create_user(
+            username="bryan.mwaura", password="x", email="bryan.mwaura@hfcb.co.ke",
+            first_name="Bryan", last_name="Mwaura")
+        self.apply()
+        self.assertTrue(person.groups.filter(name=rbac.AGENT_GROUP).exists())
+
+    def test_the_exact_address_still_wins(self):
+        person = get_user_model().objects.create_user(
+            username="whoever", password="x", email="Eileen.Ndegwa@hfgroup.co.ke")
+        self.apply()
+        self.assertTrue(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_the_rebrand_is_bridged_by_the_local_part(self):
+        person = get_user_model().objects.create_user(
+            username="aa", password="x", email="allan.aswani@hfcb.co.ke")
+        self.apply()
+        self.assertTrue(person.groups.filter(name=rbac.MANAGER_GROUP).exists())
+
+    def test_it_refuses_to_guess_between_two_people(self):
+        """Putting the wrong colleague on a desk is worse than leaving
+        somebody off it."""
+        get_user_model().objects.create_user(
+            username="stacy.one", password="x", email="stacy.mwenda.one@hfcb.co.ke",
+            first_name="Stacy", last_name="Something")
+        get_user_model().objects.create_user(
+            username="stacy.two", password="x", email="stacy.mwenda.two@hfcb.co.ke",
+            first_name="Stacy", last_name="Otherthing")
+        _, unmatched = self.apply()
+        self.assertIn("Stacy Kendi Mwenda", [name for name, *_ in unmatched])
+        self.assertEqual(
+            get_user_model().objects.filter(
+                username__startswith="stacy.",
+                groups__name=rbac.AGENT_GROUP).count(), 0)
+
+    def test_benson_is_never_matched(self):
+        person = get_user_model().objects.create_user(
+            username="benson.mbugua", password="x",
+            email="Benson.Mbugua@hfgroup.co.ke",
+            first_name="Benson", last_name="Mbugua")
+        self.apply()
+        self.assertFalse(person.groups.filter(
+            name__in=[rbac.MANAGER_GROUP, rbac.AGENT_GROUP]).exists())
+
+    def test_it_reports_who_it_could_not_find(self):
+        """'It added nobody' with no explanation is what made the first
+        attempt impossible to debug."""
+        matched, unmatched = self.apply()
+        self.assertEqual(len(matched) + len(unmatched), 7)
+        self.assertTrue(unmatched)
+
+    def test_somebody_unmatched_is_emailed_rather_than_dropped(self):
+        from apps.service_desk.models import DeskRecipient
+
+        self.apply()
+        self.assertTrue(DeskRecipient.objects.filter(
+            email__iexact="Shekinah.Mwangi@hfgroup.co.ke").exists())
+
+    def test_the_misspelt_domain_is_never_used_for_mail(self):
+        from apps.service_desk.models import DeskRecipient
+
+        self.apply()
+        self.assertFalse(
+            DeskRecipient.objects.filter(email__icontains="hfgoup").exists())
+
+    def test_running_it_again_after_a_person_appears_picks_them_up(self):
+        """The whole point of making this re-runnable."""
+        self.apply()
+        person = get_user_model().objects.create_user(
+            username="bryan.mwaura", password="x", email="bryan.mwaura@hfcb.co.ke",
+            first_name="Bryan", last_name="Mwaura")
+        self.apply()
+        self.assertTrue(person.groups.filter(name=rbac.AGENT_GROUP).exists())
+
+    def test_the_command_runs_and_reports(self):
+        from io import StringIO
+
+        get_user_model().objects.create_user(
+            username="stacy.kendi", password="x", email="sk@hfcb.co.ke",
+            first_name="Stacy", last_name="Kendi")
+        out = StringIO()
+        call_command("service_desk_team", "--sync-roster", stdout=out, stderr=out)
+        output = out.getvalue()
+        self.assertIn("Roster:", output)
+        self.assertIn("stacy.kendi", output)
