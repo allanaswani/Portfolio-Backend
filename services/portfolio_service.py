@@ -19,6 +19,28 @@ current_year = (_now.year - 1) if (_now.month == 1 and _now.day < 10) else _now.
 previous_year = current_year - 1
 
 
+# ---------------------------------------------------------------------------
+# retail_allocated_portfolio has NO unique key on cust_id: a customer who has
+# been reallocated, or loaded twice, carries several rows. Joining hf_customer
+# straight onto it counts that customer's deposits and loans once per row, so
+# an RM's KPI tile reads high by exactly that multiple — which is why the tile
+# and the trend chart disagreed by more than anyone could explain.
+#
+# Every money query over an RM's book goes through this rather than selecting
+# cust_id from the raw table. Same rule and same tie-breaker as
+# apps/portfolio/rm_rollup.py: the most recently updated allocation wins, with
+# the physical row id breaking ties when updated_at is null or equal.
+#
+# It consumes the sales_code parameter ONCE, so a caller must supply the code
+# in the position where this block's %s falls.
+RM_BOOK = """
+    SELECT DISTINCT ON (cust_id) cust_id
+    FROM retail_allocated_portfolio
+    WHERE TRIM(sales_code::text) = TRIM(%s) AND cust_id IS NOT NULL
+    ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+"""
+
+
 def customers(sales_code):
     return HfCustomer.objects.raw(
         """
@@ -69,7 +91,12 @@ def customers_revenue_list_for_rm(sales_code):
                     COALESCE(ll.loan_loss, 0)
                 ) AS total_revenue,
                 CURRENT_DATE AS revenue_date
-            FROM retail_allocated_portfolio rap
+            FROM (
+                SELECT DISTINCT ON (cust_id) cust_id, customer_name, sales_code
+                FROM retail_allocated_portfolio
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
+            ) rap
             LEFT JOIN revenue r
                 ON rap.cust_id = r.cust_id
                 AND date_trunc('year', r.tmstamp) = date_trunc('year', now())
@@ -388,12 +415,8 @@ def rm_revenue(sales_code):
 
     The previous version returned only portfolio_rm_revenue.values(), so the ftp and
     loan_loss categories were absent and rendered as zeros on the frontend."""
-    query = """
-        WITH valid_portfolio AS (
-            SELECT cust_id
-            FROM retail_allocated_portfolio
-            WHERE sales_code = %s
-        ),
+    query = f"""
+        WITH valid_portfolio AS ({RM_BOOK}),
         valid_loans AS (
             SELECT *
             FROM loans_mom_ifrs_movement l

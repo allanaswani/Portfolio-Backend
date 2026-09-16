@@ -487,9 +487,15 @@ class TotalSummaryView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        sql = """
-            WITH valid_portfolio AS (
-                SELECT cust_id FROM retail_allocated_portfolio WHERE sales_code = %s
+        # valid_portfolio used to select cust_id straight from
+        # retail_allocated_portfolio, which has no unique key on it. A customer
+        # with two allocation rows was joined to hf_customer twice, so their
+        # deposits and loans were added twice — the tiles on /rm-portfolio read
+        # high by that multiple while the trend chart, which reads
+        # daily_balance_movement, did not. svc.RM_BOOK keeps one row per
+        # customer, the most recent allocation.
+        sql = f"""
+            WITH valid_portfolio AS ({svc.RM_BOOK}
             ), rm_revenue AS (
                 SELECT * FROM portfolio_rm_revenue WHERE sales_code = %s
             ), ftp AS (
