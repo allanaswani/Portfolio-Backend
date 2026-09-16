@@ -573,14 +573,61 @@ class NewCustomersYtdListView(APIView):
 
 @extend_schema(tags=["Portfolio — Customers"])
 class CustomerPerSegmentView(APIView):
+    """The RM's customers grouped by banking segment.
+
+    Was `RetailAllocatedPortfolio.values("main_segment")`, which failed three
+    ways at once and rendered a donut of "Unknown / Unknown / Unknown":
+
+    * ``main_segment`` on the allocation table is largely empty — the segment a
+      customer is actually filed under lives on ``hf_customer``, in
+      ``banking_segment`` or ``segment`` depending on which vocabulary loaded
+      the row (see core/segments.py);
+    * the key was named ``main_segment``, which no caller reads; and
+    * ``Count("cust_id")`` over retail_allocated_portfolio counts ALLOCATION
+      ROWS, so a reallocated customer was counted once per row — the same
+      fan-out that inflated the balance tiles.
+
+    Now: one row per customer via svc.RM_BOOK, segment read from hf_customer
+    with banking_segment preferred and segment as the fallback, and customers
+    with neither grouped as "Unassigned" rather than silently becoming a
+    nameless slice.
+
+    Segments are returned AS STORED, not folded to canonical labels.
+    core.segments exists to MATCH a TL's segment across vocabularies; folding
+    here would merge MASS and STANDARD into one "PB" slice, and an RM knows
+    those as different books.
+    """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Count
         profile = _get_profile(request.user)
-        qs = RetailAllocatedPortfolio.objects.filter(sales_code=profile.sales_code)
-        data = qs.values("main_segment").annotate(count=Count("cust_id"))
-        return Response(list(data))
+        sql = f"""
+            SELECT
+                COALESCE(
+                    NULLIF(BTRIM(c.banking_segment), ''),
+                    NULLIF(BTRIM(c.segment), ''),
+                    'Unassigned'
+                ) AS segment,
+                COUNT(DISTINCT c.cust_id) AS count
+            FROM hf_customer c
+            JOIN ({svc.RM_BOOK}) vp ON c.cust_id = vp.cust_id
+            GROUP BY 1
+            ORDER BY count DESC, segment
+        """
+        with connection.cursor() as cur:
+            cur.execute(sql, [profile.sales_code])
+            rows = cur.fetchall()
+        return Response([
+            {
+                "segment": r[0],
+                "count": int(r[1] or 0),
+                # The old key, kept so anything still reading it keeps working —
+                # it now carries the real value rather than a blank.
+                "main_segment": r[0],
+            }
+            for r in rows
+        ])
 
 
 # ---------------------------------------------------------------------------
