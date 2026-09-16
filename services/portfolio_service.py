@@ -459,34 +459,63 @@ def _closed_months():
     return out
 
 
+def _table_columns(table):
+    """The columns a warehouse table actually has, lower-cased.
+
+    Asked of the catalogue rather than assumed, because the month columns are
+    NOT a uniform monthly series: 2026 is monthly (jan_26_bal … dec_26_bal) but
+    older periods are QUARTERLY — dec_24, mar_25, jun_25, sep_25, dec_25 exist
+    and jul_25, aug_25, oct_25, nov_25 do not. Naming a month that was never
+    created makes the whole statement fail, which is how the first version of
+    this returned 0.00 for an RM sitting on 296 million.
+
+    pg_attribute via to_regclass, not information_schema.columns, which does
+    not list materialized views — the same call data health uses, so the two
+    cannot disagree about what is there."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT attname FROM pg_attribute "
+            "WHERE attrelid = to_regclass(%s) "
+            "AND attnum > 0 AND NOT attisdropped", [table],
+        )
+        return {r[0].lower() for r in cur.fetchall()}
+
+
 def _rm_balance(table, sales_code):
     """Latest trustworthy balance for an RM in one balance-movement table →
-    (value, as_at label). Returns (0.0, None) when the RM has no rows there."""
-    from django.db.utils import ProgrammingError
+    (value, as_at label). Returns (0.0, None) when the RM has no rows there.
 
-    months = _closed_months()
-    cols = ", ".join(
-        f"SUM({c}) FILTER (WHERE {c} > 0) AS {c}" for c, _ in months
-    )
+    Nothing here catches a database error. A balance that silently reads zero
+    is worse than one that fails loudly: the screen falls back to the last
+    plotted month and shows a stale figure as if it were current, which is
+    exactly the bug this function was written to fix."""
+    columns = _table_columns(table)
+    months = [(c, lbl) for c, lbl in _closed_months() if c in columns]
+
+    parts = [
+        f"SUM({c}) FILTER (WHERE {c} > 0) AS {c}" for c in ("yester_1_bal", "yester_2_bal")
+        if c in columns
+    ] + [f"SUM({c}) FILTER (WHERE {c} > 0) AS {c}" for c, _ in months]
+    if not parts:
+        return 0.0, None
+
+    # customer_segment is excluded the way the chart excludes it, but only when
+    # the table carries the column at all.
+    seg = ("AND COALESCE(customer_segment, '') <> ALL(%s)"
+           if "customer_segment" in columns else "")
+    params = [sales_code] + ([list(_BAL_EXCLUDE)] if seg else [])
+
     sql = f"""
-        SELECT
-            SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0) AS y1,
-            SUM(yester_2_bal) FILTER (WHERE yester_2_bal > 0) AS y2,
-            {cols}
+        SELECT {", ".join(parts)}
         FROM {table}
         WHERE TRIM(rm_code) = TRIM(%s)
-          AND COALESCE(customer_segment, '') <> ALL(%s)
+        {seg}
     """
     with connection.cursor() as cur:
-        try:
-            cur.execute(sql, [sales_code, list(_BAL_EXCLUDE)])
-        except ProgrammingError:
-            # An older warehouse without the full year of columns pre-created.
-            connection.rollback()
-            return 0.0, None
+        cur.execute(sql, params)
         row = dict(zip([c[0] for c in cur.description], cur.fetchone()))
 
-    ladder = [("y1", "yesterday"), ("y2", "2 days ago")] + [
+    ladder = [("yester_1_bal", "yesterday"), ("yester_2_bal", "2 days ago")] + [
         (c, f"as at {label}") for c, label in months
     ]
     for key, label in ladder:
