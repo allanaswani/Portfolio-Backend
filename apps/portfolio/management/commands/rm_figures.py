@@ -109,10 +109,18 @@ class Command(BaseCommand):
         w(f"allocation rows      {rows:>10}   for {custs} customers"
           f"{'   <-- DUPLICATES' if custs and rows > custs else ''}")
         w(f"customers on tiles   {n:>10}")
+        bal = svc.rm_balances(code)
         w("")
         w(f"{'':22}{'DEPOSITS':>18}{'LOANS':>18}")
-        w(f"{'tile (now)':22}{_fmt(dep)}{_fmt(loan)}")
-        w(f"{'tile (before fix)':22}{_fmt(old_dep)}{_fmt(old_loan)}")
+        w(f"{'TILE (now)':22}{_fmt(bal['total_deposit_balance'])}"
+          f"{_fmt(bal['total_loans'])}")
+        w(f"{'  as at':22}{bal['deposits_as_at'] or '-':>18}"
+          f"{bal['loans_as_at'] or '-':>18}")
+        w("")
+        w("what the tile used to read, from hf_customer (a customer-master")
+        w("aggregate on its own refresh cycle, not the RM's live position):")
+        w(f"{'  allocated book':22}{_fmt(dep)}{_fmt(loan)}")
+        w(f"{'  before dedupe':22}{_fmt(old_dep)}{_fmt(old_loan)}")
         w("")
         for label in ("deposits", "loans"):
             cnt, y1, y2 = chart[label]

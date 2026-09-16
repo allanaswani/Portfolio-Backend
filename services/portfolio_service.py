@@ -407,6 +407,109 @@ def _json_safe(row):
     }
 
 
+# ── Where an RM's balances actually come from ────────────────────────────────
+#
+# The "Total Deposits" tile used to be SUM(hf_customer.total_depost_balance)
+# over the RM's allocated customers. The trend chart underneath it plots
+# daily_balance_movement, filtered on the account's rm_code. For EM3579 on
+# 16 Sep 2026 those two read 314,673,297 and 296,503,082 — and the RM knew the
+# second one was theirs, because it is the figure the business quotes.
+#
+# hf_customer.total_depost_balance is a customer-master aggregate on its own
+# refresh cycle; it is not the RM's live position and never was. So the tile now
+# reads the same rows the chart plots, which also means the two can no longer
+# disagree by construction.
+#
+# Freshness is a ladder, because the overnight load does not always land:
+# yesterday, then the day before, then the last CLOSED month end. Whichever rung
+# answers is returned with the date it is as at, so the number never claims to
+# be fresher than it is — on that same day the loan file had not posted at all
+# and yester_1_bal was empty across all 233 of this RM's loan accounts.
+#
+# INTERNAL ACCOUNTS and VIRTUAL are excluded here for the same reason the chart
+# excludes them: they are not customer money.
+_BAL_EXCLUDE = ("INTERNAL ACCOUNTS", "VIRTUAL")
+
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun",
+           "jul", "aug", "sep", "oct", "nov", "dec")
+_MONTH_FULL = ("January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December")
+_MONTH_END = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _closed_months():
+    """(column, human label) for every closed month, most recent first.
+
+    The warehouse pre-creates the whole year's columns, so sep_26_bal exists and
+    holds a part-month total all through September. A month-end column for a
+    month that has not ended is not a month-end balance, so the running month is
+    never a rung on the ladder."""
+    today = datetime.now()
+    out = []
+    y, m = today.year, today.month          # m is the RUNNING month; start below it
+    for _ in range(14):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        day = _MONTH_END[m - 1]
+        if m == 2 and y % 4 == 0 and (y % 100 != 0 or y % 400 == 0):
+            day = 29
+        out.append((f"{_MONTHS[m - 1]}_{str(y)[-2:]}_bal",
+                    f"{day} {_MONTH_FULL[m - 1]} {y}"))
+    return out
+
+
+def _rm_balance(table, sales_code):
+    """Latest trustworthy balance for an RM in one balance-movement table →
+    (value, as_at label). Returns (0.0, None) when the RM has no rows there."""
+    from django.db.utils import ProgrammingError
+
+    months = _closed_months()
+    cols = ", ".join(
+        f"SUM({c}) FILTER (WHERE {c} > 0) AS {c}" for c, _ in months
+    )
+    sql = f"""
+        SELECT
+            SUM(yester_1_bal) FILTER (WHERE yester_1_bal > 0) AS y1,
+            SUM(yester_2_bal) FILTER (WHERE yester_2_bal > 0) AS y2,
+            {cols}
+        FROM {table}
+        WHERE TRIM(rm_code) = TRIM(%s)
+          AND COALESCE(customer_segment, '') <> ALL(%s)
+    """
+    with connection.cursor() as cur:
+        try:
+            cur.execute(sql, [sales_code, list(_BAL_EXCLUDE)])
+        except ProgrammingError:
+            # An older warehouse without the full year of columns pre-created.
+            connection.rollback()
+            return 0.0, None
+        row = dict(zip([c[0] for c in cur.description], cur.fetchone()))
+
+    ladder = [("y1", "yesterday"), ("y2", "2 days ago")] + [
+        (c, f"as at {label}") for c, label in months
+    ]
+    for key, label in ladder:
+        v = row.get(key)
+        if v and float(v) > 0:
+            return float(v), label
+    return 0.0, None
+
+
+def rm_balances(sales_code):
+    """An RM's deposit and loan position, from the rows the trend chart plots.
+
+    → {total_deposit_balance, deposits_as_at, total_loans, loans_as_at}"""
+    dep, dep_at = _rm_balance("daily_balance_movement", sales_code)
+    loan, loan_at = _rm_balance("loan_daily_balance_movement", sales_code)
+    return {
+        "total_deposit_balance": dep,
+        "deposits_as_at": dep_at,
+        "total_loans": loan,
+        "loans_as_at": loan_at,
+    }
+
+
 def rm_revenue(sales_code):
     """RM revenue breakdown by income_category — verbatim port of old core.revenue().
     Rows are (sales_code, income_category, value): the STORED portfolio_rm_revenue

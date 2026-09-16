@@ -514,17 +514,24 @@ class TotalSummaryView(APIView):
                 %s AS sales_code,
                 COALESCE((SELECT SUM(value) FROM rm_revenue), 0)
                     + COALESCE((SELECT ftp_value FROM ftp), 0)
-                    + COALESCE((SELECT loan_loss_value FROM loan_loss), 0) AS total_revenue,
-                SUM(total_depost_balance) AS total_deposit_balance,
-                SUM(total_loans) AS total_loans
+                    + COALESCE((SELECT loan_loss_value FROM loan_loss), 0) AS total_revenue
             FROM hf_customer
             JOIN valid_portfolio vp ON hf_customer.cust_id = vp.cust_id
+            LIMIT 1
         """
         sales_code = profile.sales_code
         with connection.cursor() as cur:
             cur.execute(sql, [sales_code, sales_code, sales_code])
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # The two balances no longer come from hf_customer. They are read from
+        # the same balance-movement rows the trend chart plots, so the tile and
+        # the graph under it are the same book. See svc.rm_balances.
+        balances = svc.rm_balances(sales_code)
+        if not rows:
+            rows = [{"sales_code": sales_code, "total_revenue": 0}]
+        rows[0].update(balances)
         return Response(rows)
 
 
