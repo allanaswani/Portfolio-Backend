@@ -8,6 +8,8 @@ performance, insurance, trade finance, bank-wide deposits/loans, and AI insights
 & analytics — so its answers are grounded in real data rather than guesses.
 """
 
+import logging
+
 from django.conf import settings
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
@@ -23,7 +25,38 @@ from .serializers import (
 )
 from .agent_tools import run_tool, tool_definitions
 
+logger = logging.getLogger(__name__)
+
 MODEL = "claude-opus-4-8"
+
+
+def _explain(exc):
+    """Turn an SDK exception into something the reader can act on.
+
+    Everything that went wrong here used to arrive as "temporarily
+    unavailable", which sends whoever reads it to check the network — and the
+    most common cause is not the network. An account out of credit is not a
+    temporary outage and will not fix itself.
+    """
+    text = str(exc)
+    lowered = text.lower()
+
+    if "credit balance is too low" in lowered:
+        return ("The AI assistant has run out of Anthropic credit. Nothing is "
+                "broken — the account needs topping up under Plans & Billing. "
+                "Everything else in the application is unaffected.")
+    if "authentication" in lowered or "invalid x-api-key" in lowered:
+        return ("The AI assistant's API key is not valid. Check "
+                "ANTHROPIC_API_KEY in the backend environment.")
+    if "rate_limit" in lowered or "429" in text:
+        return ("The AI assistant is being rate limited. Wait a moment and "
+                "try again.")
+    if "overloaded" in lowered:
+        return ("Anthropic is overloaded right now. Try again in a minute.")
+    if "connection" in lowered or "timed out" in lowered or "timeout" in lowered:
+        return ("The assistant could not reach Anthropic. This is usually the "
+                "server's outbound network rather than anything you did.")
+    return f"The assistant is temporarily unavailable: {exc}"
 MAX_TOOL_ROUNDS = 8  # safety cap on the agentic loop (broader tool surface now)
 
 SYSTEM_PROMPT = (
@@ -121,9 +154,10 @@ class AgentChatView(APIView):
         try:
             reply = self._run_claude(api_key, history, user_message,
                                      role_context=_role_context(request.user))
-        except Exception as exc:  # network/auth/etc — keep the UI usable
+        except Exception as exc:  # network/auth/billing — keep the UI usable
+            logger.exception("assistant call failed")
             return Response(
-                {"detail": f"The assistant is temporarily unavailable: {exc}"},
+                {"detail": _explain(exc)},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 

@@ -64,10 +64,13 @@ class Command(BaseCommand):
         key = str(getattr(settings, "ANTHROPIC_API_KEY", "") or "")
         self.stdout.write(self.style.MIGRATE_HEADING("Configuration"))
         if key:
-            # Never print a key. Its length and prefix are enough to tell a real
-            # one from an empty string or a pasted placeholder.
+            # Never print a key. Length plus the first and last few characters
+            # are enough to tell WHICH key is loaded — which is the question
+            # when one account has credit and another does not — without
+            # putting the secret in a terminal or a paste.
             self.stdout.write(
-                f"  ANTHROPIC_API_KEY  set ({len(key)} chars, starts {key[:7]}…)")
+                f"  ANTHROPIC_API_KEY  set ({len(key)} chars, "
+                f"{key[:11]}...{key[-4:]})")
         else:
             self.stdout.write(self.style.ERROR("  ANTHROPIC_API_KEY  NOT SET"))
 
@@ -181,5 +184,10 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.ERROR(
                 "  The call fails with the bank's own tools alone, so this is not "
-                "the external lookups. It is the key, the model or the SDK "
-                "version — the error above says which."))
+                "the external lookups. It is the key, the account's credit, the "
+                "model or the SDK version — the error above says which."))
+            self.stdout.write(
+                "  If it says 'credit balance is too low', nothing here is "
+                "misconfigured: that Anthropic account is out of credit. Top it "
+                "up, or point ANTHROPIC_API_KEY at an account that has some — "
+                "the key fingerprint above says which one is loaded.")

@@ -206,3 +206,49 @@ class RequestShapeTests(TestCase):
         self.assertEqual(
             {k.lower(): v for k, v in captured["headers"].items()}.get("x-api-key"),
             KEY)
+
+
+class FailureMessageTests(TestCase):
+    """What a person reads when the assistant cannot answer.
+
+    Every failure used to arrive as "temporarily unavailable", which sends the
+    reader to check the network — and the most common cause is an account out
+    of credit, which is not temporary and will not fix itself.
+    """
+
+    def explain(self, message):
+        from apps.agent.views import _explain
+
+        return _explain(Exception(message))
+
+    def test_no_credit_says_so_plainly(self):
+        out = self.explain(
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': 'Your credit balance is too low "
+            "to access the Anthropic API. Please go to Plans & Billing to "
+            "upgrade or purchase credits.'}}")
+        self.assertIn("run out of Anthropic credit", out)
+        self.assertIn("Plans & Billing", out)
+        self.assertNotIn("temporarily unavailable", out)
+
+    def test_it_says_the_rest_of_the_application_is_fine(self):
+        """Otherwise 'the assistant is down' reads as 'the tool is down'."""
+        out = self.explain("Your credit balance is too low")
+        self.assertIn("unaffected", out)
+
+    def test_a_bad_key_points_at_the_key(self):
+        out = self.explain("Error code: 401 - authentication_error: invalid x-api-key")
+        self.assertIn("ANTHROPIC_API_KEY", out)
+
+    def test_rate_limiting_says_to_wait(self):
+        out = self.explain("Error code: 429 - rate_limit_error")
+        self.assertIn("rate limited", out)
+
+    def test_a_network_failure_names_the_network(self):
+        out = self.explain("Connection error.")
+        self.assertIn("outbound network", out)
+
+    def test_anything_unrecognised_still_carries_the_detail(self):
+        """A message the reader cannot act on is still better than none."""
+        out = self.explain("something nobody anticipated")
+        self.assertIn("something nobody anticipated", out)
