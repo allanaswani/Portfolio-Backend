@@ -337,6 +337,14 @@ ETL_REQUEST_DIR = env("ETL_REQUEST_DIR", default=str(BASE_DIR / "etl_requests"))
 # OpenAI
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 
+# TinyFish — public web search and page fetch for the assistant (apps.agent).
+#
+# ABSENT BY DEFAULT, and absent means the two external tools are never offered
+# to the model. Setting this turns on a path that sends a query OUTSIDE the
+# bank to a third party, so it is a deliberate act needing whatever sign-off
+# Compliance and Security require — not a default. See apps/agent/web_lookup.py.
+TINYFISH_API_KEY = env("TINYFISH_API_KEY", default="")
+
 # Anthropic (Claude) — powers the data-grounded AI agent (apps.agent)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 

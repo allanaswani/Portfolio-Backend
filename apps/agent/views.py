@@ -21,7 +21,7 @@ from .serializers import (
     AgentChatRequestSerializer,
     AgentChatResponseSerializer,
 )
-from .agent_tools import TOOL_DEFINITIONS, run_tool
+from .agent_tools import run_tool, tool_definitions
 
 MODEL = "claude-opus-4-8"
 MAX_TOOL_ROUNDS = 8  # safety cap on the agentic loop (broader tool surface now)
@@ -154,7 +154,7 @@ class AgentChatView(APIView):
                 # Adaptive thinking; effort defaults to "high" (the quality setting).
                 thinking={"type": "adaptive"},
                 system=system,
-                tools=TOOL_DEFINITIONS,
+                tools=tool_definitions(),
                 messages=working,
             )
             if response.stop_reason != "tool_use":

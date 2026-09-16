@@ -588,9 +588,39 @@ _DISPATCH = {
 }
 
 
+# ── Outward-facing lookups ───────────────────────────────────────────────────
+# Every tool above reads this bank's own warehouse. These two do not: they reach
+# a third-party service, so they exist ONLY when TINYFISH_API_KEY is set. With
+# no key the definitions are never offered to the model, which cannot then try
+# and fail — and nothing leaves the bank until somebody deliberately turns it
+# on. See apps/agent/web_lookup.py for the guard on what may be sent.
+
+def tool_definitions():
+    """The tools to offer the model for this deployment.
+
+    A function rather than a constant because whether the external lookups
+    exist is decided by configuration, and a module-level list would freeze
+    that at import time.
+    """
+    from . import web_lookup
+
+    if web_lookup.enabled():
+        return TOOL_DEFINITIONS + web_lookup.TOOL_DEFINITIONS
+    return TOOL_DEFINITIONS
+
+
 def run_tool(name, tool_input):
     """Execute a tool by name and return its result as a JSON string."""
+    from . import web_lookup
+
     fn = _DISPATCH.get(name)
+    if fn is None and name in web_lookup.DISPATCH:
+        # Refuse rather than run if the key was removed after the model was
+        # given the definition — configuration is the control, not the prompt.
+        if not web_lookup.enabled():
+            return json.dumps(
+                {"error": "External lookup is not enabled on this server."})
+        fn = web_lookup.DISPATCH[name]
     if fn is None:
         return json.dumps({"error": f"Unknown tool '{name}'."})
     try:
