@@ -365,7 +365,7 @@ _STATUS_LOAN = ["active", "closed", "default", "restructured"]
 
 TOOL_DEFINITIONS = [
     {
-        "name": "get_portfolio_dashboard",
+        "name": "get_mortgage_dashboard",
         "description": "Get headline mortgage portfolio KPIs: active/total loans, "
                        "outstanding balance, disbursed principal, interest earned, "
                        "repayments due in 30 days, overdue installments, application "
@@ -566,6 +566,8 @@ TOOL_DEFINITIONS = [
 ]
 
 _DISPATCH = {
+    "get_mortgage_dashboard": lambda **kw: _portfolio_dashboard(),
+    # The old name, kept so a conversation mid-flight does not break.
     "get_portfolio_dashboard": lambda **kw: _portfolio_dashboard(),
     "get_lead_funnel": lambda **kw: _lead_funnel(),
     "get_field_leaderboard": lambda **kw: _field_leaderboard(),
@@ -602,16 +604,34 @@ def tool_definitions():
     exist is decided by configuration, and a module-level list would freeze
     that at import time.
     """
-    from . import web_lookup
+    from . import rm_tools, web_lookup
 
+    # The signed-in person's own book comes FIRST. A relationship manager
+    # asking about "my portfolio" was being answered from the mortgage
+    # module, because that tool was called get_portfolio_dashboard and
+    # nothing read their actual book.
+    tools = rm_tools.TOOL_DEFINITIONS + TOOL_DEFINITIONS
     if web_lookup.enabled():
-        return TOOL_DEFINITIONS + web_lookup.TOOL_DEFINITIONS
-    return TOOL_DEFINITIONS
+        tools = tools + web_lookup.TOOL_DEFINITIONS
+    return tools
 
 
-def run_tool(name, tool_input):
-    """Execute a tool by name and return its result as a JSON string."""
-    from . import web_lookup
+def run_tool(name, tool_input, user=None):
+    """Execute a tool by name and return its result as a JSON string.
+
+    ``user`` is passed only to the tools that are scoped to the person asking.
+    Everything else is bank-wide by design and takes no user, so a tool cannot
+    accidentally widen its own scope by ignoring the argument.
+    """
+    from . import rm_tools, web_lookup
+
+    if name in rm_tools.DISPATCH:
+        try:
+            return json.dumps(
+                rm_tools.DISPATCH[name](user=user, **(tool_input or {})),
+                default=str)
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Tool '{name}' failed: {exc}"})
 
     fn = _DISPATCH.get(name)
     if fn is None and name in web_lookup.DISPATCH:

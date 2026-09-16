@@ -24,10 +24,13 @@ from .serializers import (
     AgentChatResponseSerializer,
 )
 from .agent_tools import run_tool, tool_definitions
+# Prose, changing on its own schedule — see apps/agent/prompt.py.
+from .prompt import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-opus-4-8"
+MAX_TOOL_ROUNDS = 8  # safety cap on the agentic loop
 
 
 def _explain(exc):
@@ -57,35 +60,6 @@ def _explain(exc):
         return ("The assistant could not reach Anthropic. This is usually the "
                 "server's outbound network rather than anything you did.")
     return f"The assistant is temporarily unavailable: {exc}"
-MAX_TOOL_ROUNDS = 8  # safety cap on the agentic loop (broader tool surface now)
-
-SYSTEM_PROMPT = (
-    "You are the HF Group enterprise assistant — a single data-grounded co-pilot for the "
-    "whole HF Group platform, used by relationship managers, mortgage officers, collections "
-    "and recovery, finance, HFDI project managers, branch and zonal managers, EXCO and the "
-    "Group CEO's office.\n\n"
-    "You have tools that read the live system across ALL modules:\n"
-    "• Mortgages — portfolio KPIs, lead funnel, field-agent leaderboard, loans, borrowers, "
-    "leads, applications.\n"
-    "• Collections & recovery — case status, promised-to-pay, officer activity.\n"
-    "• HFDI — project sales (MTD/YTD volume, value, income).\n"
-    "• Rights issue — applications, payments, allotments, refunds.\n"
-    "• EXCO initiatives — status, priority, budget, progress.\n"
-    "• Staff performance — monthly scorecards and top performers.\n"
-    "• Client briefs — HFCB memos by status.\n"
-    "• Insurance & trade finance books.\n"
-    "• Bank-wide (GCEO) deposit and loan movement by segment.\n"
-    "• AI business insights and analytics snapshots.\n\n"
-    "When a question concerns figures, performance, or specific records, CALL A TOOL FIRST and "
-    "base your answer strictly on what it returns — never invent numbers. Choose the tool whose "
-    "description best matches the question; you may call several. If a tool returns an error or "
-    "no data, say so plainly rather than guessing. Note that mortgage-specific tools cover only "
-    "the new Mortgages module, while the bank-wide tools cover the wider HF book.\n\n"
-    "All monetary values are Kenyan Shillings (KES). Be concise and professional: lead with the "
-    "answer, then the supporting figures. Use short tables or bullet lists for multiple rows. If "
-    "a question is ambiguous, make a reasonable assumption and state it rather than asking a "
-    "clarifying question."
-)
 
 
 def _role_context(user):
@@ -153,7 +127,8 @@ class AgentChatView(APIView):
 
         try:
             reply = self._run_claude(api_key, history, user_message,
-                                     role_context=_role_context(request.user))
+                                     role_context=_role_context(request.user),
+                                     user=request.user)
         except Exception as exc:  # network/auth/billing — keep the UI usable
             logger.exception("assistant call failed")
             return Response(
@@ -164,7 +139,8 @@ class AgentChatView(APIView):
         return self._persist_and_respond(conversation, history, user_message, reply)
 
     # ── Claude agentic loop ──────────────────────────────────────────────────
-    def _run_claude(self, api_key, history, user_message, role_context=""):
+    def _run_claude(self, api_key, history, user_message, role_context="",
+                    user=None):
         import anthropic
 
         client = anthropic.Anthropic(api_key=api_key)
@@ -201,7 +177,7 @@ class AgentChatView(APIView):
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": run_tool(block.name, block.input),
+                        "content": run_tool(block.name, block.input, user=user),
                     })
             working.append({"role": "user", "content": tool_results})
 

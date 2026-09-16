@@ -28,7 +28,7 @@ class SwitchedOffTests(TestCase):
     @override_settings(TINYFISH_API_KEY="")
     def test_the_bank_tools_are_still_all_there(self):
         names = {t["name"] for t in agent_tools.tool_definitions()}
-        self.assertIn("get_portfolio_dashboard", names)
+        self.assertIn("get_mortgage_dashboard", names)
         self.assertIn("get_trade_finance_summary", names)
 
     @override_settings(TINYFISH_API_KEY="")
