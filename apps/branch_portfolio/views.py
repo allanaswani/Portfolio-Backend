@@ -36,7 +36,7 @@ from apps.gceo_dashboard.models import (
     DailyBalanceMovement, LoanDailyBalanceMovement, Revenue, LoansHistory,
 )
 from core.pagination import StandardPagination
-from core.date_utils import cy, py, _yester_case, _prev_month_case
+from core.date_utils import cy, py, _yester_case, _prev_month_case, branch_code_for
 
 import django_filters.rest_framework
 
@@ -979,6 +979,88 @@ class BranchPropertyHoldingsListView(APIView):
             }
             for i, r in enumerate(rows)
         ])
+
+
+@extend_schema(tags=["Branch Portfolio — Property Holdings"])
+class BranchPropertyTargetsView(APIView):
+    """The property PLAN — how many units each branch is expected to sell.
+
+    The Property Holdings page could show what has been sold but had nothing to
+    judge it against, because the plan lived in a spreadsheet. It is now a table
+    (staff_management.BranchPropertyTarget, seeded with the 2026 plan).
+
+    Read this carefully before wiring it to a progress bar: the holdings above
+    are ORG-WIDE. The CRM tables carry no usable customer identifier, so a unit
+    sold cannot be attributed to a branch at all. That means a per-branch
+    ACTUAL does not exist yet, and this endpoint deliberately does not invent
+    one — it returns the plan, and an actual only at the bank level, where the
+    two are measured on the same population.
+
+    ``?year=`` selects a plan year (default: the latest loaded).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.models import BranchPropertyTarget
+
+        qs = BranchPropertyTarget.objects.all()
+        year = request.query_params.get("year")
+        if year:
+            try:
+                year = int(year)
+            except ValueError:
+                return Response({"detail": "year must be a number."}, status=400)
+        else:
+            year = qs.order_by("-year").values_list("year", flat=True).first()
+
+        rows = list(qs.filter(year=year).order_by("staff_zone", "staff_branch")) if year else []
+
+        # Which branch is the caller's, so the UI can mark their row. This is a
+        # HINT, not a filter: the plan is not confidential and a branch manager
+        # comparing themselves to the others is the point of a zone target.
+        profile = Profile.objects.filter(user_id=request.user.id).first()
+        own_code = branch_code_for(getattr(profile, "branch", None)) if profile else None
+
+        # Bank-level actual, on the same org-wide population the tiles use.
+        with connection.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) {_PROPERTY_HOLDINGS_FROM}")
+            sold_total = int(cur.fetchone()[0] or 0)
+
+        target_total = sum(float(r.target_properties) for r in rows)
+
+        zones = {}
+        for r in rows:
+            zones.setdefault(r.staff_zone or "Unzoned", 0.0)
+            zones[r.staff_zone or "Unzoned"] += float(r.target_properties)
+
+        return Response({
+            "year": year,
+            "branches": [
+                {
+                    "brn_code":          r.brn_code,
+                    "branch":            r.staff_branch,
+                    "zone":              r.staff_zone,
+                    "target_properties": float(r.target_properties),
+                    "is_own_branch":     own_code is not None and r.brn_code == own_code,
+                }
+                for r in rows
+            ],
+            "zones": [
+                {"zone": z, "target_properties": v}
+                for z, v in sorted(zones.items())
+            ],
+            "target_total": target_total,
+            # Bank-wide units held in the CRM. Named so nobody reads it as this
+            # branch's number, and paired with the note that says why.
+            "bank_sold_total": sold_total,
+            "actual_scope": "bank",
+            "actual_note": (
+                "Units sold cannot yet be attributed to a branch: the CRM "
+                "tables carry no customer identifier. The figure shown is "
+                "bank-wide, against the bank-wide plan."
+            ),
+        })
 
 
 # ══════════════════════════════════════════════════════════════════════════════

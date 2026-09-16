@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 # Treat January 1-9 as still belonging to previous year (ETL grace period)
@@ -108,3 +109,41 @@ BRN_CASE = f"""
         ELSE 'HEAD OFFICE'
     END
 """
+
+# The same mapping as a Python dict, PARSED from the SQL above rather than
+# typed out a second time - two hand-maintained copies of 24 branch codes drift,
+# and the drift is silent. Note the \s+: the SQL pads single-digit codes with a
+# second space, and a regex expecting exactly one space silently found only 16
+# of the 24 branches.
+BRANCH_BY_CODE = {
+    int(code): name
+    for code, name in re.findall(
+        r"brn_code::text = '(\d+)'\s+THEN '([^']+)'", BRN_CASE
+    )
+}
+CODE_BY_BRANCH = {name: code for code, name in BRANCH_BY_CODE.items()}
+
+# Names that other systems use for a branch this file calls something else.
+# Spelled out one by one, deliberately. The first version of branch_code_for
+# matched on any shared word once "BRANCH" was stripped, and resolved
+# "THIKA ROAD MALL-TRM BRANCH" to THIKA (500) instead of TRM (260) - a target
+# quietly landing on the wrong branch is worse than one that does not resolve.
+BRANCH_ALIASES = {
+    "SAMEER BUSINESS PARK BRANCH": 270,   # the property plan's name for SAMEER
+    "THIKA ROAD MALL-TRM BRANCH":  260,   # ... and for TRM
+    "HEAD OFFICE BRANCH":          100,   # Profile.BRANCH_CHOICES spelling
+    "HF WHIZZ BRANCH":             109,
+}
+
+
+def branch_code_for(name):
+    """Warehouse brn_code for a branch NAME, or None if it is not one we know.
+
+    Exact match, then the alias table. Nothing fuzzy: returning None lets a
+    caller say "no target for this branch", which is recoverable, whereas a
+    wrong code puts one branch's plan on another branch's page.
+    """
+    if not name:
+        return None
+    key = str(name).strip().upper()
+    return CODE_BY_BRANCH.get(key) or BRANCH_ALIASES.get(key)

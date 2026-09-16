@@ -87,4 +87,5 @@ urlpatterns = [
     path("property_holdings/summary/",    views.BranchPropertyHoldingsSummaryView.as_view()),
     path("property_holdings/by_project/", views.BranchPropertyHoldingsByProjectView.as_view()),
     path("property_holdings/list/",       views.BranchPropertyHoldingsListView.as_view()),
+    path("property_holdings/targets/",    views.BranchPropertyTargetsView.as_view()),
 ]

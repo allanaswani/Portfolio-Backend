@@ -1005,6 +1005,83 @@ class BranchDepartmentCost(models.Model):
         return f"{self.branch} · {self.department} · {self.year}-{self.month:02d}"
 
 
+class BranchPropertyTarget(models.Model):
+    """How many HFCB-Properties units a branch is expected to sell in a year.
+
+    The Property Holdings page could show what HAS been sold but had nothing to
+    judge it against — the plan lived in a spreadsheet. These are those numbers:
+    22 branches, carrying a zone and a unit target that sums to 340 for 2026.
+
+    ``target_properties`` is deliberately a decimal, not an integer. The plan
+    apportions a whole-bank figure across branches by weight, so the source
+    values are fractional (Rehani 35.664…, Embu 7.132…) and they are meant to
+    add up to the bank number exactly. Rounding each branch to a whole unit on
+    the way in would lose that — 22 roundings do not sum back to 340. The UI
+    rounds for display; the stored figure stays the plan.
+
+    ``brn_code`` is the warehouse branch code, the same key
+    core.date_utils.BRN_CASE maps to names, so a target can be joined to
+    holdings without matching on branch text. ``staff_branch`` is kept as the
+    name the plan used, which is not always the name the warehouse uses
+    (the plan says "SAMEER BUSINESS PARK BRANCH", BRN_CASE says "SAMEER
+    BRANCH"), and keeping both means neither has to be corrected to fit.
+    """
+
+    brn_code = models.IntegerField(
+        db_index=True, verbose_name="Branch code",
+        help_text="Warehouse brn_code, e.g. 200 for REHANI BRANCH.",
+    )
+    staff_branch = models.CharField(
+        max_length=120, verbose_name="Branch",
+        help_text="Branch name as the plan spells it.",
+    )
+    staff_zone = models.CharField(
+        max_length=60, blank=True, default="", db_index=True,
+        verbose_name="Zone", help_text="e.g. Zone A.",
+    )
+    year = models.IntegerField(
+        db_index=True, validators=[MinValueValidator(2000)],
+        help_text="Plan year the target applies to.",
+    )
+    # 8 decimal places, chosen not guessed: the 22 plan values are thirteenths
+    # and elevenths (denominator 143), and 8dp is the shortest scale at which
+    # they still sum to exactly 340. At 6dp they sum to 340.000001, at 10dp to
+    # 340.0000000001 - a target that does not add up to the bank number is the
+    # first thing anyone checking the plan will notice.
+    target_properties = models.DecimalField(
+        max_digits=14, decimal_places=8, default=0,
+        verbose_name="Target properties",
+        help_text="Units planned for the year. Fractional by design.",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "branch_property_target"
+        constraints = [
+            # One target per branch per year: re-uploading a plan updates the
+            # row rather than stacking a second one behind it.
+            models.UniqueConstraint(
+                fields=["brn_code", "year"],
+                name="uniq_branch_property_target_year",
+            ),
+            models.CheckConstraint(
+                check=Q(target_properties__gte=0),
+                name="branch_property_target_non_negative",
+            ),
+        ]
+        ordering = ["-year", "staff_zone", "staff_branch"]
+        verbose_name = "Branch property target"
+        verbose_name_plural = "Branch property targets"
+
+    def __str__(self):
+        return f"{self.staff_branch} · {self.year} · {self.target_properties}"
+
+
 # ── Scorecard automation engine (parallel subsystem) ───────────────────────────
 # Imported here so Django discovers these models under the staff_management app.
 # Their tables are namespaced sc_* and do NOT collide with the redesigned
