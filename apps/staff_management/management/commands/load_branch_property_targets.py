@@ -16,7 +16,11 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from apps.staff_management.models import BranchPropertyTarget
+from core.date_utils import branch_code_for
+
+from apps.staff_management.models import (
+    BranchFinalEmployeeDmcData, BranchPropertyTarget,
+)
 
 REQUIRED = ["brn_code", "staff_branch", "staff_zone", "target_properties"]
 
@@ -115,7 +119,15 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("dry run — nothing written"))
             return
 
+        dmc_by_name = {}
+        for row in (BranchFinalEmployeeDmcData.objects
+                    .filter(brn_code__isnull=True).exclude(staff_branch="")):
+            code = branch_code_for(row.staff_branch)
+            if code is not None:
+                dmc_by_name.setdefault(code, []).append(row.pk)
+
         created = updated = 0
+        dmc_rows, dmc_missing = 0, []
         with transaction.atomic():
             for brn, branch, zone, target in rows:
                 _, made = BranchPropertyTarget.objects.update_or_create(
@@ -130,6 +142,39 @@ class Command(BaseCommand):
                 created += made
                 updated += not made
 
+                # Keep the branch DMC row in step. That table is what
+                # targets.py reads for the bank / zone / branch scopes, so a
+                # plan that lives only in BranchPropertyTarget would load
+                # cleanly and change nothing anybody can see.
+                #
+                # On brn_code, never on the name: the plan calls 270 "SAMEER
+                # BUSINESS PARK BRANCH" where the warehouse says "SAMEER
+                # BRANCH". A row is updated, never created — those rows carry
+                # every other target the bank sets.
+                hit = BranchFinalEmployeeDmcData.objects.filter(
+                    brn_code=brn).update(target_properties=target)
+                # The DMC upload upserts on staff_branch alone, so brn_code can
+                # be null. Fall back to the name, resolved through the alias
+                # table in core.date_utils — exact matches only, so a branch
+                # that cannot be resolved is reported rather than guessed at.
+                if not hit and brn in dmc_by_name:
+                    hit = BranchFinalEmployeeDmcData.objects.filter(
+                        pk__in=dmc_by_name[brn]).update(target_properties=target)
+                if hit:
+                    dmc_rows += hit
+                else:
+                    dmc_missing.append((brn, branch))
+
         self.stdout.write(self.style.SUCCESS(
             f"{o['year']}: {created} created, {updated} updated."
         ))
+        self.stdout.write(
+            f"branch_final_employee_dmc_data: {dmc_rows} row(s) carry the target."
+        )
+        if dmc_missing:
+            self.stdout.write(self.style.WARNING(
+                f"{len(dmc_missing)} planned branch(es) have no DMC row, so the "
+                "target will not reach the branch/zone/bank scopes for them:"
+            ))
+            for brn, branch in sorted(dmc_missing):
+                self.stdout.write(f"  {brn:>4}  {branch}")

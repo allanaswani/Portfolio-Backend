@@ -274,6 +274,23 @@ class BranchFinalEmployeeDmcData(models.Model):
     target_banca_non_life = models.BigIntegerField(default=0, blank=True, null=True)
     target_mortgage_mrkt_rate = models.BigIntegerField(default=0, blank=True, null=True)
     target_mortgage_non_mrkt_rate = models.BigIntegerField(default=0, blank=True, null=True)
+    # HFCB-Properties units planned for the year. The catalogue in targets.py
+    # has carried a ("properties", "target_properties", ...) entry all along;
+    # the column existed only on branch_employee_dmc_data, so at branch, zone
+    # and bank scope the metric was silently skipped — rollup() intersects the
+    # catalogue with the columns a table actually has.
+    #
+    # DECIMAL, where the staff table's copy is a BigInteger, and that is
+    # deliberate. The plan apportions the bank's 340 units across 22 branches
+    # by weight, so the branch figures are fractional (Rehani 35.664...). Round
+    # them on the way in and the 22 rows sum to 341 — the bank would be reading
+    # a plan one unit larger than the one it set. Stored exact; prorate()
+    # already rounds "number" units for display, and it rounds AFTER summing,
+    # so the bank scope still reports a whole 340.
+    target_properties = models.DecimalField(
+        max_digits=14, decimal_places=8, blank=True, null=True,
+        help_text="Property units planned for the year. Fractional by design.",
+    )
     history = HistoricalRecords()
 
     class Meta:
