@@ -1,5 +1,6 @@
 from django.db import models
 from django.db.models import Q, F
+from django.db.models.functions import Lower
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
@@ -404,6 +405,70 @@ class InsurancePolicy(models.Model):
         verbose_name = "Insurance Policy"
         verbose_name_plural = "Insurance Policies"
         ordering = ["-starting_date"]
+
+
+class PremiumTypeMapping(models.Model):
+    """How one insurance product is classified — the lookup behind the premium
+    and category columns on an insurance policy.
+
+    `insurance_policies.product` is free text typed by whoever loaded the
+    policy, so the classification cannot live on the policy row: it would have
+    to be re-decided every upload, by hand, per row. This table decides it once
+    per product.
+
+    ``product`` is unique CASE-INSENSITIVELY. The plan rows arrive spelled both
+    ways in the same file — "ipp" lowercase beside "WHOLE LIFE" and "IDD" in
+    capitals — so a plain unique constraint would happily accept "IPP" as a
+    second, separate mapping and leave the lookup with two answers and no rule
+    for choosing.
+
+    The four classification columns are free text on purpose. The values seen so
+    far are vic_check "vic", life_policy_check "life", premium_type
+    "non-motor" and policy_category "Life", but this is an insurance product
+    list that Bancassurance extends, and a choices= list would reject the next
+    product rather than record it. Validation belongs with the people who own
+    the vocabulary, not in a column definition written from three rows.
+    """
+
+    product = models.CharField(
+        max_length=255, verbose_name="Product",
+        help_text="Product name as it appears on the policy, e.g. WHOLE LIFE.",
+    )
+    vic_check = models.CharField(
+        max_length=100, blank=True, default="",
+        help_text='Observed value: "vic".',
+    )
+    life_policy_check = models.CharField(
+        max_length=100, blank=True, default="",
+        help_text='Observed value: "life".',
+    )
+    premium_type = models.CharField(
+        max_length=100, blank=True, default="", db_index=True,
+        help_text='Observed value: "non-motor".',
+    )
+    policy_category = models.CharField(
+        max_length=100, blank=True, default="", db_index=True,
+        help_text='Observed value: "Life".',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "premium_types_mapping"
+        constraints = [
+            models.UniqueConstraint(
+                Lower("product"), name="uniq_premium_types_mapping_product"
+            ),
+        ]
+        ordering = ["product"]
+        verbose_name = "Premium type mapping"
+        verbose_name_plural = "Premium type mappings"
+
+    def __str__(self):
+        return f"{self.product} → {self.premium_type or '—'} / {self.policy_category or '—'}"
 
 
 class TradeFinanceData(models.Model):

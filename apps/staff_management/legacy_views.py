@@ -32,7 +32,7 @@ from .models import (
     DailyDormancyConvertedAccount, MerchantBankTillManualData, IapplyLoanApproval,
     Product, StaffEmployeeData, LeaveRecord, EmployeeRoleHistory, RmKPIBaseSummary,
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
-    BranchDepartmentCost,
+    BranchDepartmentCost, PremiumTypeMapping,
 )
 from apps.portfolio.models import RetailAllocatedPortfolio
 from .serializers import (
@@ -45,6 +45,7 @@ from .serializers import (
     EmployeeRoleHistorySerializer, RmKPIBaseSummarySerializer,
     MissingEmployeeActualSerializer, TelesalesStaffSerializer,
     TelesalesDormantTillsAllocationSerializer, BranchDepartmentCostSerializer,
+    PremiumTypeMappingSerializer,
 )
 
 TAG = ["Staff Management — Legacy Data"]
@@ -227,6 +228,78 @@ class InsurancePolicyCsvUploadView(AmendingCsvUploadView):
         row["ending_date"] = self.parse_date(row.get("ending_date"), "%d/%m/%Y", "%Y-%m-%d")
         for field in self._MONEY:
             row[field] = self.to_float(row.get(field))
+
+
+# ── Premium type mapping (managed) ────────────────────────────────────────────
+# What kind of product each insurance product IS. insurance_policies.product is
+# free text typed per upload, so the classification cannot live on the policy
+# row — it would be re-decided every load. This decides it once per product.
+
+@extend_schema(tags=TAG)
+class PremiumTypeMappingListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = PremiumTypeMappingSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["product", "premium_type", "policy_category",
+                        "vic_check", "life_policy_check"]
+    queryset = PremiumTypeMapping.objects.all().order_by("product")
+
+    def perform_create(self, serializer):
+        serializer.save(updated_by=self.request.user.get_username())
+
+
+@extend_schema(tags=TAG)
+class PremiumTypeMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = PremiumTypeMappingSerializer
+    queryset = PremiumTypeMapping.objects.all()
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user.get_username())
+
+
+@extend_schema(tags=TAG)
+class PremiumTypeMappingCsvUploadView(AmendingCsvUploadView):
+    """Upsert on product, case-insensitively.
+
+    Deliberately NOT the replace-by-year load the policy and trade-finance
+    uploads use. Those are periodic extracts where the file IS the year; this is
+    a reference list that grows. Emptying it because somebody uploaded five
+    corrections would unclassify every other product, and nothing on the screen
+    would say so.
+
+    A product already in the table is updated in place, so re-uploading the same
+    file is a no-op rather than a constraint violation.
+    """
+
+    model = PremiumTypeMapping
+    serializer_class = PremiumTypeMappingSerializer
+    result_filename = "premium_types_mapping_upload_results"
+    excluded_columns = ("id", "updated_at", "updated_by")
+
+    def amend_row(self, row):
+        for field in ("product", "vic_check", "life_policy_check",
+                      "premium_type", "policy_category"):
+            row[field] = (row.get(field) or "").strip()
+
+    def build_serializer(self, row):
+        """Bind to the existing mapping when this product is already there.
+
+        `id` is read-only on a ModelSerializer, so putting one in the row does
+        nothing — the serializer still creates, and the create trips the
+        case-insensitive constraint. Binding the INSTANCE is what makes it an
+        update, and it also lets the serializer's own uniqueness check exclude
+        the row being edited from the clash it looks for.
+
+        Matched case-insensitively, exactly as the constraint is: a file saying
+        "IpP" corrects the "ipp" already mapped rather than adding a rival.
+        """
+        instance = PremiumTypeMapping.objects.filter(
+            product__iexact=row.get("product") or "").first()
+        if instance is not None:
+            return self.serializer_class(instance, data=row)
+        return self.serializer_class(data=row)
 
 
 # ── Trade finance (managed) ───────────────────────────────────────────────────

@@ -7,6 +7,7 @@ from .models import (
     # Ported legacy models
     BranchEmployeeDmcData, BranchFinalEmployeeDmcData, Drawdown, DrawdownDaily,
     InsurancePolicy, TradeFinanceData, CustMonthlyFtp, DailySalesAccountsWithCto,
+    PremiumTypeMapping,
     DailyDormancyConvertedAccount, MerchantBankTillManualData, IapplyLoanApproval,
     Product, StaffEmployeeData, LeaveRecord, EmployeeRoleHistory, RmKPIBaseSummary,
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
@@ -121,6 +122,31 @@ class InsurancePolicySerializer(serializers.ModelSerializer):
     class Meta:
         model = InsurancePolicy
         fields = "__all__"
+
+
+class PremiumTypeMappingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PremiumTypeMapping
+        fields = "__all__"
+        read_only_fields = ("updated_at",)
+
+    def validate_product(self, value):
+        """One mapping per product, compared case-insensitively.
+
+        The model constraint already enforces this, but reaching it raises
+        IntegrityError and the client gets a 500. Checked here so the answer is
+        a 400 naming the product that is already mapped."""
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Product is required.")
+        clash = PremiumTypeMapping.objects.filter(product__iexact=value)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                f'"{clash.first().product}" is already mapped. Edit that row instead.'
+            )
+        return value
 
 
 class TradeFinanceDataSerializer(serializers.ModelSerializer):
