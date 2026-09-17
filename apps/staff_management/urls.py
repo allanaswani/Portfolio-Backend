@@ -132,7 +132,10 @@ urlpatterns = [
     path("insurance-policy/<int:pk>/",   lv.InsurancePolicyDetailView.as_view()),
     path("insurance-policy/",            lv.InsurancePolicyListCreateView.as_view()),
     path("premium-types-mapping/upload-csv/", lv.PremiumTypeMappingCsvUploadView.as_view()),
-    path("premium-types-mapping/<int:pk>/",   lv.PremiumTypeMappingDetailView.as_view()),
+    # `path:` not `str:` — the pk is the product NAME, which can contain a
+    # slash ("MOTOR/PRIVATE"). upload-csv/ is listed ABOVE this on purpose:
+    # `path:` is greedy and would otherwise swallow it.
+    path("premium-types-mapping/<path:pk>/",  lv.PremiumTypeMappingDetailView.as_view()),
     path("premium-types-mapping/",            lv.PremiumTypeMappingListCreateView.as_view()),
 
     # Trade finance (managed → full CRUD + CSV)

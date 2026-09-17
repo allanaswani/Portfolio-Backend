@@ -245,18 +245,17 @@ class PremiumTypeMappingListCreateView(generics.ListCreateAPIView):
                         "vic_check", "life_policy_check"]
     queryset = PremiumTypeMapping.objects.all().order_by("product")
 
-    def perform_create(self, serializer):
-        serializer.save(updated_by=self.request.user.get_username())
-
 
 @extend_schema(tags=TAG)
 class PremiumTypeMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Addressed BY PRODUCT NAME — ``product`` is the model's primary key,
+    because the real table has no surrogate key. The route uses ``path:`` so a
+    product containing a slash ("MOTOR/PRIVATE") still resolves; ``str:`` would
+    404 on it. Who changed what is in the simple_history table."""
+
     permission_classes = [IsAuthenticated]
     serializer_class = PremiumTypeMappingSerializer
     queryset = PremiumTypeMapping.objects.all()
-
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user.get_username())
 
 
 @extend_schema(tags=TAG)
@@ -276,7 +275,9 @@ class PremiumTypeMappingCsvUploadView(AmendingCsvUploadView):
     model = PremiumTypeMapping
     serializer_class = PremiumTypeMappingSerializer
     result_filename = "premium_types_mapping_upload_results"
-    excluded_columns = ("id", "updated_at", "updated_by")
+    # No surrogate key and no timestamps on this table — every column is a
+    # column the uploader is expected to supply.
+    excluded_columns = ()
 
     def amend_row(self, row):
         for field in ("product", "vic_check", "life_policy_check",
@@ -286,20 +287,24 @@ class PremiumTypeMappingCsvUploadView(AmendingCsvUploadView):
     def build_serializer(self, row):
         """Bind to the existing mapping when this product is already there.
 
-        `id` is read-only on a ModelSerializer, so putting one in the row does
-        nothing — the serializer still creates, and the create trips the
-        case-insensitive constraint. Binding the INSTANCE is what makes it an
-        update, and it also lets the serializer's own uniqueness check exclude
-        the row being edited from the clash it looks for.
+        Binding the INSTANCE is what makes this an update; a row carrying an
+        `id` would not, because there is no id on this table and it would be
+        read-only anyway. It also lets the uniqueness check exclude the row
+        being edited from the clash it looks for.
 
-        Matched case-insensitively, exactly as the constraint is: a file saying
-        "IpP" corrects the "ipp" already mapped rather than adding a rival.
+        Matched case-insensitively, so a file saying "IpP" corrects the "ipp"
+        already mapped rather than adding a rival. The STORED spelling is then
+        kept: `product` is the primary key, and letting the file rewrite it
+        would make this a rename — a delete and an insert — when all the
+        uploader meant was to correct the classification. A deliberate rename is
+        the edit form's job, where it is one visible act.
         """
         instance = PremiumTypeMapping.objects.filter(
             product__iexact=row.get("product") or "").first()
-        if instance is not None:
-            return self.serializer_class(instance, data=row)
-        return self.serializer_class(data=row)
+        if instance is None:
+            return self.serializer_class(data=row)
+        row["product"] = instance.pk
+        return self.serializer_class(instance, data=row)
 
 
 # ── Trade finance (managed) ───────────────────────────────────────────────────

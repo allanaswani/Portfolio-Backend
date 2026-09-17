@@ -1,12 +1,12 @@
-"""The three product mappings supplied with the table.
+"""The three sample product mappings, for an EMPTY table only.
 
-Seeded so the screen has rows on the day it deploys rather than an empty table
-with an Add button and no example of the shape. Bancassurance extends the list
-from the UI or by CSV; this is a starting point, not a closed vocabulary.
+Production's ``premium_types_mapping`` already exists and this repo has never
+seen its rows. Those rows are the real mapping; the three below are the sample
+that came with the request. Writing the sample over a populated table would be
+this migration inventing data, so it stops the moment it finds anything there.
 
-Idempotent and case-insensitive on ``product``, matching the table's own unique
-constraint — re-running it corrects a row rather than creating "IPP" beside
-"ipp".
+On a fresh database — a developer's, the test runner's — it gives the screen
+something to show and the tests something to assert.
 """
 from django.db import migrations
 
@@ -21,13 +21,6 @@ ROWS = [
 def load(apps, schema_editor):
     Mapping = apps.get_model("staff_management", "PremiumTypeMapping")
 
-    # The table already exists in production with rows this repo has never
-    # seen. Those rows are the real mapping; the three below are the sample
-    # that came with the request, and writing them over a populated table would
-    # be this migration inventing data.
-    #
-    # So they are a STARTING POINT for an empty table only. A table with
-    # anything in it is left exactly as it is.
     existing = Mapping.objects.count()
     if existing:
         print(f"\n  premium_types_mapping: {existing} row(s) already present — "
@@ -35,21 +28,14 @@ def load(apps, schema_editor):
         return
 
     for product, vic, life, premium_type, category in ROWS:
-        existing = Mapping.objects.filter(product__iexact=product).first()
-        values = {
-            "product": product,
-            "vic_check": vic,
-            "life_policy_check": life,
-            "premium_type": premium_type,
-            "policy_category": category,
-            "updated_by": "migration 0020",
-        }
-        if existing:
-            for field, value in values.items():
-                setattr(existing, field, value)
-            existing.save()
-        else:
-            Mapping.objects.create(**values)
+        Mapping.objects.create(
+            product=product,
+            vic_check=vic,
+            life_policy_check=life,
+            premium_type=premium_type,
+            policy_category=category,
+        )
+    print(f"\n  premium_types_mapping: was empty — seeded {len(ROWS)} sample products.")
 
 
 def unload(apps, schema_editor):
@@ -61,7 +47,7 @@ def unload(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("staff_management", "0019_historicalpremiumtypemapping_premiumtypemapping_and_more"),
+        ("staff_management", "0019_premiumtypemapping_historicalpremiumtypemapping"),
     ]
 
     operations = [migrations.RunPython(load, unload)]

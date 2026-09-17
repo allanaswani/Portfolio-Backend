@@ -1,6 +1,5 @@
 from django.db import models
 from django.db.models import Q, F
-from django.db.models.functions import Lower
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
@@ -408,19 +407,29 @@ class InsurancePolicy(models.Model):
 
 
 class PremiumTypeMapping(models.Model):
-    """How one insurance product is classified — the lookup behind the premium
-    and category columns on an insurance policy.
+    """How one insurance product is classified.
 
     `insurance_policies.product` is free text typed by whoever loaded the
     policy, so the classification cannot live on the policy row: it would have
     to be re-decided every upload, by hand, per row. This table decides it once
     per product.
 
-    ``product`` is unique CASE-INSENSITIVELY. The plan rows arrive spelled both
-    ways in the same file — "ipp" lowercase beside "WHOLE LIFE" and "IDD" in
-    capitals — so a plain unique constraint would happily accept "IPP" as a
-    second, separate mapping and leave the lookup with two answers and no rule
-    for choosing.
+    **The table already exists in production and this model matches it exactly**
+    — five text columns and no surrogate key:
+
+        product | vic_check | life_policy_check | premium_type | policy_category
+
+    So ``product`` IS the primary key. Django otherwise invents an implicit
+    ``id``, and every query then selects a column that is not there; the first
+    version of this model did exactly that and the migration stopped on the
+    host. ``updated_at`` / ``updated_by`` are gone for the same reason — this
+    is somebody else's table and growing it to suit our audit habits is not a
+    change to make in passing. Who changed what is recorded by
+    ``HistoricalRecords`` in a table Django does own.
+
+    A CharField primary key means the API addresses a mapping BY PRODUCT NAME,
+    so the detail route uses ``<path:pk>`` — product names contain spaces, and
+    can contain slashes ("MOTOR/PRIVATE"), which ``<str:pk>`` would reject.
 
     The four classification columns are free text on purpose. The values seen so
     far are vic_check "vic", life_policy_check "life", premium_type
@@ -431,7 +440,7 @@ class PremiumTypeMapping(models.Model):
     """
 
     product = models.CharField(
-        max_length=255, verbose_name="Product",
+        max_length=255, primary_key=True, verbose_name="Product",
         help_text="Product name as it appears on the policy, e.g. WHOLE LIFE.",
     )
     vic_check = models.CharField(
@@ -443,32 +452,25 @@ class PremiumTypeMapping(models.Model):
         help_text='Observed value: "life".',
     )
     premium_type = models.CharField(
-        max_length=100, blank=True, default="", db_index=True,
+        max_length=100, blank=True, default="",
         help_text='Observed value: "non-motor".',
     )
     policy_category = models.CharField(
-        max_length=100, blank=True, default="", db_index=True,
+        max_length=100, blank=True, default="",
         help_text='Observed value: "Life".',
     )
-    updated_at = models.DateTimeField(auto_now=True)
-    updated_by = models.CharField(max_length=150, blank=True, default="")
 
     history = HistoricalRecords()
 
     class Meta:
         managed = True
         db_table = "premium_types_mapping"
-        constraints = [
-            models.UniqueConstraint(
-                Lower("product"), name="uniq_premium_types_mapping_product"
-            ),
-        ]
         ordering = ["product"]
         verbose_name = "Premium type mapping"
         verbose_name_plural = "Premium type mappings"
 
     def __str__(self):
-        return f"{self.product} → {self.premium_type or '—'} / {self.policy_category or '—'}"
+        return f"{self.product} -> {self.premium_type or '-'} / {self.policy_category or '-'}"
 
 
 class TradeFinanceData(models.Model):

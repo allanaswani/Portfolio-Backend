@@ -95,16 +95,54 @@ class ApiTests(TestCase):
 
     def test_edit_keeps_its_own_product(self):
         """Renaming nothing must not trip the uniqueness check against itself."""
-        row = PremiumTypeMapping.objects.get(product="IDD")
-        r = self.client.patch(f"/staff_management/premium-types-mapping/{row.pk}/",
+        r = self.client.patch(f"{LIST}IDD/",
                               {"product": "IDD", "premium_type": "motor"})
         self.assertEqual(r.status_code, 200, r.content)
-        row.refresh_from_db()
-        self.assertEqual(row.premium_type, "motor")
+        self.assertEqual(
+            PremiumTypeMapping.objects.get(product="IDD").premium_type, "motor")
+
+    def test_edit_a_product_whose_name_has_a_space(self):
+        """`product` is the primary key, so it is in the URL. "WHOLE LIFE" only
+        resolves because the route is `path:`."""
+        r = self.client.patch(f"{LIST}WHOLE%20LIFE/", {"policy_category": "General"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(
+            PremiumTypeMapping.objects.get(product="WHOLE LIFE").policy_category,
+            "General")
+
+    def test_a_product_name_containing_a_slash_is_addressable(self):
+        """"MOTOR/PRIVATE" is a plausible product. `str:` would 404 on it."""
+        PremiumTypeMapping.objects.create(product="MOTOR/PRIVATE")
+        r = self.client.patch(f"{LIST}MOTOR/PRIVATE/", {"premium_type": "motor"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(
+            PremiumTypeMapping.objects.get(product="MOTOR/PRIVATE").premium_type,
+            "motor")
+
+    def test_renaming_a_product_does_not_leave_the_old_row_behind(self):
+        """Changing a CharField primary key and calling save() issues an UPDATE
+        against the NEW key, matches nothing, and INSERTs — leaving both rows.
+        The rename is done explicitly instead."""
+        r = self.client.patch(f"{LIST}IDD/", {"product": "IDD COVER"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(PremiumTypeMapping.objects.filter(product="IDD").exists())
+        self.assertTrue(PremiumTypeMapping.objects.filter(product="IDD COVER").exists())
+        self.assertEqual(PremiumTypeMapping.objects.count(), 3)
+
+    def test_a_rename_carries_the_classification_over(self):
+        r = self.client.patch(f"{LIST}IDD/", {"product": "IDD COVER"})
+        self.assertEqual(r.status_code, 200, r.content)
+        moved = PremiumTypeMapping.objects.get(product="IDD COVER")
+        self.assertEqual(moved.vic_check, "vic")
+        self.assertEqual(moved.premium_type, "non-motor")
+
+    def test_a_rename_onto_an_existing_product_is_refused(self):
+        r = self.client.patch(f"{LIST}IDD/", {"product": "WHOLE LIFE"})
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(PremiumTypeMapping.objects.count(), 3)
 
     def test_delete(self):
-        row = PremiumTypeMapping.objects.get(product="IDD")
-        r = self.client.delete(f"/staff_management/premium-types-mapping/{row.pk}/")
+        r = self.client.delete(f"{LIST}IDD/")
         self.assertEqual(r.status_code, 204, r.content)
         self.assertEqual(PremiumTypeMapping.objects.count(), 2)
 
@@ -137,6 +175,14 @@ class ApiTests(TestCase):
         self.assertEqual(PremiumTypeMapping.objects.count(), 3)
         self.assertEqual(
             PremiumTypeMapping.objects.get(product__iexact="ipp").premium_type, "motor")
+
+    def test_upload_keeps_the_stored_spelling(self):
+        """`product` is the primary key, so letting a file rewrite its case
+        would be a rename — a delete and an insert — when the uploader only
+        meant to correct the classification."""
+        self._upload(f"{HEADER}\nIpP,vic,life,motor,General\n")
+        self.assertTrue(PremiumTypeMapping.objects.filter(product="ipp").exists())
+        self.assertFalse(PremiumTypeMapping.objects.filter(product="IpP").exists())
 
     def test_upload_does_not_empty_the_table_first(self):
         """The policy and trade-finance uploads are replace-by-year loads. This

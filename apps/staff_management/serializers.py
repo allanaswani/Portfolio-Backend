@@ -128,12 +128,17 @@ class PremiumTypeMappingSerializer(serializers.ModelSerializer):
     class Meta:
         model = PremiumTypeMapping
         fields = "__all__"
-        read_only_fields = ("updated_at",)
+        # `product` is the primary key, so ModelSerializer attaches its own
+        # UniqueValidator - which fires on an UPDATE too, making every edit of
+        # an existing mapping fail against itself. validate_product does the
+        # job properly: case-insensitively, excluding the row being edited, and
+        # naming the spelling already stored.
+        extra_kwargs = {"product": {"validators": []}}
 
     def validate_product(self, value):
         """One mapping per product, compared case-insensitively.
 
-        The model constraint already enforces this, but reaching it raises
+        The unique index enforces this too, but reaching it raises
         IntegrityError and the client gets a 500. Checked here so the answer is
         a 400 naming the product that is already mapped."""
         value = (value or "").strip()
@@ -147,6 +152,32 @@ class PremiumTypeMappingSerializer(serializers.ModelSerializer):
                 f'"{clash.first().product}" is already mapped. Edit that row instead.'
             )
         return value
+
+    def update(self, instance, validated_data):
+        """Renaming a product is a delete and an add, not an UPDATE.
+
+        ``product`` is the primary key — the real table has no surrogate one.
+        Changing the pk on a loaded instance and calling save() does NOT rename
+        the row: Django issues an UPDATE against the NEW key, matches nothing,
+        and falls back to an INSERT, leaving both the old and the new mapping
+        behind. Silently duplicating a row people classify policies against is
+        the worst outcome available here.
+
+        So a rename is done explicitly. The old row goes and the new one
+        arrives, which is also what actually happened, and simple_history
+        records both halves instead of one confusing edit."""
+        from django.db import transaction
+
+        new_product = validated_data.get("product", instance.pk)
+        if new_product == instance.pk:
+            return super().update(instance, validated_data)
+
+        values = {f: validated_data.get(f, getattr(instance, f))
+                  for f in ("product", "vic_check", "life_policy_check",
+                            "premium_type", "policy_category")}
+        with transaction.atomic():
+            instance.delete()
+            return PremiumTypeMapping.objects.create(**values)
 
 
 class TradeFinanceDataSerializer(serializers.ModelSerializer):
