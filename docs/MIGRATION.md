@@ -34,6 +34,35 @@ Two facts matter more than the rest:
 
 ---
 
+## What Phase 0 actually found (21 Sep 2026)
+
+The old host is not "the portfolio server". It is the bank's data platform, and
+the portfolio app is one of the smaller things on it:
+
+| Running | Detail |
+|---|---|
+| **PostgreSQL 12** | `/usr/pgsql-12/bin/postmaster -D /data/db_data/pgsql/12/data/data/` — holds BOTH `hf_group_app` and `datawarehouse` |
+| **~75 ETL cron jobs** | `python3.6` and bash, across `etls/`, `etls-recon/`, `etl_bash/`, plus `/data/apps/school_fees/etls/` |
+| **Metabase** | `java -jar metabase.jar` on **:3000**, up 181 days. Its H2 file exists in six places — the live one is not obvious |
+| **Sybase bridge** | `JavaSybaseLink.jar 128.2.5.12 5000 IAPPLY_PROD` — a link to another system entirely |
+| **Redis** | in a container on 6379. Not this app's — the app uses DatabaseCache |
+| `etl_request_watcher.sh` | every minute, the other half of the report buttons |
+| hf-backend, portfolio-frontend | the only two things this repo owns |
+
+Three problems were visible in the same output, none of them caused by the
+migration and all of them worth fixing before it:
+
+1. **`crontab -e` has been open in `vi` for 48 days** (pid 4381, inside screen
+   17458). If anybody ever writes and quits that buffer, the crontab reverts to
+   its state 48 days ago and every job added since is gone. This is the most
+   likely explanation for the crontab that was lost previously. It has ~75 ETL
+   lines to lose.
+2. **A `git pull` is stuck mid-merge** in the `hfdi_engineering` screen, sitting
+   on `vi .git/MERGE_MSG` for three days. That ETL checkout is in a conflicted
+   state right now.
+3. **`gl_expense_data.py` has been running for 108 days.** It is scheduled
+   daily. It is not slow, it is hung.
+
 ## Phase 0 — Inventory. Read-only, run on the OLD host
 
 Nothing below writes anything. Run it and keep the output; several later
@@ -77,7 +106,28 @@ du -sh /var/lib/pgsql /data/apps/datascience 2>/dev/null
 
 The two answers are different projects.
 
-### Option A — move the app tier only *(recommended first step)*
+### Option A — move the app tier only *(recommended, and now clearly right)*
+
+Phase 0 settled this. PostgreSQL 12, seventy-five ETLs, Metabase and a Sybase
+bridge live on that host. None of it is going to a box called
+`converter-helper` on a whim, and none of it belongs to this repo.
+
+**And the app tier can move without moving ANY data.** `hf_group_app` is in the
+same PostgreSQL instance as the warehouse, so instead of dumping and restoring
+it, point the new host at it:
+
+    DB_HOST=128.2.1.25      # was 127.0.0.1
+    DW_HOST=128.2.1.25      # unchanged
+
+The app tier becomes stateless: two containers, no database, nothing to copy,
+nothing to fall out of step. Rollback is starting the old containers again. If
+the new host disappoints, you have lost an afternoon and no data.
+
+Phase 3 below (dump and restore `hf_group_app`) is therefore **not needed for
+Option A** — it applies only if you later decide the app database should follow
+the app.
+
+
 
 The two containers move. `hf_group_app` moves with them. `datawarehouse` stays
 on 128.2.1.25 and the new host reaches it over the network.
