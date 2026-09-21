@@ -28,7 +28,8 @@ from .departments import standardize_department
 from apps.portfolio.rm_rollup import fetch_rm_rollup
 from . import gceo_legacy as gl
 from .staff_scope import (
-    CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL, current_staff, people_count,
+    CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL, SERVICE_YEARS_SQL,
+    current_staff, people_count,
 )
 from .serializers import (
     CeoDepositMovementMonthlySerializer, CustomersSerializer, CeoChannelReportSerializer,
@@ -961,45 +962,67 @@ class StaffYearsServiceView(APIView):
     # Old gceo staff_years_service: banded service periods, NOT raw service_years.
     # The chart reads service_period ('< 1 yr', '1 - 2 yr', ...) + total_staff;
     # returning {service_years, count} left the chart empty.
+    #
+    # The bands are computed from date_of_employment, not read from the stored
+    # service_years column - see staff_scope.SERVICE_YEARS_SQL for the
+    # measurement that forced that. Two consequences worth naming:
+    #
+    #   * '> 15 yr' used to be written `WHEN service_years >= 10`. It only ever
+    #     produced the right answer because the branch above it had already
+    #     taken everything under 15. Now spelled as the ELSE it always was.
+    #   * Somebody with no date_of_employment has no knowable service length, so
+    #     they land in 'Unknown' rather than being quietly filed under '< 1 yr'.
+    #     Production currently has none, which is exactly when a silent default
+    #     is cheapest to add and most likely to be wrong later. 'Unknown' is the
+    #     one band that disappears when empty, because it is a data-quality
+    #     overflow rather than a real length of service.
+    #
+    # The seven real bands are emitted whether or not anyone falls in them. The
+    # old GROUP BY dropped empty ones, so a gap in the distribution vanished off
+    # the axis instead of showing as the gap it is.
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         with connection.cursor() as cur:
             cur.execute(f"""
-                SELECT
-                    service_period,
-                    total_staff,
-                    new_hires,
-                    new_promotion,
-                    total_exit
-                FROM (
-                    SELECT
-                        CASE
-                            WHEN service_years < 1 THEN '< 1 yr'
-                            WHEN service_years < 2 THEN '1 - 2 yr'
-                            WHEN service_years < 5 THEN '2 - 5 yr'
-                            WHEN service_years < 8 THEN '5 - 8 yr'
-                            WHEN service_years < 10 THEN '8 - 10 yr'
-                            WHEN service_years < 15 THEN '10 - 15 yr'
-                            WHEN service_years >= 10 THEN '> 15 yr'
-                        END::text AS service_period,
-                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE {CURRENT_STAFF_SQL}) AS total_staff,
-                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE new = 1) AS new_hires,
-                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE promotion = 1) AS new_promotion,
-                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE {LEFT_SQL}) AS total_exit,
-                        CASE
-                            WHEN service_years < 1 THEN 1
-                            WHEN service_years < 2 THEN 2
-                            WHEN service_years < 5 THEN 3
-                            WHEN service_years < 8 THEN 4
-                            WHEN service_years < 10 THEN 5
-                            WHEN service_years < 15 THEN 6
-                            ELSE 7
-                        END AS service_period_order
+                WITH staff AS (
+                    SELECT {PERSON_KEY_SQL} AS person,
+                           {SERVICE_YEARS_SQL} AS svc,
+                           ({CURRENT_STAFF_SQL}) AS is_current,
+                           {LEFT_SQL} AS has_left,
+                           new, promotion
                     FROM employee_table
-                    GROUP BY service_period, service_period_order
-                ) AS subquery
-                ORDER BY service_period_order
+                ),
+                banded AS (
+                    SELECT person, is_current, has_left, new, promotion,
+                           CASE
+                               WHEN svc IS NULL THEN 'Unknown'
+                               WHEN svc < 1  THEN '< 1 yr'
+                               WHEN svc < 2  THEN '1 - 2 yr'
+                               WHEN svc < 5  THEN '2 - 5 yr'
+                               WHEN svc < 8  THEN '5 - 8 yr'
+                               WHEN svc < 10 THEN '8 - 10 yr'
+                               WHEN svc < 15 THEN '10 - 15 yr'
+                               ELSE '> 15 yr'
+                           END AS band
+                    FROM staff
+                ),
+                bands(label, ord) AS (VALUES
+                    ('< 1 yr', 1), ('1 - 2 yr', 2), ('2 - 5 yr', 3),
+                    ('5 - 8 yr', 4), ('8 - 10 yr', 5), ('10 - 15 yr', 6),
+                    ('> 15 yr', 7), ('Unknown', 8)
+                )
+                SELECT
+                    b.label AS service_period,
+                    COUNT(DISTINCT person) FILTER (WHERE is_current)   AS total_staff,
+                    COUNT(DISTINCT person) FILTER (WHERE new = 1)      AS new_hires,
+                    COUNT(DISTINCT person) FILTER (WHERE promotion = 1) AS new_promotion,
+                    COUNT(DISTINCT person) FILTER (WHERE has_left)     AS total_exit
+                FROM bands b
+                LEFT JOIN banded ON banded.band = b.label
+                GROUP BY b.label, b.ord
+                HAVING b.ord < 8 OR COUNT(person) > 0
+                ORDER BY b.ord
             """)
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]

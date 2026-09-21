@@ -71,3 +71,22 @@ def people_count():
         ),
         distinct=True,
     )
+
+
+# ── How long somebody has worked here ────────────────────────────────────────
+# NOT ``employee_table.service_years``. That column is stored, not derived, and
+# nobody maintains it. Measured on production: 527 of 913 current staff carry
+# service_years = 0, none carry NULL, and every single one of them has a real
+# date_of_employment. They are not 527 new joiners - only 198 people were
+# actually employed this year. The column was simply never filled in for them,
+# and a stored zero is indistinguishable from a genuine one.
+#
+# So the board reported 527 staff with under a year of service beside a New
+# Hires tile reading 198. Both cannot be true, and it was the first thing
+# anyone noticed.
+#
+# date_of_employment is present for every current employee, so the length of
+# service is computed from it. Whole years, because that is what the bands need.
+SERVICE_YEARS_SQL = (
+    "date_part('year', age(current_date, date_of_employment))"
+)

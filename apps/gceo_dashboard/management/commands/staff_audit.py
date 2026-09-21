@@ -13,7 +13,7 @@ from django.core.management.base import BaseCommand
 from django.db import connection
 
 from apps.gceo_dashboard.staff_scope import (
-    CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL,
+    CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL, SERVICE_YEARS_SQL,
 )
 
 
@@ -106,6 +106,58 @@ class Command(BaseCommand):
             w(f"  flagged new = 1 (any year)                  {new_any:>8}")
             w(f"  flagged new = 1 AND employed this year      {new_year:>8}"
               "   <- the New Hires tile")
+
+            w("")
+            w("Length of service — stored column vs the employment date")
+            w("-" * 62)
+            cur.execute(f"""
+                WITH staff AS (
+                    SELECT service_years AS stored,
+                           {SERVICE_YEARS_SQL} AS computed,
+                           {PERSON_KEY_SQL} AS person
+                    FROM employee_table
+                    WHERE {CURRENT_STAFF_SQL}
+                ),
+                banded AS (
+                    SELECT person,
+                           CASE WHEN stored IS NULL THEN 'Unknown'
+                                WHEN stored < 1  THEN '< 1 yr'
+                                WHEN stored < 2  THEN '1 - 2 yr'
+                                WHEN stored < 5  THEN '2 - 5 yr'
+                                WHEN stored < 8  THEN '5 - 8 yr'
+                                WHEN stored < 10 THEN '8 - 10 yr'
+                                WHEN stored < 15 THEN '10 - 15 yr'
+                                ELSE '> 15 yr' END AS was,
+                           CASE WHEN computed IS NULL THEN 'Unknown'
+                                WHEN computed < 1  THEN '< 1 yr'
+                                WHEN computed < 2  THEN '1 - 2 yr'
+                                WHEN computed < 5  THEN '2 - 5 yr'
+                                WHEN computed < 8  THEN '5 - 8 yr'
+                                WHEN computed < 10 THEN '8 - 10 yr'
+                                WHEN computed < 15 THEN '10 - 15 yr'
+                                ELSE '> 15 yr' END AS now_
+                    FROM staff
+                ),
+                bands(label, ord) AS (VALUES
+                    ('< 1 yr',1),('1 - 2 yr',2),('2 - 5 yr',3),('5 - 8 yr',4),
+                    ('8 - 10 yr',5),('10 - 15 yr',6),('> 15 yr',7),('Unknown',8))
+                SELECT b.label,
+                       count(DISTINCT person) FILTER (WHERE was  = b.label),
+                       count(DISTINCT person) FILTER (WHERE now_ = b.label)
+                FROM bands b LEFT JOIN banded ON TRUE
+                GROUP BY b.label, b.ord ORDER BY b.ord
+            """)
+            bands = cur.fetchall()
+            w(f"  {'band':<14}{'service_years':>14}{'date_of_employment':>21}")
+            for label, was, now_ in bands:
+                flag = "   <-- " + ("+" if now_ > was else "") + str(now_ - was)                     if was != now_ else ""
+                w(f"  {label:<14}{was:>14}{now_:>21}{flag}")
+            w(f"  {'TOTAL':<14}{sum(r[1] for r in bands):>14}"
+              f"{sum(r[2] for r in bands):>21}")
+            w("")
+            w("  The right-hand column is what the slide now shows. Both add up to")
+            w("  the same headcount - nobody appears twice and nobody is dropped;")
+            w("  the stored column was just filing people in the wrong band.")
 
             w("")
             w("Departments (current staff, counted once each)")
