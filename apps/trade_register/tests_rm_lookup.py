@@ -18,7 +18,9 @@ from django.db import connection
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from apps.staff_management.models import DSRSalesCode, StaffEmployeeData
+from apps.staff_management.models import (
+    BranchEmployeeDmcData, DSRSalesCode, StaffEmployeeData,
+)
 
 from .models import TradeProduct, TradeRegisterEntry
 
@@ -74,6 +76,21 @@ class RMLookupSourceTests(APITestCase):
             pf_number="9001", sales_code="DSR900", salesperson="DSR ONLY PERSON",
             department="BANCA",
         )
+        # A Senior Relationship Manager on the HR roster whose sales code lives
+        # ONLY in the DMC register - the shape that gave PF 4191 a name in the
+        # picker and an empty code box beside it.
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO employee_table "
+                "(staff_id, name, job_title, department, exit, staff_exit_date) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
+                [4191, "DMC CODED PERSON", "Senior Relationship Manager",
+                 "COMMERCIAL BANKING", None, None],
+            )
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=4191, staff_name="DMC CODED PERSON",
+            sales_code="CBM4191", staff_branch="REHANI BRANCH",
+        )
         StaffEmployeeData.objects.create(
             staff_pf_number=9002, staff_name="SALES ONLY PERSON",
             staff_email="s@hf.test", sales_code="RM9002", department="RETAIL",
@@ -108,6 +125,28 @@ class RMLookupSourceTests(APITestCase):
         self.assertIn("DSR ONLY PERSON", self._names("DSR ONLY"))
         self.assertIn("SALES ONLY PERSON", self._names("SALES ONLY"))
         self.assertIn("ROSTER PERSON", self._names("ROSTER"))
+
+    def _by_name(self, query=""):
+        res = self.client.get(f"/trade_register/rm-lookup/?search={query}")
+        self.assertEqual(res.status_code, 200, res.content)
+        return {r["name"]: r for r in res.data["results"]}
+
+    def test_a_relationship_managers_code_comes_from_the_dmc_register(self):
+        """The reported bug: a Senior Relationship Manager is offered by name
+        with an empty code, because the picker only looked at dsr_sales_codes
+        and staff_employee_data. An RM's code lives in the DMC register - the
+        same two tables the whole targets system reads."""
+        row = self._by_name("DMC CODED")["DMC CODED PERSON"]
+        self.assertEqual(row["code"], "CBM4191")
+
+    def test_the_dmc_register_does_not_override_an_earlier_source(self):
+        """setdefault, not assignment: a person carrying codes in more than one
+        table keeps the one the earlier source gave."""
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=9002, staff_name="SALES ONLY PERSON",
+            sales_code="SHOULD-NOT-WIN", staff_branch="REHANI BRANCH",
+        )
+        self.assertIn("SALES ONLY PERSON", self._names())
 
     def test_a_dsr_can_be_found_by_sales_code(self):
         self.assertIn("DSR ONLY PERSON", self._names("DSR900"))

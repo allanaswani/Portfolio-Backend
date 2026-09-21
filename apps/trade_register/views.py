@@ -281,7 +281,10 @@ class RMLookupView(APIView):
         from django.db.models import Q
 
         from apps.gceo_dashboard.models import EmployeeTable
-        from apps.staff_management.models import DSRSalesCode, StaffEmployeeData
+        from apps.staff_management.models import (
+            BranchEmployeeDmcData, BranchFinalEmployeeDmcData, DSRSalesCode,
+            StaffEmployeeData,
+        )
 
         search = (request.query_params.get("search") or "").strip()
         include_exited = request.query_params.get("include_exited") == "1"
@@ -332,6 +335,21 @@ class RMLookupView(APIView):
             ).values_list("staff_pf_number", "sales_code"):
                 if pf is not None and code:
                     codes.setdefault(int(pf), code)
+            # The DMC tables are the bank's own sales-staff register - the same
+            # two tables the whole targets system reads - and they are where a
+            # relationship manager's sales code actually lives. Leaving them out
+            # is why a Senior Relationship Manager like PF 4191 came back with a
+            # name and an empty code box: he is not a DSR and not in
+            # staff_employee_data, so nothing the picker looked at knew his code.
+            #
+            # Per-staff first, then the per-branch table, because a BBM's own row
+            # is the branch row. setdefault keeps the earlier sources winning.
+            for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData):
+                for pf, code in model.objects.filter(
+                    staff_pf_number__in=pfs
+                ).values_list("staff_pf_number", "sales_code"):
+                    if pf is not None and code:
+                        codes.setdefault(int(pf), str(code).strip())
 
         out = []
         seen = set()

@@ -5,11 +5,13 @@ why their sales code does or does not fill in.
     manage.py rm_lookup Juspher
     manage.py rm_lookup --missing-codes          # everyone the picker shows with no code
 
-The picker reads three tables and merges them:
+The picker reads the HR roster and merges sales codes from four others:
 
-    employee_table        the HR roster, excluding anyone with an exit marker
-    dsr_sales_codes       DSR allocations
-    staff_employee_data   sales staff
+    employee_table                  the HR roster, minus anyone with an exit marker
+    dsr_sales_codes                 DSR allocations
+    staff_employee_data             sales staff
+    branch_employee_dmc_data        the per-staff DMC register
+    branch_final_employee_dmc_data  the per-branch DMC register
 
 A name can be absent for reasons that look identical on screen and are not:
 they are on no list at all, or they are on the roster but flagged as exited, or
@@ -23,7 +25,10 @@ from django.db import router as db_router
 from django.db.models import Q
 
 from apps.gceo_dashboard.models import EmployeeTable
-from apps.staff_management.models import DSRSalesCode, StaffEmployeeData
+from apps.staff_management.models import (
+    BranchEmployeeDmcData, BranchFinalEmployeeDmcData, DSRSalesCode,
+    StaffEmployeeData,
+)
 
 
 def _pf(value):
@@ -91,8 +96,8 @@ class Command(BaseCommand):
                 w("     NO CODE: staff_id is not a usable PF number, so the "
                   "sales tables cannot be keyed")
             else:
-                w(f"     NO CODE: PF {pf} is not in dsr_sales_codes or "
-                  "staff_employee_data")
+                w(f"     NO CODE: PF {pf} is in none of dsr_sales_codes, "
+                  "staff_employee_data or the two DMC registers")
 
         dsr = list(DSRSalesCode.objects.filter(salesperson__icontains=name)
                    .values_list("salesperson", "sales_code", "pf_number")[:20])
@@ -109,6 +114,15 @@ class Command(BaseCommand):
         for n, code, pf, active in staff:
             w(f"  {n}  code={code}  PF={pf}  active={active}"
               + ("" if active else "   (inactive - not merged in)"))
+
+        for model, label in ((BranchEmployeeDmcData, "branch_employee_dmc_data"),
+                             (BranchFinalEmployeeDmcData, "branch_final_employee_dmc_data")):
+            hits = list(model.objects.filter(staff_name__icontains=name)
+                        .values_list("staff_name", "sales_code", "staff_pf_number")[:20])
+            w("")
+            w(f"{label}: {len(hits)} match(es)")
+            for n, code, pf in hits:
+                w(f"  {n}  code={code}  PF={pf}")
 
         if not roster and not dsr and not staff:
             w("")
@@ -131,6 +145,13 @@ class Command(BaseCommand):
                .values_list("sales_code", flat=True).first())
         if hit:
             return hit, "staff_employee_data"
+        # The DMC registers - where a relationship manager's code actually is.
+        for model, label in ((BranchEmployeeDmcData, "branch_employee_dmc_data"),
+                             (BranchFinalEmployeeDmcData, "branch_final_employee_dmc_data")):
+            hit = (model.objects.filter(staff_pf_number=pf)
+                   .values_list("sales_code", flat=True).first())
+            if hit:
+                return str(hit).strip(), label
         return None
 
     # ── everyone with no code ────────────────────────────────────────────────
@@ -159,7 +180,8 @@ class Command(BaseCommand):
         if len(missing) > limit:
             w(f"  ... and {len(missing) - limit} more")
         w("")
-        w("A blank code is a PF that is on the HR roster but not in")
-        w("dsr_sales_codes or staff_employee_data. Either the person genuinely")
-        w("has no code, or their PF differs between HR and the sales tables.")
+        w("A blank code is a PF on the HR roster that none of dsr_sales_codes,")
+        w("staff_employee_data or the two DMC registers carries. Either the")
+        w("person genuinely has no code, or their PF differs between HR and the")
+        w("sales tables.")
         w("")
