@@ -1,0 +1,45 @@
+"""One definition of "a member of staff", for every tile on the Staff & HR slide.
+
+There were three, on the same screen, and they counted different people:
+
+    Total Staff        count(DISTINCT staff_id) FILTER (WHERE exit = 0)
+    Department / Grade COUNT(id)  with .exclude(exit=1)
+    Years of service   COUNT(*)   FILTER (WHERE exit = 0)
+
+Two differences, both silent.
+
+``exit = 0`` and ``.exclude(exit=1)`` are not the same test. A row whose ``exit``
+is NULL fails the first and passes the second, so the department and grade
+charts counted people the headline total did not.
+
+And ``exit`` is not the only exit marker. apps/trade_register/views.py already
+had to handle this: "Either marker alone can carry the exit, depending on which
+sheet the HR upload recorded it on." A leaver whose departure was recorded as a
+``staff_exit_date`` with no ``exit`` flag was being counted as current staff by
+every one of the three.
+
+On top of that, two of the three counted ROWS and one counted DISTINCT
+``staff_id``, so any duplicate in the HR upload landed in the charts but not in
+the headline.
+
+So: a person has left if EITHER marker says so, and a person is counted once.
+Both halves of that live here, and nothing on the slide gets to have its own
+opinion about it.
+"""
+from django.db.models import Q
+
+# A row that represents somebody who has left the bank.
+LEFT = Q(exit=1) | Q(staff_exit_date__isnull=False)
+
+
+def current_staff(qs):
+    """Restrict an EmployeeTable queryset to people still employed."""
+    return qs.exclude(LEFT)
+
+
+# The same rule in SQL, for the views that are raw. Written as a WHERE fragment
+# so the caller keeps control of the rest of the statement.
+CURRENT_STAFF_SQL = "COALESCE(exit, 0) <> 1 AND staff_exit_date IS NULL"
+
+# Leavers, for the tiles that count departures rather than headcount.
+LEFT_SQL = "(exit = 1 OR staff_exit_date IS NOT NULL)"
