@@ -18,7 +18,16 @@ def run_pipeline():
     from apps.portfolio.models import Loans, HfCustomer
 
     now = timezone.now()
-    expires_at = now + timedelta(hours=6)
+    # The host cron runs this every 6 hours (docs/DEPLOY.md). A 6-hour expiry
+    # therefore killed every insight at the exact moment the next run was due,
+    # and ONE missed run - a container restart, a wiped crontab - left the table
+    # with nothing active at all. That is why the assistant answered "there are
+    # no active business insights or alerts": it was reading an empty table
+    # correctly.
+    #
+    # The window has to outlive the schedule, not match it. 26 hours survives a
+    # missed run and still goes stale within a day.
+    expires_at = now + timedelta(hours=26)
 
     # Deactivate stale insights
     Insight.objects.filter(expires_at__lt=now).update(is_active=False)

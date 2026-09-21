@@ -169,10 +169,19 @@ def _clamp(limit):
 # ── Cross-module executors ───────────────────────────────────────────────────
 
 def _business_insights(category=None, limit=MAX_ROWS):
+    """Stored insights from the 6-hourly pipeline.
+
+    An empty result used to end the conversation: the assistant said "there are
+    no active business insights or alerts" and stopped, which reads as "the bank
+    has nothing going on" when it actually means "a cron job has not run".
+    Every other tool on this list still works, so an empty table is a reason to
+    go and look at the data, not a reason to stop.
+    """
     qs = Insight.objects.filter(is_active=True)
     if category:
         qs = qs.filter(category=category)
-    return [{
+
+    rows = [{
         "title": i.title, "category": i.category, "severity": i.severity,
         "segment": i.segment, "branch": i.branch,
         "metric_value": str(i.metric_value) if i.metric_value is not None else None,
@@ -180,6 +189,28 @@ def _business_insights(category=None, limit=MAX_ROWS):
         "body": (i.body or "")[:400],
         "generated_at": str(i.generated_at.date()),
     } for i in qs.order_by("-generated_at")[:_clamp(limit)]]
+    if rows:
+        return rows
+
+    # Say WHY it is empty and what to do instead, so the model answers with
+    # something the reader can act on rather than a dead end.
+    stale = Insight.objects.filter(is_active=False).order_by("-generated_at").first()
+    return {
+        "insights": [],
+        "reason": (
+            "The stored insight table is empty. These are written by a scheduled "
+            "job (manage.py run_insights_pipeline, every 6 hours); nothing here "
+            "means that job has not run recently, NOT that the bank has no "
+            "issues worth reporting."
+        ),
+        "last_generated": str(stale.generated_at.date()) if stale else None,
+        "what_to_do": (
+            "Do not tell the user there is nothing to report. Build the answer "
+            "from live data instead - portfolio totals, arrears and collections, "
+            "deposit and loan movement, branch and RM performance - and say the "
+            "figures are read live because the scheduled insight job has not run."
+        ),
+    }
 
 
 def _analytics_metrics(category=None, limit=MAX_ROWS):
