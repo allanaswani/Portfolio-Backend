@@ -100,6 +100,63 @@ du -sh /var/lib/pgsql /data/apps/datascience 2>/dev/null
 
 ---
 
+## BLOCKED — converter-helper has no outbound network (21 Sep 2026)
+
+The database half of Option A works. Everything else does not, and the reason
+is the host, not the plan.
+
+    128.2.1.25:5432          OK   - pg_hba rules added, both databases reachable
+    smtp.office365.com:587   BLOCKED
+    github.com:443           BLOCKED
+    pypi.org:443             BLOCKED
+    registry.npmjs.org:443   BLOCKED
+
+Its only route is `default via 10.51.181.1`, and there is no proxy on either
+host - the old one has direct internet, the new one has none.
+
+**The blocking one is SMTP.** Login sends a six-digit OTP by email
+(`EMAIL_HOST=smtp.office365.com`, no internal relay). Deploy onto this host as
+it stands and the application comes up perfectly and nobody can sign in. The
+same path carries service desk notifications, the daily digest and every alert.
+
+GitHub, PyPI and npm are only needed to BUILD, and that can be worked around by
+building on the old host and shipping `docker save` output. SMTP cannot be
+worked around - the mail has to leave the machine.
+
+### The egress to request
+
+    Host: 10.51.181.25 (converter-helper)
+
+      smtp.office365.com     : 587  TCP   REQUIRED - login fails without it
+      api.anthropic.com      : 443  TCP   AI assistant
+      github.com             : 443  TCP   deployments
+      pypi.org               : 443  TCP   Python dependencies
+      files.pythonhosted.org : 443  TCP   PyPI's download host - asked for
+                                          separately or pip still fails
+      registry.npmjs.org     : 443  TCP   Node dependencies
+
+    Already working: 128.2.1.25:5432
+
+### Before raising it, two questions worth asking
+
+1. **Is converter-helper the right host at all?** No outbound access by design,
+   7.6G free on `/`, and `/data` already at 91%. That reads as a box
+   provisioned for internal batch work, not for a user-facing application that
+   sends mail and calls an external API.
+2. **Is there an internal SMTP relay?** Most banks route application mail
+   through one. If there is, `EMAIL_HOST` points at it and the blocking problem
+   disappears with no internet access at all. There is not one configured
+   today.
+
+### What is safe to leave as it is
+
+Nothing needs undoing. Two `pg_hba.conf` lines were added on the old host,
+which are inert until something connects from 10.51.181.25, and a `crontab -e`
+that had been open in `vi` for 48 days was killed - worth doing whether or not
+this migration ever happens.
+
+---
+
 ## Phase 1 — Decide this before anything else
 
 **Does the warehouse database move too, or stay where it is?**
