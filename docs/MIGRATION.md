@@ -100,7 +100,43 @@ du -sh /var/lib/pgsql /data/apps/datascience 2>/dev/null
 
 ---
 
-## BLOCKED — converter-helper has no outbound network (21 Sep 2026)
+## The network, as measured (21 Sep 2026)
+
+Users never touch the application host. `ceo.hfcb.co.ke` resolves to
+**128.2.4.27**, a reverse proxy, and from a user laptop `128.2.1.25` is closed
+on 22, 5400 and 9000 while `128.2.4.27:443` is open. The app servers sit behind
+that proxy, so "can users reach the new host" was the wrong question - they
+cannot reach the current one either, and do not need to.
+
+    users ──https──▶ 128.2.4.27:443   (reverse proxy, ceo.hfcb.co.ke)
+                          └─────────▶ 128.2.1.25:5400 / :9000
+
+| Path | Result | Meaning |
+|---|---|---|
+| new → `128.2.1.25:5432` | OK | databases reachable, pg_hba rules in |
+| old → `new:5400` / `:9000` | **refused** | the packet ARRIVED - path is open, nothing listening yet |
+| users → `128.2.4.27:443` | OK | the front door |
+| users → app hosts directly | closed | by design, both old and new |
+| new → `smtp.office365.com:587` | **timed out** | firewall drop |
+| new → github / pypi / npm | timed out | firewall drop |
+
+Refused and timed out are not the same answer and the difference decided this
+migration. **Refused** means the host received the packet and had nothing
+listening; **timed out** means a firewall dropped it. `nc` to the new host on
+5400 came back refused, which is what proved the path was already open.
+
+### Still to confirm
+
+`128.2.4.27` must reach `10.51.181.25:5400`. It is on the same 128.2.x family
+as the old host, which does reach it, so this is likely already true - but it is
+somebody else's box and worth one command from it.
+
+Cutover then becomes a backend repoint on that proxy: one line, reversible,
+no DNS change and no certificate work.
+
+---
+
+## BLOCKED — converter-helper cannot send mail (21 Sep 2026)
 
 The database half of Option A works. Everything else does not, and the reason
 is the host, not the plan.
