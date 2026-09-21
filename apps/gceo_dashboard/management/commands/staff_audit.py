@@ -12,7 +12,9 @@ It writes nothing.
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-from apps.gceo_dashboard.staff_scope import CURRENT_STAFF_SQL, LEFT_SQL
+from apps.gceo_dashboard.staff_scope import (
+    CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL,
+)
 
 
 class Command(BaseCommand):
@@ -28,13 +30,21 @@ class Command(BaseCommand):
             w("")
             w("employee_table")
             w("=" * 62)
-            rows = one("SELECT count(*) FROM employee_table")
-            people = one("SELECT count(DISTINCT staff_id) FROM employee_table")
+            rows   = one("SELECT count(*) FROM employee_table")
+            ids    = one("SELECT count(DISTINCT staff_id) FROM employee_table")
+            no_id  = one("SELECT count(*) FROM employee_table "
+                         "WHERE staff_id IS NULL OR BTRIM(staff_id::text) = ''")
+            people = one(f"SELECT count(DISTINCT {PERSON_KEY_SQL}) FROM employee_table")
             w(f"  rows                         {rows:>8}")
-            w(f"  distinct staff_id            {people:>8}")
-            if rows != people:
-                w(f"  DUPLICATES                   {rows - people:>8}"
-                  "   <- row counts and people counts differ")
+            w(f"  distinct staff_id            {ids:>8}"
+              "   <- all a DISTINCT staff_id count can see")
+            w(f"  rows with NO staff_id        {no_id:>8}"
+              + ("   <- SILENTLY DROPPED by that count" if no_id else ""))
+            w(f"  people (staff_id, else row)  {people:>8}"
+              "   <- what the tiles count now")
+            dupes = rows - no_id - ids
+            if dupes > 0:
+                w(f"  duplicate staff_id rows      {dupes:>8}")
 
             w("")
             w("How each definition of 'current staff' counts")
@@ -46,8 +56,11 @@ class Command(BaseCommand):
                  "SELECT count(id) FROM employee_table WHERE exit IS DISTINCT FROM 1"),
                 ("exit = 0, rows            (old Years of service)",
                  "SELECT count(*) FROM employee_table WHERE exit = 0"),
-                ("both markers, distinct    (what they all use now)",
+                ("both markers, DISTINCT staff_id  (my first fix, still short)",
                  f"SELECT count(DISTINCT staff_id) FROM employee_table WHERE {CURRENT_STAFF_SQL}"),
+                ("both markers, people             (what they all use now)",
+                 f"SELECT count(DISTINCT {PERSON_KEY_SQL}) FROM employee_table "
+                 f"WHERE {CURRENT_STAFF_SQL}"),
             ]
             for label, sql in defs:
                 w(f"  {label:<52}{one(sql):>8}")
@@ -73,12 +86,12 @@ class Command(BaseCommand):
             w("-" * 62)
             cur.execute(f"""
                 SELECT
-                    count(DISTINCT staff_id) FILTER (WHERE service_years IS NULL),
-                    count(DISTINCT staff_id) FILTER (WHERE service_years = 0),
-                    count(DISTINCT staff_id) FILTER (WHERE service_years > 0 AND service_years < 1),
-                    count(DISTINCT staff_id) FILTER (WHERE date_of_employment IS NULL),
-                    count(DISTINCT staff_id) FILTER (WHERE new = 1),
-                    count(DISTINCT staff_id) FILTER (WHERE new = 1
+                    count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)) FILTER (WHERE service_years IS NULL),
+                    count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)) FILTER (WHERE service_years = 0),
+                    count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)) FILTER (WHERE service_years > 0 AND service_years < 1),
+                    count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)) FILTER (WHERE date_of_employment IS NULL),
+                    count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)) FILTER (WHERE new = 1),
+                    count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)) FILTER (WHERE new = 1
                         AND date_trunc('year', date_of_employment) = date_trunc('year', now()))
                 FROM employee_table
                 WHERE {CURRENT_STAFF_SQL}
@@ -99,7 +112,7 @@ class Command(BaseCommand):
             w("-" * 62)
             cur.execute(f"""
                 SELECT COALESCE(NULLIF(BTRIM(department), ''), '(blank)'),
-                       count(DISTINCT staff_id)
+                       count(DISTINCT COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text))
                 FROM employee_table WHERE {CURRENT_STAFF_SQL}
                 GROUP BY 1 ORDER BY 2 DESC
             """)

@@ -27,7 +27,9 @@ from .models import (
 from .departments import standardize_department
 from apps.portfolio.rm_rollup import fetch_rm_rollup
 from . import gceo_legacy as gl
-from .staff_scope import CURRENT_STAFF_SQL, LEFT_SQL, current_staff
+from .staff_scope import (
+    CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL, current_staff, people_count,
+)
 from .serializers import (
     CeoDepositMovementMonthlySerializer, CustomersSerializer, CeoChannelReportSerializer,
     TransactionDiarySerializer, CeoDepositMovementSerializer, CeoDepositMovementDailySerializer,
@@ -666,10 +668,10 @@ class StaffInformationView(APIView):
         with connection.cursor() as cur:
             cur.execute(f"""
                 SELECT
-                    count(distinct staff_id) FILTER (WHERE {CURRENT_STAFF_SQL}) AS total_staff,
-                    count(distinct staff_id) FILTER (WHERE new = 1 AND date_trunc('year', date_of_employment) = date_trunc('year', now())) AS new_hires,
-                    count(distinct staff_id) FILTER (WHERE promotion = 1 AND date_trunc('year', promotion_date) = date_trunc('year', now())) AS new_promotion,
-                    count(distinct staff_id) FILTER (WHERE {LEFT_SQL} AND date_trunc('year', staff_exit_date) = date_trunc('year', now())) AS total_exit
+                    count(distinct {PERSON_KEY_SQL}) FILTER (WHERE {CURRENT_STAFF_SQL}) AS total_staff,
+                    count(distinct {PERSON_KEY_SQL}) FILTER (WHERE new = 1 AND date_trunc('year', date_of_employment) = date_trunc('year', now())) AS new_hires,
+                    count(distinct {PERSON_KEY_SQL}) FILTER (WHERE promotion = 1 AND date_trunc('year', promotion_date) = date_trunc('year', now())) AS new_promotion,
+                    count(distinct {PERSON_KEY_SQL}) FILTER (WHERE {LEFT_SQL} AND date_trunc('year', staff_exit_date) = date_trunc('year', now())) AS total_exit
                 FROM employee_table
             """)
             cols = [c[0] for c in cur.description]
@@ -685,7 +687,7 @@ class StaffGenderView(APIView):
         data = (
             current_staff(EmployeeTable.objects.all())
             .values("gender")
-            .annotate(count=Count("staff_id", distinct=True))
+            .annotate(count=people_count())
         )
         return Response(list(data))
 
@@ -934,7 +936,7 @@ class StaffDepartmentView(APIView):
         data = (
             current_staff(EmployeeTable.objects.all())
             .values("department")
-            .annotate(count=Count("staff_id", distinct=True))
+            .annotate(count=people_count())
             .order_by("-count")
         )
         return Response(list(data))
@@ -948,7 +950,7 @@ class StaffGradeView(APIView):
         data = (
             current_staff(EmployeeTable.objects.all())
             .values("grade")
-            .annotate(count=Count("staff_id", distinct=True))
+            .annotate(count=people_count())
             .order_by("-count")
         )
         return Response(list(data))
@@ -981,10 +983,10 @@ class StaffYearsServiceView(APIView):
                             WHEN service_years < 15 THEN '10 - 15 yr'
                             WHEN service_years >= 10 THEN '> 15 yr'
                         END::text AS service_period,
-                        COUNT(DISTINCT staff_id) FILTER (WHERE {CURRENT_STAFF_SQL}) AS total_staff,
-                        COUNT(DISTINCT staff_id) FILTER (WHERE new = 1) AS new_hires,
-                        COUNT(DISTINCT staff_id) FILTER (WHERE promotion = 1) AS new_promotion,
-                        COUNT(DISTINCT staff_id) FILTER (WHERE {LEFT_SQL}) AS total_exit,
+                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE {CURRENT_STAFF_SQL}) AS total_staff,
+                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE new = 1) AS new_hires,
+                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE promotion = 1) AS new_promotion,
+                        COUNT(DISTINCT {PERSON_KEY_SQL}) FILTER (WHERE {LEFT_SQL}) AS total_exit,
                         CASE
                             WHEN service_years < 1 THEN 1
                             WHEN service_years < 2 THEN 2

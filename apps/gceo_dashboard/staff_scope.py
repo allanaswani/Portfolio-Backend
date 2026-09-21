@@ -26,7 +26,8 @@ So: a person has left if EITHER marker says so, and a person is counted once.
 Both halves of that live here, and nothing on the slide gets to have its own
 opinion about it.
 """
-from django.db.models import Q
+from django.db.models import Count, Q, TextField
+from django.db.models.functions import Cast, Coalesce, Trim
 
 # A row that represents somebody who has left the bank.
 LEFT = Q(exit=1) | Q(staff_exit_date__isnull=False)
@@ -43,3 +44,30 @@ CURRENT_STAFF_SQL = "COALESCE(exit, 0) <> 1 AND staff_exit_date IS NULL"
 
 # Leavers, for the tiles that count departures rather than headcount.
 LEFT_SQL = "(exit = 1 OR staff_exit_date IS NOT NULL)"
+
+
+# ── Counting people ──────────────────────────────────────────────────────────
+# ``staff_id`` is nullable, and COUNT(DISTINCT staff_id) DROPS every row where
+# it is NULL. Those are real employees, and they disappeared from the headcount
+# without a trace - which is why the board reported fewer staff than the bank
+# has. Standardising on COUNT(DISTINCT staff_id) is what introduced it to the
+# department and grade charts, which had previously counted rows and so at least
+# included these people.
+#
+# So the key is the staff number where there is one, and the row itself where
+# there is not: a person with no staff number is still a person, and two rows
+# carrying the same staff number are still one person.
+PERSON_KEY_SQL = (
+    "COALESCE(NULLIF(BTRIM(staff_id::text), ''), 'row:' || id::text)"
+)
+
+
+def people_count():
+    """The ORM equivalent of PERSON_KEY_SQL, as a Count() to annotate with."""
+    return Count(
+        Coalesce(
+            Trim(Cast("staff_id", TextField())),
+            Cast("id", TextField()),
+        ),
+        distinct=True,
+    )
