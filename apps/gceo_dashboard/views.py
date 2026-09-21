@@ -27,6 +27,7 @@ from .models import (
 from .departments import standardize_department
 from apps.portfolio.rm_rollup import fetch_rm_rollup
 from . import gceo_legacy as gl
+from core.departments import roll_up
 from .staff_scope import (
     CURRENT_STAFF_SQL, LEFT_SQL, PERSON_KEY_SQL, SERVICE_YEARS_SQL,
     current_staff, people_count,
@@ -931,16 +932,36 @@ class EmployeeOverlayUploadView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
 class StaffDepartmentView(APIView):
+    """Current staff per department, counted once each, one spelling each.
+
+    ``department`` is free text, and production holds 57 distinct values for 913
+    people - the same department spelled several ways, plus branches recorded in
+    the department column. Grouping on the raw value ranked a split department
+    two or three times at a fraction of its real size, which on a chart that
+    shows only the top few is the difference between appearing and not.
+    core.departments decides what counts as the same department; it merges only
+    what is safe to merge and reports the rest for HR to rule on.
+
+    ``?top=N`` folds everything past rank N into a single 'Other' row so the
+    bars still add up to the headcount. That has to happen here: a caller given
+    only the per-department counts cannot work out 'Other' correctly, because
+    somebody recorded under two different tail departments would be counted
+    twice. Without the parameter the full list comes back, so other callers of
+    this endpoint are unaffected.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        data = (
-            current_staff(EmployeeTable.objects.all())
-            .values("department")
-            .annotate(count=people_count())
-            .order_by("-count")
-        )
-        return Response(list(data))
+        pairs = [
+            (dept, (str(staff_id).strip() or f"row:{pk}") if staff_id else f"row:{pk}")
+            for dept, staff_id, pk in current_staff(EmployeeTable.objects.all())
+            .values_list("department", "staff_id", "id")
+        ]
+        try:
+            top = int(request.query_params.get("top") or 0) or None
+        except (TypeError, ValueError):
+            top = None
+        return Response(roll_up(pairs, top=top))
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
