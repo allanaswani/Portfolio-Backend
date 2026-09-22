@@ -279,7 +279,31 @@ former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):
 ```cron
 */5 * * * *  docker exec hf-backend python manage.py precompute_slides
 0  */6 * * *  docker exec hf-backend python manage.py run_insights_pipeline
+30 6  2 * *  docker exec hf-backend python manage.py run_scorecard
+0  7  * * *  docker exec hf-backend python manage.py run_scorecard --current
 ```
+**The two scorecard lines are new.** Before them nothing generated a scorecard at
+all: the engine was reachable only by POSTing to
+`staff_management/employee-monthly-performance/run-scorecard/`, no scheduled job
+ever sent that POST, and the table simply stopped at whichever month somebody
+last triggered it by hand — which is how it ended up months stale with the
+scorecard page blank.
+
+They are two lines because they answer two different questions. The monthly one
+runs on the 2nd and grades **the month that has closed**, which is the figure
+anyone is judged on. The daily one refreshes **the month in progress** so the
+page is not empty for thirty days at a time — but those rows compare a partial
+month's actuals against a whole month's target, so they read low by design and
+are a running position, not a grade.
+
+Both are idempotent (`update_or_create` on `sales_code` + `month`), so a re-run
+or an overlap costs nothing.
+
+> **They score zero without targets.** `_score()` returns 0 whenever the target
+> is not positive, so a month with no `RmTarget` rows produces a full set of
+> employees at 0.00 and grade E — which looks like a broken engine and is not.
+> `manage.py scorecard_audit` tells the two apart, and
+> `manage.py run_scorecard --dry-run` says so before writing anything.
 
 **Optional — compose.** A `docker-compose.yml` exists in the repo root defining the `web` service
 (`network_mode: host`, `restart: unless-stopped`, `env_file: /etc/hf/prod.env`) so
