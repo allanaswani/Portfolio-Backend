@@ -279,7 +279,7 @@ former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):
 ```cron
 */5 * * * *  docker exec hf-backend python manage.py precompute_slides
 0  */6 * * *  docker exec hf-backend python manage.py run_insights_pipeline
-30 6  2 * *  docker exec hf-backend python manage.py run_scorecard
+0  7  7 * *  docker exec hf-backend python manage.py run_scorecard
 0  7  * * *  docker exec hf-backend python manage.py run_scorecard --current
 ```
 **The two scorecard lines are new.** Before them nothing generated a scorecard at
@@ -290,8 +290,18 @@ last triggered it by hand — which is how it ended up months stale with the
 scorecard page blank.
 
 They are two lines because they answer two different questions. The monthly one
-runs on the 2nd and grades **the month that has closed**, which is the figure
-anyone is judged on. The daily one refreshes **the month in progress** so the
+grades **the month that has closed**, which is the figure anyone is judged on.
+
+> **The 7th is not arbitrary — do not move it earlier.** Two host ETLs feed the
+> scorecard and land first:
+> ```
+> 0 11 5 * *  scorecard_finance_monthly_revenue.py
+> 0 11 6 * *  routine_registration_data.py
+> ```
+> They run on the 5th and the 6th at 11:00. A scorecard generated before them is
+> computed against last month's revenue and registration figures, and because
+> the run is idempotent it overwrites the correct rows with the stale ones. The
+> 7th is the first safe morning. The daily one refreshes **the month in progress** so the
 page is not empty for thirty days at a time — but those rows compare a partial
 month's actuals against a whole month's target, so they read low by design and
 are a running position, not a grade.
