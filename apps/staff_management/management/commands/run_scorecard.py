@@ -4,6 +4,13 @@
     manage.py run_scorecard --current        # the month in progress
     manage.py run_scorecard --year 2026 --month 8
     manage.py run_scorecard --dry-run        # compute nothing, just report
+    manage.py run_scorecard --force          # write even with no targets
+
+It REFUSES to write when the period has no targets, because every pillar then
+scores 0 and everybody grades E - a table full of grade E looks exactly like
+real, catastrophic performance, and this runs from cron, so a single missing
+target file would otherwise become a permanent daily record of the whole bank
+failing. --force overrides that.
 
 Until now the engine could only be reached by POSTing to
 ``staff_management/employee-monthly-performance/run-scorecard/``. Nothing in
@@ -43,6 +50,10 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Report what would be scored without writing anything.",
         )
+        parser.add_argument(
+            "--force", action="store_true",
+            help="Write even when the period has no targets (scores will be 0).",
+        )
 
     def handle(self, *a, **o):
         from apps.staff_management.views import _compute_scorecard
@@ -60,19 +71,32 @@ class Command(BaseCommand):
         w = self.stdout.write
         w(f"Scorecard period: {period:%B %Y}")
 
+        # Without targets for the period every pillar scores 0 and everybody
+        # grades E, because _score() returns 0 whenever the target is not
+        # positive. Writing that is worse than writing nothing: a table full of
+        # grade E is indistinguishable from real, terrible performance, and this
+        # runs from cron every morning - so one missing target file would quietly
+        # become a permanent record of the whole bank failing.
+        #
+        # So it refuses by default. --force is there for the case where somebody
+        # genuinely wants the zero rows.
+        from apps.portfolio_management_enrichment.models import RmTarget
+        targets = RmTarget.objects.filter(
+            month__year=period.year, month__month=period.month
+        ).count()
+        w(f"  RmTarget rows for this period: {targets}")
+
+        if not targets and not o["force"]:
+            w("")
+            w("  REFUSING TO WRITE. With no targets every pillar divides by zero,")
+            w("  so every employee would be recorded at 0.00 / grade E - which")
+            w("  reads exactly like real failure and would overwrite whatever is")
+            w("  already there.")
+            w("  Load this period's targets, then run again. Use --force if the")
+            w("  zero rows are genuinely what you want.")
+            return
+
         if o["dry_run"]:
-            # Worth knowing BEFORE writing 127 rows of zeros: without targets
-            # for the period every score is 0 and every grade is E, because
-            # _score() returns 0 whenever the target is not positive.
-            from apps.portfolio_management_enrichment.models import RmTarget
-            targets = RmTarget.objects.filter(
-                month__year=period.year, month__month=period.month
-            ).count()
-            w(f"  RmTarget rows for this period: {targets}")
-            if not targets:
-                w("  NOTHING WOULD SCORE. With no targets every pillar divides")
-                w("  by zero, so all 127 staff would be written as 0.00 / grade E.")
-                w("  Load the targets for this month first.")
             w("  --dry-run: nothing written.")
             return
 
