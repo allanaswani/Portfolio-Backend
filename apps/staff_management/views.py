@@ -63,8 +63,26 @@ def _resolve_period(body):
 
 
 def _compute_scorecard(year, month, period_date):
-    """
-    Core scorecard engine.
+    """Core scorecard engine.
+
+    Everything is measured year-to-date, as at the end of the scored month, and
+    the targets in RmTarget are pro-rated to the same date by
+    ``manage.py load_rm_targets``. Both sides have to agree on that or the
+    grades are meaningless:
+
+      deposits       growth since last December, against a growth target
+      new customers  change in customer count since last December
+      revenue        YTD - portfolio_rm_revenue has no date column at all, so
+                     it cannot be anything else
+      loans          always zero; see below
+
+    ``loan_actual`` is hardcoded to 0 because there is no RM-level loan actuals
+    source - the loans branch of the warehouse ETL is switched off. The pillar
+    still carries 30% of the weighted total, so nobody can score above 77 and
+    grades A and B are unreachable. ``manage.py scorecard_audit`` states that
+    arithmetically. Fixing it is a business decision: switch the ETL on, or
+    redistribute the 30%.
+
     Returns list of EmployeeMonthlyPerformance objects (saved to DB).
     """
     from apps.portfolio.models import RetailAllocatedPortfolio, PortfolioRmDepositTrends, PortfolioRmRevenue
@@ -86,7 +104,7 @@ def _compute_scorecard(year, month, period_date):
         if sc:
             emp_meta[sc] = emp
 
-    # Deposit actuals for the period (sum value per sales_code)
+    # Deposit and customer positions at the end of the scored month...
     dep_qs = (
         PortfolioRmDepositTrends.objects
         .filter(dates_eom__year=year, dates_eom__month=month)
@@ -94,6 +112,25 @@ def _compute_scorecard(year, month, period_date):
         .annotate(dep_actual=Sum("value"), nc_actual=Sum("number_of_customers"))
     )
     dep_map = {r["sales_code"]: r for r in dep_qs}
+
+    # ...and at last December, because the plan sets GROWTH, not balances.
+    #
+    # target_deposits_value is a movement target - staff_management/targets.py
+    # marks it basis="movement", and the old BranchDash compared it against this
+    # year's balance minus last December's. Scoring a BALANCE against it is not
+    # a small error: a book worth hundreds of millions divided by a growth
+    # target of a few million reads in the thousands of percent, caps at 110,
+    # and hands every RM full marks on 40% of their scorecard for free.
+    #
+    # Same reasoning for customers: number_of_customers is how many a person
+    # HAS, so "new customers" is the change in it, not the count.
+    base_qs = (
+        PortfolioRmDepositTrends.objects
+        .filter(dates_eom__year=year - 1, dates_eom__month=12)
+        .values("sales_code")
+        .annotate(dep_base=Sum("value"), nc_base=Sum("number_of_customers"))
+    )
+    base_map = {r["sales_code"]: r for r in base_qs}
 
     # Revenue actuals (no month filter — YTD snapshot)
     rev_qs = (
@@ -119,8 +156,16 @@ def _compute_scorecard(year, month, period_date):
         dep_row = dep_map.get(sc, {})
         tgt = target_map.get(sc)
 
-        dep_actual = Decimal(str(dep_row.get("dep_actual") or 0))
-        nc_actual = int(dep_row.get("nc_actual") or 0)
+        # Growth since last December. An RM with no December row is treated as
+        # having started from nothing, which is right for a book opened this
+        # year and generous if the warehouse is simply missing their baseline.
+        base_row = base_map.get(sc, {})
+        dep_actual = Decimal(str(
+            (dep_row.get("dep_actual") or 0) - (base_row.get("dep_base") or 0)
+        ))
+        nc_actual = int(
+            (dep_row.get("nc_actual") or 0) - (base_row.get("nc_base") or 0)
+        )
         rev_actual = Decimal(str(rev_map.get(sc, 0)))
         loan_actual = Decimal("0")  # no direct RM-level loan trends table
 

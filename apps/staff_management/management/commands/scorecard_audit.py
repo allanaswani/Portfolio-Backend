@@ -84,28 +84,47 @@ class Command(BaseCommand):
         w("")
         w("Can the grades even be reached")
         w("=" * 68)
-        # loan_actual is hardcoded to Decimal("0") in views._compute_scorecard,
-        # because there is no RM-level loan actuals table - the loan branch of
-        # the warehouse ETL is switched off. A pillar that is always zero still
-        # carries its full weight into the total.
-        reachable = SCORE_CAP * (1 - WEIGHTS["loans"])
-        w(f"  score cap per pillar                 {SCORE_CAP:>8.0f}")
-        w(f"  loans weight (always scores zero)    {WEIGHTS['loans'] * 100:>7.0f}%")
+        # A pillar only contributes if BOTH sides exist: an actual to measure
+        # and a target to measure it against. Either missing scores it 0, and
+        # the pillar still carries its full weight into the total.
+        live = {}
+        try:
+            from apps.portfolio_management_enrichment.models import RmTarget
+            latest = months[0]["month"] if months else None
+            tq = RmTarget.objects.filter(month=latest) if latest else RmTarget.objects.none()
+            live["deposits"] = tq.filter(deposit_target__gt=0).exists()
+            live["revenue"] = tq.filter(revenue_target__gt=0).exists()
+            live["new customers"] = tq.filter(new_customers_target__gt=0).exists()
+        except Exception as exc:
+            w(f"  could not read RmTarget: {exc}")
+            live = {k: True for k in ("deposits", "revenue", "new customers")}
+        # loan_actual is hardcoded to Decimal("0") in views._compute_scorecard -
+        # there is no RM-level loan actuals table, because the loan branch of the
+        # warehouse ETL is switched off. No target can rescue it.
+        live["loans"] = False
+
+        w(f"  {'pillar':<16}{'weight':>8}   scored?")
+        for pillar, weight in WEIGHTS.items():
+            why = "yes" if live.get(pillar) else "NO - always scores zero"
+            w(f"  {pillar:<16}{weight * 100:>7.0f}%   {why}")
+
+        reachable = SCORE_CAP * sum(wt for p, wt in WEIGHTS.items() if live.get(p))
+        w("")
         w(f"  highest total anyone can reach       {reachable:>8.1f}")
         w("")
         for grade, floor in (("A", 90), ("B", 80), ("C", 60), ("D", 50)):
-            ok = "reachable" if reachable >= floor else "IMPOSSIBLE"
-            w(f"    grade {grade}  needs {floor:>3}   {ok}")
-        if reachable < 80:
+            w(f"    grade {grade}  needs {floor:>3}   "
+              f"{'reachable' if reachable >= floor else 'IMPOSSIBLE'}")
+        dead = [p for p in WEIGHTS if not live.get(p)]
+        if dead:
+            lost = sum(WEIGHTS[p] for p in dead)
             w("")
-            w("  Grades A and B cannot be awarded to anyone, in any month, at")
-            w("  any level of performance. loan_actual is hardcoded to 0 in")
-            w("  views._compute_scorecard because there is no RM-level loan")
-            w("  actuals source, but the loans pillar still takes 30% of the")
-            w("  weighted total. Every RM is therefore scored out of 77.")
-            w("  This is a business decision to make, not a bug to quietly")
-            w("  patch: either the loans ETL gets switched on, or the 30% is")
-            w("  redistributed across the pillars that can actually be scored.")
+            w(f"  {int(lost * 100)}% of the scorecard cannot be scored at all: "
+              + ", ".join(dead) + ".")
+            w("  An RM who hits every target they CAN be measured on still tops")
+            w(f"  out at {reachable:.0f}. This is a business decision, not a bug to")
+            w("  patch quietly: either the missing data is sourced, or the")
+            w("  weights are redistributed across the pillars that work.")
 
         w("")
         w("Config tables")
