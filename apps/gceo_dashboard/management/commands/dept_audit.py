@@ -32,9 +32,10 @@ from core.departments import (
     BRANCH_NETWORK, UNASSIGNED, canonical, compare_key, roll_up,
 )
 
-# How many bars the CEO slide has room for. Kept here so the coverage figure
-# below describes the chart people are actually looking at.
-CHART_BARS = 8
+# How many DEPARTMENTS the CEO slide asks for. The frontend requests ?top=13
+# and renders those plus an 'Other' row, so keep this equal to that 13 or the
+# coverage figures below describe a chart nobody is looking at.
+CHART_BARS = 13
 
 
 class Command(BaseCommand):
@@ -68,7 +69,8 @@ class Command(BaseCommand):
 
         if not o["candidates_only"]:
             self._merged(w, groups, raw_people, rolled)
-        self._candidates(w, groups)
+        counts = {r["department"]: r["count"] for r in rolled}
+        self._candidates(w, groups, counts)
         if not o["candidates_only"]:
             self._totals(w, raw_people, rolled, people)
 
@@ -88,37 +90,64 @@ class Command(BaseCommand):
 
     # -- what was refused ----------------------------------------------------
 
-    def _candidates(self, w, groups):
+    def _candidates(self, w, groups, counts):
         """Canonical names that look related but were deliberately left apart.
 
-        Two tests, both deliberately loose - this list is meant to be read by a
-        person, so a few false suggestions cost nothing and a missed one costs a
-        wrong chart. Either one name contains the other ('Retail' inside 'Retail
-        Banking'), or they open with the same word.
+        The test is deliberately loose - a person reads this list, so a few
+        false suggestions cost nothing and a missed one costs a wrong chart.
+        Either one name contains the other, or they open with the same word.
+
+        Related names are grouped transitively, so a family appears once rather
+        than as every pair inside it, and each is shown with its headcount and
+        ordered biggest first. That ordering is the point: 'Retail Banking 378
+        against RETAIL 2' is a decision worth someone's time, and two
+        single-person names that look alike is not.
         """
         names = sorted(n for n in groups if n not in (BRANCH_NETWORK, UNASSIGNED))
-        clusters = defaultdict(set)
+
+        parent = {n: n for n in names}
+
+        def find(n):
+            while parent[n] != n:
+                parent[n] = parent[parent[n]]
+                n = parent[n]
+            return n
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
         for i, a in enumerate(names):
             ka = compare_key(a)
+            first_a = ka.split()[0] if ka.split() else ""
             for b in names[i + 1:]:
                 kb = compare_key(b)
-                first = ka.split()[0] if ka.split() else ""
-                related = (
-                    ka in kb or kb in ka
-                    or (first and first == (kb.split()[0] if kb.split() else None))
-                )
-                if related:
-                    clusters[min(a, b)].update({a, b})
+                first_b = kb.split()[0] if kb.split() else ""
+                if ka in kb or kb in ka or (first_a and first_a == first_b):
+                    union(a, b)
+
+        families = defaultdict(list)
+        for n in names:
+            families[find(n)].append(n)
+        groups_out = [sorted(m, key=lambda n: -counts.get(n, 0))
+                      for m in families.values() if len(m) > 1]
+        groups_out.sort(key=lambda m: -counts.get(m[0], 0))
 
         w("")
         w("NOT merged - these need HR to say whether they are one department")
         w("=" * 68)
-        if not clusters:
+        if not groups_out:
             w("  Nothing looks related. Every remaining name is distinct.")
             w("")
             return
-        for _, members in sorted(clusters.items()):
-            w("  " + "  |  ".join(sorted(members)))
+        for members in groups_out:
+            w("  " + "  |  ".join(f"{n} ({counts.get(n, 0)})" for n in members))
+        w("")
+        w("  Ordered by the largest name in each group, so the decisions that")
+        w("  move the chart come first. A name with 1 or 2 people sitting beside")
+        w("  a large one is usually a stray spelling of it rather than a real")
+        w("  department - but that is still HR's call, not this command's.")
         w("")
         w("  These were left split on purpose. A department split across two")
         w("  bars is visible and wrong; two real departments merged into one")

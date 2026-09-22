@@ -165,15 +165,22 @@ def _display(key):
 
 
 _ALIAS_KEYS = None
+_PREFERRED_KEYS = None
 
 
 def canonical(raw):
     """The one name this department is counted and displayed under."""
-    global _ALIAS_KEYS
+    global _ALIAS_KEYS, _PREFERRED_KEYS
     key = _key(raw)
     if not key:
         return UNASSIGNED
-    if is_branch(raw):
+    # A name the bank's own cost deck calls a department IS a department, even
+    # when a branch shares it. 'HEAD OFFICE' is both branch code 100 and a line
+    # in the CEO cost deck, and the branch test used to win - which quietly
+    # moved 7 people off the department chart and into Branch Network.
+    if _PREFERRED_KEYS is None:
+        _PREFERRED_KEYS = {_key(n) for n in PREFERRED}
+    if key not in _PREFERRED_KEYS and is_branch(raw):
         return BRANCH_NETWORK
     # Aliases are matched on the reduced key, so 'HFDI Department' resolves too.
     if _ALIAS_KEYS is None:
