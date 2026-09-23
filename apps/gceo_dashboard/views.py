@@ -1414,6 +1414,8 @@ class TopCustomerInflowView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # ::bigint (not ::int) - day movements exceed the int4 range and
+        # 500 the query; same hotfix as tl_portfolio and branch in/outflow.
         # Old backend `top_customer_inflow`: aggregate per customer with the
         # month-fallback yester CASE (plain SUMs, no >0 filter), then take the
         # top 10 by inflow movement.
@@ -1448,7 +1450,7 @@ class TopCustomerInflowView(APIView):
                 yester_1_bal - yester_2_bal AS movement,
                 banking_segment
             FROM data
-            ORDER BY (yester_1_bal - yester_2_bal)::int DESC
+            ORDER BY (yester_1_bal - yester_2_bal)::bigint DESC
             LIMIT 10
         """
         with connection.cursor() as cur:
@@ -1463,6 +1465,8 @@ class TopCustomerOutflowView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # ::bigint (not ::int) - day movements exceed the int4 range and
+        # 500 the query; same hotfix as tl_portfolio and branch in/outflow.
         # Old backend `top_customer_outflow`: same aggregate as inflow, ordered
         # ascending (largest outflow first), top 10.
         yester2 = _topcust_yester_case("yester_2_bal")
@@ -1496,7 +1500,7 @@ class TopCustomerOutflowView(APIView):
                 yester_1_bal - yester_2_bal AS movement,
                 banking_segment
             FROM data
-            ORDER BY (yester_1_bal - yester_2_bal)::int ASC
+            ORDER BY (yester_1_bal - yester_2_bal)::bigint ASC
             LIMIT 10
         """
         with connection.cursor() as cur:
