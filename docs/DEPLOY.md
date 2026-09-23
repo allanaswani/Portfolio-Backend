@@ -426,6 +426,7 @@ is new.
 | Hostname | `datawarehouseworker-node1` | `converter-helper` |
 | Backend env | `/etc/hf/prod.env` | `/etc/hf/prod.env` (same name, verified 23 Sep) |
 | Frontend dir | `portfolio-management-frontend-react` | `/data/apps/hf/portfolio-management-frontend` |
+| Frontend repo | `allanaswani/Portfolio-Frontend` | same repo, different folder name |
 | Frontend env | inline `-e NODE_OPTIONS=…` | `--env-file /etc/hf/portfolio-frontend.env` |
 | `etl_requests` mount | **required** | not used |
 | Serves the public site | yes | not yet |
