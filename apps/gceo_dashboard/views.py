@@ -101,6 +101,20 @@ _BANKING_SEGMENT_CASE = """
 """
 
 
+def _run_topcust(sql: str):
+    """Execute a top-customer query and return plain dicts.
+
+    Both callers aggregate the whole of daily_balance_movement to return ten
+    rows, so they go through gceo_legacy._cached (30 min, shared DB cache) for
+    the same reason the customer KPIs do: the figures are daily-grade, and one
+    uncached run ties up a gunicorn worker on every dashboard load.
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def _topcust_yester_case(col: str) -> str:
     """yester_1/yester_2 fallback used ONLY by top_customer_inflow/outflow.
 
@@ -1432,7 +1446,9 @@ class TopCustomerInflowView(APIView):
                     {_BANKING_SEGMENT_CASE} AS banking_segment
                 FROM daily_balance_movement dbm
                 LEFT JOIN (
-                    SELECT DISTINCT ON (cust_id) *
+                    -- only cust_id/rm_name are read; SELECT * dragged every
+                    -- column of the table through the DISTINCT ON sort.
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
@@ -1453,10 +1469,7 @@ class TopCustomerInflowView(APIView):
             ORDER BY (yester_1_bal - yester_2_bal)::bigint DESC
             LIMIT 10
         """
-        with connection.cursor() as cur:
-            cur.execute(sql)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = gl._cached("gceo:top_customer_inflow", lambda: _run_topcust(sql))
         return Response(rows)
 
 
@@ -1482,7 +1495,9 @@ class TopCustomerOutflowView(APIView):
                     {_BANKING_SEGMENT_CASE} AS banking_segment
                 FROM daily_balance_movement dbm
                 LEFT JOIN (
-                    SELECT DISTINCT ON (cust_id) *
+                    -- only cust_id/rm_name are read; SELECT * dragged every
+                    -- column of the table through the DISTINCT ON sort.
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
@@ -1503,10 +1518,7 @@ class TopCustomerOutflowView(APIView):
             ORDER BY (yester_1_bal - yester_2_bal)::bigint ASC
             LIMIT 10
         """
-        with connection.cursor() as cur:
-            cur.execute(sql)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = gl._cached("gceo:top_customer_outflow", lambda: _run_topcust(sql))
         return Response(rows)
 
 
@@ -1528,7 +1540,9 @@ class RMYTDMovementView(APIView):
                     {yester1} AS yester_1_bal
                 FROM daily_balance_movement dbm
                 LEFT JOIN (
-                    SELECT DISTINCT ON (cust_id) *
+                    -- only cust_id/rm_name are read; SELECT * dragged every
+                    -- column of the table through the DISTINCT ON sort.
+                    SELECT DISTINCT ON (cust_id) cust_id, rm_name
                     FROM retail_allocated_portfolio
                     WHERE cust_id IS NOT NULL
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
