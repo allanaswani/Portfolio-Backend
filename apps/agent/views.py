@@ -29,7 +29,7 @@ from .prompt import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-opus-5"
 MAX_TOOL_ROUNDS = 8  # safety cap on the agentic loop
 
 

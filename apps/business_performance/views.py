@@ -11,6 +11,7 @@ Two things the executive cockpit needs that don't exist elsewhere:
    falls back to a deterministic rule-based brief so the panel never breaks.
 """
 
+import logging
 from collections import defaultdict
 
 from django.conf import settings
@@ -22,6 +23,8 @@ from drf_spectacular.utils import extend_schema
 
 from .models import StrategyTarget
 from .serializers import StrategyTargetSerializer, ExecBriefRequestSerializer
+
+logger = logging.getLogger(__name__)
 
 WRITE_GROUPS = {"business_performance", "ceo", "exco"}
 
@@ -107,7 +110,7 @@ class TargetsMatrixView(APIView):
 
 # ── AI executive brief ────────────────────────────────────────────────────────
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-opus-5"
 
 BRIEF_SYSTEM = (
     "You are the analyst briefing the HF Group Director of Strategy & Business "
@@ -140,7 +143,11 @@ class ExecBriefView(APIView):
                 if points:
                     return Response({"section": section, "points": points, "source": "ai"})
             except Exception:
-                pass  # fall through to deterministic brief — panel must never break
+                # The panel must never break, so we still fall through to the
+                # deterministic brief - but log it, or a dead API key looks
+                # exactly like a working one from the frontend.
+                logger.warning("exec brief: Claude call failed, using rule-based "
+                               "fallback", exc_info=True)
         return Response({"section": section,
                          "points": self._fallback(section, period, metrics),
                          "source": "rule"})
@@ -182,7 +189,11 @@ class ExecBriefView(APIView):
         client = anthropic.Anthropic(api_key=api_key)
         resp = client.messages.create(
             model=MODEL,
-            max_tokens=600,
+            # Thinking is ON by default on Opus 5 and its tokens come out of
+            # max_tokens, so this cannot stay at the old 600 - the brief would
+            # truncate mid-sentence. Only what is generated is billed.
+            max_tokens=16000,
+            thinking={"type": "adaptive"},
             system=[{"type": "text", "text": BRIEF_SYSTEM,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}],
