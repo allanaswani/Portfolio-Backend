@@ -150,13 +150,31 @@ class Command(BaseCommand):
             client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
             response = client.messages.create(
                 model=views.MODEL,
-                max_tokens=64,
+                # Adaptive thinking spends tokens from this same budget, so a
+                # tight cap here stops the model before it ever answers: the
+                # call succeeds, stop_reason comes back "max_tokens", and the
+                # test would print OK without a single word of output.
+                max_tokens=4000,
                 thinking={"type": "adaptive"},
                 tools=tools,
                 messages=[{"role": "user", "content": "Reply with the word ok."}],
             )
+            said = "".join(
+                b.text for b in response.content
+                if getattr(b, "type", None) == "text"
+            ).strip()
+            if response.stop_reason == "max_tokens" or not said:
+                self.stdout.write(self.style.WARNING(
+                    f"  REACHED THE API but got no answer — "
+                    f"stop_reason={response.stop_reason}, text={said!r}. "
+                    f"The key works; raise max_tokens."))
+                return False
             self.stdout.write(self.style.SUCCESS(
-                f"  OK — stop_reason={response.stop_reason}"))
+                f"  OK — stop_reason={response.stop_reason}, model={response.model}, "
+                f"said={said[:40]!r}"))
+            self.stdout.write(
+                f"  tokens in/out: {response.usage.input_tokens}/"
+                f"{response.usage.output_tokens}")
             return True
         except Exception as exc:  # noqa: BLE001 — the whole point is to show it
             self.stdout.write(self.style.ERROR(f"  FAILED — {type(exc).__name__}"))
