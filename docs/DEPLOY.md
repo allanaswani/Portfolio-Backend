@@ -424,7 +424,7 @@ is new.
 |  | OLD — `128.2.1.25` | NEW — `10.51.181.25` |
 |---|---|---|
 | Hostname | `datawarehouseworker-node1` | `converter-helper` |
-| Backend env | `/etc/hf/prod.env` | `/etc/hf/backend.env` |
+| Backend env | `/etc/hf/prod.env` | `/etc/hf/prod.env` (same name, verified 23 Sep) |
 | Frontend dir | `portfolio-management-frontend-react` | `/data/apps/hf/portfolio-management-frontend` |
 | Frontend env | inline `-e NODE_OPTIONS=…` | `--env-file /etc/hf/portfolio-frontend.env` |
 | `etl_requests` mount | **required** | not used |
@@ -466,7 +466,7 @@ cd /data/apps/hf/hf_group_backend
 git pull
 docker build -t hf-backend:latest .
 docker rm -f hf-backend
-docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/backend.env hf-backend:latest gunicorn config.wsgi:application --bind 0.0.0.0:9000 --workers 9 --threads 4 --timeout 120 --access-logfile -
+docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/prod.env hf-backend:latest gunicorn config.wsgi:application --bind 0.0.0.0:9000 --workers 9 --threads 4 --timeout 120 --access-logfile -
 ```
 
 Frontend:
@@ -477,6 +477,17 @@ git pull
 docker rm -f portfolio-frontend
 docker run -d --name portfolio-frontend --restart unless-stopped -p 5400:3000 -v "$(pwd)":/app -w /app --env-file /etc/hf/portfolio-frontend.env node:22 sh -c "npm i && npm run build && npm start"
 ```
+
+Every env file on both hosts lives in `/etc/hf/` and the backend's is
+`prod.env` on each. The new host's full set, for reference:
+
+```
+c360.env  c360-frontend.env  portfolio-frontend.env  prod.env
+```
+
+Check with `ls -la /etc/hf/` rather than assuming - an `--env-file` that does
+not exist fails the `docker run` outright, and if the old container was already
+removed the service stays down until the path is right.
 
 Customer 360 runs only on the new host: see `docs/CUSTOMER360-DEPLOY.md`.
 
