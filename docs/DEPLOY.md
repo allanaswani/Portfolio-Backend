@@ -408,3 +408,84 @@ env at build time):
 NEXT_PUBLIC_API_URL=https://<new-backend-host>/
 ```
 (Trailing slash, no leading space.)
+
+---
+
+## Appendix E — Routine redeploy, both hosts (23 Sep 2026)
+
+Two production servers run in parallel until the reverse proxy at `128.2.4.27`
+is repointed. **`ceo.hfcb.co.ke` still reaches the OLD host**, so a change that
+is only deployed to the new one has not reached any real user. Deploy to both.
+
+Container names are identical on both machines, so always check the shell
+prompt before pasting: `datawarehouseworker-node1` is old, `converter-helper`
+is new.
+
+|  | OLD — `128.2.1.25` | NEW — `10.51.181.25` |
+|---|---|---|
+| Hostname | `datawarehouseworker-node1` | `converter-helper` |
+| Backend env | `/etc/hf/prod.env` | `/etc/hf/backend.env` |
+| Frontend dir | `portfolio-management-frontend-react` | `/data/apps/hf/portfolio-management-frontend` |
+| Frontend env | inline `-e NODE_OPTIONS=…` | `--env-file /etc/hf/portfolio-frontend.env` |
+| `etl_requests` mount | **required** | not used |
+| Serves the public site | yes | not yet |
+
+### OLD host
+
+Backend — from the backend repo directory:
+
+```bash
+git pull
+docker build -t hf-backend:latest .
+docker stop hf-backend && docker rm hf-backend
+docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/prod.env -v /data/apps/datascience/etl_requests:/app/etl_requests hf-backend:latest
+```
+
+No explicit gunicorn arguments here — the image's own `CMD` runs.
+
+The `etl_requests` mount is not optional. It is what the Trade Finance and
+scorecard "send report" buttons write into, and a host cron watcher picks the
+files up. Without the mount those buttons still return 202 and nothing is ever
+sent.
+
+Frontend:
+
+```bash
+cd ../../portfolio-management-frontend-react/
+git pull
+docker rm -f portfolio-frontend
+docker run -d --name portfolio-frontend --restart unless-stopped -e NODE_OPTIONS="--max-old-space-size=4096" -v $(pwd):/app -w /app -p 5400:3000 node:22 sh -c "npm install && npm run build && npm run start"
+```
+
+### NEW host
+
+Backend:
+
+```bash
+cd /data/apps/hf/hf_group_backend
+git pull
+docker build -t hf-backend:latest .
+docker rm -f hf-backend
+docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/backend.env hf-backend:latest gunicorn config.wsgi:application --bind 0.0.0.0:9000 --workers 9 --threads 4 --timeout 120 --access-logfile -
+```
+
+Frontend:
+
+```bash
+cd /data/apps/hf/portfolio-management-frontend
+git pull
+docker rm -f portfolio-frontend
+docker run -d --name portfolio-frontend --restart unless-stopped -p 5400:3000 -v "$(pwd)":/app -w /app --env-file /etc/hf/portfolio-frontend.env node:22 sh -c "npm i && npm run build && npm start"
+```
+
+Customer 360 runs only on the new host: see `docs/CUSTOMER360-DEPLOY.md`.
+
+### Migrations
+
+Run them **before** starting the new container, so running code never queries a
+column that does not exist yet, and run them on **one** host only — both point
+at the same PostgreSQL databases on `128.2.1.25`:
+
+```bash
+docker run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py migrate <app>
+```
