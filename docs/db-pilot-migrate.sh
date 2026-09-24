@@ -33,7 +33,17 @@ KEEP=0
 
 OLD_HOST="${OLD_HOST:-128.2.1.25}"
 NEW_HOST="${NEW_HOST:-127.0.0.1}"
-PGUSER_OLD="${PGUSER_OLD:-postgres}"
+# The old server does not admit "postgres" from this host - its pg_hba only
+# knows the role the app connects with. Take that role and its password from
+# the env file rather than have anyone retype a production password.
+# grep, not `. prod.env`: one line in these files carries unquoted spaces and a
+# "<", which bash reads as a redirect before abandoning the rest of the file.
+ENVFILE="${ENVFILE:-/etc/hf/prod.env}"
+envget() { [ -f "$ENVFILE" ] && grep -m1 "^$1=" "$ENVFILE" | cut -d= -f2- ; }
+PGUSER_OLD="${PGUSER_OLD:-$(envget DW_USER)}"
+PGUSER_OLD="${PGUSER_OLD:-datawarehouse}"
+[ -z "$PGPASSWORD" ] && PGPASSWORD="$(envget DW_PASSWORD)"
+export PGPASSWORD
 PGUSER_NEW="${PGUSER_NEW:-postgres}"
 PILOT="${DB}_pilot"
 
@@ -47,8 +57,15 @@ say " $(date '+%Y-%m-%d %H:%M:%S %Z')"
 rule
 
 # ── 1. can we see both ends ────────────────────────────────────────────
-psql -X -Atc "SELECT 1" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB" >/dev/null \
-  || { say "!! cannot read $DB on $OLD_HOST"; exit 1; }
+if ! psql -X -Atc "SELECT 1" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB" >/dev/null 2>&1; then
+  say "!! cannot read $DB on $OLD_HOST as '$PGUSER_OLD'."
+  say "   The old server's pg_hba decides this, and it is NOT the file under"
+  say "   /var/lib/pgsql. See the live one, on the OLD host:"
+  say "     psql -h 127.0.0.1 -U postgres -Atc 'SHOW hba_file;'"
+  say "   Override with: PGUSER_OLD=x PGPASSWORD=y sh $0 $DB"
+  exit 1
+fi
+
 psql -X -Atc "SELECT 1" -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres >/dev/null \
   || { say "!! cannot reach the local server"; exit 1; }
 
