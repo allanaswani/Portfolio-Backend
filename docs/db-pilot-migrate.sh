@@ -27,9 +27,32 @@
 set -e
 
 DB="$1"
-[ -n "$DB" ] || { echo "usage: sh db-pilot-migrate.sh <database> [-k]"; exit 1; }
+[ -n "$DB" ] || {
+  echo "usage: sh db-pilot-migrate.sh <database> [-k] [-t table [-t table ...]]"
+  echo
+  echo "  -k          keep the pilot database instead of dropping it"
+  echo "  -t table    rehearse on these tables only, not the whole database"
+  echo
+  echo "  The role the app uses can open the warehouse but not the other"
+  echo "  databases on that server, and the old host will not admit postgres"
+  echo "  from here - so rehearse on a few warehouse tables instead:"
+  echo "    sh db-pilot-migrate.sh datawarehouse -t daily_balance_movement"
+  exit 1
+}
+shift
 KEEP=0
-[ "$2" = "-k" ] && KEEP=1
+TABLE_ARGS=""
+TABLE_LIST=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -k) KEEP=1 ;;
+    -t) shift; [ -n "$1" ] || { echo "-t needs a table name"; exit 1; }
+        TABLE_ARGS="$TABLE_ARGS -t $1"
+        TABLE_LIST="$TABLE_LIST $1" ;;
+    *)  echo "unknown option: $1"; exit 1 ;;
+  esac
+  shift
+done
 
 OLD_HOST="${OLD_HOST:-128.2.1.25}"
 NEW_HOST="${NEW_HOST:-127.0.0.1}"
@@ -69,7 +92,16 @@ fi
 psql -X -Atc "SELECT 1" -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres >/dev/null \
   || { say "!! cannot reach the local server"; exit 1; }
 
-SRC_BYTES=$(psql -X -Atc "SELECT pg_database_size('$DB');" -h "$OLD_HOST" -U "$PGUSER_OLD" -d postgres)
+if [ -n "$TABLE_LIST" ]; then
+  # Measure what is actually being copied, not the whole database.
+  SUM="0"
+  for t in $TABLE_LIST; do SUM="$SUM + pg_total_relation_size('$t')"; done
+  SRC_BYTES=$(psql -X -Atc "SELECT $SUM;" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB")
+  say "Rehearsing on tables:$TABLE_LIST"
+else
+  # Ask from inside $DB: the app's role may not be admitted to postgres.
+  SRC_BYTES=$(psql -X -Atc "SELECT pg_database_size('$DB');" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB")
+fi
 SRC_PRETTY=$(psql -X -Atc "SELECT pg_size_pretty($SRC_BYTES::bigint);" -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres)
 say "Source size: $SRC_PRETTY ($SRC_BYTES bytes)"
 
@@ -93,7 +125,7 @@ psql -X -q -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres \
 say ""
 say "Streaming... (no dump file is written to disk)"
 START=$(date +%s)
-pg_dump -h "$OLD_HOST" -U "$PGUSER_OLD" -Fc --no-owner --no-privileges "$DB" \
+pg_dump -h "$OLD_HOST" -U "$PGUSER_OLD" -Fc --no-owner --no-privileges $TABLE_ARGS "$DB" \
   | pg_restore -h "$NEW_HOST" -U "$PGUSER_NEW" -d "$PILOT" \
       --no-owner --no-privileges --exit-on-error
 END=$(date +%s)
@@ -107,12 +139,20 @@ say "Verification"
 SRC_TABLES=$(psql -X -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema');" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB")
 DST_TABLES=$(psql -X -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema');" -h "$NEW_HOST" -U "$PGUSER_NEW" -d "$PILOT")
 say "  tables   source $SRC_TABLES   restored $DST_TABLES"
-[ "$SRC_TABLES" = "$DST_TABLES" ] || say "  !! TABLE COUNT DIFFERS - the restore is incomplete."
+if [ -z "$TABLE_LIST" ] && [ "$SRC_TABLES" != "$DST_TABLES" ]; then
+  say "  !! TABLE COUNT DIFFERS - the restore is incomplete."
+fi
 
 # Row counts on the five largest tables. Reltuples is an estimate, so this is a
 # smell test, not a proof; the real check is per-table count(*) before cutover.
-say "  five largest tables, estimated rows:"
-for t in $(psql -X -Atc "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE relkind='r' AND nspname='public' ORDER BY reltuples DESC LIMIT 5;" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB"); do
+if [ -n "$TABLE_LIST" ]; then
+  say "  (subset rehearsal - comparing only the tables named)"
+  BIGGEST="$TABLE_LIST"
+else
+  BIGGEST=$(psql -X -Atc "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE relkind='r' AND nspname='public' ORDER BY reltuples DESC LIMIT 5;" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB")
+  say "  five largest tables:"
+fi
+for t in $BIGGEST; do
   S=$(psql -X -Atc "SELECT count(*) FROM \"$t\";" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB" 2>/dev/null || echo "?")
   D=$(psql -X -Atc "SELECT count(*) FROM \"$t\";" -h "$NEW_HOST" -U "$PGUSER_NEW" -d "$PILOT" 2>/dev/null || echo "?")
   if [ "$S" = "$D" ]; then say "    $t: $S  OK"; else say "    $t: source $S / restored $D  !! MISMATCH"; fi
