@@ -90,13 +90,17 @@ systemctl stop postgresql-12
 mv /data/db_data/pgsql/12/data/data /data/db_data/pgsql/12/data/data.old
 ```
 
-`mv` rather than `rm`: it is instant, and it keeps the old copy until Phase 2
-has actually started. Delete it once the base backup is running and you can see
-free space falling:
+`mv` rather than `rm` makes the deletion instant and reversible for a moment.
+But it must be deleted **before** the base backup starts, not during it:
+clearing only the dumps leaves 189 GB free, and the backup needs 441 GB, so it
+would fill the disk partway through.
 
 ```bash
 rm -rf /data/db_data/pgsql/12/data/data.old
 ```
+
+Nothing is lost by deleting it early. The old host is untouched and serving
+production throughout, so a failed backup just means starting again.
 
 **[NEW]** Confirm the arithmetic before going further:
 
@@ -104,8 +108,9 @@ rm -rf /data/db_data/pgsql/12/data/data.old
 df -Ph /data
 ```
 
-Expect roughly 573 GB free. The base backup needs 441 GB; below about 520 GB,
-stop and find more space rather than proceeding.
+Expect roughly 573 GB free — 189 GB after the dumps, plus 384 GB from the data
+directory. The base backup needs 441 GB; below about 520 GB, stop and find more
+space rather than proceeding.
 
 ---
 
