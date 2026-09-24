@@ -18,9 +18,25 @@ echo " Host:    $(hostname) / $(hostname -I 2>/dev/null | awk '{print $1}')"
 echo " Date:    $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "=========================================================="
 
-PSQL="psql -X -q -U postgres"
+# Find a way in. Running as root, the socket hits pg_hba's "local all all peer"
+# and fails, while "host all all 127.0.0.1/32 trust" lets the same user in over
+# TCP - so try TCP first, then the postgres OS user, then the socket.
 have_pg=0
-if command -v psql >/dev/null 2>&1; then have_pg=1; fi
+PSQL=""
+if command -v psql >/dev/null 2>&1; then
+  if psql -X -Atc "SELECT 1" -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+    PSQL="psql -X -q -h 127.0.0.1 -U postgres"; have_pg=1
+  elif sudo -n -u postgres psql -X -Atc "SELECT 1" >/dev/null 2>&1; then
+    PSQL="sudo -n -u postgres psql -X -q"; have_pg=1
+  elif psql -X -Atc "SELECT 1" -U postgres >/dev/null 2>&1; then
+    PSQL="psql -X -q -U postgres"; have_pg=1
+  else
+    echo "!! psql is installed but no connection method worked."
+    echo "   Tried: -h 127.0.0.1 -U postgres | sudo -u postgres | local socket."
+    echo "   Everything below that needs the server will be blank."
+  fi
+fi
+[ -n "$PSQL" ] && echo "  (connecting with: $PSQL)"
 
 echo
 echo "--- 1. PostgreSQL present, and which version -------------"
