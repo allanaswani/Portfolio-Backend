@@ -91,10 +91,23 @@ echo "  before trusting the list, and cross-check pg_hba.conf below."
 
 echo
 echo "--- 6. Who is ALLOWED to connect (pg_hba) ----------------"
-for f in /var/lib/pgsql/12/data/pg_hba.conf /var/lib/pgsql/data/pg_hba.conf \
-         /etc/postgresql/12/main/pg_hba.conf; do
-  [ -f "$f" ] && { echo "  $f"; grep -vE '^\s*#|^\s*$' "$f" | sed 's/^/    /'; }
-done
+# Ask the server where its config lives. Guessing the path reads a leftover
+# default while the running server uses another - which is what happened here:
+# the packaged /var/lib/pgsql/12/data/pg_hba.conf was stale and the live file
+# sits under the data_directory.
+HBA=""
+[ "$have_pg" = 1 ] && HBA=$($PSQL -Atc "SHOW hba_file;" 2>/dev/null)
+if [ -n "$HBA" ] && [ -f "$HBA" ]; then
+  echo "  $HBA   (live, per SHOW hba_file)"
+  grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$HBA" | sed 's/^/    /'
+else
+  echo "  !! could not ask the server; falling back to common paths, which may"
+  echo "     be stale. Treat anything below as unconfirmed."
+  for f in /var/lib/pgsql/12/data/pg_hba.conf /var/lib/pgsql/data/pg_hba.conf \
+           /etc/postgresql/12/main/pg_hba.conf; do
+    [ -f "$f" ] && { echo "  $f"; grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$f" | sed 's/^/    /'; }
+  done
+fi
 echo "  Every non-local line here is a consumer somebody deliberately added."
 
 echo
