@@ -1,0 +1,128 @@
+#!/bin/sh
+# Rehearse the database move on one small database, measuring as it goes.
+#
+# RUN ON THE NEW HOST (10.51.181.25). It reads from the old host over the
+# network and writes only to a NEW database named <db>_pilot — nothing existing
+# is touched, and the pilot is dropped at the end unless you pass -k.
+#
+#   sh db-pilot-migrate.sh metabase
+#   sh db-pilot-migrate.sh virtual_accounts_activation -k
+#
+# Why this shape:
+#
+# * It streams pg_dump straight into pg_restore. No dump file ever lands on
+#   disk, which matters: /data on this host has ~63 GB free against a 439 GB
+#   warehouse, and a file-based dump would need room for BOTH the dump and the
+#   restore. Piping removes half that requirement.
+# * The new host already reaches the old server on 5432 (the app tier has been
+#   querying it across the network since the Option A move), so there is no scp
+#   step and no root-login problem to solve.
+# * It prints bytes/second. That number, applied to 439 GB, is the only honest
+#   way to size the maintenance window - every estimate before it is a guess.
+#
+# What it does NOT prove: that a 439 GB pipe survives for hours. A stream that
+# breaks at 80% has to start again, so for the warehouse itself compare this
+# against pg_basebackup or a file-based dump with a resumable transfer.
+
+set -e
+
+DB="$1"
+[ -n "$DB" ] || { echo "usage: sh db-pilot-migrate.sh <database> [-k]"; exit 1; }
+KEEP=0
+[ "$2" = "-k" ] && KEEP=1
+
+OLD_HOST="${OLD_HOST:-128.2.1.25}"
+NEW_HOST="${NEW_HOST:-127.0.0.1}"
+PGUSER_OLD="${PGUSER_OLD:-postgres}"
+PGUSER_NEW="${PGUSER_NEW:-postgres}"
+PILOT="${DB}_pilot"
+
+say() { printf '%s\n' "$*"; }
+rule() { say "----------------------------------------------------------"; }
+
+rule
+say " Pilot restore: $DB  ->  $PILOT"
+say " From $OLD_HOST  to  $NEW_HOST"
+say " $(date '+%Y-%m-%d %H:%M:%S %Z')"
+rule
+
+# ── 1. can we see both ends ────────────────────────────────────────────
+psql -X -Atc "SELECT 1" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB" >/dev/null \
+  || { say "!! cannot read $DB on $OLD_HOST"; exit 1; }
+psql -X -Atc "SELECT 1" -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres >/dev/null \
+  || { say "!! cannot reach the local server"; exit 1; }
+
+SRC_BYTES=$(psql -X -Atc "SELECT pg_database_size('$DB');" -h "$OLD_HOST" -U "$PGUSER_OLD" -d postgres)
+SRC_PRETTY=$(psql -X -Atc "SELECT pg_size_pretty($SRC_BYTES::bigint);" -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres)
+say "Source size: $SRC_PRETTY ($SRC_BYTES bytes)"
+
+# ── 2. refuse rather than fill the disk ────────────────────────────────
+DATA_DIR=$(psql -X -Atc "SHOW data_directory;" -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres)
+AVAIL_KB=$(df -Pk "$DATA_DIR" | awk 'NR==2 {print $4}')
+AVAIL_BYTES=$((AVAIL_KB * 1024))
+say "Free where PostgreSQL stores data ($DATA_DIR): $(df -Ph "$DATA_DIR" | awk 'NR==2 {print $4}')"
+if [ "$AVAIL_BYTES" -lt $((SRC_BYTES * 2)) ]; then
+  say "!! Less than 2x the source size free. Refusing."
+  say "   A restore needs the data plus indexes rebuilt alongside it; 2x is"
+  say "   the floor, not the target. Free space or pick a smaller database."
+  exit 1
+fi
+
+# ── 3. the rehearsal itself ────────────────────────────────────────────
+psql -X -q -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres \
+  -c "DROP DATABASE IF EXISTS \"$PILOT\";" \
+  -c "CREATE DATABASE \"$PILOT\";"
+
+say ""
+say "Streaming... (no dump file is written to disk)"
+START=$(date +%s)
+pg_dump -h "$OLD_HOST" -U "$PGUSER_OLD" -Fc --no-owner --no-privileges "$DB" \
+  | pg_restore -h "$NEW_HOST" -U "$PGUSER_NEW" -d "$PILOT" \
+      --no-owner --no-privileges --exit-on-error
+END=$(date +%s)
+SECS=$((END - START))
+[ "$SECS" -lt 1 ] && SECS=1
+
+# ── 4. did it actually arrive ──────────────────────────────────────────
+rule
+say "Verification"
+
+SRC_TABLES=$(psql -X -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema');" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB")
+DST_TABLES=$(psql -X -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema');" -h "$NEW_HOST" -U "$PGUSER_NEW" -d "$PILOT")
+say "  tables   source $SRC_TABLES   restored $DST_TABLES"
+[ "$SRC_TABLES" = "$DST_TABLES" ] || say "  !! TABLE COUNT DIFFERS - the restore is incomplete."
+
+# Row counts on the five largest tables. Reltuples is an estimate, so this is a
+# smell test, not a proof; the real check is per-table count(*) before cutover.
+say "  five largest tables, estimated rows:"
+for t in $(psql -X -Atc "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE relkind='r' AND nspname='public' ORDER BY reltuples DESC LIMIT 5;" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB"); do
+  S=$(psql -X -Atc "SELECT count(*) FROM \"$t\";" -h "$OLD_HOST" -U "$PGUSER_OLD" -d "$DB" 2>/dev/null || echo "?")
+  D=$(psql -X -Atc "SELECT count(*) FROM \"$t\";" -h "$NEW_HOST" -U "$PGUSER_NEW" -d "$PILOT" 2>/dev/null || echo "?")
+  if [ "$S" = "$D" ]; then say "    $t: $S  OK"; else say "    $t: source $S / restored $D  !! MISMATCH"; fi
+done
+
+# ── 5. the number the window is built from ─────────────────────────────
+RATE=$((SRC_BYTES / SECS))
+rule
+say "Throughput"
+say "  $SRC_PRETTY in ${SECS}s = $((RATE / 1024 / 1024)) MB/s"
+WAREHOUSE=471788503919
+EST=$((WAREHOUSE / RATE))
+say ""
+say "  At that rate the 439 GB warehouse would take about"
+say "  $((EST / 3600))h $(((EST % 3600) / 60))m of pure transfer."
+say "  Add index rebuild, ANALYZE, and verification - in practice assume"
+say "  at least double, and that a small database streams faster than a"
+say "  large one, so treat this as a floor rather than a forecast."
+
+# ── 6. clean up ────────────────────────────────────────────────────────
+if [ "$KEEP" = 1 ]; then
+  say ""
+  say "Kept as \"$PILOT\". Drop it when finished:"
+  say "  psql -h $NEW_HOST -U $PGUSER_NEW -d postgres -c 'DROP DATABASE \"$PILOT\";'"
+else
+  psql -X -q -h "$NEW_HOST" -U "$PGUSER_NEW" -d postgres -c "DROP DATABASE \"$PILOT\";"
+  say ""
+  say "Pilot dropped. Nothing was left behind."
+fi
+rule
