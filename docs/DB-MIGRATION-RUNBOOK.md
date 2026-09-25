@@ -128,10 +128,29 @@ reported in Phase 0 — **not** the one under `/var/lib/pgsql`, which is a stale
 package default that nothing reads:
 
 ```bash
-HBA=$(psql -h 127.0.0.1 -U postgres -Atc "SHOW hba_file;"); cp "$HBA" "$HBA.bak-$(date +%F)"; echo "host replication postgres 10.51.181.25/32 md5" >> "$HBA"; psql -h 127.0.0.1 -U postgres -c "SELECT pg_reload_conf();"
+HBA=$(psql -h 127.0.0.1 -U postgres -Atc "SHOW hba_file;"); mkdir -p /root/pgconf-backups; cp "$HBA" /root/pgconf-backups/pg_hba.conf.bak-$(date +%F); echo "host replication datawarehouse 10.51.181.25/32 md5" >> "$HBA"; psql -h 127.0.0.1 -U postgres -c "SELECT pg_reload_conf();"
 ```
 
 A reload, not a restart — no outage.
+
+**[OLD] Clear any file the `postgres` OS user cannot read — do this BEFORE
+starting the copy.** `pg_basebackup` sweeps the whole data directory at the very
+end, so a single unreadable file fails the run at 99% and the 441 GB starts
+again. It cannot resume.
+
+```bash
+find /data/db_data/pgsql/12/data/data ! -user postgres -ls
+```
+
+This bit us on 24 Sep: a pre-existing `postgresql.conf.bak`, plus the
+`pg_hba.conf.bak-*` this runbook told you to make in the step above. Config
+backups do not belong inside the data directory:
+
+```bash
+mkdir -p /root/pgconf-backups && mv /data/db_data/pgsql/12/data/data/*.bak /data/db_data/pgsql/12/data/data/*.bak-* /root/pgconf-backups/ 2>/dev/null
+```
+
+Re-run the `find` and only continue when it returns nothing.
 
 **[NEW]** Take the base backup. Run it under `tmux` or `screen`: it will run for
 hours and a dropped SSH session would kill it.
