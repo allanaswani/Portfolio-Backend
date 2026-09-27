@@ -254,11 +254,24 @@ offline:
 systemctl stop postgresql-12
 ```
 
-**[NEW]** Confirm replay has caught up, then promote:
+**[OLD]** Record where the primary stopped. This is the number the whole
+migration is verified against:
+
+```bash
+sudo -u postgres /usr/pgsql-12/bin/pg_controldata /data/db_data/pgsql/12/data/data | grep -E "Latest checkpoint location|Latest checkpoint.s REDO location"
+```
+
+**[NEW]** Replay must have reached that point before you promote. With physical
+replication the standby is byte-identical by construction, so this comparison -
+not row counting - is what proves the move:
 
 ```bash
 psql -h 127.0.0.1 -U postgres -Atc "SELECT pg_last_wal_replay_lsn();"
 ```
+
+If the standby's LSN is behind the primary's shutdown location, **wait**. It is
+still applying. Promoting early silently loses whatever had not been replayed,
+and nothing afterwards will tell you that it happened.
 ```bash
 sudo -u postgres pg_ctl promote -D /data/db_data/pgsql/12/data/data
 ```
@@ -272,7 +285,34 @@ psql -h 127.0.0.1 -U postgres -Atc "SELECT pg_is_in_recovery();"
 
 ## Phase 4 — Verify before letting anyone in
 
-**[NEW]** Sizes and row counts against what the old host held:
+**Take the baseline BEFORE Phase 3 stops the primary.** There is nothing to
+compare against afterwards - the old server is off, and starting it again to
+take counts risks it accepting a write.
+
+**[OLD]**, as the last thing before stopping it:
+
+```bash
+sh docs/db-verify.sh > ~/verify-old-before-cutover.txt
+```
+
+**[NEW]**, after the promote:
+
+```bash
+sh docs/db-verify.sh > ~/verify-new-after-promote.txt
+```
+
+Then compare. Pull the old file across and diff:
+
+```bash
+scp admlin01@128.2.1.25:~/verify-old-before-cutover.txt . && diff verify-old-before-cutover.txt ~/verify-new-after-promote.txt
+```
+
+Two differences are expected and fine: the `role` line (`primary` vs
+`standby`), and any line marked ESTIMATE, since those are planner statistics
+rather than counts. **Everything else must be identical** - database sizes,
+roles, table/index/sequence/view/function counts, and every exact row count.
+
+The quick spot-check, if you want one before the full diff:
 
 ```bash
 psql -h 127.0.0.1 -U postgres -c "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database WHERE NOT datistemplate ORDER BY pg_database_size(datname) DESC;"
