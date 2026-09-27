@@ -21,32 +21,56 @@
 # match.
 
 THRESHOLD_GB="${THRESHOLD_GB:-5}"
-PSQL="psql -X -q -h 127.0.0.1 -U postgres"
 
-$PSQL -Atc "SELECT 1" >/dev/null 2>&1 || {
-  echo "!! cannot reach the server on 127.0.0.1"; exit 1; }
+# Defaults to the local server. Point it at the other host instead and no file
+# has to be copied between the two - run it twice on ONE machine and diff there:
+#
+#   sh db-verify.sh > ~/standby.txt
+#   PGHOST=128.2.1.25 PGUSER=datawarehouse #     PGPASSWORD=$(grep -m1 '^DW_PASSWORD=' /etc/hf/prod.env | cut -d= -f2-) #     sh db-verify.sh > ~/primary.txt
+#   diff ~/primary.txt ~/standby.txt
+#
+# Reading the primary remotely uses the app's role, which pg_hba admits only to
+# its own database - the other four will report as unreachable rather than
+# silently missing. For the full picture at cutover, run it locally on each
+# host as postgres.
+PGHOST="${PGHOST:-127.0.0.1}"
+PGUSER="${PGUSER:-postgres}"
+export PGPASSWORD
+PSQL="psql -X -q -h $PGHOST -U $PGUSER"
+
+$PSQL -Atc "SELECT 1" -d postgres >/dev/null 2>&1   || $PSQL -Atc "SELECT 1" -d datawarehouse >/dev/null 2>&1   || { echo "!! cannot reach the server at $PGHOST as $PGUSER"; exit 1; }
 
 echo "# cluster snapshot"
 echo "# host is not printed on purpose: the two files must differ ONLY where"
 echo "# the data differs, so that diff output means something."
 echo
 
+# -d is explicit from here on: the app's role may not be admitted to the
+# "postgres" database, and psql would otherwise default to one we cannot open.
+DB0=$($PSQL -Atc "SELECT current_database();" -d postgres 2>/dev/null || echo datawarehouse)
+
 echo "== role =="
-$PSQL -Atc "SELECT CASE WHEN pg_is_in_recovery() THEN 'standby' ELSE 'primary' END;"
+$PSQL -d "$DB0" -Atc "SELECT CASE WHEN pg_is_in_recovery() THEN 'standby' ELSE 'primary' END;"
 echo
 
 echo "== databases =="
-$PSQL -Atc "
+$PSQL -d "$DB0" -Atc "
   SELECT datname || ' | ' || pg_size_pretty(pg_database_size(datname))
   FROM pg_database WHERE NOT datistemplate ORDER BY datname;"
 echo
 
 echo "== roles =="
-$PSQL -Atc "SELECT rolname || ' | super=' || rolsuper || ' login=' || rolcanlogin
+$PSQL -d "$DB0" -Atc "SELECT rolname || ' | super=' || rolsuper || ' login=' || rolcanlogin
             FROM pg_roles WHERE rolname NOT LIKE 'pg\_%' ORDER BY rolname;"
 echo
 
-for db in $($PSQL -Atc "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname;"); do
+for db in $($PSQL -d "$DB0" -Atc "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname;"); do
+  if ! $PSQL -d "$db" -Atc "SELECT 1" >/dev/null 2>&1; then
+    echo "== $db : NOT READABLE from $PGHOST as $PGUSER =="
+    echo
+    continue
+  fi
+
   echo "== $db : object counts =="
   $PSQL -d "$db" -Atc "
     SELECT 'tables    ' || count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
