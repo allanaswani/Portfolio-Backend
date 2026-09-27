@@ -164,6 +164,36 @@ sudo -u postgres pg_basebackup -h 128.2.1.25 -U postgres -D /data/db_data/pgsql/
 - `-R` writes `standby.signal` and `primary_conninfo`, making this a standby.
 - `-P` prints progress, which is also your throughput measurement.
 
+### While the backup runs, watch the slot — daily, without fail
+
+The slot is what guarantees no WAL is lost. It is also the one way this process
+can damage the **old** host: while the slot exists and nothing is consuming it,
+WAL accumulates there and is never recycled.
+
+**[OLD]**
+
+```bash
+psql -h 127.0.0.1 -U postgres -c "SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained FROM pg_replication_slots;" ; df -Ph /data
+```
+
+- `active = t` — healthy, something is consuming it.
+- `active = f` with `retained` growing — **the backup died and nobody noticed.**
+  Either start the standby immediately, or drop the slot.
+
+This happened on 25-27 Sep 2026: the backup finished on the Friday evening, the
+standby was not started, and by Sunday the slot held 43 GB and the old host had
+gone from 107 GB free to 77 GB - roughly 15 GB a day, about five days from
+filling the disk and taking the warehouse down. Starting the standby drains it.
+
+If the backup has failed and will not be restarted the same day, drop the slot
+rather than leave it:
+
+```bash
+psql -h 127.0.0.1 -U postgres -c "SELECT pg_drop_replication_slot('converter_helper');"
+```
+
+A dropped slot costs a fresh base backup. A full disk costs production.
+
 **[NEW]** When it finishes, start it. It will connect to the old host and catch
 up on everything written during the copy:
 
