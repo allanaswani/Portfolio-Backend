@@ -8,6 +8,7 @@ would make the page that has to stay fast the slowest one.
 from rest_framework import serializers
 
 from .models import (
+    TicketAttachment,
     DeskRecipient, DeskSettings, Holiday, Ticket, TicketCategory, TicketComment,
     TicketEvent,
 )
@@ -123,6 +124,28 @@ class TicketEventSerializer(serializers.ModelSerializer):
         return describe(obj.working_seconds_since_previous)
 
 
+class TicketAttachmentSerializer(serializers.ModelSerializer):
+    """Metadata only. The bytes are fetched from the download endpoint, so a
+    ticket with ten screenshots does not put ten base64 blobs in one JSON."""
+
+    uploaded_by_name = serializers.SerializerMethodField()
+    size_label = serializers.SerializerMethodField()
+    is_image = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TicketAttachment
+        fields = ["id", "filename", "content_type", "size", "size_label",
+                  "is_image", "uploaded_by_name", "created_at"]
+
+    def get_uploaded_by_name(self, obj):
+        u = obj.uploaded_by
+        return (u.get_full_name() or u.username).strip() if u else "—"
+
+    def get_size_label(self, obj):
+        kb = obj.size / 1024
+        return f"{kb:.0f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
+
+
 class TicketCommentSerializer(serializers.ModelSerializer):
     author = serializers.SerializerMethodField()
 
@@ -184,6 +207,7 @@ class TicketListSerializer(serializers.ModelSerializer):
 class TicketDetailSerializer(TicketListSerializer):
     events = serializers.SerializerMethodField()
     comments = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
     time_breakdown = serializers.SerializerMethodField()
 
@@ -192,11 +216,17 @@ class TicketDetailSerializer(TicketListSerializer):
             "body", "requester_email", "requester_department", "requester_branch",
             "resolution_note", "satisfaction", "assigned_at", "started_at",
             "on_hold_seconds", "last_reopened_at",
-            "events", "comments", "permissions", "time_breakdown",
+            "events", "comments", "attachments", "permissions", "time_breakdown",
         ]
 
     def get_events(self, obj):
         return TicketEventSerializer(obj.events.all(), many=True).data
+
+    def get_attachments(self, obj):
+        # Metadata only - the bytes come from the download endpoint, so opening
+        # a ticket never drags several megabytes of screenshots through JSON.
+        return TicketAttachmentSerializer(
+            obj.attachments.select_related("uploaded_by"), many=True).data
 
     def get_comments(self, obj):
         from .rbac import is_handler

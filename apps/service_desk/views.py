@@ -9,20 +9,23 @@ is the failure this module exists to prevent.
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.db.models import Count, Prefetch, Q
+from django.http import HttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.views import APIView
 
 from . import notifications, rbac, reports, workflow
 from .models import (
-    DeskRecipient, DeskSettings, Holiday, Ticket, TicketCategory, TicketComment,
-    TicketEvent,
+    DeskRecipient, DeskSettings, Holiday, Ticket, TicketAttachment,
+    TicketCategory, TicketComment, TicketEvent,
 )
 from .serializers import (
+    TicketAttachmentSerializer,
     DeskRecipientSerializer, DeskSettingsSerializer, HolidaySerializer,
     TicketCategorySerializer,
     TicketCommentSerializer, TicketCreateSerializer, TicketDetailSerializer,
@@ -621,3 +624,129 @@ class ReportsView(APIView):
             "trend": reports.trend(days=days),
             "ageing": reports.ageing(),
         })
+
+
+@extend_schema(tags=TAG)
+class TicketAttachmentView(APIView):
+    """List what is attached to a ticket, or attach something.
+
+    Upload is multipart. The type is decided by sniffing the first bytes, not
+    by trusting the extension or the browser's Content-Type, both of which the
+    sender controls.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, reference):
+        ticket = _get_ticket_or_403(request, reference)
+        if ticket is None:
+            return Response({"detail": "No such ticket."}, status=404)
+        rows = ticket.attachments.select_related("uploaded_by")
+        return Response(TicketAttachmentSerializer(rows, many=True).data)
+
+    def post(self, request, reference):
+        ticket = _get_ticket_or_403(request, reference)
+        if ticket is None:
+            return Response({"detail": "No such ticket."}, status=404)
+        # Anyone who may comment may attach: the two are the same act, and a
+        # screenshot is usually what the comment is about.
+        if not rbac.can_comment(request.user, ticket):
+            return Response({"detail": "You cannot add to this ticket."}, status=403)
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose a file first."}, status=400)
+
+        if upload.size > TicketAttachment.MAX_BYTES:
+            mb = TicketAttachment.MAX_BYTES / 1024 / 1024
+            return Response(
+                {"file": f"That file is {upload.size / 1024 / 1024:.1f} MB. "
+                         f"The limit is {mb:.0f} MB - crop the screenshot, or "
+                         f"put a large document somewhere shared and link it."},
+                status=400)
+        if ticket.attachments.count() >= TicketAttachment.MAX_PER_TICKET:
+            return Response(
+                {"file": f"This ticket already has {TicketAttachment.MAX_PER_TICKET} "
+                         f"attachments, which is the limit."}, status=400)
+
+        payload = upload.read()
+        kind = _sniff(payload, upload.content_type)
+        if kind not in TicketAttachment.ALLOWED:
+            return Response(
+                {"file": f"{kind or 'That file type'} is not accepted. Send an "
+                         f"image, a PDF, a Word or Excel file, or plain text."},
+                status=400)
+
+        att = TicketAttachment.objects.create(
+            ticket=ticket,
+            filename=(upload.name or "attachment")[:200],
+            content_type=kind,
+            size=len(payload),
+            data=payload,
+            uploaded_by=request.user,
+        )
+        # The timeline is the record of what happened to a ticket, and a file
+        # arriving is something that happened. workflow.record, not a raw
+        # create: it is what times the step against the one before it.
+        workflow.record(ticket, TicketEvent.KIND_COMMENT, actor=request.user,
+                        note=f"Attached {att.filename}")
+        return Response(TicketAttachmentSerializer(att).data, status=201)
+
+
+@extend_schema(tags=TAG)
+class TicketAttachmentDownloadView(APIView):
+    """Serve one attachment, to anyone allowed to see the ticket it is on."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference, pk):
+        ticket = _get_ticket_or_403(request, reference)
+        if ticket is None:
+            return Response({"detail": "No such ticket."}, status=404)
+        try:
+            att = ticket.attachments.get(pk=pk)
+        except TicketAttachment.DoesNotExist:
+            return Response({"detail": "No such attachment."}, status=404)
+
+        response = HttpResponse(bytes(att.data), content_type=att.content_type)
+        # inline for images so a screenshot opens in the tab; attachment for
+        # everything else so nothing is rendered that should not be.
+        disposition = "inline" if att.is_image else "attachment"
+        response["Content-Disposition"] = f'{disposition}; filename="{att.filename}"'
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+
+#: Magic numbers, because the browser's Content-Type and the file name are both
+#: supplied by whoever is uploading. Falling back to the declared type only for
+#: the text formats, which have no signature to check.
+_SIGNATURES = (
+    (bytes.fromhex("89504E470D0A1A0A"), "image/png"),
+    (bytes.fromhex("FFD8FF"), "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"%PDF-", "application/pdf"),
+)
+
+#: Written as hex rather than escape sequences: a literal like a PNG header
+#: is unreadable inline and easy to corrupt when this file is edited.
+
+
+def _sniff(payload, declared):
+    for magic, kind in _SIGNATURES:
+        if payload.startswith(magic):
+            return kind
+    if payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        return "image/webp"
+    # Office files are zip archives; the declared type is the only way to tell
+    # a .docx from a .xlsx without unpacking it, so it is trusted ONLY here and
+    # only for types on the allow list.
+    if payload[:2] == b"PK" and declared in TicketAttachment.ALLOWED:
+        return declared
+    if declared in {"text/plain", "text/csv"}:
+        return declared
+    # Nothing recognised it. Returning the declared type here would defeat the
+    # whole check - an executable renamed .png, sent as image/png, would be
+    # accepted on the sender's word. Unknown means refused.
+    return ""

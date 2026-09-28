@@ -884,3 +884,88 @@ class RequesterChoosesTheHandlerTests(DeskTestCase):
         self.assertTrue(perms["assign_others"])
         # But not the desk-only "take it for myself" action.
         self.assertFalse(perms["take"])
+
+
+PNG = bytes.fromhex("89504E470D0A1A0A") + b"\x00" * 64
+
+
+class AttachmentTests(DeskTestCase):
+    """A screenshot is how most problems are actually described."""
+
+    def upload(self, who, reference, name, payload, declared):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        return self.as_(who).post(
+            f"{BASE}tickets/{reference}/attachments/",
+            {"file": SimpleUploadedFile(name, payload, content_type=declared)},
+            format="multipart")
+
+    def test_requester_can_attach_and_it_shows_on_the_ticket(self):
+        t = self.raise_ticket()
+        res = self.upload(self.requester, t.reference, "shot.png", PNG, "image/png")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["content_type"], "image/png")
+        self.assertTrue(res.data["is_image"])
+
+        detail = self.as_(self.requester).get(f"{BASE}tickets/{t.reference}/")
+        self.assertEqual(len(detail.data["attachments"]), 1)
+        self.assertEqual(detail.data["attachments"][0]["filename"], "shot.png")
+
+    def test_attaching_is_recorded_on_the_timeline(self):
+        """A file arriving is something that happened to the ticket."""
+        t = self.raise_ticket()
+        self.upload(self.requester, t.reference, "shot.png", PNG, "image/png")
+        self.assertTrue(
+            TicketEvent.objects.filter(ticket=t, note__icontains="shot.png").exists())
+
+    def test_the_declared_type_is_not_trusted(self):
+        """An executable renamed .png is still an executable."""
+        t = self.raise_ticket()
+        res = self.upload(self.requester, t.reference, "evil.png",
+                          b"MZ\x90\x00" + b"\x00" * 64, "image/png")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("not accepted", str(res.data).lower())
+
+    def test_oversize_is_refused_with_the_limit_named(self):
+        t = self.raise_ticket()
+        big = PNG + b"\x00" * (5 * 1024 * 1024)
+        res = self.upload(self.requester, t.reference, "big.png", big, "image/png")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("limit", str(res.data).lower())
+
+    def test_a_stranger_can_neither_attach_nor_download(self):
+        t = self.raise_ticket()
+        self.upload(self.requester, t.reference, "shot.png", PNG, "image/png")
+        att = t.attachments.get()
+
+        self.assertIn(
+            self.upload(self.stranger, t.reference, "x.png", PNG, "image/png").status_code,
+            (403, 404))
+        self.assertIn(
+            self.as_(self.stranger).get(
+                f"{BASE}tickets/{t.reference}/attachments/{att.id}/").status_code,
+            (403, 404))
+
+    def test_download_returns_the_bytes_that_were_uploaded(self):
+        t = self.raise_ticket()
+        self.upload(self.requester, t.reference, "shot.png", PNG, "image/png")
+        att = t.attachments.get()
+
+        res = self.as_(self.agent).get(
+            f"{BASE}tickets/{t.reference}/attachments/{att.id}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res["Content-Type"], "image/png")
+        self.assertEqual(b"".join(res.streaming_content) if res.streaming
+                         else res.content, PNG)
+        self.assertEqual(res["X-Content-Type-Options"], "nosniff")
+
+    def test_per_ticket_cap(self):
+        from .models import TicketAttachment
+
+        t = self.raise_ticket()
+        for i in range(TicketAttachment.MAX_PER_TICKET):
+            self.assertEqual(
+                self.upload(self.requester, t.reference, f"s{i}.png", PNG, "image/png")
+                .status_code, 201)
+        res = self.upload(self.requester, t.reference, "one-too-many.png", PNG, "image/png")
+        self.assertEqual(res.status_code, 400)

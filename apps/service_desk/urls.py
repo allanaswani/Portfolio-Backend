@@ -11,6 +11,11 @@ urlpatterns = [
     # Every state change is its own endpoint. There is no PATCH that can set a
     # status, because each of these records a step and tells somebody.
     path("tickets/<str:reference>/comment/", v.TicketCommentView.as_view()),
+    # A screenshot is how most problems are actually described.
+    path("tickets/<str:reference>/attachments/",
+         v.TicketAttachmentView.as_view()),
+    path("tickets/<str:reference>/attachments/<int:pk>/",
+         v.TicketAttachmentDownloadView.as_view()),
     path("tickets/<str:reference>/status/",  v.TicketStatusView.as_view()),
     path("tickets/<str:reference>/assign/",  v.TicketAssignView.as_view()),
     path("tickets/<str:reference>/resolve/", v.TicketResolveView.as_view()),

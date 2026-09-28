@@ -519,6 +519,63 @@ class TicketEvent(models.Model):
         return f"{self.ticket_id} {self.kind} @ {self.at:%Y-%m-%d %H:%M}"
 
 
+class TicketAttachment(TimeStamped):
+    """A file somebody attached to a ticket — usually a screenshot.
+
+    **The bytes live in the database, not on disk.** That is a deliberate
+    choice for this deployment, not an oversight: the application runs in a
+    container that is destroyed and recreated on every deploy, and no volume is
+    mounted for uploads. A FileField writing to MEDIA_ROOT would lose every
+    attachment the next time somebody shipped a change, silently, and the first
+    anyone would know is a broken link on an old ticket. Rows survive that, and
+    they also reach the standby through replication like everything else.
+
+    The cost is database size, which is why ``MAX_BYTES`` is small and enforced
+    in the view. Screenshots and a PDF or two, not a document store: if this
+    ever needs to hold real files, that is the point to introduce object
+    storage, and this model is the seam where it would change.
+    """
+
+    #: Per file. Generous for a screenshot, mean for anything else - which is
+    #: the intent.
+    MAX_BYTES = 5 * 1024 * 1024
+    #: Per ticket, so one enthusiastic reporter cannot post fifty.
+    MAX_PER_TICKET = 10
+
+    #: What a service desk is legitimately sent. Anything executable is absent
+    #: on purpose, and the check is on the sniffed type, not the file name.
+    ALLOWED = {
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+        "application/pdf", "text/plain", "text/csv",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/msword", "application/vnd.ms-excel",
+    }
+
+    ticket = models.ForeignKey(
+        "Ticket", on_delete=models.CASCADE, related_name="attachments")
+    filename = models.CharField(max_length=200)
+    content_type = models.CharField(max_length=100)
+    size = models.PositiveIntegerField()
+    data = models.BinaryField()
+
+    uploaded_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="ticket_attachments")
+
+    class Meta:
+        db_table = "service_desk_attachment"
+        ordering = ["created_at"]
+        indexes = [models.Index(fields=["ticket", "created_at"])]
+
+    def __str__(self):
+        return f"{self.filename} on {self.ticket.reference}"
+
+    @property
+    def is_image(self):
+        return self.content_type.startswith("image/")
+
+
 class TicketComment(TimeStamped):
     """A message on a ticket.
 
