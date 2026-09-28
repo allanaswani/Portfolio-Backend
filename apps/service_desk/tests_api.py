@@ -969,3 +969,38 @@ class AttachmentTests(DeskTestCase):
                 .status_code, 201)
         res = self.upload(self.requester, t.reference, "one-too-many.png", PNG, "image/png")
         self.assertEqual(res.status_code, 400)
+
+
+class ReportsExportTests(DeskTestCase):
+    """Managers were rebuilding the detail in Excel by hand."""
+
+    def test_only_the_desk_may_export(self):
+        res = self.as_(self.requester).get(f"{BASE}reports/export/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_export_has_a_row_per_ticket_and_names_the_file(self):
+        a = self.raise_ticket()
+        b = self.raise_ticket()
+        res = self.as_(self.manager).get(f"{BASE}reports/export/")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res["Content-Type"], "text/csv")
+        self.assertIn("service-desk-", res["Content-Disposition"])
+
+        lines = res.content.decode().strip().splitlines()
+        self.assertEqual(len(lines), 3, "header plus one row per ticket")
+        self.assertIn("reference", lines[0])
+        self.assertIn(a.reference, res.content.decode())
+        self.assertIn(b.reference, res.content.decode())
+
+    def test_undecided_states_export_blank_not_no(self):
+        """A ticket still in time has not met its target and has not missed it."""
+        self.raise_ticket()
+        body = self.as_(self.manager).get(f"{BASE}reports/export/").content.decode()
+        row = body.strip().splitlines()[1].split(",")
+        header = body.strip().splitlines()[0].split(",")
+
+        for column in ("response_breached", "resolution_breached",
+                       "confirmed_by_requester", "satisfaction"):
+            self.assertEqual(row[header.index(column)], "",
+                             f"{column} should be blank while undecided")

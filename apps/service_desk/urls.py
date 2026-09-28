@@ -40,4 +40,6 @@ urlpatterns = [
     # Counts for the sidebar, and the reporting the desk is measured by.
     path("my-desk/", v.MyDeskView.as_view()),
     path("reports/", v.ReportsView.as_view()),
+    # The tickets behind the numbers, for the manager who has to explain them.
+    path("reports/export/", v.ReportsExportView.as_view()),
 ]

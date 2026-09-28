@@ -6,6 +6,9 @@ PATCH that could set ``status`` directly would be a step nobody recorded, which
 is the failure this module exists to prevent.
 """
 
+import csv
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.db.models import Count, Prefetch, Q
@@ -624,6 +627,106 @@ class ReportsView(APIView):
             "trend": reports.trend(days=days),
             "ageing": reports.ageing(),
         })
+
+
+@extend_schema(tags=TAG)
+class ReportsExportView(APIView):
+    """The tickets behind the report, as CSV.
+
+    Managers were reading numbers off a dashboard and then rebuilding the
+    detail in Excel by hand. This is the detail: one row per ticket, with the
+    durations already worked out in hours, because the point of the export is
+    usually "which ones took too long and who had them".
+
+    Working hours, not wall-clock - the same measure the dashboard shows, so
+    the two never disagree.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    COLUMNS = [
+        "reference", "subject", "category", "priority", "status",
+        "raised_by", "on_behalf_of", "department", "branch", "assigned_to",
+        "created_at", "first_response_at", "resolved_at", "closed_at",
+        "response_hours", "resolution_hours", "on_hold_hours",
+        "response_due_at", "resolution_due_at",
+        "response_breached", "resolution_breached",
+        "reopened_count", "confirmed_by_requester", "satisfaction",
+    ]
+
+    def get(self, request):
+        if not rbac.is_handler(request.user):
+            return Response({"detail": "The service desk reports are for the desk."},
+                            status=403)
+
+        days = _days(request)
+        since = timezone.now() - timedelta(days=days)
+        rows = (Ticket.objects
+                .filter(created_at__gte=since)
+                .select_related("category", "raised_by", "assigned_to")
+                .order_by("created_at"))
+
+        response = HttpResponse(content_type="text/csv")
+        stamp = timezone.now().strftime("%Y-%m-%d")
+        response["Content-Disposition"] = (
+            f'attachment; filename="service-desk-{days}days-{stamp}.csv"')
+
+        writer = csv.writer(response)
+        writer.writerow(self.COLUMNS)
+        for t in rows:
+            writer.writerow([
+                t.reference,
+                t.subject,
+                t.category.name if t.category else "",
+                t.get_priority_display(),
+                t.get_status_display(),
+                _person_label(t.raised_by),
+                t.on_behalf_of,
+                t.requester_department,
+                t.requester_branch,
+                _person_label(t.assigned_to),
+                _stamp(t.created_at),
+                _stamp(t.first_response_at),
+                _stamp(t.resolved_at),
+                _stamp(t.closed_at),
+                _hours(t.working_seconds_to_response()),
+                _hours(t.working_seconds_open()),
+                _hours(t.on_hold_seconds),
+                _stamp(t.response_due_at),
+                _stamp(t.resolution_due_at),
+                _yesno(t.response_breached),
+                _yesno(t.resolution_breached),
+                t.reopened_count,
+                _yesno(t.confirmed_by_requester),
+                t.satisfaction if t.satisfaction is not None else "",
+            ])
+        return response
+
+
+def _person_label(user):
+    if not user:
+        return ""
+    return (user.get_full_name() or user.username).strip()
+
+
+def _stamp(moment):
+    # Local time and no seconds: this is opened in Excel by people, and an ISO
+    # string with a timezone offset is parsed as text by half of them.
+    if not moment:
+        return ""
+    return timezone.localtime(moment).strftime("%Y-%m-%d %H:%M")
+
+
+def _hours(seconds):
+    return "" if seconds is None else round(seconds / 3600, 2)
+
+
+def _yesno(value):
+    # Three states, not two. Blank means "not decided yet", which is different
+    # from "no" and matters for both breach and confirmation.
+    if value is None:
+        return ""
+    return "yes" if value else "no"
 
 
 @extend_schema(tags=TAG)
