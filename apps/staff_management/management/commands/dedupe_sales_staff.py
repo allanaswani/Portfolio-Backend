@@ -25,6 +25,23 @@ leader does not take it to the grave.
 Rows where the duplicates disagree on a populated field are reported and
 SKIPPED, not merged. Two different sales codes for one person is a question for
 whoever maintains the list, not something a script should decide.
+
+Two of those disagreements are mechanical rather than real, and each has its
+own flag so nothing is resolved silently:
+
+``--prefer-lettered``
+    One row's "sales code" is just the PF number - 3528 against GO3528. That is
+    the PF in the wrong column, not a competing code, so the lettered one wins.
+
+``--resolve-attributes``
+    The rows agree on the sales code and differ only on something else, such as
+    an exit date or a zone. The keeper's value is taken and the other reported,
+    so a stale row cannot quietly overwrite a corrected one.
+
+Neither flag will ever choose between two real sales codes. BL3524 against
+DSR221 stays skipped however the command is run - and is worth checking before
+merging at all, since a teller holding a DSR code may be two genuine roles
+rather than one duplicated person.
 """
 
 from django.core.management.base import BaseCommand
@@ -52,6 +69,13 @@ class Command(BaseCommand):
             help="Actually merge. Without it nothing is written.")
         parser.add_argument(
             "--pf", help="Limit to one PF number, for checking a single case.")
+        parser.add_argument(
+            "--prefer-lettered", action="store_true",
+            help="When one sales code is just the PF number, keep the lettered one.")
+        parser.add_argument(
+            "--resolve-attributes", action="store_true",
+            help="Merge rows that agree on the sales code and differ only elsewhere, "
+                 "taking the keeper's values.")
 
     def handle(self, *args, **o):
         apply = o["apply"]
@@ -84,11 +108,31 @@ class Command(BaseCommand):
             label = f"PF {group['staff_pf_number']} / {group['staff_role'] or '(no role)'}"
 
             # Disagreement on a populated field is a decision, not a merge.
-            conflicts = []
+            conflicts, code_values = [], set()
             for field in fields:
                 values = {getattr(r, field) for r in rows if not _blank(getattr(r, field))}
+                if field == "sales_code":
+                    code_values = {str(v) for v in values}
                 if len(values) > 1:
                     conflicts.append(f"{field}={sorted(str(v) for v in values)}")
+
+            reason = ""
+            if conflicts:
+                pf = str(group["staff_pf_number"] or "").strip()
+                # A "code" equal to the PF number is the PF in the wrong column.
+                placeholders = {c for c in code_values if c == pf or c.isdigit()}
+                real_codes = code_values - placeholders
+
+                if len(code_values) > 1 and len(real_codes) == 1 and o["prefer_lettered"]:
+                    rows = [r for r in rows
+                            if str(r.sales_code or "").strip() not in placeholders] or rows
+                    conflicts = [c for c in conflicts if not c.startswith("sales_code=")]
+                    reason = f" [dropped placeholder code {sorted(placeholders)}]"
+
+                if conflicts and len(code_values) <= 1 and o["resolve_attributes"]:
+                    reason += f" [kept the keeper's {', '.join(c.split('=')[0] for c in conflicts)}]"
+                    conflicts = []
+
             if conflicts:
                 skipped += 1
                 self.stdout.write(self.style.WARNING(
@@ -104,7 +148,12 @@ class Command(BaseCommand):
                 ),
                 reverse=True,
             )[0]
-            others = [r for r in rows if r.id != keeper.id]
+            # Every row in the group that is not the keeper goes, including any
+            # placeholder rows filtered out of the conflict check above.
+            all_rows = BranchEmployeeDmcData.objects.filter(
+                staff_pf_number=group["staff_pf_number"],
+                staff_role=group["staff_role"])
+            others = [r for r in all_rows if r.id != keeper.id]
 
             filled = []
             for field in fields:
@@ -121,7 +170,7 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"  merge {label}: keeping id {keeper.id} "
                 f"[code={keeper.sales_code or 'none'}], removing "
-                f"{', '.join(str(r.id) for r in others)}{note}")
+                f"{', '.join(str(r.id) for r in others)}{note}{reason}")
 
             if apply:
                 with transaction.atomic():
