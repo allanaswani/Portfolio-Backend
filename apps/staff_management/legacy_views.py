@@ -73,7 +73,17 @@ class BranchEmployeeDmcDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=TAG)
 class BranchEmployeeDmcCsvUploadView(AmendingCsvUploadView):
-    """Upsert on (staff_pf_number, sales_code, staff_role) — ported from legacy."""
+    """Upsert on (staff_pf_number, staff_role).
+
+    **Not on sales_code.** The legacy uploader keyed on it, which meant a row
+    carrying a code never matched the same person's existing row with a blank
+    one - so uploading codes for staff who had none created a second row each
+    time instead of filling the blank in. That is how Purity Zawadi ends up on
+    the Sales team page twice, once with a code and once without.
+
+    A sales code is something we are SETTING on a person, so it cannot also be
+    part of deciding which person this is. PF number and role are.
+    """
 
     model = BranchEmployeeDmcData
     serializer_class = BranchEmployeeDmcDataSerializer
@@ -84,12 +94,33 @@ class BranchEmployeeDmcCsvUploadView(AmendingCsvUploadView):
 
     def save_valid(self, row, serializer):
         data = serializer.validated_data
-        BranchEmployeeDmcData.objects.update_or_create(
-            staff_pf_number=data.get("staff_pf_number"),
-            sales_code=data.get("sales_code"),
-            staff_role=data.get("staff_role"),
-            defaults=data,
-        )
+        pf = data.get("staff_pf_number")
+        role = data.get("staff_role")
+        if not pf:
+            return {"staff_pf_number": "Required - it is how a person is matched."}
+
+        existing = BranchEmployeeDmcData.objects.filter(
+            staff_pf_number=pf, staff_role=role)
+        count = existing.count()
+
+        if count == 0:
+            BranchEmployeeDmcData.objects.create(**data)
+            return None
+
+        # Duplicates already in the table from the old behaviour: update every
+        # one rather than picking a winner, and say so on the results row.
+        # update_or_create would raise MultipleObjectsReturned here and fail the
+        # whole row, which would hide the problem instead of repairing it.
+        for instance in existing:
+            for field, value in data.items():
+                setattr(instance, field, value)
+            instance.save()
+
+        if count > 1:
+            row["note"] = (
+                f"{count} existing rows for PF {pf} / {role} were updated - "
+                f"duplicates from the previous upload behaviour. Run "
+                f"`manage.py dedupe_sales_staff` to merge them.")
         return None
 
 
