@@ -6,6 +6,8 @@ urlpatterns = [
     # The queue and one ticket. Addressed by reference, not id — a reference is
     # what appears in the emails people will paste back at you.
     path("tickets/", v.TicketListCreateView.as_view()),
+    # Before the <reference> route, or "bulk-assign" is read as a reference.
+    path("tickets/bulk-assign/", v.TicketBulkAssignView.as_view()),
     path("tickets/<str:reference>/", v.TicketDetailView.as_view()),
 
     # Every state change is its own endpoint. There is no PATCH that can set a
@@ -31,6 +33,10 @@ urlpatterns = [
     path("recipients/<int:pk>/",  v.DeskRecipientDetailView.as_view()),
     path("holidays/",             v.HolidayListCreateView.as_view()),
     path("holidays/<int:pk>/",    v.HolidayDetailView.as_view()),
+    # What the desk has already answered, so the fifteenth person asking does
+    # not have to raise a ticket at all.
+    path("kb/",                   v.KbListCreateView.as_view()),
+    path("kb/<slug:slug>/",       v.KbDetailView.as_view()),
     path("settings/",             v.DeskSettingsView.as_view()),
     path("handlers/",             v.HandlerListView.as_view()),
     # Who is on the desk, and finding people to put on it.

@@ -8,7 +8,7 @@ would make the page that has to stay fast the slowest one.
 from rest_framework import serializers
 
 from .models import (
-    TicketAttachment,
+    KbArticle, TicketAttachment,
     DeskRecipient, DeskSettings, Holiday, Ticket, TicketCategory, TicketComment,
     TicketEvent,
 )
@@ -122,6 +122,30 @@ class TicketEventSerializer(serializers.ModelSerializer):
     def get_gap(self, obj):
         """How long this step took, in the desk's working time."""
         return describe(obj.working_seconds_since_previous)
+
+
+class KbArticleSerializer(serializers.ModelSerializer):
+    """The list form carries a snippet rather than the whole body: a search
+    result showing six full articles is a wall of text nobody reads."""
+
+    created_by_name = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source="category.name", default="", read_only=True)
+    snippet = serializers.SerializerMethodField()
+
+    class Meta:
+        model = KbArticle
+        fields = ["id", "kind", "title", "slug", "body", "snippet",
+                  "category", "category_name", "is_published", "views",
+                  "created_by_name", "created_at", "updated_at"]
+        read_only_fields = ["slug", "views", "created_by_name", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        return (u.get_full_name() or u.username).strip() if u else "—"
+
+    def get_snippet(self, obj):
+        text = " ".join(obj.body.split())
+        return text[:180] + ("…" if len(text) > 180 else "")
 
 
 class TicketAttachmentSerializer(serializers.ModelSerializer):

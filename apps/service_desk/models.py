@@ -519,6 +519,73 @@ class TicketEvent(models.Model):
         return f"{self.ticket_id} {self.kind} @ {self.at:%Y-%m-%d %H:%M}"
 
 
+class KbArticle(TimeStamped):
+    """Something the desk has already answered, written down once.
+
+    Two shapes, one model, because they are the same thing at different
+    lengths and splitting them would mean maintaining two search boxes:
+
+    * an **article** is the answer to "how do I…", which a requester can read
+      instead of raising a ticket at all;
+    * a **reply** is a paragraph a handler pastes into a response, so the
+      fifteenth person to ask gets the same answer as the first.
+
+    Kept deliberately plain: a title, a body, and whether it is published.
+    Versioning, approval workflow and attachments are all things a wiki does
+    better, and the moment this needs them it should become a link to one.
+    """
+
+    KIND_ARTICLE = "article"
+    KIND_REPLY = "reply"
+    KIND = ((KIND_ARTICLE, "Article"), (KIND_REPLY, "Canned reply"))
+
+    kind = models.CharField(max_length=10, choices=KIND, default=KIND_ARTICLE)
+    title = models.CharField(max_length=200)
+    slug = models.SlugField(max_length=220, unique=True, blank=True)
+    body = models.TextField()
+
+    # Optional: an article about report requests should surface on a report
+    # request, but plenty of answers belong to no category at all.
+    category = models.ForeignKey(
+        "TicketCategory", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="articles")
+
+    # Unpublished is a draft the desk can see and a requester cannot. There is
+    # no review step - one person writing something useful should not wait.
+    is_published = models.BooleanField(default=True)
+
+    #: Incremented on read. The only measure of whether anything here is used,
+    #: and the thing that tells you which answers to keep current.
+    views = models.PositiveIntegerField(default=0)
+
+    created_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="kb_articles")
+
+    class Meta:
+        db_table = "service_desk_kb_article"
+        ordering = ["-views", "title"]
+        indexes = [
+            models.Index(fields=["kind", "is_published"]),
+            models.Index(fields=["category", "is_published"]),
+        ]
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            from django.utils.text import slugify
+
+            base = slugify(self.title)[:200] or "article"
+            slug, n = base, 1
+            while KbArticle.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                n += 1
+                slug = f"{base}-{n}"
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+
 class TicketAttachment(TimeStamped):
     """A file somebody attached to a ticket — usually a screenshot.
 

@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, F, Prefetch, Q
 from django.http import HttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -24,11 +24,11 @@ from rest_framework.views import APIView
 
 from . import notifications, rbac, reports, workflow
 from .models import (
-    DeskRecipient, DeskSettings, Holiday, Ticket, TicketAttachment,
+    DeskRecipient, DeskSettings, Holiday, KbArticle, Ticket, TicketAttachment,
     TicketCategory, TicketComment, TicketEvent,
 )
 from .serializers import (
-    TicketAttachmentSerializer,
+    KbArticleSerializer, TicketAttachmentSerializer,
     DeskRecipientSerializer, DeskSettingsSerializer, HolidaySerializer,
     TicketCategorySerializer,
     TicketCommentSerializer, TicketCreateSerializer, TicketDetailSerializer,
@@ -626,6 +626,154 @@ class ReportsView(APIView):
             "by_handler": reports.by_handler(days=days),
             "trend": reports.trend(days=days),
             "ageing": reports.ageing(),
+        })
+
+
+@extend_schema(tags=TAG)
+class KbListCreateView(generics.ListCreateAPIView):
+    """Search what has already been answered, or write it down.
+
+    Reading is open to everyone - the point of a knowledge base is that the
+    fifteenth person does not have to raise a ticket. Writing is the desk's,
+    because an answer with nobody accountable for it is worse than none.
+    """
+
+    serializer_class = KbArticleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = KbArticle.objects.select_related("category", "created_by")
+        # Drafts are the desk's business. A requester seeing a half-written
+        # answer is worse than seeing nothing.
+        if not rbac.is_handler(self.request.user):
+            qs = qs.filter(is_published=True, kind=KbArticle.KIND_ARTICLE)
+
+        p = self.request.query_params
+        kind = p.get("kind")
+        if kind:
+            qs = qs.filter(kind=kind)
+        category = p.get("category")
+        if category:
+            qs = qs.filter(category_id=category)
+
+        # Deliberately icontains rather than full-text search: this table holds
+        # tens of rows, not thousands, and a tsvector would be machinery with
+        # nothing to do. Revisit when a search actually feels slow.
+        q = (p.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(body__icontains=q))
+        return qs
+
+    def perform_create(self, serializer):
+        if not rbac.is_handler(self.request.user):
+            raise serializers.ValidationError(
+                {"detail": "Only the desk can write knowledge base entries."})
+        serializer.save(created_by=self.request.user)
+
+
+@extend_schema(tags=TAG)
+class KbDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = KbArticleSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = KbArticle.objects.select_related("category", "created_by")
+    lookup_field = "slug"
+
+    def get_object(self):
+        obj = super().get_object()
+        if not obj.is_published and not rbac.is_handler(self.request.user):
+            from rest_framework.exceptions import NotFound
+
+            raise NotFound("No such article.")
+        return obj
+
+    def retrieve(self, request, *args, **kwargs):
+        obj = self.get_object()
+        # F() rather than obj.views + 1: two people opening the same article at
+        # once would otherwise both write the same number.
+        KbArticle.objects.filter(pk=obj.pk).update(views=F("views") + 1)
+        obj.refresh_from_db(fields=["views"])
+        return Response(self.get_serializer(obj).data)
+
+    def _guard(self, request):
+        if not rbac.is_handler(request.user):
+            return Response(
+                {"detail": "Only the desk can change knowledge base entries."},
+                status=403)
+        return None
+
+    def update(self, request, *args, **kwargs):
+        return self._guard(request) or super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return self._guard(request) or super().destroy(request, *args, **kwargs)
+
+
+@extend_schema(tags=TAG)
+class TicketBulkAssignView(APIView):
+    """Hand several tickets to one person in a single act.
+
+    Twenty new tickets on a Monday was twenty round trips, which is how a queue
+    stops being triaged. Each ticket still goes through ``workflow.assign``, so
+    every one of them gets its own timeline entry and its own email - a bulk
+    action that skipped those would be a silent reassignment, which is the
+    thing this module exists to prevent.
+
+    Partial success is the normal outcome and is reported per ticket: one
+    already-closed ticket in a selection of twenty must not cost the other
+    nineteen.
+    """
+
+    permission_classes = [IsAuthenticated]
+    #: Enough for a morning's triage, small enough that one request cannot
+    #: send a hundred emails.
+    MAX = 50
+
+    def post(self, request):
+        references = request.data.get("references") or []
+        if not isinstance(references, list) or not references:
+            return Response({"references": "Choose at least one ticket."}, status=400)
+        if len(references) > self.MAX:
+            return Response(
+                {"references": f"{len(references)} tickets at once is too many; "
+                               f"the limit is {self.MAX}."}, status=400)
+
+        username = (request.data.get("username") or "").strip()
+        if username:
+            if not rbac.can_assign_to_others(request.user):
+                return Response(
+                    {"username": "Only a desk manager can hand tickets to "
+                                 "somebody else."}, status=403)
+            target = get_user_model().objects.filter(
+                username__iexact=username, is_active=True).first()
+            if target is None:
+                return Response({"username": "No active user with that username."},
+                                status=400)
+        else:
+            if not rbac.is_handler(request.user):
+                return Response({"username": "Choose who should handle these."},
+                                status=400)
+            target = request.user  # "take them"
+
+        assigned, skipped = [], []
+        for reference in references[: self.MAX]:
+            ticket = Ticket.objects.filter(reference=reference).first()
+            if ticket is None:
+                skipped.append({"reference": reference, "why": "No such ticket."})
+                continue
+            if ticket.status in Ticket.CLOSED_STATUSES:
+                skipped.append({"reference": reference,
+                                "why": f"Already {ticket.get_status_display().lower()}."})
+                continue
+            if not rbac.can_assign(request.user, ticket):
+                skipped.append({"reference": reference, "why": "Not yours to assign."})
+                continue
+            workflow.assign(ticket, target, actor=request.user)
+            assigned.append(reference)
+
+        return Response({
+            "assigned": assigned,
+            "skipped": skipped,
+            "assigned_to": _person_label(target),
         })
 
 

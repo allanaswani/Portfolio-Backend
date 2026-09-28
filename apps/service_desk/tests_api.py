@@ -1004,3 +1004,121 @@ class ReportsExportTests(DeskTestCase):
                        "confirmed_by_requester", "satisfaction"):
             self.assertEqual(row[header.index(column)], "",
                              f"{column} should be blank while undecided")
+
+
+class BulkAssignTests(DeskTestCase):
+    """Twenty tickets on a Monday was twenty round trips."""
+
+    def path(self):
+        return f"{BASE}tickets/bulk-assign/"
+
+    def test_manager_assigns_several_at_once(self):
+        a, b = self.raise_ticket(), self.raise_ticket()
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.as_(self.manager).post(
+                self.path(),
+                {"references": [a.reference, b.reference], "username": self.agent.username},
+                format="json")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertCountEqual(res.data["assigned"], [a.reference, b.reference])
+        a.refresh_from_db(); b.refresh_from_db()
+        self.assertEqual(a.assigned_to, self.agent)
+        self.assertEqual(b.assigned_to, self.agent)
+
+    def test_each_ticket_still_gets_its_own_timeline_entry(self):
+        """A bulk action that skipped the record would be a silent reassignment."""
+        a = self.raise_ticket()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.as_(self.manager).post(
+                self.path(),
+                {"references": [a.reference], "username": self.agent.username},
+                format="json")
+        self.assertTrue(
+            TicketEvent.objects.filter(ticket=a, kind=TicketEvent.KIND_ASSIGNED).exists())
+
+    def test_one_bad_ticket_does_not_cost_the_others(self):
+        good = self.raise_ticket()
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.as_(self.manager).post(
+                self.path(),
+                {"references": [good.reference, "HFSD-NOPE"],
+                 "username": self.agent.username},
+                format="json")
+
+        self.assertEqual(res.data["assigned"], [good.reference])
+        self.assertEqual(len(res.data["skipped"]), 1)
+        self.assertEqual(res.data["skipped"][0]["reference"], "HFSD-NOPE")
+
+    def test_a_handler_may_take_tickets_but_not_hand_them_over(self):
+        a = self.raise_ticket()
+        with self.captureOnCommitCallbacks(execute=True):
+            mine = self.as_(self.agent).post(
+                self.path(), {"references": [a.reference]}, format="json")
+        self.assertEqual(mine.status_code, 200)
+        a.refresh_from_db()
+        self.assertEqual(a.assigned_to, self.agent)
+
+        other = self.as_(self.agent).post(
+            self.path(),
+            {"references": [a.reference], "username": self.manager.username},
+            format="json")
+        self.assertEqual(other.status_code, 403)
+
+    def test_nothing_selected_is_refused(self):
+        res = self.as_(self.manager).post(self.path(), {"references": []}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+
+class KnowledgeBaseTests(DeskTestCase):
+    """So the fifteenth person to ask gets the first person's answer."""
+
+    def write(self, who=None, **extra):
+        payload = {"title": "How to read the branch deposit figure",
+                   "body": "Clear the branch filter before comparing to the report."}
+        payload.update(extra)
+        return self.as_(who or self.manager).post(f"{BASE}kb/", payload, format="json")
+
+    def test_the_desk_writes_and_a_slug_is_made(self):
+        res = self.write()
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["slug"], "how-to-read-the-branch-deposit-figure")
+
+    def test_a_requester_cannot_write(self):
+        res = self.write(self.requester)
+        self.assertIn(res.status_code, (400, 403))
+
+    def test_a_requester_reads_published_articles(self):
+        self.write()
+        res = self.as_(self.requester).get(f"{BASE}kb/")
+        rows = res.data["results"] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(rows), 1)
+
+    def test_drafts_and_canned_replies_are_the_desks_business(self):
+        """A half-written answer is worse than no answer."""
+        self.write(title="Draft answer", is_published=False)
+        self.write(title="Paste me", kind="reply")
+
+        seen = self.as_(self.requester).get(f"{BASE}kb/")
+        rows = seen.data["results"] if isinstance(seen.data, dict) else seen.data
+        self.assertEqual(rows, [])
+
+        desk = self.as_(self.agent).get(f"{BASE}kb/")
+        rows = desk.data["results"] if isinstance(desk.data, dict) else desk.data
+        self.assertEqual(len(rows), 2)
+
+    def test_search_matches_title_and_body(self):
+        self.write()
+        self.write(title="Something else", body="Nothing to do with deposits here.")
+
+        hit = self.as_(self.agent).get(f"{BASE}kb/", {"q": "branch filter"})
+        rows = hit.data["results"] if isinstance(hit.data, dict) else hit.data
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "How to read the branch deposit figure")
+
+    def test_reading_counts_a_view(self):
+        slug = self.write().data["slug"]
+        self.as_(self.requester).get(f"{BASE}kb/{slug}/")
+        self.as_(self.requester).get(f"{BASE}kb/{slug}/")
+        again = self.as_(self.agent).get(f"{BASE}kb/{slug}/")
+        self.assertEqual(again.data["views"], 3)
