@@ -39,6 +39,7 @@ urlpatterns = [
     path("api/v1/insights/", include("apps.insights.urls")),
     path("api/v1/agent/", include("apps.agent.urls")),
     path("api/v1/surfaces/", include("apps.surfaces.urls")),
+    path("commercial_pipeline/", include("apps.commercial_pipeline.urls")),
     path("api/v1/slideshow/", include("apps.slideshow.urls")),
 
     # Password reset

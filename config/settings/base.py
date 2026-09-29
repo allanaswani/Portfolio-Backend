@@ -55,6 +55,7 @@ LOCAL_APPS = [
     "apps.trade_register",
     "apps.business_performance",
     "apps.surfaces",
+    "apps.commercial_pipeline",
     "apps.referrals",
     "apps.observability",
     "apps.service_desk",
