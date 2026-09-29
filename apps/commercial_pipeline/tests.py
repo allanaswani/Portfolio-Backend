@@ -9,7 +9,7 @@ from rest_framework.test import APIClient, APITestCase
 from apps.portfolio.models import Profile
 from .models import PipelineEntry as P
 
-BASE = "/commercial_pipeline/"
+BASE = "/commercial_book/"
 
 
 def user(username, sales_code="", segment="COMMERCIAL", group=None):

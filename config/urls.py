@@ -39,7 +39,11 @@ urlpatterns = [
     path("api/v1/insights/", include("apps.insights.urls")),
     path("api/v1/agent/", include("apps.agent.urls")),
     path("api/v1/surfaces/", include("apps.surfaces.urls")),
-    path("commercial_pipeline/", include("apps.commercial_pipeline.urls")),
+    # NOT "commercial_pipeline/": the reverse proxy in front of ceo.hfcb.co.ke
+    # returns 502 for any path containing "pipeline", so every call from the
+    # page failed while the page itself loaded. The Django app keeps its name;
+    # only the URL avoids the word.
+    path("commercial_book/", include("apps.commercial_pipeline.urls")),
     path("api/v1/slideshow/", include("apps.slideshow.urls")),
 
     # Password reset
