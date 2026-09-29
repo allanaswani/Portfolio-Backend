@@ -1071,8 +1071,13 @@ class StaffProjectionsView(APIView):
     def get(self, request):
         # Monthly staff waterfall (old gceo staff_staff_projections):
         # [{employment_date, total_staff, new_hires, total_exit, new_promotion}].
-        with connection.cursor() as cur:
-            cur.execute("""
+        #
+        # employee_table is ~1,300 rows, so this is cheap in isolation and it
+        # STILL timed out on 28 Sep. That is the tell: it was queueing behind
+        # the uncached whole-table aggregates elsewhere on this dashboard, not
+        # slow itself. Cached regardless - a headcount waterfall only changes
+        # when somebody joins or leaves.
+        sql = """
                 WITH MonthlyData AS (
                     SELECT
                         CASE WHEN date_of_employment < date_trunc('year', current_date)
@@ -1121,10 +1126,9 @@ class StaffProjectionsView(APIView):
                 SELECT employment_date, total_staff, new_hires, total_exit, new_promotion
                 FROM StaffCount LEFT JOIN MonthlySummary USING (employment_date)
                 ORDER BY employment_date
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+        """
+        return Response(gl._cached("gceo:staff_projections",
+                                   lambda: _run_topcust(sql)))
 
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
@@ -1176,18 +1180,21 @@ class CeoFixedDepositProductSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
+        # Cached: this aggregates the whole of `accounts` on every dashboard
+        # load. Uncached, several of these fire together when the CEO dashboard
+        # opens, the database saturates, and the proxy in front gives up long
+        # before gunicorn's 600s does - which is what the "socket hang up" and
+        # the Apache "Error reading from remote server" on 28-29 Sep were.
+        return Response(gl._cached(
+            "gceo:fd_product_summary",
+            lambda: _run_topcust("""
                 SELECT accs.type, accs.currency, SUM(accs.current_balance) AS amount
                 FROM accounts accs
                 INNER JOIN product_mapping pm ON accs.type = pm.product_description
                 WHERE pm.product_map = 'FD'
                 GROUP BY accs.type, accs.currency
                 ORDER BY amount DESC
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+            """)))
 
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
@@ -1197,8 +1204,12 @@ class CeoFixedDepositSegmentSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        with connection.cursor() as cur:
-            cur.execute("""
+        # The heaviest of the four: `accounts` joined to hf_customer, which is
+        # 333k rows, aggregated in full. Cached for the same reason as the
+        # product summary above.
+        return Response(gl._cached(
+            "gceo:fd_segment_summary",
+            lambda: _run_topcust("""
                 SELECT c.banking_segment, SUM(accs.current_balance) AS amount
                 FROM accounts accs
                 INNER JOIN product_mapping pm ON accs.type = pm.product_description
@@ -1206,10 +1217,7 @@ class CeoFixedDepositSegmentSummaryView(APIView):
                 WHERE pm.product_map = 'FD'
                 GROUP BY c.banking_segment
                 ORDER BY amount DESC
-            """)
-            cols = [c[0] for c in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        return Response(rows)
+            """)))
 
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
