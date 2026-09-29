@@ -156,3 +156,96 @@ class PipelineTests(APITestCase):
                       res.data["stages_under_broad"][P.BROAD_APPLICATION])
         self.assertFalse(res.data["can_see_team"])
         self.assertTrue(self.as_(self.tl).get(f"{BASE}options/").data["can_see_team"])
+
+
+class WorkbookUploadTests(APITestCase):
+    """Loading the workbook without a shell on the host."""
+
+    def setUp(self):
+        self.rm = user("up_rm", sales_code="CM010")
+        self.tl = user("up_tl", sales_code="CM911", group="tl_portfolio")
+
+    def as_(self, who):
+        c = APIClient()
+        c.force_authenticate(who)
+        return c
+
+    def book(self, name="pipeline.xlsx"):
+        """A workbook shaped like the real one, built in memory."""
+        import io as _io
+
+        import openpyxl
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Assets Pipeline"
+        ws.append(["Branch", "Sales Person Name", "Customer Name",
+                   "Loan Amount Requested", "Amount to be Disbursed", "Product",
+                   "Broad Application stage", "Additional comments"])
+        ws.append(["Commercial", "Anne Kimani", "Technomasters Limited",
+                   10000000, 6000000, "Contract Finance", "Approved", "Limit in place"])
+        # 'Credit Risk' is not a broad stage; the importer must place it properly.
+        ws.append(["Commercial", "Irene Njenga", "Cloudarc Solutions Ltd",
+                   10000000, 10000000, "Contract Financing", "Credit Risk", ""])
+        # A row with no customer is skipped, not imported blank.
+        ws.append(["Commercial", "Nobody", "", 500, 500, "x", "Approved", ""])
+
+        trade = wb.create_sheet("Trade Pipeline")
+        trade.append(["Branch", "Sales Person Name", "Customer Name", "Amount ",
+                      "Revenues", "Type", "Application Stage", "Comments"])
+        trade.append(["Commercial", "Lilian Biwott", "Experian Limited",
+                      50000000, 500000, "LC", "Approved", "Issued."])
+
+        buf = _io.BytesIO()
+        wb.save(buf)
+        return SimpleUploadedFile(
+            name, buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    def post(self, who, **extra):
+        payload = {"file": self.book()}
+        payload.update(extra)
+        return self.as_(who).post(f"{BASE}upload/", payload, format="multipart")
+
+    def test_an_rm_cannot_load_everybody_elses_rows(self):
+        self.assertEqual(self.post(self.rm).status_code, 403)
+
+    def test_the_first_upload_reports_and_writes_nothing(self):
+        res = self.post(self.tl)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertFalse(res.data["applied"])
+        self.assertEqual(res.data["total"], 3)
+        self.assertEqual(res.data["skipped"], 1, "the row with no customer")
+        self.assertEqual(P.objects.count(), 0, "nothing saved on a dry run")
+
+    def test_applying_saves_and_places_the_stages_properly(self):
+        res = self.post(self.tl, apply="true")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(P.objects.count(), 3)
+
+        row = P.objects.get(customer_name="Cloudarc Solutions Ltd")
+        self.assertEqual(row.broad_stage, P.BROAD_APPLICATION,
+                         "'Credit Risk' is a specific stage, not a broad one")
+        self.assertEqual(row.stage, "at_credit_risk")
+
+    def test_replace_removes_imported_rows_but_never_somebody_s_own(self):
+        self.post(self.tl, apply="true")
+        typed = P.objects.create(kind=P.KIND_ASSET, customer_name="Typed by an RM",
+                                 segment="COMMERCIAL", amount=1, created_by=self.rm)
+
+        self.post(self.tl, apply="true", replace="true")
+        self.assertTrue(P.objects.filter(pk=typed.pk).exists(),
+                        "a row an RM typed must survive a re-upload")
+        self.assertEqual(P.objects.filter(created_by__isnull=True).count(), 3,
+                         "the previous import was replaced, not doubled")
+
+    def test_a_file_that_is_not_a_workbook_is_refused(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        res = self.as_(self.tl).post(
+            f"{BASE}upload/",
+            {"file": SimpleUploadedFile("notes.txt", b"hello", content_type="text/plain")},
+            format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Excel", str(res.data))

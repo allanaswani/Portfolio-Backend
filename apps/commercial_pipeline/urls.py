@@ -10,4 +10,6 @@ urlpatterns = [
     path("export/",             v.PipelineExportView.as_view()),
     # Choices and product suggestions, so the form never hard-codes them.
     path("options/",            v.PipelineOptionsView.as_view()),
+    # Loading the workbook without needing a shell on the host.
+    path("upload/",             v.PipelineUploadView.as_view()),
 ]

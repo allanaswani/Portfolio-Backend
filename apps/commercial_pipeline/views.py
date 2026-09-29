@@ -17,17 +17,20 @@ them back to the spreadsheet.
 
 import csv
 
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.http import HttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import StandardPagination
 from core.segments import canonical_segment, segment_synonyms
+from .importer import parse_workbook
 from .models import PipelineEntry
 from .serializers import PipelineEntrySerializer
 
@@ -269,3 +272,90 @@ class PipelineOptionsView(APIView):
             "product_suggestions": sorted(set(products)),
             "can_see_team": sees_team(request.user),
         })
+
+
+@extend_schema(tags=TAG)
+class PipelineUploadView(APIView):
+    """Load the workbook by uploading it, instead of copying it to a server.
+
+    The management command needs a shell on the application host, which the
+    people who actually keep this spreadsheet do not have - so without this the
+    import can only ever be done by somebody else, on request, which is how the
+    spreadsheet stayed the system of record in the first place.
+
+    Two steps on purpose. The first upload reads the file and reports what it
+    found, writing nothing; only a second call with ``apply=true`` saves. A
+    140-row import that silently doubled the pipeline would be worse than no
+    import at all.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    #: Comfortably above the real file, mean enough to refuse a mistake.
+    MAX_BYTES = 10 * 1024 * 1024
+
+    def post(self, request):
+        # Loading everybody's rows is a team action, so it is the team's to do.
+        if not sees_team(request.user):
+            return Response(
+                {"detail": "Only a team leader can load the workbook."}, status=403)
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose the workbook first."}, status=400)
+        if not upload.name.lower().endswith((".xlsx", ".xlsm")):
+            return Response(
+                {"file": f"{upload.name} is not an Excel workbook. Save it as "
+                         f".xlsx and try again."}, status=400)
+        if upload.size > self.MAX_BYTES:
+            return Response(
+                {"file": f"That file is {upload.size / 1024 / 1024:.1f} MB; the "
+                         f"limit is {self.MAX_BYTES // 1024 // 1024} MB."}, status=400)
+
+        try:
+            entries, warnings, skipped = parse_workbook(upload)
+        except Exception as exc:  # noqa: BLE001 - the message is for the reader
+            return Response(
+                {"file": f"That workbook could not be read: {exc}"}, status=400)
+
+        by_kind = {}
+        for e in entries:
+            by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
+        labels = dict(PipelineEntry.KIND)
+        found = [{"kind": k, "kind_display": labels.get(k, k), "count": n}
+                 for k, n in sorted(by_kind.items())]
+
+        applied = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        if not applied:
+            return Response({
+                "applied": False,
+                "found": found,
+                "total": len(entries),
+                "skipped": skipped,
+                "warnings": warnings,
+            })
+
+        profile = _profile(request.user)
+        segment = canonical_segment(profile.segment if profile else "") or "COMMERCIAL"
+        replace = str(request.data.get("replace", "")).lower() in ("1", "true", "yes")
+
+        with transaction.atomic():
+            removed = 0
+            if replace:
+                # Only ever rows that came from a workbook: created_by is null
+                # on those and set on anything an RM typed. Uploading a fresh
+                # copy must never delete somebody's own work.
+                removed = PipelineEntry.objects.filter(
+                    created_by__isnull=True, segment=segment).delete()[0]
+            for e in entries:
+                e.segment = segment
+            PipelineEntry.objects.bulk_create(entries, batch_size=200)
+
+        return Response({
+            "applied": True,
+            "found": found,
+            "total": len(entries),
+            "skipped": skipped,
+            "removed": removed,
+            "warnings": warnings,
+        }, status=201)
