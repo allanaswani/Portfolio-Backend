@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
+from django.core.cache import cache
 from django.db import connection
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -18,6 +19,20 @@ import django_filters.rest_framework
 
 def _get_profile(user):
     return get_object_or_404(Profile, user_id=user.id)
+
+
+_TREND_TTL = 30 * 60
+
+
+def _cached(key, compute, ttl=_TREND_TTL):
+    """The month-by-month trend scans a year of loans_history and is slow enough
+    that the proxy gives up on it (502) before Django answers. The numbers only
+    change when the nightly ETL lands, so half an hour of cache costs nothing."""
+    value = cache.get(key)
+    if value is None:
+        value = compute()
+        cache.set(key, value, ttl)
+    return value
 
 
 def _is_team_level(request, view):
@@ -113,9 +128,12 @@ class TotalBookMonthByMonthView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         if _is_team_level(request, self):
-            data = cc.total_collection_trends_summary()
+            data = _cached("collections:trends:book",
+                           cc.total_collection_trends_summary)
         else:
-            data = cc.delay_officer_collection_trends_summary(profile.sales_code)
+            code = profile.sales_code or ""
+            data = _cached(f"collections:trends:{code}",
+                           lambda: cc.delay_officer_collection_trends_summary(code))
         return Response(data)
 
 

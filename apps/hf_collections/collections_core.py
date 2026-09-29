@@ -1229,7 +1229,10 @@ group by delay_officer,
             "total_principle_plus_intrest": x.total_principle_plus_intrest,
             "total_total_drawndown_amount": x.total_total_drawndown_amount,
             "balance": x.balance,
-            "loan_account_number":x.loan_account_number,
+            # No loan_account_number: this is grouped by officer and month, so
+            # there is no single loan behind a row. Asking a raw() row for a
+            # column the query never selected sends Django back to the table on
+            # the fake `id 1` above, which is what made this endpoint 500.
             } for x in custfeedback]
     return customerfeedback
 
