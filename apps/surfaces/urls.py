@@ -6,4 +6,5 @@ urlpatterns = [
     path("generate/",          views.SurfaceGenerateView.as_view()),
     path("<int:pk>/",          views.SurfaceDetailView.as_view()),
     path("<int:pk>/data/",     views.SurfaceDataView.as_view()),
+    path("<int:pk>/refine/",   views.SurfaceRefineView.as_view()),
 ]

@@ -11,6 +11,7 @@ the live actuals, so nothing here duplicates a figure that already exists.
 
 from django.conf import settings
 from django.db import models
+from simple_history.models import HistoricalRecords
 
 
 class StrategyTarget(models.Model):
@@ -81,3 +82,59 @@ class StrategyTarget(models.Model):
         else:
             period = str(self.year)
         return f"{self.get_metric_display()} · {scope} · {period} = {self.target_value}"
+
+
+class BankingSectorPosition(models.Model):
+    """Where every Kenyan bank sits, as CBK publishes it each quarter.
+
+    Nothing in this warehouse knows what another bank is worth. Every table
+    here is HF Group's own book, so the honest answer to "how do we compare"
+    was "no data" — which is why the assistant kept returning a note panel
+    instead of a market-share chart.
+
+    CBK publishes the sector figures quarterly (the Bank Supervision Annual
+    Report and the quarterly sector releases). They are public, so holding
+    them here breaks no confidence, and once they are a table the assistant
+    charts them like any other figure instead of reaching outside the bank.
+
+    One row per bank per period. ``is_us`` marks HF Group's own row so a panel
+    can highlight it without string-matching a name that may be spelled three
+    ways across releases.
+    """
+
+    period = models.CharField(
+        max_length=20, db_index=True,
+        help_text="The CBK period, e.g. '2026-Q2'. Sorts correctly as text.")
+    bank_name = models.CharField(max_length=255, db_index=True)
+    is_us = models.BooleanField(
+        default=False,
+        help_text="True on HF Group's own row, so a chart can highlight it.")
+
+    # All money in KES. Nullable because CBK does not publish every measure
+    # for every bank in every release, and a zero would be a lie.
+    total_assets = models.DecimalField(max_digits=22, decimal_places=2, blank=True, null=True)
+    total_deposits = models.DecimalField(max_digits=22, decimal_places=2, blank=True, null=True)
+    total_loans = models.DecimalField(max_digits=22, decimal_places=2, blank=True, null=True)
+    profit_before_tax = models.DecimalField(max_digits=22, decimal_places=2, blank=True, null=True)
+
+    market_share_pct = models.DecimalField(max_digits=7, decimal_places=4, blank=True, null=True)
+    tier = models.CharField(max_length=20, blank=True, help_text="CBK tier: 1, 2 or 3.")
+    branches = models.IntegerField(blank=True, null=True)
+    npl_ratio_pct = models.DecimalField(max_digits=7, decimal_places=4, blank=True, null=True)
+
+    source = models.CharField(
+        max_length=255, blank=True,
+        help_text="Which CBK release this row came from, so a figure can be traced.")
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "bp_banking_sector_position"
+        unique_together = ("period", "bank_name")
+        ordering = ["-period", "-total_assets"]
+        verbose_name = "Banking sector position"
+        verbose_name_plural = "Banking sector positions"
+
+    def __str__(self):
+        return f"{self.period} · {self.bank_name}"

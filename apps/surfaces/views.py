@@ -29,7 +29,8 @@ from drf_spectacular.utils import extend_schema
 
 from apps.agent.agent_tools import run_tool, tool_definitions
 from .models import Surface
-from .serializers import SurfaceSerializer, GenerateRequestSerializer
+from .serializers import (SurfaceSerializer, GenerateRequestSerializer,
+                          RefineRequestSerializer)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ MAX_TOOL_ROUNDS = 8
 
 # One panel kind per way of reading a number, not one per chart library widget.
 # Keeping this list short is what makes a generated layout predictable.
-PANEL_KINDS = ["kpi", "bar", "line", "table", "note"]
+PANEL_KINDS = ["kpi", "bar", "line", "area", "donut", "table", "note"]
 
 SURFACE_SCHEMA = {
     "type": "object",
@@ -76,6 +77,41 @@ SURFACE_SCHEMA = {
                     },
                     "unit": {"type": "string", "enum": ["kes", "number", "percent"]},
                     "body": {"type": "string", "description": "Text, for kind=note only."},
+
+                    # ── How it is drawn ──────────────────────────────────
+                    # Display instructions, not data. They exist because
+                    # people ask for the chart they want - "rank it", "top
+                    # ten", "show us against them" - and with nowhere to put
+                    # that, the request was simply ignored.
+                    "sort": {
+                        "type": "string", "enum": ["none", "asc", "desc"],
+                        "description": "Order rows by the y value. 'desc' for a league table.",
+                    },
+                    "limit": {
+                        "type": "integer", "minimum": 1, "maximum": 50,
+                        "description": "Keep only the first N rows after sorting - 'the top ten'.",
+                    },
+                    "compare_field": {
+                        "type": "string",
+                        "description": (
+                            "A second numeric row key drawn behind the bars, for "
+                            "actual-against-target. Only for kind=bar."
+                        ),
+                    },
+                    "target": {
+                        "type": "number",
+                        "description": "Draw a reference line at this value. For line and area.",
+                    },
+                    "highlight_field": {
+                        "type": "string",
+                        "description": (
+                            "Row key marking the row to emphasise, e.g. 'is_us' on "
+                            "get_market_position so HF Group stands out from competitors."
+                        ),
+                    },
+                    "highlight_value": {
+                        "description": "The value of highlight_field that means 'emphasise this row'.",
+                    },
                 },
                 "required": ["id", "kind", "title", "span"],
             },
@@ -111,7 +147,22 @@ SYSTEM = (
     "- data_path must point at what you actually saw in the tool result.\n"
     "- Money is Kenyan Shillings; use unit 'kes' for money, 'number' for counts.\n"
     "- Between three and six panels. A wall of panels is not a dashboard."
-)
+) + """
+
+On how a panel is drawn:
+- If the person says how they want it - ranked, top ten, as a line, against
+  target, us against the competition - do exactly that, using sort, limit,
+  compare_field, target and highlight_field. An explicit instruction about the
+  chart is not a preference to weigh; it is the request.
+- kind 'donut' is for composition - how a whole splits - and only when the
+  parts sum to something meaningful. Six slices at most.
+- kind 'area' is a line with the volume beneath it filled: use it for a
+  balance or a book over time, and plain 'line' for a rate or a ratio.
+- Ranked lists read best sorted 'desc' with a limit. An unordered bar chart of
+  forty branches tells nobody anything.
+- On get_market_position set highlight_field 'is_us' and highlight_value true,
+  so our own bank is visibly marked against its competitors.
+"""
 
 
 def _dig(obj, path):
@@ -239,7 +290,7 @@ class SurfaceGenerateView(APIView):
         return Response({"surface": SurfaceSerializer(surface).data, "panels": data},
                         status=status.HTTP_201_CREATED)
 
-    def _design(self, api_key, prompt, user):
+    def _design(self, api_key, prompt, user, system=None):
         import anthropic
 
         client = anthropic.Anthropic(api_key=api_key)
@@ -251,7 +302,7 @@ class SurfaceGenerateView(APIView):
                 model=MODEL,
                 max_tokens=16000,
                 thinking={"type": "adaptive"},
-                system=[{"type": "text", "text": SYSTEM,
+                system=[{"type": "text", "text": system or SYSTEM,
                          "cache_control": {"type": "ephemeral"}}],
                 tools=tools,
                 messages=messages,
@@ -280,3 +331,86 @@ class SurfaceGenerateView(APIView):
             messages.append({"role": "user", "content": results})
 
         return None
+
+
+REFINE_SYSTEM = SYSTEM + """
+
+You are ADJUSTING a surface that already exists, not building a new one. You
+are given its current layout and one instruction.
+
+Change only what the instruction asks for. Every panel the person did not
+mention keeps its tool, its tool_input, its data_path and its fields exactly as
+they are - somebody is looking at this dashboard, and silently re-deciding a
+panel they were happy with is a worse failure than refusing.
+
+If the instruction is only about how something is drawn - rank it, top ten,
+make it a line, mark us against the others - change the display fields alone
+and leave every tool call untouched, so the figures do not move. Call the data
+tools again only if the instruction asks for a figure that is not on the
+surface yet. Then call render_surface once with the complete layout, including
+the panels you did not change.
+"""
+
+
+@extend_schema(tags=["Surfaces"], request=RefineRequestSerializer)
+class SurfaceRefineView(APIView):
+    """Adjust a surface in place: "rank that by value and show the top ten"."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        ser = RefineRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        instruction = ser.validated_data["instruction"]
+
+        try:
+            surface = Surface.objects.get(pk=pk)
+        except Surface.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not surface.visible_to(request.user):
+            return Response({"detail": "This surface is private."},
+                            status=status.HTTP_403_FORBIDDEN)
+        # Seeing a shared surface is not permission to rewrite it for everyone.
+        if surface.created_by_id != request.user.id and not request.user.is_superuser:
+            return Response(
+                {"detail": "Only the person who made this surface can change it. "
+                           "Build your own from its description instead."},
+                status=status.HTTP_403_FORBIDDEN)
+
+        api_key = getattr(settings, "ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return Response(
+                {"detail": "Surfaces need ANTHROPIC_API_KEY set on the server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        brief = (
+            "Here is the surface as it stands:\n\n"
+            + json.dumps(surface.spec or {}, indent=2, default=str)
+            + "\n\nThe instruction is:\n"
+            + instruction
+        )
+        try:
+            spec = self._design(api_key, brief, request.user, system=REFINE_SYSTEM)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("surface refine failed")
+            return Response({"detail": f"Could not apply that change: {exc}"},
+                            status=status.HTTP_502_BAD_GATEWAY)
+        if spec is None:
+            return Response(
+                {"detail": "Claude did not return an updated layout. Try naming the "
+                           "panel and what should change about it."},
+                status=status.HTTP_502_BAD_GATEWAY)
+
+        surface.spec = spec
+        if spec.get("title"):
+            surface.title = spec["title"]
+        # The prompt is the surface's history: keep what it was asked to be.
+        surface.prompt = f'{surface.prompt}\n\n> {instruction}'.strip()
+        surface.save(update_fields=["spec", "title", "prompt", "updated_at"])
+
+        data = {p.get("id"): resolve_panel(p, request.user)
+                for p in spec.get("panels", [])}
+        return Response({"surface": SurfaceSerializer(surface).data, "panels": data})
+
+    # The loop is identical to generation; only the system prompt differs.
+    _design = SurfaceGenerateView._design

@@ -347,6 +347,20 @@ OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 # Compliance and Security require — not a default. See apps/agent/web_lookup.py.
 TINYFISH_API_KEY = env("TINYFISH_API_KEY", default="")
 
+# Trino data lake — curated live reads for the assistant (apps.agent).
+#
+# ABSENT BY DEFAULT. No host means the lake tools are never offered to the
+# model, so it cannot try and fail. The ETLs already reach this lake; the app
+# tier never has, so confirm the route before setting these:
+#     nc -vz $TRINO_HOST $TRINO_PORT
+# The account used here should be read-only. See apps/agent/trino_tools.py.
+TRINO_HOST = env("TRINO_HOST", default="")
+TRINO_PORT = env("TRINO_PORT", default="8443")
+TRINO_USER = env("TRINO_USER", default="")
+TRINO_PASSWORD = env("TRINO_PASSWORD", default="")
+TRINO_CATALOG = env("TRINO_CATALOG", default="delta")
+TRINO_SCHEMA = env("TRINO_SCHEMA", default="gold_db")
+
 # Anthropic (Claude) — powers the data-grounded AI agent (apps.agent)
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 

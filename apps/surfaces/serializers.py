@@ -25,3 +25,15 @@ class SurfaceSerializer(serializers.ModelSerializer):
 
 class GenerateRequestSerializer(serializers.Serializer):
     prompt = serializers.CharField(max_length=2000)
+
+
+class RefineRequestSerializer(serializers.Serializer):
+    """An adjustment to a surface that already exists.
+
+    Separate from ``GenerateRequestSerializer`` because the two are not the
+    same act: generating starts from nothing, refining starts from a layout
+    somebody is already looking at and must keep everything they did not
+    mention.
+    """
+
+    instruction = serializers.CharField(max_length=2000)

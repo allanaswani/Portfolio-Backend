@@ -635,13 +635,19 @@ def tool_definitions():
     exist is decided by configuration, and a module-level list would freeze
     that at import time.
     """
-    from . import rm_tools, web_lookup
+    from . import bank_tools, rm_tools, trino_tools, web_lookup
 
     # The signed-in person's own book comes FIRST. A relationship manager
     # asking about "my portfolio" was being answered from the mortgage
     # module, because that tool was called get_portfolio_dashboard and
     # nothing read their actual book.
-    tools = rm_tools.TOOL_DEFINITIONS + TOOL_DEFINITIONS
+    #
+    # bank_tools follows: one customer, one branch, and the market. Those are
+    # scoped to the caller in the queryset, so they are safe to offer to
+    # everybody — what differs is how much comes back.
+    tools = rm_tools.TOOL_DEFINITIONS + bank_tools.TOOL_DEFINITIONS + TOOL_DEFINITIONS
+    if trino_tools.enabled():
+        tools = tools + trino_tools.TOOL_DEFINITIONS
     if web_lookup.enabled():
         tools = tools + web_lookup.TOOL_DEFINITIONS
     return tools
@@ -654,13 +660,27 @@ def run_tool(name, tool_input, user=None):
     Everything else is bank-wide by design and takes no user, so a tool cannot
     accidentally widen its own scope by ignoring the argument.
     """
-    from . import rm_tools, web_lookup
+    from . import bank_tools, rm_tools, trino_tools, web_lookup
 
-    if name in rm_tools.DISPATCH:
+    # Everything scoped to the person asking goes through one path, so a new
+    # scoped tool cannot be added without receiving the user.
+    for scoped in (rm_tools.DISPATCH, bank_tools.DISPATCH):
+        if name in scoped:
+            try:
+                return json.dumps(
+                    scoped[name](user=user, **(tool_input or {})), default=str)
+            except Exception as exc:  # noqa: BLE001
+                return json.dumps({"error": f"Tool '{name}' failed: {exc}"})
+
+    if name in trino_tools.DISPATCH:
+        # Refuse rather than run if the lake was unconfigured after the model
+        # was handed the definition — configuration is the control.
+        if not trino_tools.enabled():
+            return json.dumps(
+                {"error": "The Trino lake is not configured on this server."})
         try:
             return json.dumps(
-                rm_tools.DISPATCH[name](user=user, **(tool_input or {})),
-                default=str)
+                trino_tools.DISPATCH[name](**(tool_input or {})), default=str)
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": f"Tool '{name}' failed: {exc}"})
 
