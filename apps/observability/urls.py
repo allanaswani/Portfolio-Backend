@@ -29,6 +29,9 @@ urlpatterns = [
     path("services/<int:pk>/",      av.MonitoredServiceDetailView.as_view()),
     path("services/<int:pk>/token/", av.MonitoredServiceTokenView.as_view()),
 
+    # Who uses another system (Customer 360), matched to this tool's users.
+    path("usage/<slug:source>/", v.ExternalUsageView.as_view()),
+
     # Alerting — who is told, what is currently wrong, and a way to prove the
     # mail path works before an outage is the thing that tests it.
     path("alerts/recipients/",           av.AlertRecipientListView.as_view()),

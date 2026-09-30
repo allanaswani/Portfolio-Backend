@@ -361,3 +361,20 @@ class ActiveUsersView(APIView):
             ],
             "total_users": User.objects.filter(is_active=True).count(),
         })
+
+
+@extend_schema(tags=TAG_PERF)
+class ExternalUsageView(APIView):
+    """Adoption of another system by this tool's users - Customer 360 to begin with.
+
+    ``GET observability/usage/<source>/?days=30``. Every active user here is listed
+    with their use of that system (pushed via ingest/), including those who have
+    never opened it. See apps/observability/usage.py.
+    """
+
+    permission_classes = ADMIN
+
+    def get(self, request, source):
+        from . import usage
+        days = _int(request, "days", 30, 1, 90)
+        return Response(usage.adoption(source, days, timezone.now()))

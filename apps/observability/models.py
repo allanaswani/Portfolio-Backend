@@ -261,6 +261,50 @@ class ExternalAuditEvent(models.Model):
         return f"{self.source}: {self.action} {self.model_label}"
 
 
+class ExternalUsageDay(models.Model):
+    """One user's use of another system on one day, as that system reported it.
+
+    Customer 360 is a separate app with its own database and its own activity trail.
+    Its training was run for users of this portfolio tool, so the question "is it
+    being used, and by whom" has to be answered here, against this tool's own user
+    directory - which is also the only place that can show who has NEVER opened it.
+    Customer 360 pushes one row per (day, username) via ``observability/ingest/``;
+    re-pushing a day replaces the row, so an hourly push keeps "today" current.
+    """
+
+    source = models.CharField(max_length=50, db_index=True)
+    day = models.DateField(db_index=True)
+    # Lower-cased, matched to auth_user.username case-insensitively. Not a FK: a
+    # username the other system knows may have no account here (a local login).
+    username = models.CharField(max_length=150, db_index=True)
+    requests = models.PositiveIntegerField(default=0)
+    page_views = models.PositiveIntegerField(default=0)
+    customer_views = models.PositiveIntegerField(default=0)
+    distinct_customers = models.PositiveIntegerField(default=0)
+    searches = models.PositiveIntegerField(default=0)
+    exports = models.PositiveIntegerField(default=0)
+    errors = models.PositiveIntegerField(default=0)
+    sessions = models.PositiveIntegerField(default=0)
+    active_minutes = models.PositiveIntegerField(default=0)
+    first_at = models.DateTimeField(null=True, blank=True)
+    last_at = models.DateTimeField(null=True, blank=True)
+    features = models.JSONField(default=dict, blank=True)
+    reported_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = True
+        db_table = "observability_external_usage_day"
+        ordering = ["-day", "username"]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "day", "username"],
+                                    name="uniq_external_usage_day"),
+        ]
+        indexes = [models.Index(fields=["source", "day"])]
+
+    def __str__(self):
+        return f"{self.source} {self.day} {self.username}"
+
+
 class ExternalTableHealth(models.Model):
     """A table in another system, as that system last reported it."""
 
