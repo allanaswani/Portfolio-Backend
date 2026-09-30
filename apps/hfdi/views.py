@@ -192,7 +192,8 @@ class HfdiTargetsListCreateView(generics.ListCreateAPIView):
     serializer_class = HfdiTargetsSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
-    filterset_fields = ["project_id", "pm", "rm", "is_active"]
+    filterset_fields = ["project_id", "pm", "rm", "team_leader", "site_admin",
+                        "is_active"]
     queryset = HfdiTargets.objects.all()
 
 

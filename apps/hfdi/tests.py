@@ -305,3 +305,24 @@ class HfdiTargetsWriteTests(TestCase):
         self.assertEqual(row.volume, 191)
         self.assertEqual(row.recording_date, date.today())
         self.assertEqual(row.history.count(), 1)          # history table wrote too
+
+    def test_site_admin_round_trips_and_can_be_filtered_on(self):
+        """site_admin sits beside team_leader: saved, returned, filterable."""
+        r = self.client.post(BASE + "hfdi-targets/", {
+            "project_id": 2, "pm": "Lucy Gathoni", "team_leader": "Peter Mwangi",
+            "site_admin": "Grace Wanjiru", "volume": "10",
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.data["site_admin"], "Grace Wanjiru")
+
+        row = HfdiTargets.objects.get(pk=r.data["id"])
+        self.assertEqual(row.site_admin, "Grace Wanjiru")
+        self.assertEqual(row.history.first().site_admin, "Grace Wanjiru",
+                         "the history table carries it too")
+
+        listed = self.client.get(BASE + "hfdi-targets/",
+                                 {"site_admin": "Grace Wanjiru"})
+        self.assertEqual(listed.data["count"], 1)
+        self.assertEqual(
+            self.client.get(BASE + "hfdi-targets/",
+                            {"site_admin": "Nobody"}).data["count"], 0)

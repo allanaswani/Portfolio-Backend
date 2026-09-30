@@ -150,6 +150,7 @@ class HfdiTargets(models.Model):
     rm = models.CharField(max_length=255, blank=True, null=True)
     sales_manager = models.CharField(max_length=255, blank=True, null=True)
     team_leader = models.CharField(max_length=255, blank=True, null=True)
+    site_admin = models.CharField(max_length=255, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     month = models.CharField(max_length=50, blank=True, null=True)
     target_start_date = models.CharField(max_length=50, default="")
