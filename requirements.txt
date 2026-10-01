@@ -13,6 +13,10 @@ PyJWT==2.12.1
 # ── Database ──────────────────────────────────────────────────────────────────
 psycopg[binary]==3.2.3
 psycopg2-binary==2.9.12
+# Trino lake client for apps/agent/trino_tools.py. Installed unconditionally so
+# an image rebuild cannot quietly undo it, but the tools stay dormant until
+# TRINO_HOST is set, so an unconfigured deployment carries it and never uses it.
+trino==0.330.0
 
 # ── Filtering / Pagination ────────────────────────────────────────────────────
 django-filter==24.3
