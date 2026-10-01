@@ -182,26 +182,42 @@ def check_data_health():
 
     sent = []
     for row in health.table_health():
-        key = f"table:{row['table']}"
+        key = (f"table:{row['source']}:{row['table']}" if row.get("external")
+               else f"table:{row['table']}")
         status = row["status"]
 
         if status in ("missing", "empty", "stale", "error"):
-            detail = (
-                f"Table: {row['table']} ({row['label']}, {row['app_label']})\n"
-                f"Status: {status}\n"
-                f"Rows: {row['rows']:,}\n"
-                f"Last refreshed: {row['last_seen'] or 'never'}\n"
-                + (f"Error: {row['error']}\n" if row["error"] else "")
-                + "\nAn empty or missing warehouse table means the ETL that fills "
-                  "it has stopped. The pages that read it will render zeros "
-                  "rather than an error.\n"
-            )
+            if row.get("external"):
+                # A check another system ran on itself (Customer 360's warehouse
+                # tables, source dates, deployment settings). Its own detail says
+                # what is wrong; the ETL wording below would be false for, say,
+                # "LAN access".
+                system = (MonitoredService.objects.filter(slug=row["source"])
+                          .values_list("name", flat=True).first() or row["source"])
+                detail = (
+                    f"System: {system}\n"
+                    f"Check: {row['label']}\n"
+                    f"Status: {status}\n"
+                    + (f"Current to: {row['last_seen']}\n" if row.get("last_seen") else "")
+                    + (f"Detail: {row['error']}\n" if row["error"] else "")
+                    + f"\nReported by {system} itself. Its admin Data health page "
+                      "has the full picture.\n"
+                )
+                subject = f"{system}: {row['label']} is {status}"
+            else:
+                detail = (
+                    f"Table: {row['table']} ({row['label']}, {row['app_label']})\n"
+                    f"Status: {status}\n"
+                    f"Rows: {row['rows']:,}\n"
+                    f"Last refreshed: {row['last_seen'] or 'never'}\n"
+                    + (f"Error: {row['error']}\n" if row["error"] else "")
+                    + "\nAn empty or missing warehouse table means the ETL that fills "
+                      "it has stopped. The pages that read it will render zeros "
+                      "rather than an error.\n"
+                )
+                subject = f"{row['table']} is {status}"
             if transition(key, status, detail):
-                sent.append((
-                    "data_health",
-                    f"{row['table']} is {status}",
-                    detail,
-                ))
+                sent.append(("data_health", subject, detail))
         elif status in ("ok", "warning"):
             if transition(key, "ok", f"{row['table']} is loading normally."):
                 sent.append((
@@ -267,12 +283,49 @@ def check_sensitive_changes(minutes=10):
              f"{len(notable)} sensitive change(s)", body)]
 
 
+def check_external_reports():
+    """A system that has stopped pushing its health.
+
+    A pushed report older than ``health.EXTERNAL_STALE_MINUTES`` is shown as
+    "unknown" on the Data health page, which is honest but silent: nothing mails
+    when Customer 360's push stops, and its rows would then say nothing about
+    anything. Silence must not read as health, so it is an alert of its own.
+    """
+    from django.db.models import Max
+
+    from . import health
+    from .models import ExternalTableHealth
+
+    sent = []
+    cutoff = timezone.now() - timedelta(minutes=health.EXTERNAL_STALE_MINUTES)
+    for row in ExternalTableHealth.objects.values("source").annotate(latest=Max("reported_at")):
+        source, latest = row["source"], row["latest"]
+        name = (MonitoredService.objects.filter(slug=source).values_list("name", flat=True).first()
+                or source)
+        key = f"push:{source}"
+        if latest < cutoff:
+            detail = (
+                f"{name} last reported its health at {latest:%Y-%m-%d %H:%M}.\n"
+                f"Nothing has arrived for over {health.EXTERNAL_STALE_MINUTES // 60} hours, "
+                "so its tables, source dates and settings are no longer being watched.\n\n"
+                "On its server, check the hourly push job (crontab -l) and run it by hand:\n"
+                "  docker exec c360-backend python manage.py push_monitoring\n"
+            )
+            if transition(key, "silent", detail):
+                sent.append(("data_health", f"{name} has stopped reporting its health", detail))
+        elif transition(key, "ok", f"{name} is reporting normally."):
+            sent.append(("data_health", f"{name} is reporting its health again",
+                         f"{name} reported at {latest:%Y-%m-%d %H:%M}.\n"))
+    return sent
+
+
 def run_all(sensitive_minutes=10):
     """Every immediate check. Returns the alerts that were sent."""
     alerts = []
     alerts += check_services()
     alerts += check_error_rate()
     alerts += check_data_health()
+    alerts += check_external_reports()
     alerts += check_sensitive_changes(minutes=sensitive_minutes)
 
     delivered = []
