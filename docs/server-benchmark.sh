@@ -60,6 +60,24 @@ TESTFILE="$DIR/.benchmark.$$"
 cleanup() { rm -f "$TESTFILE" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
+# Checked here rather than inside each test. An earlier version let section 7
+# cd into a directory that did not exist, which lost the fsync measurement
+# while the report still looked like it had run.
+if [ "$DO_WRITE" -eq 1 ]; then
+  if [ ! -d "$DIR" ]; then
+    echo "NOTE: $DIR does not exist. Creating it."
+    if ! mkdir -p "$DIR" 2>/dev/null; then
+      echo "ERROR: could not create $DIR. Pass --dir to somewhere writable,"
+      echo "       or --no-write for inventory only."
+      exit 1
+    fi
+  fi
+  if [ ! -w "$DIR" ]; then
+    echo "ERROR: $DIR is not writable. Pass --dir elsewhere, or --no-write."
+    exit 1
+  fi
+fi
+
 hr()  { printf '\n%s\n' "────────────────────────────────────────────────────────────────"; }
 sec() { hr; printf '  %s\n' "$1"; hr; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -213,9 +231,7 @@ fi
 # ── 8. Sequential throughput ────────────────────────────────────────────────
 sec "8. Sequential throughput  (bulk restore, pg_basebackup, backups)"
 if [ "$DO_WRITE" -eq 1 ]; then
-  if [ ! -d "$DIR" ] || [ ! -w "$DIR" ]; then
-    echo "  $DIR is not a writable directory — skipping."
-  else
+  if true; then
     AVAIL_MB=$(df -Pm "$DIR" | awk 'NR==2{print $4}')
     NEED_MB=$((SIZE_GB * 1024))
     if [ "$AVAIL_MB" -lt $((NEED_MB + 2048)) ]; then
@@ -313,12 +329,13 @@ cat <<'NOTE'
      is worth a conversation. On virtualised or SAN storage this is the ONLY
      way to find out what you have -- ROTA in section 4 is not trustworthy
      there, and both of these hosts are in that position.
-  3. MemAvailable in section 3, against the size of the working set — not
-     against the 441 GB total, which will never be cached.
-  4. Random read IOPS in section 9. Sequential throughput is the number
+  2. MemAvailable in section 3, against the size of the working set — not
+     against the whole database, which will never be cached.
+  3. Random read IOPS in section 9. Sequential throughput is the number
      everyone quotes and the least relevant to query latency.
-  5. 'wa' in the vmstat output. High iowait with idle CPU means you are
-     waiting on storage, and more cores will not help.
+  4. 'wa' in the vmstat output, and 'so' beside it. High iowait with idle CPU
+     means you are waiting on storage and more cores will not help; non-zero
+     'so' means the machine is actively paging out while you watch.
 
   Run this on BOTH hosts, keep both outputs, and compare like for like:
 
