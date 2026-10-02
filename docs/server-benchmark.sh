@@ -113,15 +113,37 @@ printf '\n  vm.swappiness = %s' "$SWAPPINESS"
   || printf '\n'
 # Transparent huge pages are a known source of latency spikes on Postgres.
 THP=/sys/kernel/mm/transparent_hugepage/enabled
-[ -r "$THP" ] && printf '  THP           : %s   (never/madvise preferred for Postgres)\n' "$(cat $THP)"
+if [ -r "$THP" ]; then
+  THP_NOW=$(sed 's/.*\[\(.*\)\].*/\1/' "$THP")
+  printf '  THP           : %s' "$THP_NOW"
+  [ "$THP_NOW" = "always" ] \
+    && printf '   <-- defragmentation stalls show up as unexplained\n                       latency spikes on Postgres; "never" is the\n                       usual setting on a database host\n' \
+    || printf '\n'
+fi
+
+# Swap that is full while RAM looks free is a past memory-pressure event that
+# never unwound. Anything Postgres left in there is read back at swap latency.
+SWAP_T=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
+SWAP_F=$(awk '/SwapFree/{print $2}' /proc/meminfo)
+if [ "${SWAP_T:-0}" -gt 0 ] 2>/dev/null; then
+  SWAP_PCT=$(( (SWAP_T - SWAP_F) * 100 / SWAP_T ))
+  printf '  Swap used     : %s%%' "$SWAP_PCT"
+  [ "$SWAP_PCT" -gt 80 ] \
+    && printf '   <-- effectively exhausted. Something was paged out\n                       under pressure and never came back; check what\n                       with: smem -s swap -r | head\n' \
+    || printf '\n'
+fi
 
 # ── 4. Storage inventory ────────────────────────────────────────────────────
 sec "4. Storage"
 if have lsblk; then
   lsblk -o NAME,SIZE,TYPE,ROTA,MOUNTPOINT,FSTYPE 2>/dev/null | sed 's/^/  /'
   echo
-  echo "  ROTA=1 is a spinning disk, ROTA=0 is flash. For a database this is"
-  echo "  the single most important line in this whole report."
+  echo "  ROTA=1 means spinning, 0 means flash -- BUT ONLY ON A REAL DISK."
+  echo "  A virtio disk (KVM/OpenShift) and a SAN multipath device both report"
+  echo "  1 whatever is actually behind them, because the guest and the"
+  echo "  multipath layer cannot see the array. Both of these hosts are in"
+  echo "  that position, so ROTA tells you nothing here and the only way to"
+  echo "  know is to measure: pg_test_fsync and fio, sections 7 and 9."
 fi
 echo
 df -hT -x tmpfs -x devtmpfs 2>/dev/null | sed 's/^/  /'
@@ -286,9 +308,11 @@ sec "12. Reading this report"
 cat <<'NOTE'
   In order of how much they matter for the database cutover:
 
-  1. ROTA in section 4. Flash or spinning. Nothing else compensates.
-  2. fdatasync ops/sec in section 7. That is your write-transaction ceiling.
-     Under ~1,000 on a bank's warehouse is worth a conversation.
+  1. fdatasync ops/sec in section 7. That is your write-transaction ceiling,
+     because every COMMIT waits for one. Under ~1,000 on a bank's warehouse
+     is worth a conversation. On virtualised or SAN storage this is the ONLY
+     way to find out what you have -- ROTA in section 4 is not trustworthy
+     there, and both of these hosts are in that position.
   3. MemAvailable in section 3, against the size of the working set — not
      against the 441 GB total, which will never be cached.
   4. Random read IOPS in section 9. Sequential throughput is the number
