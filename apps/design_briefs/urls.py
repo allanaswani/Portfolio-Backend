@@ -10,6 +10,8 @@ urlpatterns = [
     path("summary/", v.SummaryView.as_view()),
 
     # Reference data for the forms.
+    path("calendar/", v.CalendarView.as_view()),
+
     path("meta/", v.MetaView.as_view()),
     path("designers/", v.DesignerListView.as_view()),
     path("departments/", v.DepartmentListView.as_view()),
@@ -30,4 +32,16 @@ urlpatterns = [
     path("briefs/<str:reference>/cancel/",  v.BriefCancelView.as_view()),
     path("briefs/<str:reference>/reopen/",  v.BriefReopenView.as_view()),
     path("briefs/<str:reference>/note/",    v.BriefNoteView.as_view()),
+
+    # The artwork. A proof's image is served from its own route so the browser
+    # caches it and a board listing stays a few kilobytes.
+    path("briefs/<str:reference>/proofs/", v.BriefProofView.as_view()),
+    path("proofs/<int:pk>/thumb/",   v.ProofThumbView.as_view()),
+    path("proofs/<int:pk>/preview/", v.ProofPreviewView.as_view()),
+
+    # The conversation, and the checklist of what the brief has to produce.
+    path("briefs/<str:reference>/comments/", v.BriefCommentView.as_view()),
+    path("briefs/<str:reference>/deliverables/", v.BriefDeliverableView.as_view()),
+    path("briefs/<str:reference>/deliverables/<int:pk>/tick/",
+         v.DeliverableTickView.as_view()),
 ]

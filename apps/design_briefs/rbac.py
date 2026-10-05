@@ -154,22 +154,40 @@ def can_work(user, brief) -> bool:
 def can_judge(user, brief) -> bool:
     """Approve, or send back for rework.
 
-    Whoever raised it, or the department admin on their behalf — because a
-    requester who has left, or is on leave, must not be able to strand a brief
-    in review forever. An admin doing it is recorded as the actor either way.
+    The requirement is *"if it didn't meet the satisfaction of the person who
+    raised it **or the department that raised it**"* — so this is deliberately
+    three people, not one:
+
+    * whoever raised it;
+    * **anybody in the department it was raised for** — a brief raised by
+      someone now on leave must not sit in review until they are back, and the
+      department is the party whose satisfaction the requirement names;
+    * the marketing admin, as a backstop.
+
+    Whoever actually does it is recorded as the actor on the step, so "the
+    department approved it" is never anonymous.
     """
     if not user or not getattr(user, "is_authenticated", False):
         return False
     if brief.raised_by_id and brief.raised_by_id == user.id:
         return True
+    if _same_department(department_of(user), brief.department):
+        return True
     return is_admin(user)
 
 
 def can_cancel(user, brief) -> bool:
-    """Withdraw a brief. The requester, or an admin."""
+    """Withdraw a brief. The requester, their department, or an admin.
+
+    Same reasoning as ``can_judge``: the department that asked for the work is
+    the party that can call it off. Not the designer — stopping work is not the
+    decision of the person who would otherwise have to do it.
+    """
     if is_admin(user):
         return True
-    return bool(brief.raised_by_id and brief.raised_by_id == user.id)
+    if brief.raised_by_id and brief.raised_by_id == user.id:
+        return True
+    return _same_department(department_of(user), brief.department)
 
 
 def role_of(user) -> str:

@@ -13,20 +13,27 @@ page one is a wall display that lies about the pipeline.
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.db.models import (
-    Avg, Case, Count, F, IntegerField, Q, Sum, Value, When,
+    Avg, Case, Count, F, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum,
+    Value, When,
 )
+from django.http import HttpResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import rbac, workflow
-from .models import BriefEvent, DesignBrief
+from . import images, rbac, workflow
+from .models import (
+    BriefComment, BriefDeliverable, BriefEvent, BriefProof, DesignBrief,
+)
 from .serializers import (
-    ApproveSerializer, AssignSerializer, BriefEventSerializer,
+    ApproveSerializer, AssignSerializer, BriefCommentSerializer,
+    BriefDeliverableSerializer, BriefEventSerializer, BriefProofSerializer,
+    DeliverablesSerializer, ProofUploadSerializer,
     DesignBriefCreateSerializer, DesignBriefDetailSerializer,
     DesignBriefListSerializer, DesignBriefUpdateSerializer, NoteSerializer,
     PersonSerializer, ReasonSerializer,
@@ -50,9 +57,25 @@ class IsMarketingAdmin(IsAuthenticated):
 
 
 def _base_queryset():
+    """Everything a board row needs, in a fixed number of queries.
+
+    The latest proof comes through a subquery rather than a prefetch: a
+    prefetch cannot be limited per parent, so it would pull every version of
+    every brief's artwork to display one thumbnail each.
+    """
+    newest = (BriefProof.objects
+              .filter(brief=OuterRef("pk")).order_by("-version"))
     return (DesignBrief.objects
             .select_related("raised_by", "assigned_designer", "assigned_by",
-                            "approved_by"))
+                            "approved_by")
+            .annotate(
+                latest_proof_id=Subquery(newest.values("id")[:1]),
+                latest_proof_version=Subquery(newest.values("version")[:1]),
+                deliverables_total_n=Count("deliverables", distinct=True),
+                deliverables_done_n=Count(
+                    "deliverables", filter=Q(deliverables__done=True),
+                    distinct=True),
+            ))
 
 
 def _by_release(descending=False):
@@ -152,7 +175,14 @@ def _get_or_none(request, reference):
     enough to probe for other departments' work.
     """
     brief = (_base_queryset()
-             .prefetch_related("events__actor")
+             .prefetch_related(
+                 "events__actor", "deliverables__done_by",
+                 Prefetch("proofs", queryset=BriefProof.objects
+                          .select_related("uploaded_by").order_by("-version")),
+                 Prefetch("comments", queryset=BriefComment.objects
+                          .select_related("author", "proof")
+                          .order_by("created_at", "id")),
+             )
              .filter(reference=reference).first())
     if brief is None or not rbac.can_view(request.user, brief):
         return None
@@ -188,7 +218,9 @@ class BriefListCreateView(generics.ListCreateAPIView):
                     .order_by("-_prio" if ordering.startswith("-") else "_prio"))
         if ordering in {"created_at", "-created_at", "status", "-status"}:
             return qs.order_by(ordering)
-        return qs
+        # Explicit, not inherited from Meta: an unordered queryset makes page
+        # boundaries arbitrary, and DRF warns about exactly this.
+        return qs.order_by("-created_at", "-id")
 
     def create(self, request, *args, **kwargs):
         ser = self.get_serializer(data=request.data)
@@ -319,8 +351,9 @@ class BriefReworkView(_TransitionView):
 
     def check(self, user, brief):
         if not rbac.can_judge(user, brief):
-            return False, ("Only the person who raised this brief, or the "
-                           "department admin, can send it back.")
+            return False, ("Only the person who raised this brief, somebody "
+                           "in the department it was raised for, or the "
+                           "marketing admin can send it back.")
         return True, ""
 
     def act(self, brief, user, data):
@@ -335,8 +368,9 @@ class BriefApproveView(_TransitionView):
 
     def check(self, user, brief):
         if not rbac.can_judge(user, brief):
-            return False, ("Only the person who raised this brief, or the "
-                           "department admin, can approve it.")
+            return False, ("Only the person who raised this brief, somebody "
+                           "in the department it was raised for, or the "
+                           "marketing admin can approve it.")
         return True, ""
 
     def act(self, brief, user, data):
@@ -351,7 +385,8 @@ class BriefCancelView(_TransitionView):
 
     def check(self, user, brief):
         if not rbac.can_cancel(user, brief):
-            return False, "Only the requester or the department admin can cancel."
+            return False, ("Only the requester, their department, or the "
+                           "marketing admin can cancel a brief.")
         return True, ""
 
     def act(self, brief, user, data):
@@ -477,7 +512,12 @@ class BoardView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        limit = min(int(request.query_params.get("limit") or 12), 100)
+        # The wall display paginates across slides rather than clipping, so it
+        # asks for everything; 500 is a sanity ceiling, not a design choice.
+        try:
+            limit = min(max(int(request.query_params.get("limit") or 12), 1), 500)
+        except (TypeError, ValueError):
+            limit = 12
         qs = _apply_filters(_visible(request), request.query_params)
         today = timezone.localdate()
 
@@ -654,3 +694,262 @@ class BriefTimelineView(generics.ListAPIView):
         if brief is None:
             return BriefEvent.objects.none()
         return brief.events.select_related("actor")
+
+
+# ── Artwork ──────────────────────────────────────────────────────────────────
+
+@extend_schema(tags=TAG)
+class BriefProofView(APIView):
+    """The versions of the artwork on one brief, and adding another.
+
+    Uploading is the designer's action, so it is gated like ``start`` and
+    ``submit``. ``submit=true`` uploads and hands over in one step, because
+    uploading and then forgetting to submit is how a finished design sits
+    unseen for three days.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, reference):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        proofs = brief.proofs.select_related("uploaded_by").order_by("-version")
+        return Response(BriefProofSerializer(proofs, many=True).data)
+
+    def post(self, request, reference):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        if not rbac.can_work(request.user, brief):
+            return Response(
+                {"detail": "Only the designer this brief is assigned to, or "
+                           "the marketing admin, can upload artwork."},
+                status=403)
+
+        ser = ProofUploadSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        prepared = {
+            "preview": b"", "thumbnail": b"", "width": 0, "height": 0,
+            "original_name": "", "original_bytes": 0,
+        }
+        upload = data.get("file")
+        if upload is not None:
+            try:
+                prepared = images.prepare(upload.read(), getattr(upload, "name", ""))
+            except images.ProofImageError as exc:
+                # The message is written for whoever is uploading.
+                return Response({"file": [str(exc)]}, status=400)
+
+        try:
+            proof = workflow.add_proof(
+                brief, prepared=prepared, uploaded_by=request.user,
+                note=data.get("note", ""), source_url=data.get("source_url", ""),
+                submit_for_review=bool(data.get("submit")))
+        except workflow.TransitionError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        brief = _get_or_none(request, reference)
+        return Response(
+            DesignBriefDetailSerializer(brief, context={"request": request}).data,
+            status=status.HTTP_201_CREATED)
+
+
+class _ProofImageView(APIView):
+    """Serve one stored image.
+
+    Its own endpoint rather than a data: URI in the JSON, so the browser caches
+    it and a fifty-row board stays a few kilobytes instead of several megabytes.
+    Visibility is checked against the brief, so a proof cannot be read by
+    guessing ids.
+    """
+
+    permission_classes = [IsAuthenticated]
+    field = "thumbnail"
+
+    def get(self, request, pk):
+        proof = BriefProof.objects.select_related("brief").filter(pk=pk).first()
+        if proof is None or not rbac.can_view(request.user, proof.brief):
+            return Response({"detail": "Not found."}, status=404)
+        blob = bytes(getattr(proof, self.field) or b"")
+        if not blob:
+            return Response({"detail": "No image on this version."}, status=404)
+        ctype = getattr(proof, self.field + "_content_type", "image/jpeg")
+        res = HttpResponse(blob, content_type=ctype)
+        # A version is immutable once written, so it can be cached hard.
+        # Private: it is somebody's unreleased artwork, not a public asset.
+        res["Cache-Control"] = "private, max-age=86400"
+        res["ETag"] = '"{}-{}-{}"'.format(proof.pk, self.field, len(blob))
+        return res
+
+
+@extend_schema(tags=TAG)
+class ProofThumbView(_ProofImageView):
+    field = "thumbnail"
+
+
+@extend_schema(tags=TAG)
+class ProofPreviewView(_ProofImageView):
+    field = "preview"
+
+
+# ── Conversation ─────────────────────────────────────────────────────────────
+
+@extend_schema(tags=TAG)
+class BriefCommentView(APIView):
+    """Feedback on the brief, or on one version of the artwork.
+
+    Anybody who can see the brief can comment. Narrowing this would push the
+    conversation back into WhatsApp, which is the thing the board is replacing.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        rows = (brief.comments.select_related("author", "proof")
+                .order_by("created_at", "id"))
+        return Response(BriefCommentSerializer(rows, many=True).data)
+
+    def post(self, request, reference):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+
+        proof = None
+        pid = request.data.get("proof")
+        if pid:
+            proof = brief.proofs.filter(pk=pid).first()
+            if proof is None:
+                return Response({"proof": ["No such version on this brief."]},
+                                status=400)
+        try:
+            comment = workflow.add_comment(
+                brief, author=request.user,
+                body=request.data.get("body", ""), proof=proof)
+        except workflow.TransitionError as exc:
+            return Response({"body": [str(exc)]}, status=400)
+        return Response(BriefCommentSerializer(comment).data,
+                        status=status.HTTP_201_CREATED)
+
+
+# ── Deliverables ─────────────────────────────────────────────────────────────
+
+@extend_schema(tags=TAG)
+class BriefDeliverableView(APIView):
+    """The checklist of what the brief has to produce.
+
+    PUT replaces the list and carries ticks across by label, so adding a line
+    does not silently un-tick finished work.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        return Response(BriefDeliverableSerializer(
+            brief.deliverables.select_related("done_by"), many=True).data)
+
+    def put(self, request, reference):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        # Who the work is for decides what it has to include; the designer
+        # ticks items off but does not rewrite the list.
+        if not (rbac.can_judge(request.user, brief) or rbac.is_admin(request.user)):
+            return Response(
+                {"detail": "The requester, their department or the marketing "
+                           "admin sets the deliverables."}, status=403)
+        ser = DeliverablesSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            workflow.set_deliverables(brief, ser.validated_data["labels"],
+                                      actor=request.user)
+        except workflow.TransitionError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(BriefDeliverableSerializer(
+            brief.deliverables.select_related("done_by"), many=True).data)
+
+
+@extend_schema(tags=TAG)
+class DeliverableTickView(APIView):
+    """Tick or un-tick one item. The designer's day-to-day action."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, reference, pk):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        item = brief.deliverables.filter(pk=pk).first()
+        if item is None:
+            return Response({"detail": "Not found."}, status=404)
+        if not (rbac.can_work(request.user, brief)
+                or rbac.can_judge(request.user, brief)):
+            return Response({"detail": "Not yours to tick."}, status=403)
+        done = request.data.get("done", True)
+        workflow.tick_deliverable(
+            item, actor=request.user,
+            done=str(done).lower() not in {"false", "0", "no"})
+        return Response(BriefDeliverableSerializer(item).data)
+
+
+# ── Calendar ─────────────────────────────────────────────────────────────────
+
+@extend_schema(tags=TAG)
+class CalendarView(APIView):
+    """Release dates for one month, as a campaign calendar.
+
+    Marketing works to a calendar, not a queue: the thing worth seeing is the
+    week where six items all land. Closed briefs are included so the month
+    reads as what happened, not only as what is left.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        today = timezone.localdate()
+        raw = (request.query_params.get("month") or "").strip()
+        try:
+            parts = raw.split("-")
+            year, month = int(parts[0]), int(parts[1])
+            if not (1 <= month <= 12 and 2000 <= year <= 2100):
+                raise ValueError("out of range")
+        except Exception:
+            year, month = today.year, today.month
+
+        start = today.replace(year=year, month=month, day=1)
+        end = (start.replace(year=year + 1, month=1, day=1) if month == 12
+               else start.replace(month=month + 1, day=1))
+
+        qs = (_visible(request)
+              .filter(release_date__gte=start, release_date__lt=end)
+              .order_by(_by_release()))
+        rows = DesignBriefListSerializer(
+            qs, many=True, context={"request": request}).data
+
+        days = {}
+        for row in rows:
+            days.setdefault(row["release_date"], []).append(row)
+
+        return Response({
+            "month": "{:04d}-{:02d}".format(year, month),
+            "first_day": start,
+            "today": today,
+            "total": len(rows),
+            # A plain map of date -> briefs. The frontend lays out the grid;
+            # which weekday the first falls on is a presentation question.
+            "days": [{"date": d, "briefs": b} for d, b in sorted(days.items())],
+            # Undated briefs are on no calendar, and a campaign calendar that
+            # silently omits them hides real work.
+            "undated": DesignBriefListSerializer(
+                _visible(request).open().filter(release_date__isnull=True),
+                many=True, context={"request": request}).data,
+        })

@@ -275,6 +275,8 @@ class BriefEvent(models.Model):
     KIND_REOPENED = "reopened"
     KIND_NOTE = "note"
     KIND_EDITED = "edited"
+    KIND_PROOF = "proof"
+    KIND_COMMENT = "comment"
 
     KIND = [
         (KIND_RAISED, "Raised"),
@@ -288,6 +290,8 @@ class BriefEvent(models.Model):
         (KIND_REOPENED, "Reopened from archive"),
         (KIND_NOTE, "Note"),
         (KIND_EDITED, "Brief edited"),
+        (KIND_PROOF, "Artwork uploaded"),
+        (KIND_COMMENT, "Comment"),
     ]
 
     brief = models.ForeignKey(
@@ -316,3 +320,139 @@ class BriefEvent(models.Model):
         if self.actor_id and not self.actor_name:
             self.actor_name = self.actor.get_full_name() or self.actor.username
         return super().save(*args, **kwargs)
+
+
+class BriefProof(models.Model):
+    """One version of the artwork, as submitted for review.
+
+    This is what turns the board from a list of titles into a design board: the
+    card shows the work, not just its name. A design team recognises artwork
+    faster than it reads a heading.
+
+    **Only a downscaled preview and a thumbnail are stored, never the original.**
+    See ``images.py`` for why — there is no volume for uploads and the database
+    is not an asset manager. ``source_url`` is where the full-resolution file
+    actually lives.
+
+    One row per round, never overwritten: v1 and v2 both stay, so "what did we
+    change after they sent it back" is answerable rather than argued about.
+    """
+
+    #: Per brief, so a long rework history cannot grow without limit.
+    MAX_PER_BRIEF = 24
+
+    brief = models.ForeignKey(
+        DesignBrief, on_delete=models.CASCADE, related_name="proofs")
+    #: 1, 2, 3 … assigned by ``workflow.add_proof`` inside the transaction.
+    version = models.PositiveSmallIntegerField()
+
+    preview = models.BinaryField(editable=False)
+    preview_content_type = models.CharField(max_length=40, default="image/jpeg")
+    thumbnail = models.BinaryField(editable=False)
+    thumbnail_content_type = models.CharField(max_length=40, default="image/jpeg")
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
+
+    #: What was uploaded, kept so the record is honest about what the preview
+    #: was made from.
+    original_name = models.CharField(max_length=200, blank=True)
+    original_bytes = models.PositiveIntegerField(default=0)
+
+    #: Where the print/production file lives. The point of not storing it here.
+    source_url = models.URLField(max_length=500, blank=True)
+    note = models.TextField(blank=True)
+
+    uploaded_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="design_proofs")
+    uploaded_by_name = models.CharField(max_length=150, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "design_brief_proof"
+        ordering = ["-version"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["brief", "version"], name="design_proof_version_unique"),
+        ]
+        indexes = [models.Index(fields=["brief", "-version"])]
+
+    def __str__(self):
+        return f"{self.brief_id} proof v{self.version}"
+
+    def save(self, *args, **kwargs):
+        if self.uploaded_by_id and not self.uploaded_by_name:
+            self.uploaded_by_name = (
+                self.uploaded_by.get_full_name() or self.uploaded_by.username)
+        return super().save(*args, **kwargs)
+
+
+class BriefComment(models.Model):
+    """Feedback on a brief, and optionally on one version of the artwork.
+
+    Separate from ``BriefEvent``: an event is a step the system recorded, a
+    comment is something a person chose to say. Mixing them means a timeline
+    where "assigned to Grace" and "the logo is the old mark" carry the same
+    weight.
+
+    ``proof`` pins a comment to the version it is about, so feedback given on v1
+    still reads correctly after v2 lands.
+    """
+
+    brief = models.ForeignKey(
+        DesignBrief, on_delete=models.CASCADE, related_name="comments")
+    proof = models.ForeignKey(
+        BriefProof, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="comments")
+    body = models.TextField()
+    author = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="design_brief_comments")
+    author_name = models.CharField(max_length=150, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "design_brief_comment"
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["brief", "created_at"])]
+
+    def __str__(self):
+        return f"{self.brief_id} comment by {self.author_name}"
+
+    def save(self, *args, **kwargs):
+        if self.author_id and not self.author_name:
+            self.author_name = self.author.get_full_name() or self.author.username
+        return super().save(*args, **kwargs)
+
+
+class BriefDeliverable(models.Model):
+    """One item the brief has to produce — a size, a format, a placement.
+
+    A single brief is usually several artefacts: an Instagram square, a story,
+    an A4 print, an email header. Modelling those as child briefs would double
+    the board's complexity for a team of three designers, so they are a
+    checklist on the brief instead: enough that nothing is forgotten, without a
+    second workflow to run.
+    """
+
+    MAX_PER_BRIEF = 30
+
+    brief = models.ForeignKey(
+        DesignBrief, on_delete=models.CASCADE, related_name="deliverables")
+    label = models.CharField(max_length=160)
+    done = models.BooleanField(default=False)
+    done_at = models.DateTimeField(null=True, blank=True)
+    done_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="design_deliverables_done")
+    #: Kept explicit so the list reads in the order it was written, not by id.
+    order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "design_brief_deliverable"
+        ordering = ["order", "id"]
+        indexes = [models.Index(fields=["brief", "order"])]
+
+    def __str__(self):
+        return f"{self.brief_id} · {self.label}"

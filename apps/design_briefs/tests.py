@@ -8,13 +8,15 @@ brief is archived rather than deleted.
 """
 
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core import mail
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from . import rbac, workflow
+from . import images, notifications, rbac, workflow
 from .models import BriefEvent, DesignBrief
 
 BASE = "/design_briefs/"
@@ -166,12 +168,49 @@ class ReworkTests(BoardTestCase):
         with self.assertRaises(workflow.TransitionError):
             workflow.request_rework(brief, actor=self.requester, reason="no")
 
-    def test_only_the_requester_or_the_admin_sends_it_back(self):
+    def test_a_designer_cannot_send_back_somebody_elses_brief(self):
         brief = self.submitted()
         self.client.force_authenticate(self.other_designer)
         r = self.client.post(f"{BASE}briefs/{brief.reference}/rework/",
                              {"reason": "I would do it differently"}, format="json")
         self.assertEqual(r.status_code, 403)
+
+    def test_the_raising_department_can_send_it_back_not_just_the_raiser(self):
+        """The requirement says "the person who raised it OR the department".
+
+        A brief raised by somebody on leave must not sit in review until they
+        are back, so a colleague in the same department can judge it.
+        """
+        colleague = user("mary_colleague", email="colleague@hf.test")
+        brief = self.submitted()
+        with mock.patch.object(rbac, "department_of", return_value="Marketing"):
+            self.client.force_authenticate(colleague)
+            r = self.client.post(f"{BASE}briefs/{brief.reference}/rework/",
+                                 {"reason": "Wrong brand mark"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["status"], DesignBrief.STATUS_REWORK)
+        self.assertEqual(r.data["rework_count"], 1)
+
+    def test_a_different_departments_colleague_still_cannot(self):
+        outsider = user("finance_person", email="finance@hf.test")
+        brief = self.submitted()
+        with mock.patch.object(rbac, "department_of", return_value="Finance"):
+            self.client.force_authenticate(outsider)
+            r = self.client.post(f"{BASE}briefs/{brief.reference}/rework/",
+                                 {"reason": "no"}, format="json")
+        # Not even visible to them, so 404 rather than 403 - see VisibilityTests.
+        self.assertEqual(r.status_code, 404)
+
+    def test_the_department_spelling_does_not_have_to_match_exactly(self):
+        """employee_table.department holds 57 spellings for far fewer real
+        departments, so 'MARKETING DEPT' must match 'Marketing'."""
+        colleague = user("spelling_colleague", email="spell@hf.test")
+        brief = self.submitted()
+        with mock.patch.object(rbac, "department_of", return_value="MARKETING DEPARTMENT"):
+            self.client.force_authenticate(colleague)
+            r = self.client.post(f"{BASE}briefs/{brief.reference}/rework/",
+                                 {"reason": "colour is off"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
 
 
 class ApprovalTests(BoardTestCase):
@@ -464,3 +503,437 @@ class MetaAndSummaryTests(BoardTestCase):
         self.assertEqual(r.data["totals"]["reworked"], 1)
         self.assertEqual(r.data["totals"]["rework_events"], 1)
         self.assertEqual(r.data["totals"]["avg_satisfaction"], 4.0)
+
+
+def png_bytes(w=2400, h=1600, mode="RGB"):
+    """A realistic image: big, and smooth rather than flat or noisy.
+
+    Built small and upscaled, which is fast and gives low-frequency content -
+    what a real layout looks like to a compressor. Both a flat colour and a
+    high-frequency pattern are traps here: PNG stores either far better than
+    JPEG does, so a synthetic "original" can be smaller than its own
+    downscaled preview.
+    """
+    import io as _io
+
+    from PIL import Image
+
+    small = Image.new(mode, (24, 16))
+    px = small.load()
+    for y in range(16):
+        for x in range(24):
+            v = int(255 * (x / 23))
+            colour = (v, 150, 255 - v)
+            px[x, y] = colour if mode == "RGB" else colour + (255,)
+    img = small.resize((w, h), Image.BICUBIC)
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def upload(name="proof.png", **kw):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    return SimpleUploadedFile(name, png_bytes(**kw), content_type="image/png")
+
+
+class ProofTests(BoardTestCase):
+    """The artwork. A design board whose cards show no design is a to-do list."""
+
+    def assigned(self):
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        workflow.start(brief, actor=self.designer)
+        return brief
+
+    def test_the_original_bytes_are_never_stored(self):
+        """The container has no volume and /data is 90% full. Only the
+        downscaled preview and thumbnail are kept."""
+        brief = self.assigned()
+        raw = png_bytes()
+        prepared = images.prepare(raw, "flyer.png")
+        proof = workflow.add_proof(brief, prepared=prepared, uploaded_by=self.designer)
+
+        # What was uploaded is recorded, so the row is honest about it.
+        self.assertEqual(proof.original_bytes, len(raw))
+
+        # The actual guarantees. Deliberately NOT "the preview is smaller than
+        # the upload": that depends on the image, not on this code - PNG beats
+        # JPEG on flat colour and on noise alike, so a synthetic original can
+        # be smaller than its own downscale. The invariants are the dimension
+        # cap and a stored size the database can carry.
+        self.assertLessEqual(max(proof.width, proof.height), images.PREVIEW_EDGE)
+        self.assertLess(len(bytes(proof.thumbnail)), len(bytes(proof.preview)))
+        self.assertLess(len(bytes(proof.preview)), 2_000_000,
+                        "a stored preview must stay small enough for the database")
+
+        # And the model has nowhere to put the original at all, which is the
+        # point: /data is 90% full and the container has no volume.
+        fields = {f.name for f in proof._meta.get_fields()}
+        self.assertNotIn("original", fields)
+        self.assertNotIn("file", fields)
+
+    def test_versions_increment_and_are_never_overwritten(self):
+        brief = self.assigned()
+        for _ in range(3):
+            workflow.add_proof(brief, prepared=images.prepare(png_bytes()),
+                               uploaded_by=self.designer)
+        self.assertEqual(
+            list(brief.proofs.order_by("version").values_list("version", flat=True)),
+            [1, 2, 3])
+
+    def test_a_designer_uploads_and_hands_over_in_one_step(self):
+        brief = self.assigned()
+        self.client.force_authenticate(self.designer)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/proofs/",
+                             {"file": upload(), "submit": "true",
+                              "note": "First pass"}, format="multipart")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["status"], DesignBrief.STATUS_SUBMITTED)
+        self.assertEqual(r.data["proof_version"], 1)
+        self.assertEqual(len(r.data["proofs"]), 1)
+
+    def test_only_the_assigned_designer_can_upload(self):
+        brief = self.assigned()
+        self.client.force_authenticate(self.other_designer)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/proofs/",
+                             {"file": upload()}, format="multipart")
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_non_image_is_refused_with_a_usable_message(self):
+        brief = self.assigned()
+        with self.assertRaises(images.ProofImageError) as ctx:
+            images.prepare(b"this is not an image at all", "notes.txt")
+        self.assertIn("not an image", str(ctx.exception))
+
+    def test_an_oversized_file_is_refused_before_pillow_opens_it(self):
+        with self.assertRaises(images.ProofImageError) as ctx:
+            images.prepare(b"x" * (images.MAX_UPLOAD_BYTES + 1), "huge.png")
+        self.assertIn("MB", str(ctx.exception))
+
+    def test_transparency_is_kept_as_png_not_flattened(self):
+        """Flattening a logo's alpha onto white changes the artwork under review."""
+        prepared = images.prepare(png_bytes(mode="RGBA"), "logo.png")
+        self.assertEqual(prepared["preview_content_type"], "image/png")
+
+    def test_a_link_only_proof_is_allowed_for_print_and_video(self):
+        """A 400 MB print PDF belongs behind a link, not in the database."""
+        brief = self.assigned()
+        self.client.force_authenticate(self.designer)
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/proofs/",
+            {"source_url": "https://hfgroup.sharepoint.com/flyer-print.pdf"},
+            format="multipart")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["proofs"][0]["source_url"],
+                         "https://hfgroup.sharepoint.com/flyer-print.pdf")
+
+    def test_an_empty_upload_with_no_link_is_refused(self):
+        brief = self.assigned()
+        self.client.force_authenticate(self.designer)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/proofs/", {},
+                             format="multipart")
+        self.assertEqual(r.status_code, 400)
+
+    def test_the_image_endpoint_serves_bytes_and_refuses_outsiders(self):
+        brief = self.assigned()
+        proof = workflow.add_proof(brief, prepared=images.prepare(png_bytes()),
+                                   uploaded_by=self.designer)
+
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}proofs/{proof.pk}/thumb/")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r["Content-Type"].startswith("image/"))
+        self.assertIn("private", r["Cache-Control"])
+
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(
+            self.client.get(f"{BASE}proofs/{proof.pk}/thumb/").status_code, 404)
+
+    def test_the_card_carries_the_newest_version_only(self):
+        brief = self.assigned()
+        workflow.add_proof(brief, prepared=images.prepare(png_bytes()),
+                           uploaded_by=self.designer)
+        newest = workflow.add_proof(brief, prepared=images.prepare(png_bytes()),
+                                    uploaded_by=self.designer)
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}briefs/")
+        row = r.data["results"][0]
+        self.assertEqual(row["proof_version"], 2)
+        self.assertIn(str(newest.pk), row["thumbnail_url"])
+
+    def test_a_board_row_without_artwork_says_so_rather_than_erroring(self):
+        self.raise_brief()
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}briefs/")
+        row = r.data["results"][0]
+        self.assertIsNone(row["thumbnail_url"])
+        self.assertIsNone(row["proof_version"])
+
+
+class CommentTests(BoardTestCase):
+    def test_anyone_who_can_see_the_brief_can_comment(self):
+        brief = self.raise_brief()
+        self.client.force_authenticate(self.designer)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/comments/",
+                             {"body": "Which logo lockup?"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["body"], "Which logo lockup?")
+
+    def test_an_outsider_cannot(self):
+        brief = self.raise_brief()
+        self.client.force_authenticate(self.outsider)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/comments/",
+                             {"body": "hello"}, format="json")
+        self.assertEqual(r.status_code, 404)
+
+    def test_a_comment_can_be_pinned_to_one_version(self):
+        """Feedback on v1 must still read correctly once v2 lands."""
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        proof = workflow.add_proof(brief, prepared=images.prepare(png_bytes()),
+                                   uploaded_by=self.designer)
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/comments/",
+                             {"body": "Logo too small", "proof": proof.pk},
+                             format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["proof_version"], 1)
+
+    def test_an_empty_comment_is_refused(self):
+        brief = self.raise_brief()
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(f"{BASE}briefs/{brief.reference}/comments/",
+                             {"body": "   "}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_comments_are_separate_from_the_event_timeline(self):
+        brief = self.raise_brief()
+        workflow.add_comment(brief, author=self.requester, body="Note this")
+        self.assertEqual(brief.comments.count(), 1)
+        # An event is still written, so the history shows a conversation happened.
+        self.assertEqual(
+            brief.events.filter(kind=BriefEvent.KIND_COMMENT).count(), 1)
+
+
+class DeliverableTests(BoardTestCase):
+    def test_the_requester_sets_the_checklist_and_the_designer_ticks_it(self):
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+
+        self.client.force_authenticate(self.requester)
+        r = self.client.put(f"{BASE}briefs/{brief.reference}/deliverables/",
+                            {"labels": ["Instagram square", "Story 9:16", "A4 print"]},
+                            format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual([d["label"] for d in r.data],
+                         ["Instagram square", "Story 9:16", "A4 print"])
+
+        item = brief.deliverables.first()
+        self.client.force_authenticate(self.designer)
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/deliverables/{item.pk}/tick/",
+            {}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertTrue(r.data["done"])
+
+    def test_adding_a_line_does_not_untick_finished_work(self):
+        brief = self.raise_brief()
+        workflow.set_deliverables(brief, ["Instagram square", "A4 print"])
+        first = brief.deliverables.get(label="Instagram square")
+        workflow.tick_deliverable(first, actor=self.designer)
+
+        workflow.set_deliverables(
+            brief, ["Instagram square", "A4 print", "Email header"])
+        again = brief.deliverables.get(label="Instagram square")
+        self.assertTrue(again.done, "a tick was lost when a line was added")
+        self.assertEqual(brief.deliverables.count(), 3)
+
+    def test_the_designer_cannot_rewrite_the_list(self):
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        self.client.force_authenticate(self.designer)
+        r = self.client.put(f"{BASE}briefs/{brief.reference}/deliverables/",
+                            {"labels": ["Just the one I feel like"]}, format="json")
+        self.assertEqual(r.status_code, 403)
+
+    def test_progress_is_on_the_board_row(self):
+        brief = self.raise_brief()
+        workflow.set_deliverables(brief, ["a", "b", "c", "d"])
+        workflow.tick_deliverable(brief.deliverables.first(), actor=self.designer)
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}briefs/")
+        row = r.data["results"][0]
+        self.assertEqual(row["deliverables_total"], 4)
+        self.assertEqual(row["deliverables_done"], 1)
+
+    def test_too_many_deliverables_is_refused(self):
+        brief = self.raise_brief()
+        with self.assertRaises(workflow.TransitionError):
+            workflow.set_deliverables(brief, [f"item {i}" for i in range(40)])
+
+
+class CalendarTests(BoardTestCase):
+    def test_briefs_land_on_their_release_date(self):
+        today = timezone.localdate()
+        self.raise_brief(design_item="On a date", release_date=today)
+        self.raise_brief(design_item="No date at all", release_date=None)
+
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}calendar/?month={today:%Y-%m}")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["total"], 1)
+        self.assertEqual(len(r.data["days"]), 1)
+        self.assertEqual(r.data["days"][0]["briefs"][0]["design_item"], "On a date")
+
+    def test_undated_briefs_are_reported_separately_not_hidden(self):
+        self.raise_brief(design_item="No date at all", release_date=None)
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}calendar/")
+        self.assertEqual(r.data["total"], 0)
+        self.assertEqual(len(r.data["undated"]), 1)
+
+    def test_a_nonsense_month_falls_back_to_this_one_rather_than_erroring(self):
+        self.client.force_authenticate(self.designer)
+        for bad in ("", "banana", "2026-13", "1066-01", "2026"):
+            r = self.client.get(f"{BASE}calendar/?month={bad}")
+            self.assertEqual(r.status_code, 200, bad)
+            self.assertEqual(r.data["month"], f"{timezone.localdate():%Y-%m}")
+
+    def test_the_calendar_is_scoped_like_everything_else(self):
+        self.raise_brief(release_date=timezone.localdate())
+        self.client.force_authenticate(self.outsider)
+        r = self.client.get(f"{BASE}calendar/")
+        self.assertEqual(r.data["total"], 0)
+
+
+class MailTests(BoardTestCase):
+    """Who hears about a transition, and that mail can never break one.
+
+    Every send is queued on ``transaction.on_commit``, so these use
+    ``captureOnCommitCallbacks`` - without it the callbacks never fire inside a
+    test's transaction and every one of these would pass vacuously.
+    """
+
+    def setUp(self):
+        super().setUp()
+        mail.outbox = []
+
+    def submitted_brief(self):
+        brief = self.raise_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+            workflow.start(brief, actor=self.designer)
+            workflow.submit(brief, actor=self.designer)
+        mail.outbox = []
+        return brief
+
+    def test_assigning_mails_the_designer_and_not_the_admin_who_did_it(self):
+        brief = self.raise_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, [self.designer.email])
+        self.assertNotIn(self.admin.email, msg.to)
+        self.assertIn(brief.design_item, msg.subject)
+        self.assertIn(brief.reference, msg.body)
+
+    def test_submitting_mails_the_requester_not_the_designer(self):
+        brief = self.raise_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+        mail.outbox = []
+
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.submit(brief, actor=self.designer)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.requester.email])
+
+    def test_rework_mail_carries_the_reason_or_it_is_useless(self):
+        brief = self.submitted_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.request_rework(brief, actor=self.requester,
+                                    reason="Logo is the old brand mark")
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, [self.designer.email])
+        self.assertIn("Logo is the old brand mark", msg.body)
+        self.assertIn("Logo is the old brand mark", msg.alternatives[0][0])
+
+    def test_approval_mails_the_designer_whose_work_it_was(self):
+        brief = self.submitted_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.approve(brief, actor=self.requester, satisfaction=5)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.designer.email])
+
+    def test_nobody_is_copied_on_their_own_action(self):
+        """An email telling you what you just did teaches people to filter."""
+        brief = self.submitted_brief()
+        # The admin stands in for the requester AND happens to be the designer's
+        # colleague; the designer must still not be mailed about their own
+        # submission, and an actor is never their own recipient.
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.request_rework(brief, actor=self.designer,
+                                    reason="spotted it myself")
+        self.assertEqual(mail.outbox, [])
+
+    def test_cancelling_tells_the_designer_to_stop(self):
+        brief = self.raise_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+        mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.cancel(brief, actor=self.requester, reason="Campaign dropped")
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Stop work", mail.outbox[0].body)
+        self.assertIn("Campaign dropped", mail.outbox[0].body)
+
+    def test_an_unassigned_brief_mails_nobody_on_cancel(self):
+        brief = self.raise_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.cancel(brief, actor=self.requester, reason="dropped")
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_mail_failure_cannot_break_the_transition(self):
+        """Office365 being slow must not roll back a submission."""
+        brief = self.raise_brief()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+
+        with mock.patch(
+            "apps.design_briefs.notifications.EmailMultiAlternatives.send",
+            side_effect=RuntimeError("SMTP timeout"),
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                workflow.submit(brief, actor=self.designer)
+
+        brief.refresh_from_db()
+        self.assertEqual(brief.status, DesignBrief.STATUS_SUBMITTED)
+
+    def test_the_admins_hear_when_there_is_no_requester_to_reach(self):
+        """A brief raised by somebody since removed must not go silent."""
+        brief = self.raise_brief()
+        brief.raised_by = None
+        brief.save(update_fields=["raised_by"])
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+        mail.outbox = []
+
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.submit(brief, actor=self.designer)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.admin.email])
+
+    def test_superusers_are_not_mailed_as_admins(self):
+        """A superuser can act on anything; that does not put them on the team."""
+        user("root_user", superuser=True, email="root@hf.test")
+        self.assertNotIn("root@hf.test", notifications.admin_addresses())
+        self.assertIn(self.admin.email, notifications.admin_addresses())

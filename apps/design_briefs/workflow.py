@@ -18,11 +18,22 @@ Submit on somebody else's brief needs to be told, not left wondering.
 from django.db import transaction
 from django.utils import timezone
 
+from . import notifications
 from .models import BriefEvent, DesignBrief
 
 
 class TransitionError(Exception):
     """A step that is not allowed from where the brief currently is."""
+
+
+def _after_commit(fn, *args, **kwargs):
+    """Run once the transaction has actually committed.
+
+    Mail sent inside the transaction would announce a step a later error rolled
+    back - telling a designer their work was handed over while the database
+    says it was not.
+    """
+    transaction.on_commit(lambda: fn(*args, **kwargs))
 
 
 def _label(user):
@@ -108,6 +119,7 @@ def assign(brief, designer, actor=None, note=""):
     record(brief, kind, actor=actor, from_status=from_status,
            to_status=brief.status,
            note=(note or detail))
+    _after_commit(notifications.assigned, brief, actor)
     return brief
 
 
@@ -153,6 +165,7 @@ def submit(brief, actor=None, note=""):
     brief.save(update_fields=["status", "submitted_at", "updated_at"])
     record(brief, BriefEvent.KIND_SUBMITTED, actor=actor, note=note,
            from_status=from_status, to_status=brief.status)
+    _after_commit(notifications.submitted, brief, actor)
     return brief
 
 
@@ -184,6 +197,7 @@ def request_rework(brief, actor=None, reason=""):
         "updated_at"])
     record(brief, BriefEvent.KIND_REWORK, actor=actor, note=reason,
            from_status=from_status, to_status=brief.status)
+    _after_commit(notifications.reworked, brief, actor, reason)
     return brief
 
 
@@ -225,6 +239,7 @@ def approve(brief, actor=None, satisfaction=None, note=""):
         "archived_at", "updated_at"])
     record(brief, BriefEvent.KIND_APPROVED, actor=actor, note=note,
            from_status=from_status, to_status=brief.status)
+    _after_commit(notifications.approved, brief, actor)
     return brief
 
 
@@ -248,6 +263,7 @@ def cancel(brief, actor=None, reason=""):
     brief.save(update_fields=["status", "closing_note", "archived_at", "updated_at"])
     record(brief, BriefEvent.KIND_CANCELLED, actor=actor, note=reason,
            from_status=from_status, to_status=brief.status)
+    _after_commit(notifications.cancelled, brief, actor, reason)
     return brief
 
 
@@ -302,3 +318,120 @@ def record_edit(brief, actor=None, changed=None):
     return record(brief, BriefEvent.KIND_EDITED, actor=actor,
                   note="Changed: " + ", ".join(sorted(changed)),
                   from_status=brief.status, to_status=brief.status)
+
+
+# ── Artwork ──────────────────────────────────────────────────────────────────
+
+@transaction.atomic
+def add_proof(brief, *, prepared, uploaded_by=None, note="", source_url="",
+              submit_for_review=False):
+    """Attach a new version of the artwork.
+
+    ``prepared`` is the dict ``images.prepare`` returns — the downscaled
+    preview and thumbnail. This function never sees the original bytes, which
+    is deliberate: see ``images.py``.
+
+    The version number is taken inside the transaction, so two designers
+    uploading at the same moment cannot both claim v3. The unique constraint on
+    (brief, version) is the backstop if they somehow do.
+
+    ``submit_for_review`` is the usual path: a designer uploads the work and
+    hands it over in one action, because uploading and then forgetting to
+    submit is how a finished design sits unseen for three days.
+    """
+    from .models import BriefProof
+
+    if brief.is_closed:
+        raise TransitionError("This brief is closed.")
+    if brief.proofs.count() >= BriefProof.MAX_PER_BRIEF:
+        raise TransitionError(
+            f"This brief already has {BriefProof.MAX_PER_BRIEF} versions of "
+            "artwork. Raise a new brief rather than a twenty-fifth round.")
+
+    latest = (brief.proofs.order_by("-version")
+              .values_list("version", flat=True).first() or 0)
+    proof = BriefProof.objects.create(
+        brief=brief,
+        version=latest + 1,
+        uploaded_by=uploaded_by if (uploaded_by and uploaded_by.is_authenticated) else None,
+        note=note or "",
+        source_url=source_url or "",
+        **prepared,
+    )
+    record(brief, BriefEvent.KIND_PROOF, actor=uploaded_by,
+           note=(note or f"Version {proof.version} uploaded."),
+           from_status=brief.status, to_status=brief.status)
+
+    if submit_for_review:
+        submit(brief, actor=uploaded_by, note=note)
+    return proof
+
+
+@transaction.atomic
+def add_comment(brief, *, author, body, proof=None):
+    """Say something about the brief, or about one version of the artwork.
+
+    Kept separate from the event timeline: an event is a step the system
+    recorded, a comment is something a person chose to say. An event is also
+    written, so the history still shows that a conversation happened.
+    """
+    from .models import BriefComment
+
+    body = (body or "").strip()
+    if not body:
+        raise TransitionError("Nothing to say.")
+
+    comment = BriefComment.objects.create(
+        brief=brief,
+        proof=proof,
+        body=body,
+        author=author if (author and author.is_authenticated) else None,
+    )
+    record(brief, BriefEvent.KIND_COMMENT, actor=author,
+           note=(f"On v{proof.version}: " if proof else "") + body[:400],
+           from_status=brief.status, to_status=brief.status)
+    return comment
+
+
+# ── Deliverables ─────────────────────────────────────────────────────────────
+
+@transaction.atomic
+def set_deliverables(brief, labels, actor=None):
+    """Replace the checklist with ``labels``, keeping what is already ticked.
+
+    A plain replace would silently un-tick finished items whenever somebody
+    added a line, so completion is carried across by label.
+    """
+    from .models import BriefDeliverable
+
+    labels = [l.strip() for l in (labels or []) if l and l.strip()]
+    if len(labels) > BriefDeliverable.MAX_PER_BRIEF:
+        raise TransitionError(
+            f"At most {BriefDeliverable.MAX_PER_BRIEF} deliverables on one brief.")
+
+    existing = {d.label: d for d in brief.deliverables.all()}
+    brief.deliverables.all().delete()
+    made = []
+    for i, label in enumerate(labels):
+        was = existing.get(label)
+        made.append(BriefDeliverable.objects.create(
+            brief=brief, label=label, order=i,
+            done=bool(was and was.done),
+            done_at=was.done_at if was else None,
+            done_by=was.done_by if was else None,
+        ))
+    record(brief, BriefEvent.KIND_EDITED, actor=actor,
+           note=f"Deliverables set: {len(made)} item(s).",
+           from_status=brief.status, to_status=brief.status)
+    return made
+
+
+@transaction.atomic
+def tick_deliverable(deliverable, actor=None, done=True):
+    """Tick or un-tick one item."""
+    deliverable.done = bool(done)
+    deliverable.done_at = timezone.now() if done else None
+    deliverable.done_by = (
+        actor if (done and actor and actor.is_authenticated) else None)
+    deliverable.save(update_fields=["done", "done_at", "done_by"])
+    return deliverable
