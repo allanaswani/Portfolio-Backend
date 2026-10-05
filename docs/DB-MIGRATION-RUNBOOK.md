@@ -307,6 +307,32 @@ Then compare. Pull the old file across and diff:
 scp admlin01@128.2.1.25:~/verify-old-before-cutover.txt . && diff verify-old-before-cutover.txt ~/verify-new-after-promote.txt
 ```
 
+### Dry-run it first — before the window (added 2026-10-05)
+
+Run the [NEW] snapshot and the diff **while the primary is still live**. It
+costs nothing, proves the comparison works, and tells you what the real diff
+should look like. On 2026-10-05 that dry run produced the `role` line plus nine
+row counts, **every one of them HIGHER on the standby**:
+`observability_heartbeat` +9, `observability_request_metric` +326,
+`user_activity_events` +11, `token_blacklist_*` +3, `weighted_sales_branch_trade_data_dump` +6,
+two feedback tables +1.
+
+That pattern is the **healthy** one and must be read correctly:
+
+- Every differing table is **append-only and continuously written** — heartbeats,
+  request metrics, JWT tokens, activity events, an ETL dump. The baseline was a
+  point-in-time snapshot of a *live* primary; the standby then kept replaying.
+  The differences are the clock moving, not data diverging.
+- **Not one table was LOWER on the standby.** That is the thing to check. A
+  standby behind on even one count means replay is lagging or lossy. All-higher
+  means it is faithfully following.
+
+**At the real cutover the primary is already STOPPED when you snapshot the
+standby, so the counts must match EXACTLY.** The acceptance criterion is
+therefore stricter than the dry run: *only* the `role` line may differ. Any row
+count difference at that point — in either direction — means stop and
+investigate, do not let anyone in.
+
 Two differences are expected and fine: the `role` line (`primary` vs
 `standby`), and any line marked ESTIMATE, since those are planner statistics
 rather than counts. **Everything else must be identical** - database sizes,
@@ -318,7 +344,7 @@ The quick spot-check, if you want one before the full diff:
 psql -h 127.0.0.1 -U postgres -c "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database WHERE NOT datistemplate ORDER BY pg_database_size(datname) DESC;"
 ```
 
-Expect `datawarehouse` at 439 GB, `virtual_accounts_activation` 1644 MB,
+Expect `datawarehouse` at **463 GB** (it was 439 GB when this was written on 27 Sep 2026 and grows ~2-3 GB/day — re-read your own baseline file rather than trusting this figure), `virtual_accounts_activation` 1644 MB,
 `metabase` 72 MB, `airflow_db` 12 MB.
 
 ```bash

@@ -108,6 +108,12 @@ NEW_ROLES = (
     # also has its own Team screen, which edits exactly these two groups.
     "service_desk_manager",
     "service_desk_agent",
+    # Design Briefs (apps.design_briefs) — the Marketing design board. The
+    # groups themselves are created by its migration 0002; registered here so
+    # an administrator can put somebody on the design team from the Users
+    # screen, and so the badge is not blank.
+    "marketing_admin",
+    "marketing_designer",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -130,6 +136,8 @@ NEW_ROLE_DESCRIPTIONS = {
     "c360_rm": "Customer 360 — relationship manager (own book).",
     "service_desk_manager": "Service Desk — desk lead; assigns, edits query types, SLAs and the team.",
     "service_desk_agent": "Service Desk — works the queue and answers queries.",
+    "marketing_admin": "Design Briefs — Marketing department admin; assigns designers, reopens archived briefs, sees the reports.",
+    "marketing_designer": "Design Briefs — designer; works the briefs allocated to them and sees the whole board.",
 }
 
 # Every role the system knows about (legacy + new).
@@ -182,6 +190,10 @@ ROLE_TO_TIER = {
     # so these only decide the badge on the Users screen.
     "service_desk_manager": ROLE_MANAGER,
     "service_desk_agent": ROLE_OFFICER,
+    # Design briefs — apps/design_briefs gates on the group NAME, not the
+    # tier, so these only decide the badge on the Users screen.
+    "marketing_admin": ROLE_MANAGER,
+    "marketing_designer": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).

@@ -33,6 +33,7 @@ urlpatterns = [
     path("referrals/", include("apps.referrals.urls")),
     path("observability/", include("apps.observability.urls")),
     path("service_desk/", include("apps.service_desk.urls")),
+    path("design_briefs/", include("apps.design_briefs.urls")),
 
     # New feature APIs (v1 prefix for new frontend)
     path("api/v1/analytics/", include("apps.analytics.urls")),
