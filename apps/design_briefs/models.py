@@ -396,8 +396,16 @@ class BriefComment(models.Model):
     weight.
 
     ``proof`` pins a comment to the version it is about, so feedback given on v1
-    still reads correctly after v2 lands.
+    still reads correctly after v2 lands. With ``x``/``y`` set it is pinned to a
+    *place* on that version as well - the markup every proofing tool has, and
+    the difference between "the logo is wrong" and an arrow on the logo.
     """
+
+    #: Positions are FRACTIONS of the stored preview (0.0 - 1.0), never pixels.
+    #: The preview is itself a downscale and the browser renders it at whatever
+    #: width the layout gives it, so a pixel offset would land in the wrong
+    #: place on every screen but the one it was drawn on. A fraction survives
+    #: both the downscale and the viewport.
 
     brief = models.ForeignKey(
         DesignBrief, on_delete=models.CASCADE, related_name="comments")
@@ -405,6 +413,23 @@ class BriefComment(models.Model):
         BriefProof, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="comments")
     body = models.TextField()
+
+    # ── Markup ───────────────────────────────────────────────────────────────
+    #: Top-left of the mark, as a fraction of the preview. Both or neither.
+    x = models.FloatField(null=True, blank=True)
+    y = models.FloatField(null=True, blank=True)
+    #: Optional box. Absent means a point pin, which is most feedback.
+    w = models.FloatField(null=True, blank=True)
+    h = models.FloatField(null=True, blank=True)
+
+    #: Markup gets answered and closed off, the way it does in a proofing tool.
+    #: A general comment can be resolved too - there is no reason it cannot be.
+    resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="design_comments_resolved")
+
     author = models.ForeignKey(
         USER, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="design_brief_comments")
@@ -414,10 +439,19 @@ class BriefComment(models.Model):
     class Meta:
         db_table = "design_brief_comment"
         ordering = ["created_at", "id"]
-        indexes = [models.Index(fields=["brief", "created_at"])]
+        indexes = [
+            models.Index(fields=["brief", "created_at"]),
+            models.Index(fields=["proof", "created_at"]),
+        ]
 
     def __str__(self):
-        return f"{self.brief_id} comment by {self.author_name}"
+        where = f" @{self.x:.2f},{self.y:.2f}" if self.is_markup else ""
+        return f"{self.brief_id} comment by {self.author_name}{where}"
+
+    @property
+    def is_markup(self) -> bool:
+        """Pinned to a place on the artwork, rather than to the brief."""
+        return self.x is not None and self.y is not None
 
     def save(self, *args, **kwargs):
         if self.author_id and not self.author_name:

@@ -41,6 +41,8 @@ urlpatterns = [
 
     # The conversation, and the checklist of what the brief has to produce.
     path("briefs/<str:reference>/comments/", v.BriefCommentView.as_view()),
+    path("briefs/<str:reference>/comments/<int:pk>/resolve/",
+         v.CommentResolveView.as_view()),
     path("briefs/<str:reference>/deliverables/", v.BriefDeliverableView.as_view()),
     path("briefs/<str:reference>/deliverables/<int:pk>/tick/",
          v.DeliverableTickView.as_view()),

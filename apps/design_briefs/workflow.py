@@ -367,13 +367,46 @@ def add_proof(brief, *, prepared, uploaded_by=None, note="", source_url="",
     return proof
 
 
+def _check_position(x, y, w, h):
+    """Validate a mark's position, in fractions of the preview.
+
+    Fractions, not pixels - see the note on ``BriefComment``. Both x and y or
+    neither: a half-given position would draw a pin at the origin, which looks
+    like a fault in the artwork rather than in the data.
+    """
+    if x is None and y is None:
+        if w is not None or h is not None:
+            raise TransitionError("A box needs a position. Give x and y too.")
+        return False
+    if x is None or y is None:
+        raise TransitionError("A mark needs both x and y.")
+    for name, v in (("x", x), ("y", y)):
+        if not (0.0 <= float(v) <= 1.0):
+            raise TransitionError(
+                name + " must be between 0 and 1 - it is a fraction of the "
+                "image, not a pixel offset.")
+    for name, v, origin in (("w", w, x), ("h", h, y)):
+        if v is None:
+            continue
+        if not (0.0 < float(v) <= 1.0):
+            raise TransitionError(name + " must be between 0 and 1.")
+        if float(origin) + float(v) > 1.0001:  # a hair of float tolerance
+            raise TransitionError("The box falls outside the image.")
+    return True
+
+
 @transaction.atomic
-def add_comment(brief, *, author, body, proof=None):
-    """Say something about the brief, or about one version of the artwork.
+def add_comment(brief, *, author, body, proof=None, x=None, y=None,
+                w=None, h=None):
+    """Say something about the brief, about one version, or about one PLACE.
 
     Kept separate from the event timeline: an event is a step the system
     recorded, a comment is something a person chose to say. An event is also
     written, so the history still shows that a conversation happened.
+
+    With a position it becomes markup. Markup needs a proof to be pinned to - a
+    coordinate with no image is meaningless, and silently dropping it would
+    lose the one thing the person was trying to point at.
     """
     from .models import BriefComment
 
@@ -381,15 +414,44 @@ def add_comment(brief, *, author, body, proof=None):
     if not body:
         raise TransitionError("Nothing to say.")
 
+    positioned = _check_position(x, y, w, h)
+    if positioned and proof is None:
+        raise TransitionError(
+            "Markup has to be on a version of the artwork. Pick the version "
+            "it refers to.")
+
     comment = BriefComment.objects.create(
         brief=brief,
         proof=proof,
         body=body,
+        x=x if positioned else None,
+        y=y if positioned else None,
+        w=w if positioned else None,
+        h=h if positioned else None,
         author=author if (author and author.is_authenticated) else None,
     )
+    where = ""
+    if proof is not None:
+        where = "On v%d%s: " % (proof.version,
+                                " (marked up)" if positioned else "")
     record(brief, BriefEvent.KIND_COMMENT, actor=author,
-           note=(f"On v{proof.version}: " if proof else "") + body[:400],
+           note=where + body[:400],
            from_status=brief.status, to_status=brief.status)
+    return comment
+
+
+@transaction.atomic
+def resolve_comment(comment, actor=None, resolved=True):
+    """Close a piece of feedback off, or reopen it.
+
+    No event is written: ticking a comment is not a step in the brief's life,
+    and a timeline full of them would bury the steps that are.
+    """
+    comment.resolved = bool(resolved)
+    comment.resolved_at = timezone.now() if resolved else None
+    comment.resolved_by = (
+        actor if (resolved and actor and actor.is_authenticated) else None)
+    comment.save(update_fields=["resolved", "resolved_at", "resolved_by"])
     return comment
 
 

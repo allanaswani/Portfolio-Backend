@@ -1011,3 +1011,161 @@ class WipTests(BoardTestCase):
         self.working(self.designer, 1)
         wip = self.board(self.requester)
         self.assertEqual(wip["limit"], 3)
+
+
+class MarkupTests(BoardTestCase):
+    """Feedback pinned to a place on the artwork.
+
+    Positions are fractions of the preview, never pixels: the preview is itself
+    a downscale and the browser renders it at whatever width the layout gives
+    it, so a pixel offset would land somewhere else on every other screen.
+    """
+
+    def proofed(self):
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        workflow.start(brief, actor=self.designer)
+        proof = workflow.add_proof(
+            brief, prepared=images.prepare(png_bytes()),
+            uploaded_by=self.designer)
+        return brief, proof
+
+    def test_a_pinned_comment_is_markup_and_a_plain_one_is_not(self):
+        brief, proof = self.proofed()
+        pinned = workflow.add_comment(
+            brief, author=self.requester, body="Logo too small",
+            proof=proof, x=0.25, y=0.4)
+        plain = workflow.add_comment(
+            brief, author=self.requester, body="General thought")
+
+        self.assertTrue(pinned.is_markup)
+        self.assertFalse(plain.is_markup)
+        self.assertEqual((pinned.x, pinned.y), (0.25, 0.4))
+        self.assertIsNone(pinned.w)
+
+    def test_a_box_is_allowed(self):
+        brief, proof = self.proofed()
+        c = workflow.add_comment(
+            brief, author=self.requester, body="This whole strip is off-brand",
+            proof=proof, x=0.1, y=0.1, w=0.5, h=0.2)
+        self.assertTrue(c.is_markup)
+        self.assertEqual((c.w, c.h), (0.5, 0.2))
+
+    def test_half_a_position_is_refused_rather_than_pinned_to_the_origin(self):
+        """A pin at 0,0 looks like a fault in the artwork, not in the data."""
+        brief, proof = self.proofed()
+        with self.assertRaises(workflow.TransitionError):
+            workflow.add_comment(brief, author=self.requester, body="x only",
+                                 proof=proof, x=0.5)
+        with self.assertRaises(workflow.TransitionError):
+            workflow.add_comment(brief, author=self.requester, body="y only",
+                                 proof=proof, y=0.5)
+
+    def test_a_position_outside_the_image_is_refused(self):
+        brief, proof = self.proofed()
+        for kw in ({"x": 1.4, "y": 0.2}, {"x": -0.1, "y": 0.2},
+                   {"x": 0.2, "y": 2.0}):
+            with self.assertRaises(workflow.TransitionError, msg=str(kw)):
+                workflow.add_comment(brief, author=self.requester,
+                                     body="out of bounds", proof=proof, **kw)
+
+    def test_a_box_that_runs_off_the_edge_is_refused(self):
+        brief, proof = self.proofed()
+        with self.assertRaises(workflow.TransitionError):
+            workflow.add_comment(brief, author=self.requester, body="too wide",
+                                 proof=proof, x=0.8, y=0.1, w=0.5)
+
+    def test_a_box_with_no_position_is_refused(self):
+        brief, proof = self.proofed()
+        with self.assertRaises(workflow.TransitionError):
+            workflow.add_comment(brief, author=self.requester, body="box only",
+                                 proof=proof, w=0.3, h=0.3)
+
+    def test_markup_without_a_version_is_refused_not_silently_unpinned(self):
+        """Dropping the coordinate would lose the one thing they pointed at."""
+        brief, _ = self.proofed()
+        with self.assertRaises(workflow.TransitionError):
+            workflow.add_comment(brief, author=self.requester,
+                                 body="where though", x=0.3, y=0.3)
+
+    def test_the_api_accepts_markup_and_returns_it(self):
+        brief, proof = self.proofed()
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/comments/",
+            {"body": "Old brand mark", "proof": proof.pk,
+             "x": 0.32, "y": 0.18, "w": 0.2, "h": 0.1},
+            format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertTrue(r.data["is_markup"])
+        self.assertAlmostEqual(r.data["x"], 0.32)
+        self.assertEqual(r.data["proof_version"], 1)
+        self.assertFalse(r.data["resolved"])
+
+    def test_the_api_rejects_a_position_out_of_range(self):
+        brief, proof = self.proofed()
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/comments/",
+            {"body": "nope", "proof": proof.pk, "x": 3.0, "y": 0.2},
+            format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("x", r.data)
+
+    def test_markup_rides_on_the_brief_payload(self):
+        brief, proof = self.proofed()
+        workflow.add_comment(brief, author=self.requester, body="here",
+                             proof=proof, x=0.5, y=0.5)
+        self.client.force_authenticate(self.designer)
+        r = self.client.get(f"{BASE}briefs/{brief.reference}/")
+        marks = [c for c in r.data["comments"] if c["is_markup"]]
+        self.assertEqual(len(marks), 1)
+        self.assertEqual(marks[0]["y"], 0.5)
+
+    def test_a_comment_can_be_resolved_and_reopened(self):
+        brief, proof = self.proofed()
+        c = workflow.add_comment(brief, author=self.requester, body="fix this",
+                                 proof=proof, x=0.2, y=0.2)
+        self.client.force_authenticate(self.designer)
+
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/comments/{c.pk}/resolve/",
+            {}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertTrue(r.data["resolved"])
+        self.assertIsNotNone(r.data["resolved_at"])
+        self.assertEqual(r.data["resolved_by"], self.designer.id)
+
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/comments/{c.pk}/resolve/",
+            {"resolved": False}, format="json")
+        self.assertFalse(r.data["resolved"])
+        self.assertIsNone(r.data["resolved_at"])
+        self.assertIsNone(r.data["resolved_by"])
+
+    def test_resolving_writes_no_timeline_step(self):
+        """A history full of ticks buries the steps that matter."""
+        brief, proof = self.proofed()
+        c = workflow.add_comment(brief, author=self.requester, body="fix",
+                                 proof=proof, x=0.2, y=0.2)
+        before = brief.events.count()
+        workflow.resolve_comment(c, actor=self.designer)
+        self.assertEqual(brief.events.count(), before)
+
+    def test_an_outsider_cannot_resolve(self):
+        brief, proof = self.proofed()
+        c = workflow.add_comment(brief, author=self.requester, body="fix",
+                                 proof=proof, x=0.2, y=0.2)
+        self.client.force_authenticate(self.outsider)
+        r = self.client.post(
+            f"{BASE}briefs/{brief.reference}/comments/{c.pk}/resolve/",
+            {}, format="json")
+        self.assertEqual(r.status_code, 404)
+
+    def test_the_timeline_note_says_it_was_marked_up(self):
+        brief, proof = self.proofed()
+        workflow.add_comment(brief, author=self.requester, body="here",
+                             proof=proof, x=0.5, y=0.5)
+        note = brief.events.filter(kind=BriefEvent.KIND_COMMENT).last().note
+        self.assertIn("marked up", note)
+        self.assertIn("v1", note)

@@ -33,7 +33,8 @@ from .models import (
 from .serializers import (
     ApproveSerializer, AssignSerializer, BriefCommentSerializer,
     BriefDeliverableSerializer, BriefEventSerializer, BriefProofSerializer,
-    DeliverablesSerializer, ProofUploadSerializer,
+    DeliverablesSerializer, MarkupSerializer, ProofUploadSerializer,
+    ResolveSerializer,
     DesignBriefCreateSerializer, DesignBriefDetailSerializer,
     DesignBriefListSerializer, DesignBriefUpdateSerializer, NoteSerializer,
     PersonSerializer, ReasonSerializer,
@@ -851,21 +852,50 @@ class BriefCommentView(APIView):
         if brief is None:
             return Response({"detail": "Not found."}, status=404)
 
+        ser = MarkupSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
         proof = None
-        pid = request.data.get("proof")
-        if pid:
-            proof = brief.proofs.filter(pk=pid).first()
+        if data.get("proof"):
+            proof = brief.proofs.filter(pk=data["proof"]).first()
             if proof is None:
                 return Response({"proof": ["No such version on this brief."]},
                                 status=400)
         try:
             comment = workflow.add_comment(
-                brief, author=request.user,
-                body=request.data.get("body", ""), proof=proof)
+                brief, author=request.user, body=data["body"], proof=proof,
+                x=data.get("x"), y=data.get("y"),
+                w=data.get("w"), h=data.get("h"))
         except workflow.TransitionError as exc:
             return Response({"body": [str(exc)]}, status=400)
         return Response(BriefCommentSerializer(comment).data,
                         status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=TAG)
+class CommentResolveView(APIView):
+    """Tick a piece of feedback off, or reopen it.
+
+    Anybody who can see the brief may resolve a comment. Restricting it to the
+    author would leave markup from somebody on leave open forever, and the list
+    of open marks is the thing a designer works down.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, reference, pk):
+        brief = _get_or_none(request, reference)
+        if brief is None:
+            return Response({"detail": "Not found."}, status=404)
+        comment = brief.comments.filter(pk=pk).first()
+        if comment is None:
+            return Response({"detail": "Not found."}, status=404)
+        ser = ResolveSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        workflow.resolve_comment(comment, actor=request.user,
+                                 resolved=ser.validated_data["resolved"])
+        return Response(BriefCommentSerializer(comment).data)
 
 
 # ── Deliverables ─────────────────────────────────────────────────────────────

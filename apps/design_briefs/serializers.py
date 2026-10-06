@@ -104,17 +104,49 @@ class BriefProofSerializer(serializers.ModelSerializer):
 class BriefCommentSerializer(serializers.ModelSerializer):
     author_display = serializers.SerializerMethodField()
     proof_version = serializers.SerializerMethodField()
+    resolved_by_display = serializers.SerializerMethodField()
+    is_markup = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = BriefComment
-        fields = ["id", "body", "proof", "proof_version", "author",
-                  "author_display", "created_at"]
+        fields = ["id", "body", "proof", "proof_version",
+                  "x", "y", "w", "h", "is_markup",
+                  "resolved", "resolved_at", "resolved_by",
+                  "resolved_by_display",
+                  "author", "author_display", "created_at"]
+        read_only_fields = ["resolved_at", "resolved_by"]
 
     def get_author_display(self, obj):
         return _person(obj.author, obj.author_name)
 
     def get_proof_version(self, obj):
         return obj.proof.version if obj.proof_id else None
+
+    def get_resolved_by_display(self, obj):
+        return _person(obj.resolved_by)
+
+
+class MarkupSerializer(serializers.Serializer):
+    """A comment, optionally pinned to a place on a version.
+
+    The bounds are checked again in ``workflow._check_position``: this catches a
+    malformed request, that enforces the rule for every caller.
+    """
+
+    body = serializers.CharField(allow_blank=False)
+    proof = serializers.IntegerField(required=False, allow_null=True)
+    x = serializers.FloatField(required=False, allow_null=True,
+                               min_value=0.0, max_value=1.0)
+    y = serializers.FloatField(required=False, allow_null=True,
+                               min_value=0.0, max_value=1.0)
+    w = serializers.FloatField(required=False, allow_null=True,
+                               min_value=0.0, max_value=1.0)
+    h = serializers.FloatField(required=False, allow_null=True,
+                               min_value=0.0, max_value=1.0)
+
+
+class ResolveSerializer(serializers.Serializer):
+    resolved = serializers.BooleanField(required=False, default=True)
 
 
 class BriefDeliverableSerializer(serializers.ModelSerializer):
