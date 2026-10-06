@@ -6,7 +6,11 @@ Each function reads the managed HFDI tables that exist in this backend
 hfdi_legacy_projects/_sales_data, hfdi_crm_projects/_sales_data, hfdi_manual_sales_data)
 and returns plain lists of dicts for the chart endpoints.
 """
+import logging
+
 from django.db import connection
+
+logger = logging.getLogger(__name__)
 
 # Month-pivot summaries (Jan..Dec) keyed by project. The three legacy helpers
 # were identical except for the measured column, so they share one query here.
@@ -80,6 +84,14 @@ def projects_monthly_performance():
 # per-project variants group `original_target` differently (the legacy aggregate
 # grouped by project_name only; the per-project one also kept the target dates),
 # so the GROUP BY is parameterised to preserve each variant's exact result.
+#
+# The four date columns on hfdi_performance_target_feedback are varchar, not
+# date, so they are read through `hfdi_try_date` (migration hfdi.0009) rather
+# than `::date`. A row typed `Sep`, or left at the `""` default, then drops out
+# of the year filter instead of failing the whole statement and 500-ing the
+# dashboard for every project. `_warn_unparseable_targets` makes that loss
+# audible - a target silently missing is the failure mode to fear here, not a
+# target that is absent and logged.
 def _revenue_ctes(*, per_project: bool) -> str:
     if per_project:
         extra_cols = "htf.target_sales_end_date, htf.target_collections_end_date,"
@@ -98,13 +110,13 @@ def _revenue_ctes(*, per_project: bool) -> str:
                max(htf.volume) AS volume_target, max(htf.value) AS value_target,
                max(htf.collections_value) AS collections_value_target,
                max(htf.income) AS income_target,
-               max(extract(DOY FROM target_start_date::date)) AS target_start_day,
+               max(extract(DOY FROM hfdi_try_date(target_start_date))) AS target_start_day,
                max(extract(DOY FROM current_date)) AS current_date_day,
-               max(extract(DOY FROM target_sales_end_date::date)) AS target_sales_end_day,
-               max(extract(DOY FROM target_collections_end_date::date)) AS target_collections_end_day
+               max(extract(DOY FROM hfdi_try_date(target_sales_end_date))) AS target_sales_end_day,
+               max(extract(DOY FROM hfdi_try_date(target_collections_end_date))) AS target_collections_end_day
         FROM hfdi_performance_target_feedback htf
         LEFT JOIN project_data_names x ON x.project_id = htf.project_id
-        WHERE date_trunc('year', month::date) = date_trunc('year', current_date)
+        WHERE date_trunc('year', hfdi_try_date(month)) = date_trunc('year', current_date)
         {group_by}
     ),
     ytd_targets AS (
@@ -175,13 +187,52 @@ _REVENUE_POINT_PER_PROJECT_TAIL = """
 """
 
 
+_UNPARSEABLE_TARGETS_SQL = """
+    SELECT project_id, month, target_start_date,
+           target_sales_end_date, target_collections_end_date
+    FROM hfdi_performance_target_feedback
+    WHERE hfdi_try_date(month) IS NULL
+       OR hfdi_try_date(target_start_date) IS NULL
+       OR hfdi_try_date(target_sales_end_date) IS NULL
+       OR hfdi_try_date(target_collections_end_date) IS NULL
+"""
+
+
+def unparseable_target_dates():
+    """Target rows holding something that is not a date in a date column.
+
+    These are the rows the YTD queries cannot use. The table is small (one row
+    per project per month), so this is cheap to ask.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(_UNPARSEABLE_TARGETS_SQL)
+        return _rows_as_dicts(cursor)
+
+
+def _warn_unparseable_targets():
+    """Log the rows being skipped, so a quietly short answer is traceable."""
+    try:
+        bad = unparseable_target_dates()
+    except Exception:              # never let the warning break the response
+        logger.exception("could not check hfdi target dates")
+        return
+    if bad:
+        logger.warning(
+            "hfdi: %d target row(s) excluded from the YTD figures - a date "
+            "column holds text that is not a date. project_id(s): %s",
+            len(bad), sorted({r["project_id"] for r in bad}),
+        )
+
+
 def revenue_point_ytd():
+    _warn_unparseable_targets()
     with connection.cursor() as cursor:
         cursor.execute(_revenue_ctes(per_project=False) + _REVENUE_POINT_AGG_TAIL)
         return _rows_as_dicts(cursor)
 
 
 def revenue_point_ytd_by_project():
+    _warn_unparseable_targets()
     with connection.cursor() as cursor:
         cursor.execute(_revenue_ctes(per_project=True) + _REVENUE_POINT_PER_PROJECT_TAIL)
         return _rows_as_dicts(cursor)

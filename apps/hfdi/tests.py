@@ -326,3 +326,61 @@ class HfdiTargetsWriteTests(TestCase):
         self.assertEqual(
             self.client.get(BASE + "hfdi-targets/",
                             {"site_admin": "Nobody"}).data["count"], 0)
+
+
+class TargetTextDateTests(TestCase):
+    """A date column holding "Sep" must not take the dashboard down.
+
+    hfdi_performance_target_feedback stores four dates as varchar(50), so anyone
+    who can edit targets can type anything. On 6 Oct 2026 one such row returned
+    500 on both YTD revenue endpoints for the whole bank:
+    `DataError: invalid input syntax for type date: "Sep"`.
+    """
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="hfdidate", password="pw12345")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        _seed()                       # one project with well-formed target dates
+        self.bad = HfdiTargets.objects.create(
+            project_id=1001, pm="PM", month="Sep",
+            target_start_date="Sep", target_sales_end_date="",
+            target_collections_end_date="not a date",
+            volume=99, value=Decimal("999"), income=Decimal("99"),
+            collections_value=Decimal("99"),
+        )
+
+    def test_both_ytd_endpoints_survive_a_text_month(self):
+        for path in ["hfdi-ytd_performance_hfdi_list/",
+                     "hfdi-ytd_performance_hfdi_list_per_project/"]:
+            resp = self.client.get(BASE + path)
+            self.assertEqual(resp.status_code, 200,
+                             f"{path} -> {resp.status_code}: {resp.content}")
+
+    def test_the_well_formed_project_still_reports_its_target(self):
+        """The bad row is skipped; it does not blank the projects around it."""
+        resp = self.client.get(BASE + "hfdi-ytd_performance_hfdi_list/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["volume_target"], 10,
+                         "the valid project's target must survive untouched")
+
+    def test_the_unusable_rows_are_reported_not_swallowed(self):
+        from apps.hfdi import services
+        bad = services.unparseable_target_dates()
+        self.assertEqual([r["project_id"] for r in bad], [1001])
+        self.assertEqual(bad[0]["month"], "Sep")
+
+    def test_a_blank_default_is_not_a_date_either(self):
+        """target_sales_end_date defaults to "", which ::date also rejected."""
+        from apps.hfdi import services
+        HfdiTargets.objects.all().delete()
+        HfdiTargets.objects.create(project_id=1001, month=str(THIS_MONTH), volume=1)
+        self.assertEqual(len(services.unparseable_target_dates()), 1)
+        self.assertEqual(
+            self.client.get(BASE + "hfdi-ytd_performance_hfdi_list/").status_code, 200)
+
+    def test_clean_data_reports_nothing(self):
+        from apps.hfdi import services
+        self.bad.delete()
+        self.assertEqual(services.unparseable_target_dates(), [])
