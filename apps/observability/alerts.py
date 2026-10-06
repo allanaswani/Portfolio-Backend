@@ -171,6 +171,15 @@ def check_error_rate(hours=1):
     return []
 
 
+def _rows_text(count):
+    """A row count for a mail, or plain words when there is not one.
+
+    ``None`` means the scan never got a count - formatting it as 0 would report
+    an unmeasured table as an empty one.
+    """
+    return f"{count:,}" if isinstance(count, int) else "not measured"
+
+
 def check_data_health():
     """Warehouse tables that went missing, empty or newly stale.
 
@@ -181,7 +190,35 @@ def check_data_health():
     from . import health
 
     sent = []
-    for row in health.table_health():
+    rows = health.table_health()
+
+    # The database itself could not be reached, so NOTHING was learned about any
+    # table. Alerting per table here would mail thirty-two false "the ETL has
+    # stopped" warnings and then, on recovery, thirty-two "has RECOVERED" ones.
+    # It is one fault with one owner: send that, and leave every table's stored
+    # state untouched because no new evidence was gathered about it.
+    unreachable = [r for r in rows if r["status"] == "unreachable"]
+    if unreachable:
+        detail = (
+            "The data-health scan could not open a connection to the warehouse, "
+            "so none of the %d tables were checked.\n\n"
+            "What the database said:\n%s\n\n"
+            "This is NOT evidence that an ETL has stopped. Until it is cleared, "
+            "nothing is being monitored.\n"
+            % (len(unreachable), unreachable[0]["error"] or "no detail given")
+        )
+        if transition("database:warehouse", "unreachable", detail):
+            sent.append(("data_health",
+                         "The warehouse database is refusing connections", detail))
+        return sent
+
+    if transition("database:warehouse", "ok",
+                  "The warehouse is answering again."):
+        sent.append(("data_health", "The warehouse database is reachable again",
+                     "Connections are being accepted and the data-health scan is "
+                     "running normally again.\n"))
+
+    for row in rows:
         key = (f"table:{row['source']}:{row['table']}" if row.get("external")
                else f"table:{row['table']}")
         status = row["status"]
@@ -208,7 +245,7 @@ def check_data_health():
                 detail = (
                     f"Table: {row['table']} ({row['label']}, {row['app_label']})\n"
                     f"Status: {status}\n"
-                    f"Rows: {row['rows']:,}\n"
+                    f"Rows: {_rows_text(row['rows'])}\n"
                     f"Last refreshed: {row['last_seen'] or 'never'}\n"
                     + (f"Error: {row['error']}\n" if row["error"] else "")
                     + "\nAn empty or missing warehouse table means the ETL that fills "
@@ -223,7 +260,7 @@ def check_data_health():
                 sent.append((
                     "data_health",
                     f"{row['table']} has RECOVERED",
-                    f"{row['table']} is loading again — {row['rows']:,} rows, last "
+                    f"{row['table']} is loading again — {_rows_text(row['rows'])} rows, last "
                     f"refreshed {row['last_seen']}.\n",
                 ))
     return sent

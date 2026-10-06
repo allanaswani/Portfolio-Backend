@@ -108,6 +108,21 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+# How long a worker keeps a database connection open between requests.
+#
+# Configurable because it is the only lever on this side of the wire when the
+# server runs out of connection slots, and it must not need a code change at
+# 09:34 on a Tuesday. At 60s each of the N worker threads holds a slot for a
+# minute after it finishes with it; at 0 the slot is handed back immediately and
+# the cost is one connect per request. Across two app tiers, Customer 360,
+# Metabase and the ETL crontab that difference decides whether a stock
+# max_connections = 100 is survivable.
+#
+# On 2026-10-06 it was not: the warehouse refused connections and users got 500s
+# on /ceo/employees. Raising the server's ceiling is the real fix — this is the
+# lever that does not need a database restart.
+CONN_MAX_AGE = env.int("DB_CONN_MAX_AGE", default=60)
+
 DATABASES = {
     # New application DB — all managed models and Django system tables live here
     "default": {
@@ -117,7 +132,12 @@ DATABASES = {
         "PASSWORD": env("DB_PASSWORD", default=""),
         "HOST": env("DB_HOST", default="127.0.0.1"),
         "PORT": env("DB_PORT", default="5432"),
-        "CONN_MAX_AGE": 60,
+        "CONN_MAX_AGE": CONN_MAX_AGE,
+        # Django hands a pooled connection straight back to the next request. If
+        # the server closed it in the meantime that request dies on a connection
+        # it never opened, which is a 500 nobody can explain from the view code.
+        # This checks it is alive first and reconnects if not.
+        "CONN_HEALTH_CHECKS": True,
     },
     # Legacy data warehouse — unmanaged (read-only) models point here
     "datawarehouse": {
@@ -127,7 +147,8 @@ DATABASES = {
         "PASSWORD": env("DW_PASSWORD", default=""),
         "HOST": env("DW_HOST", default="127.0.0.1"),
         "PORT": env("DW_PORT", default="5432"),
-        "CONN_MAX_AGE": 60,
+        "CONN_MAX_AGE": CONN_MAX_AGE,
+        "CONN_HEALTH_CHECKS": True,
         "TEST": {
             "MIRROR": "datawarehouse",  # Don't create a test DB for this one
         },

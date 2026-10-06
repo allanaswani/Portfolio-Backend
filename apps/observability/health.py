@@ -56,6 +56,59 @@ CACHE_KEY = "observability:data-health"
 CACHE_SECONDS = 300          # the answer changes on ETL timescales, not per click
 
 
+# ── Why a refused connection is not a missing table ──────────────────────────
+# On 2026-10-06 the warehouse hit its connection ceiling, and this page reported
+# all thirty-two tables as "No table, 0 rows, error". Every one of them was
+# present and full. The scan had never looked: each probe failed at the connect
+# step, and the row still carried the initial exists=False, rows=0 — values that
+# were never measured but read on screen, and in the export, as findings.
+#
+# Two rules come out of that, and they are the whole of this change:
+#   1. A failure to CONNECT is a fact about the database, not about the table.
+#      It is reported once, and the remaining tables are not probed - thirty-two
+#      identical connect failures are thirty-two timeouts for one answer.
+#   2. Anything the scan did not measure is reported as blank, never as zero or
+#      false. "I could not look" and "I looked and it is not there" are
+#      different findings and must not render identically.
+CONNECTION_FAILURE_MARKERS = (
+    "too many clients",            # max_connections exhausted - what we hit
+    "could not connect",
+    "connection failed",
+    "connection refused",
+    "server closed the connection",
+    "terminating connection",
+    "no connection to the server",
+    "connection already closed",
+    "the connection is closed",
+    "could not translate host name",
+    "no pg_hba.conf entry",
+    "password authentication failed",
+    "database system is starting up",
+    "database system is shutting down",
+)
+
+# Statuses that mean the scan measured nothing. Their rows must not claim a row
+# count or an existence verdict.
+UNMEASURED_STATUSES = ("unreachable", "skipped", "error")
+
+
+def _is_unreachable(exc):
+    """Did this fail because the DATABASE could not be reached?
+
+    Distinguished from a table-level failure, which is worth reporting per
+    table. A statement timeout is deliberately NOT in here: that connection was
+    fine, the query was too slow, and the next table may well answer.
+    """
+    from django.db import InterfaceError
+
+    if isinstance(exc, InterfaceError):
+        # Django's InterfaceError is a sibling of DatabaseError, not a subclass,
+        # and means the connection object itself is unusable.
+        return True
+    text = str(exc).lower()
+    return any(m in text for m in CONNECTION_FAILURE_MARKERS)
+
+
 def _freshness_field(model):
     """The best date/datetime column on the model, or None."""
     by_name = {
@@ -126,15 +179,19 @@ def _classify(exists, rows, age_days):
 def _row(model, table, alias, field, exists, count, is_estimate, last_seen,
          age_days, error, status=None):
     """One table's verdict, in the shape the dashboard reads."""
+    measured = (status or "") not in UNMEASURED_STATUSES
     return {
         "app_label": model._meta.app_label,
         "model": model._meta.model_name,
         "label": str(model._meta.verbose_name).title(),
         "table": table,
         "database": alias,
-        "exists": exists,
-        "rows": count,
-        "rows_are_estimate": is_estimate,
+        # Blank, not zero. A row the scan could not read has no row count and
+        # no existence verdict, and printing 0/false there is how a full
+        # warehouse came to look like an empty one.
+        "exists": exists if measured else None,
+        "rows": count if measured else None,
+        "rows_are_estimate": is_estimate if measured else False,
         "freshness_column": field.name if field else None,
         "last_seen": last_seen,
         "age_days": age_days,
@@ -246,7 +303,14 @@ def table_health(app_label=None, use_cache=True):
     """
     cache_key = f"{CACHE_KEY}:{app_label or 'all'}"
     if use_cache:
-        cached = cache.get(cache_key)
+        # Guarded because the cache backend is a table in the very database this
+        # scan exists to report on: when that database refuses connections, the
+        # cache read raises, and an unguarded read would take the page down with
+        # the exact finding the reader came for.
+        try:
+            cached = cache.get(cache_key)
+        except Exception:  # noqa: BLE001
+            cached = None
         if cached is not None:
             return cached
 
@@ -254,6 +318,9 @@ def table_health(app_label=None, use_cache=True):
     today = now.date()
     started = time.monotonic()
     rows = []
+    # alias -> why it cannot be reached. Filled on the first connect failure so
+    # the rest of its tables are answered from it instead of re-failing.
+    dead = {}
 
     # Deduplicated AFTER the app filter, so narrowing to one app still picks
     # that app's mapping of a shared table rather than dropping the table.
@@ -275,6 +342,13 @@ def table_health(app_label=None, use_cache=True):
         # it" are different findings and must not share a verdict. Only the
         # first is an error.
         unreadable = False
+
+        # This database has already refused us. Answer from that, rather than
+        # queue another connect attempt behind the same closed door.
+        if alias in dead:
+            rows.append(_row(model, table, alias, field, None, None, False,
+                             None, None, dead[alias], "unreachable"))
+            continue
 
         # Out of time: report the rest honestly rather than keep the reader
         # waiting for a page that will be killed before it arrives.
@@ -314,6 +388,12 @@ def table_health(app_label=None, use_cache=True):
                         )[:300]
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"[:300]
+            if _is_unreachable(exc):
+                # Not this table's fault, and not this table's verdict.
+                dead[alias] = error
+                rows.append(_row(model, table, alias, field, None, None, False,
+                                 None, None, error, "unreachable"))
+                continue
             unreadable = True
 
         age_days = None
@@ -332,17 +412,26 @@ def table_health(app_label=None, use_cache=True):
     # 360 owns its own database, so it pushes rather than being scanned — but
     # it belongs on the same screen, because "is the data there" is one question
     # across the estate, not one per system.
-    rows += external_rows(app_label=app_label)
+    # Also guarded: these rows live in a local table, so losing the database
+    # loses them too — and the scanned verdicts above are still worth showing.
+    try:
+        rows += external_rows(app_label=app_label)
+    except Exception:  # noqa: BLE001
+        pass
 
     rows.sort(key=lambda r: (
-        {"missing": 0, "error": 1, "empty": 2, "stale": 3, "warning": 4,
-         "unknown": 5, "skipped": 6, "ok": 7}.get(r["status"], 9),
+        {"unreachable": -1, "missing": 0, "error": 1, "empty": 2, "stale": 3,
+         "warning": 4, "unknown": 5, "skipped": 6, "ok": 7}.get(r["status"], 9),
         r["table"],
     ))
-    try:
-        cache.set(cache_key, rows, CACHE_SECONDS)
-    except Exception:  # noqa: BLE001 — a cache backend must never break the scan
-        pass
+    # A scan that could not reach the database is not an answer worth keeping
+    # for five minutes: the ceiling clears in seconds and the reader would still
+    # be staring at the failure, pressing Refresh, getting the cache back.
+    if not dead:
+        try:
+            cache.set(cache_key, rows, CACHE_SECONDS)
+        except Exception:  # noqa: BLE001 — a cache must never break the scan
+            pass
     return rows
 
 
@@ -351,10 +440,23 @@ def summarise(rows):
     for row in rows:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
     healthy = counts.get("ok", 0) + counts.get("warning", 0)
+    # Tables whose state was never established. Counting them as problems would
+    # report a database outage as thirty-two broken ETLs and send the team
+    # looking in the wrong place.
+    not_judged = (counts.get("unknown", 0) + counts.get("skipped", 0)
+                  + counts.get("unreachable", 0))
+    unreachable = counts.get("unreachable", 0)
     return {
         "tables": len(rows),
         "healthy": healthy,
-        "problems": len(rows) - healthy - counts.get("unknown", 0),
+        "problems": len(rows) - healthy - not_judged,
         "by_status": counts,
-        "total_rows": sum(r["rows"] for r in rows),
+        # None where a row was never measured, so this is a sum of what we know.
+        "total_rows": sum(r["rows"] or 0 for r in rows),
+        "unreachable": unreachable,
+        "database_unreachable": bool(unreachable),
+        # The reason, once, for the banner. Every unreachable row carries the
+        # same one.
+        "unreachable_reason": next(
+            (r["error"] for r in rows if r["status"] == "unreachable"), ""),
     }

@@ -673,3 +673,155 @@ class SentinelDateTests(TestCase):
                     if model in dated:
                         offenders.append(f"{path}:{cls}")
         self.assertEqual(offenders, [], "use WarehouseModelSerializer for these")
+
+
+class DatabaseUnreachableTests(TestCase):
+    """A database that refuses the connection is one fault, not thirty-two.
+
+    On 2026-10-06 the warehouse hit ``max_connections`` and this page reported
+    every table as "No table, 0 rows". All of them were present and full: each
+    probe had failed at the connect step, and the row still carried the
+    initialised ``exists=False, rows=0`` — never-measured values rendering as
+    findings. An export of that screen reads as a wiped warehouse.
+    """
+
+    TOO_MANY = ('connection to server at "127.0.0.1", port 5432 failed: '
+                "FATAL:  sorry, too many clients already")
+
+    def _scan(self, exc):
+        from unittest.mock import MagicMock, patch
+
+        from django.core.cache import cache
+
+        cache.clear()
+        with patch("apps.observability.health.connections", MagicMock()), \
+             patch("apps.observability.health.transaction", MagicMock()), \
+             patch("apps.observability.health._estimate_rows",
+                   side_effect=exc) as probe:
+            rows = health.table_health(use_cache=False)
+        cache.clear()
+        return rows, probe
+
+    def test_a_refused_connection_is_not_a_missing_table(self):
+        from django.db.utils import OperationalError
+
+        rows, _ = self._scan(OperationalError(self.TOO_MANY))
+
+        self.assertTrue(rows)
+        self.assertTrue(all(r["status"] == "unreachable" for r in rows),
+                        {r["status"] for r in rows})
+        # The distinction the old screen lost: "missing" is a measurement.
+        self.assertNotIn("missing", {r["status"] for r in rows})
+        self.assertIn("too many clients", rows[0]["error"])
+
+    def test_nothing_measured_is_reported_as_blank_not_as_zero(self):
+        from django.db.utils import OperationalError
+
+        rows, _ = self._scan(OperationalError(self.TOO_MANY))
+
+        for row in rows:
+            self.assertIsNone(row["rows"], row["table"])
+            self.assertIsNone(row["exists"], row["table"])
+            self.assertFalse(row["rows_are_estimate"])
+
+    def test_the_database_is_asked_once_not_once_per_table(self):
+        """Thirty-two identical connect failures are thirty-two timeouts."""
+        from django.db.utils import OperationalError
+
+        rows, probe = self._scan(OperationalError(self.TOO_MANY))
+
+        self.assertGreater(len(rows), 1)
+        self.assertEqual(probe.call_count, 1)
+
+    def test_the_summary_blames_the_database_not_the_etls(self):
+        from django.db.utils import OperationalError
+
+        rows, _ = self._scan(OperationalError(self.TOO_MANY))
+        summary = health.summarise(rows)
+
+        self.assertTrue(summary["database_unreachable"])
+        self.assertEqual(summary["unreachable"], len(rows))
+        # Counting these as problems would send the team looking for dead ETLs.
+        self.assertEqual(summary["problems"], 0)
+        self.assertEqual(summary["healthy"], 0)
+        self.assertIn("too many clients", summary["unreachable_reason"])
+        # And a sum over blanks must not blow up.
+        self.assertEqual(summary["total_rows"], 0)
+
+    def test_an_unreachable_scan_is_not_cached(self):
+        """The ceiling clears in seconds; the screen must not hold the failure.
+
+        Cached, Refresh would hand the reader the same outage for five minutes
+        after the database recovered.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from django.core.cache import cache
+        from django.db.utils import OperationalError
+
+        cache.clear()
+        with patch("apps.observability.health.connections", MagicMock()), \
+             patch("apps.observability.health.transaction", MagicMock()), \
+             patch("apps.observability.health._estimate_rows",
+                   side_effect=OperationalError(self.TOO_MANY)):
+            health.table_health(use_cache=False)
+        self.assertIsNone(cache.get(f"{health.CACHE_KEY}:all"))
+        cache.clear()
+
+    def test_a_healthy_scan_is_still_cached(self):
+        from unittest.mock import MagicMock, patch
+
+        from django.core.cache import cache
+
+        cache.clear()
+        with patch("apps.observability.health.connections", MagicMock()), \
+             patch("apps.observability.health.transaction", MagicMock()), \
+             patch("apps.observability.health._last_seen", return_value=None), \
+             patch("apps.observability.health._estimate_rows",
+                   return_value=(True, 7, False)):
+            health.table_health(use_cache=False)
+        self.assertIsNotNone(cache.get(f"{health.CACHE_KEY}:all"))
+        cache.clear()
+
+    def test_a_slow_query_does_not_void_the_whole_scan(self):
+        """A statement timeout means that table was slow, not that the server
+        is gone — and the next table may well answer."""
+        from django.db.utils import OperationalError
+
+        rows, probe = self._scan(
+            OperationalError("canceling statement due to statement timeout"))
+
+        self.assertTrue(all(r["status"] == "error" for r in rows))
+        # Every table was still attempted.
+        self.assertEqual(probe.call_count, len(rows))
+
+    def test_a_dropped_connection_counts_as_unreachable(self):
+        """InterfaceError is a SIBLING of DatabaseError, not a subclass."""
+        from django.db import InterfaceError
+
+        rows, probe = self._scan(InterfaceError("connection already closed"))
+
+        self.assertTrue(all(r["status"] == "unreachable" for r in rows))
+        self.assertEqual(probe.call_count, 1)
+
+    def test_the_endpoint_reports_the_outage_as_an_outage(self):
+        from unittest.mock import MagicMock, patch
+
+        from django.core.cache import cache
+        from django.db.utils import OperationalError
+
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(admin_user("unreachable_admin"))
+        with patch("apps.observability.health.connections", MagicMock()), \
+             patch("apps.observability.health.transaction", MagicMock()), \
+             patch("apps.observability.health._estimate_rows",
+                   side_effect=OperationalError(self.TOO_MANY)):
+            res = client.get("/observability/data-health/?refresh=1")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["summary"]["database_unreachable"])
+        self.assertTrue(all(t["status"] == "unreachable"
+                            for t in res.data["tables"]))
+        self.assertTrue(all(t["rows"] is None for t in res.data["tables"]))
+        cache.clear()
