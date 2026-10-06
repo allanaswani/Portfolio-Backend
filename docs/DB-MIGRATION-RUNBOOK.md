@@ -13,7 +13,239 @@ you paste: `datawarehouseworker-node1` is OLD, `converter-helper` is NEW.**
 | `/data` free | 107 GB | 63 GB |
 | Volume group free | **0** | **0** |
 
-Measured 24 Sep 2026. Everything moves: all five databases, 441 GB.
+Measured 24 Sep 2026. Everything moves: all five databases, 441 GB
+(**now 463 GB — see the findings section immediately below**).
+
+---
+
+## What changed since this was written — read this first (6 Oct 2026)
+
+Nine findings from a day of work on the live hosts. Four of them correct
+something above, and two change the plan. The applied ones are marked **DONE**
+and need no repeating.
+
+### Corrections to the table above
+
+* **The cluster is 463 GB, not 441 GB** — `datawarehouse` 463 GB,
+  `virtual_accounts_activation` 1644 MB, `metabase` 72 MB, `postgres` 16 MB,
+  `airflow_db` 12 MB. At 2–3 GB/day of growth and **108 GB free on the new
+  host**, that is **36–49 days of headroom**, with **zero free extents in the
+  volume group** so there is no LVM extend to fall back on. `accounts_history`
+  alone is 257 GB of the 463: a retention policy there is the cheapest 100+ GB
+  available and is independent of this migration.
+* **Database sizes are byte-identical on both hosts.** That is the cleanest
+  confirmation of the copy there is — better than any row count.
+* **`psql -U postgres` as root always fails here** with *"Peer authentication
+  failed"*: the unix socket maps the OS user to the DB user. Every command in
+  this runbook must be `sudo -u postgres psql`, run from `/` (otherwise a
+  cosmetic *"could not change directory"* warning appears).
+
+### DONE 6 Oct — `max_connections` 100 → 300, both hosts
+
+The stock 100 ran out under live traffic and threw **500s to real users** on
+`/ceo/employees` from `https://ceo.hfcb.co.ke/`. The holders were attributed
+with:
+
+```bash
+ss -tnp state established '( dport = :5432 )' | grep -o '"[^"]*",pid=[0-9]*' | sort | uniq -c | sort -rn
+```
+
+**8 gunicorn workers holding 2–5 connections each, plus `java` (Metabase) 3.**
+Not a leak: Django closes a persistent connection at the *end of a request on
+that thread*, so an idle thread sits on its connection for the life of the
+worker — 9 workers × 4 threads is up to 36 slots held open by design. The tell
+is `longest_idle ≈ oldest`, clustered one group per worker pid.
+
+Raised to 300 on **the standby first** — a standby refuses to start when the
+parameter is below the primary's. Relief with no restart and no session, for
+when it is refusing even `postgres`:
+
+```bash
+ps -eo pid,etimes,args --sort=-etimes | awk '/postgres: / && / idle$/ {print $1}' | head -40 | xargs -r kill -TERM
+```
+
+`kill -TERM` is what `pg_terminate_backend()` does internally. **Never `kill -9`
+a backend** — the postmaster reads an abnormal exit as possible shared-memory
+corruption and restarts the whole cluster.
+
+Note on reading `ps` here: PostgreSQL 12's process title is
+`postgres: <user> <database> <host> <state>` — **user first**. So
+`postgres: datawarehouse metabase 127.0.0.1 idle` is the `datawarehouse` role
+connected to the `metabase` database, not a `metabase` user. There is no
+`metabase` role.
+
+### DONE 6 Oct — `wal_log_hints = on`, both hosts. This is the big one.
+
+**The promote in Phase 3 was one-way and this runbook did not say so.**
+`wal_log_hints` was `off` and `Data page checksum version` was `0`, and
+`pg_rewind` requires one or the other. Without it the old host can never be
+re-synced as a standby of the new one without re-copying 463 GB — and the old
+host has ~107 GB free, so it physically cannot. The migration would have ended
+with **the production database running with no replica at all.**
+
+Now `on` on both hosts (one restart each). **It must stay on.** Verify before
+the window:
+
+```bash
+sudo -u postgres psql -Atc "show wal_log_hints"
+```
+
+Cost: somewhat more WAL volume, since hint-bit updates are now logged.
+
+### The two hosts are in DIFFERENT TIMEZONES — unresolved
+
+`systemctl status` on the old host reports **`+0545`** (Asia/Kathmandu); the new
+host reports **`EAT`** (+0300). **Cron schedules against host local time**, so
+the ~100 ETL jobs on the old host are running on a +0545 clock, and anything
+rescheduled on the new host shifts by **2h45m**. This also explains the gap
+between the old host's container access logs (`+0300`) and its own `date`.
+
+Settle it before the window, on both hosts:
+
+```bash
+hostname; date; date -u; timedatectl status
+systemctl is-active chronyd ntpd; chronyc tracking 2>/dev/null; ntpq -p 2>/dev/null
+docker exec hf-backend date; date
+```
+
+`timedatectl` gives Time zone and **NTP synchronized** in one line. Django is
+insulated from the container's timezone (`USE_TZ = True`,
+`TIME_ZONE = "Africa/Nairobi"`, so it converts from UTC explicitly), but **cron
+is not**, and neither are PostgreSQL's own log timestamps.
+
+### `metabase` and `airflow_db` are read-WRITE tenants of this cluster
+
+They are not read-only consumers of the warehouse — they live **inside** the
+cluster being moved (72 MB and 12 MB), and both write constantly: Metabase its
+sessions, saved questions and query logs, airflow every task instance and DAG
+run.
+
+Two consequences, and they close off the two obvious shortcuts:
+
+1. **They cannot be pointed at the standby before the promote.** Their writes
+   fail with *"cannot execute INSERT in a read-only transaction"*.
+2. **The hosts cannot run in parallel.** After a promote, `metabase` and
+   `airflow_db` would exist in two writable copies and each client's state
+   would land wherever it happened to be routed — saved questions appearing and
+   disappearing, airflow potentially running a DAG twice from two schedulers.
+   Making the old host a standby of the new one does not help: a standby is
+   read-only. True parallel writes would need multi-master (pglogical/BDR) and a
+   conflict policy, which PostgreSQL 12 core does not have.
+
+So one database has to be the one everybody writes to. That is what the
+forwarder below is for — it is not a convenience, it is what prevents the split.
+
+### The ETLs have no passwords — the forwarder needs `trust`, not `md5`
+
+`select rolname, rolpassword is not null from pg_authid` shows `datawarehouse`,
+`airflow_user` and `DWH` **do** have passwords, but `postgres` does not — and a
+search of `/data/apps/datascience/` for `password`/`PGPASSWORD` found **nothing**.
+Every client reaches PostgreSQL over `127.0.0.1` with `trust`, so an empty
+password field has always worked and nobody would know.
+
+**An `md5` entry would break all ~100 ETL jobs at once**, and it would look like
+the migration broke the ETLs rather than the auth method.
+
+### DONE 6 Oct — the new host had no `pg_hba` entry for the old host
+
+Nothing on `128.2.1.25` could reach `10.51.181.25:5432` at all. The existing
+`128.1.1.52/24` line looks close enough to be mistaken for it, but `128.1.1.x`
+and `128.2.1.x` are different networks. Added and reloaded:
+
+```bash
+# [NEW]
+cp /data/db_data/pgsql/12/data/data/pg_hba.conf /root/pg_hba.conf.before-forwarder
+echo "host    all    all    128.2.1.25/32    trust" >> /data/db_data/pgsql/12/data/data/pg_hba.conf
+sudo -u postgres psql -c "select pg_reload_conf()"
+```
+
+`listen_addresses` is already `*` and `5432/tcp` is already open in firewalld on
+the new host, so that line was the only thing in the way.
+
+Separately, and not part of this migration: that file `trust`s five whole `/24`
+subnets, meaning anyone on any of them can connect as **any** role including
+`postgres` with no password. That needs a ticket of its own.
+
+### DONE 6 Oct — the forwarder, rehearsed and proven
+
+**The idea:** after the promote, run a TCP forwarder on the old host's 5432
+pointing at the new host. Every ETL, Metabase and airflow job keeps connecting
+to `128.2.1.25:5432` with the config it has today and lands on the new database
+without knowing. Nothing on the old host is edited, and **Metabase is never
+restarted** — which matters, because that `java` process has no systemd unit and
+`PPID 1`, nobody owns it, and nobody knows what starts it.
+
+`systemd-socket-proxyd` ships with systemd, so this needs no package install on
+a production database host.
+
+**Rehearse it on 5433, bound to loopback, before the window.** Nothing uses
+5433, so production cannot be affected, and it can be left running for days with
+one low-stakes ETL pointed at it:
+
+```bash
+# [OLD]
+cat > /etc/systemd/system/pgproxy-rehearsal.socket <<'EOF'
+[Unit]
+Description=Rehearsal: local 5433 to the new host's PostgreSQL
+
+[Socket]
+ListenStream=127.0.0.1:5433
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+cat > /etc/systemd/system/pgproxy-rehearsal.service <<'EOF'
+[Unit]
+Description=Rehearsal: forward to 10.51.181.25:5432
+Requires=pgproxy-rehearsal.socket
+After=pgproxy-rehearsal.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 10.51.181.25:5432
+PrivateTmp=yes
+EOF
+
+systemctl daemon-reload
+systemctl start pgproxy-rehearsal.socket
+cd / && sudo -u postgres psql -h 127.0.0.1 -p 5433 -d datawarehouse -Atc "select current_setting('data_directory'), pg_is_in_recovery(), inet_server_addr()"
+```
+
+Expected, and what it returned on 6 Oct:
+`/data/db_data/pgsql/12/data/data|t|10.51.181.25`
+
+The **`t`** is the proof: a server *in recovery*, which the old host is not. That
+one line confirms routing, firewalld, the new `pg_hba` entry and passwordless
+`trust` end to end. Deliberately not `enable`d — a rehearsal must not survive a
+reboot.
+
+**OPEN — the proxy's connection ceiling.** This systemd's
+`systemd-socket-proxyd` has no `--connections-max` flag (only `-h` and
+`--version`), so the limit is the compiled-in **256**. That is below the 300
+slots now configured, and it cannot be tuned. Before the window, measure the
+real peak on the old host and decide whether to accept 256 or use `haproxy`
+for the production forwarder:
+
+```bash
+sudo -u postgres psql -Atc "select count(*) from pg_stat_activity where backend_type='client backend'"
+```
+
+### What the rollback actually is
+
+Phase 3 says the promote is the point of no return. With the forwarder it is
+softer than that, and `pg_rewind` is not needed for the rollback itself:
+
+* The old PostgreSQL **must** stop at cutover, because the forwarder needs port
+  5432 — and that is the point, not a side effect. It is what stops `metabase`
+  and `airflow_db` existing in two writable copies.
+* The old cluster is then **frozen and byte-intact**. Rollback is: stop the
+  forwarder, start the old PostgreSQL, revert the env files. You lose only what
+  was written after the promote.
+* `wal_log_hints` buys the *other* direction: re-synchronising the old host as a
+  standby of the new one with `pg_rewind` in minutes rather than a 463 GB copy,
+  so you have a replica again and a failback that takes seconds.
+
+**Delete nothing on the old host for at least two weeks** still stands.
 
 ---
 
@@ -222,6 +454,12 @@ for choosing this method.
 Do this in a quiet window. Everything before it was reversible by deleting the
 standby; from here the old host stops serving.
 
+> **Read the 6 Oct findings section first.** Three things changed here: the
+> promote needed `wal_log_hints = on` to be reversible at all (now done); the
+> forwarder below takes the place of repointing the ETLs, Metabase and airflow
+> on the night; and `metabase`/`airflow_db` being read-write tenants of this
+> cluster is why the old PostgreSQL *must* stop rather than run alongside.
+
 **[OLD]** Stop every writer. All 76 connections, not just the app:
 
 ```bash
@@ -408,9 +646,19 @@ anyone is let back in.
 
 Three things gate the cutover date and none belong to this repo:
 
-1. **The ETLs** — 100+ jobs, data team.
-2. **Metabase** — 11 connections held open since 9 July, no named owner.
-3. **airflow** — `airflow_db` exists and something maintains it.
+1. **The ETLs** — 100+ jobs, data team. They carry **no passwords** and rely on
+   `trust` over `127.0.0.1`; the forwarder keeps that working, repointing them
+   does not.
+2. **Metabase** — holds connections, no named owner, **no systemd unit and
+   `PPID 1`**, so nobody knows what starts it. If it is stopped it may not come
+   back. Its 72 MB app database is inside this cluster and is read-write.
+3. **airflow** — `airflow_db` exists and something maintains it. Also
+   read-write, also inside this cluster.
+4. **The timezone split** — the old host runs on `+0545`, the new one on `+0300`
+   (EAT). Cron schedules against host local time, so every job moves by 2h45m if
+   it is rescheduled on the new host. Nobody owns which is correct.
+5. **Disk on the new host** — 108 GB free, 2–3 GB/day, **36–49 days**, and the
+   volume group has no free extents. `accounts_history` is 257 GB of the 463.
 
 The copy is the easy half. Every one of these resolves the old host by IP, and
 each one missed is an outage the morning after, with no obvious link back to
