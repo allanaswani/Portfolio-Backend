@@ -937,3 +937,77 @@ class MailTests(BoardTestCase):
         user("root_user", superuser=True, email="root@hf.test")
         self.assertNotIn("root@hf.test", notifications.admin_addresses())
         self.assertIn(self.admin.email, notifications.admin_addresses())
+
+
+class WipTests(BoardTestCase):
+    """Work in progress against a limit, so the screen can say "too much".
+
+    The limit is ceil(designers x 1.5) - kanban's working rule - derived from
+    the designer group rather than configured, so there is no setting to go
+    stale.
+    """
+
+    def working(self, designer, n=1):
+        for i in range(n):
+            brief = self.raise_brief(design_item=f"Item {designer.username} {i}")
+            workflow.assign(brief, designer, actor=self.admin)
+            workflow.start(brief, actor=designer)
+
+    def board(self, who=None):
+        self.client.force_authenticate(who or self.admin)
+        r = self.client.get(f"{BASE}board/")
+        self.assertEqual(r.status_code, 200, r.data)
+        return r.data["wip"]
+
+    def test_the_limit_is_one_and_a_half_times_the_designers_rounded_up(self):
+        # setUp puts two users in the designer group.
+        self.assertEqual(self.board()["designers"], 2)
+        self.assertEqual(self.board()["limit"], 3)  # ceil(2 * 1.5)
+
+        user("third_designer", rbac.DESIGNER_GROUP)
+        self.assertEqual(self.board()["limit"], 5)  # ceil(3 * 1.5)
+
+    def test_an_idle_designer_still_counts_toward_capacity(self):
+        """Counting only people who happen to hold work would tighten the limit
+        the moment somebody cleared their plate, which is backwards."""
+        self.working(self.designer, 1)
+        wip = self.board()
+        self.assertEqual(wip["designers"], 2)
+        self.assertEqual(wip["in_progress"], 1)
+        self.assertFalse(wip["over"])
+
+    def test_over_the_limit_is_reported(self):
+        self.working(self.designer, 3)
+        self.working(self.other_designer, 2)
+        wip = self.board()
+        self.assertEqual(wip["in_progress"], 5)
+        self.assertEqual(wip["limit"], 3)
+        self.assertTrue(wip["over"])
+
+    def test_work_waiting_on_a_requester_is_not_the_designers_load(self):
+        """A brief in review is somebody else's turn; counting it would make the
+        team look overloaded by another department's silence."""
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        workflow.start(brief, actor=self.designer)
+        workflow.submit(brief, actor=self.designer)
+
+        wip = self.board()
+        self.assertEqual(wip["in_progress"], 0)
+        self.assertFalse(wip["over"])
+
+    def test_no_designers_means_no_limit_rather_than_a_limit_of_zero(self):
+        """A limit of zero would paint every board as over its limit."""
+        for u in (self.designer, self.other_designer):
+            u.groups.clear()
+        wip = self.board()
+        self.assertEqual(wip["designers"], 0)
+        self.assertEqual(wip["limit"], 0)
+        self.assertFalse(wip["over"])
+
+    def test_the_board_still_answers_for_a_plain_requester(self):
+        """The wip block must not be admin-only - the wall display is polled by
+        whoever is signed in on that machine."""
+        self.working(self.designer, 1)
+        wip = self.board(self.requester)
+        self.assertEqual(wip["limit"], 3)

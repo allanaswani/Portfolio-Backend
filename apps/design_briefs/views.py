@@ -584,10 +584,40 @@ class BoardView(APIView):
             "no_release_date": sum(1 for r in rows if r.release_date is None),
         }
 
+        # -- Work in progress against a limit ---------------------------------
+        # The wall display has to stay readable as the team grows, and a count
+        # on its own does not say whether it is too much. Kanban's working rule
+        # is a WIP limit of team size x 1.5, rounded up, so that is what is
+        # reported - derived, not configured, so there is no setting to go
+        # stale. It describes the IN PROGRESS column only: work that is waiting
+        # on a requester is not the designers' load.
+        #
+        # Counted from the group rather than from who happens to have work, so
+        # a designer with an empty plate still counts toward the team's
+        # capacity instead of tightening the limit by being idle.
+        try:
+            designers = (Group.objects
+                         .filter(name=rbac.DESIGNER_GROUP)
+                         .values_list("user__id", flat=True)
+                         .exclude(user__isnull=True)
+                         .distinct().count())
+        except Exception:  # noqa: BLE001 - never break the board over a count
+            designers = 0
+        designers = designers or len({r.assigned_designer_id for r in rows
+                                      if r.assigned_designer_id})
+        wip = {
+            "designers": designers,
+            "in_progress": counts["in_progress"],
+            # ceil(n * 1.5) without importing math for one line.
+            "limit": (designers * 3 + 1) // 2 if designers else 0,
+        }
+        wip["over"] = bool(wip["limit"]) and wip["in_progress"] > wip["limit"]
+
         return Response({
             "as_of": timezone.now(),
             "today": today,
             "counts": counts,
+            "wip": wip,
             "columns": columns,
             "pipelines": pipelines,
         })
