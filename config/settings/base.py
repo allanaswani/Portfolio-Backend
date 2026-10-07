@@ -347,6 +347,9 @@ SERVER_EMAIL = DEFAULT_FROM_EMAIL
 # change. FRONTEND_PUBLIC_URL = off-LAN/internet, FRONTEND_LAN_URL = office LAN.
 APP_BRAND_NAME = env("APP_BRAND_NAME", default="HFCB")
 FRONTEND_PUBLIC_URL = env("FRONTEND_PUBLIC_URL", default="https://ceo.hfcb.co.ke")
+# Both URLs are in real use - roughly 65/35 by request count - so emails keep
+# offering both, labelled. Pointing FRONTEND_LAN_URL at a different app tier
+# is also how LAN users get moved to a new host without a code change.
 FRONTEND_LAN_URL = env("FRONTEND_LAN_URL", default="http://128.2.1.25:5400")
 
 # ETL report trigger (Trade Finance / Insurance / Drawdowns / Weighted Sales /

@@ -1,3 +1,4 @@
+import logging
 from datetime import date, timedelta
 
 from django.contrib.auth.models import User
@@ -7,6 +8,10 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
+
+from core.email_links import brand, primary_url
+
+logger = logging.getLogger(__name__)
 
 
 BRANCH_CHOICES = [
@@ -82,22 +87,38 @@ def create_user_profile(sender, instance, created, **kwargs):
         # emailed a hardcoded placeholder string here — misleading and unsafe.)
         if not p.user.email:
             return
-        login_url = "http://128.2.1.25:5400/login"
+        # Was hardcoded to http://128.2.1.25:5400/login, which ignored
+        # FRONTEND_PUBLIC_URL and taught every new user the raw IP in the
+        # first email they ever got from us.
+        base = primary_url()
+        if not base:
+            logger.warning(
+                "no FRONTEND_PUBLIC_URL/FRONTEND_LAN_URL set - the account "
+                "email for %s will carry no link",
+                p.user.username,
+            )
+        login_url = f"{base}/login" if base else ""
+        link_text = f"To access the site click {login_url}." if login_url else ""
+        link_html = (
+            f'<p>To access the site click <a href="{login_url}">Portfolio Tool</a></p>'
+            if login_url
+            else ""
+        )
         message = (
             f"Hi {p.user.first_name},\n\n"
-            f"An account has been created for you on the HF Portfolio Tool.\n\n"
+            f"An account has been created for you on the {brand()} Portfolio Tool.\n\n"
             f"\t Username: {p.user.username}\n\n"
             f"For security, no password is sent by email. To set your password, "
             f'open the login page and use the "Forgot password?" link, then sign in.\n\n'
-            f"To access the site click {login_url}."
+            + link_text
         )
         html_message = f"""
         <p>Hi {p.user.first_name},</p>
-        <p>An account has been created for you on the HF Portfolio Tool.</p>
+        <p>An account has been created for you on the {brand()} Portfolio Tool.</p>
         <p><strong>Username</strong>: {p.user.username}</p>
         <p>For security, no password is sent by email. To set your password, open the
         login page and use the <strong>Forgot password?</strong> link, then sign in.</p>
-        <p>To access the site click <a href="{login_url}">Portfolio Tool</a></p>
+        {link_html}
         """
         try:
             send_mail(

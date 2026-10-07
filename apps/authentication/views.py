@@ -7,35 +7,19 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 
+from core.email_links import access_links_block, brand, reset_links_block
+
 logger = logging.getLogger(__name__)
 
 
-def _brand():
-    return getattr(settings, "APP_BRAND_NAME", "HFCB")
+# Kept as module-level names because other modules import them from here
+# (apps/authentication/management/commands/grant_c360_access.py). The logic
+# itself now lives in core/email_links.py, which apps/portfolio/models.py also
+# uses - that one used to hardcode a raw-IP login URL of its own.
+_brand = brand
+_access_links_block = access_links_block
+_reset_links_block = reset_links_block
 
-
-def _access_links_block():
-    """Footer listing both ways to reach the tool — off-LAN and on-LAN."""
-    pub = (getattr(settings, "FRONTEND_PUBLIC_URL", "") or "").rstrip("/")
-    lan = (getattr(settings, "FRONTEND_LAN_URL", "") or "").rstrip("/")
-    lines = ["Access the tool here:"]
-    if pub:
-        lines.append(f"  - Off-network (internet): {pub}")
-    if lan:
-        lines.append(f"  - On-network (office LAN): {lan}")
-    return "\n".join(lines)
-
-
-def _reset_links_block(token):
-    """Both password-reset links (off-LAN + on-LAN) carrying the token."""
-    pub = (getattr(settings, "FRONTEND_PUBLIC_URL", "") or "").rstrip("/")
-    lan = (getattr(settings, "FRONTEND_LAN_URL", "") or "").rstrip("/")
-    lines = []
-    if pub:
-        lines.append(f"  - Off-network (internet): {pub}/reset_password/confirm/{token}")
-    if lan:
-        lines.append(f"  - On-network (office LAN): {lan}/reset_password/confirm/{token}")
-    return "\n".join(lines)
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
