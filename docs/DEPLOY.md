@@ -501,3 +501,90 @@ at the same PostgreSQL databases on `128.2.1.25`:
 ```bash
 docker run --rm --network=host --env-file /etc/hf/prod.env hf-backend:latest python manage.py migrate <app>
 ```
+
+### Redis — required on every host that serves traffic
+
+`REDIS_URL` in `/etc/hf/prod.env` is what selects the cache backend
+(`config/settings/base.py`, the `Cache` block). Setting it **without** a Redis
+listening is the worst of the three states, and it is the state the new host was
+left in:
+
+| `REDIS_URL` | Redis running | Result |
+|---|---|---|
+| set | yes | Redis cache. What production should look like. |
+| set | **no** | `Error 111 connecting to 127.0.0.1:6379` on **every** cache touch. `IGNORE_EXCEPTIONS` turns each one into a cache miss, so you get 200s and no alarm — but **zero caching**, DRF throttling counts nothing, every KPI tile recomputes, and `DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS` writes a traceback per request. |
+| unset | n/a | `DatabaseCache` on `django_cache`. Slower but correct. Needs `manage.py createcachetable`. |
+
+The middle row is silent in the only way that matters: nothing 500s, so the host
+looks healthy while throttling is switched off.
+
+**Read the working host before building the new one.** The old host runs
+`hf-redis`; copy its shape rather than guessing flags:
+
+```bash
+# on the OLD host 128.2.1.25
+docker inspect hf-redis --format 'image:    {{.Config.Image}}
+cmd:      {{json .Config.Cmd}}
+net:      {{.HostConfig.NetworkMode}}
+ports:    {{json .HostConfig.PortBindings}}
+restart:  {{.HostConfig.RestartPolicy.Name}}
+mounts:   {{json .Mounts}}
+maxmem:   {{.HostConfig.Memory}}'
+```
+
+Then on the host that needs it:
+
+```bash
+grep -n '^REDIS_URL' /etc/hf/prod.env     # confirm host:port and db index first
+
+docker run -d --name hf-redis --restart unless-stopped --network=host \
+  redis:7-alpine \
+  redis-server --bind 127.0.0.1 --protected-mode yes \
+               --maxmemory 512mb --maxmemory-policy allkeys-lru \
+               --save '' --appendonly no
+```
+
+Three deliberate choices, all specific to this being a **cache** and not a
+datastore:
+
+- `--bind 127.0.0.1` — `REDIS_URL` points at loopback, so nothing needs to reach
+  Redis across the network. Under `--network=host` the image's default
+  `0.0.0.0` bind would publish an unauthenticated Redis on port 6379 to the LAN,
+  where anyone could read cached payloads or issue `FLUSHALL`. Check whether the
+  old host does this; if it does, it is a finding for the same ticket as the
+  `pg_hba.conf` `trust` entries, not something to copy forward.
+- `--maxmemory` + `allkeys-lru` — a cache with no ceiling grows until the box
+  reclaims it. LRU eviction is correct here because every key is reconstructible.
+- `--save '' --appendonly no` — no persistence. There is nothing in this Redis
+  worth surviving a restart, and disk on the new host is the tighter constraint.
+
+**No backend restart is needed** when Redis comes up: `django_redis` reconnects
+on the next cache call. A restart *is* needed if you take the other route and
+unset `REDIS_URL`, because the backend is chosen at import time.
+
+**Verify — the log going quiet is not proof, confirm a round trip:**
+
+```bash
+docker exec hf-backend python manage.py shell -c "
+from django.conf import settings
+from django.core.cache import caches
+c = caches['default']
+print('configured:', settings.CACHES['default']['BACKEND'])
+print('class     :', type(c).__name__)
+c.set('deploy-probe', 'ok', 30)
+print('readback  :', c.get('deploy-probe'))"
+
+docker logs --since 2m hf-backend 2>&1 | grep -c 'Error 111' || echo 'no connection errors'
+```
+
+Read it as two independent facts:
+
+- `configured:` must end in `RedisCache`. If it says `DatabaseCache` then
+  `REDIS_URL` is unset and no amount of running Redis will be used.
+- `readback: ok` then proves a real round trip. With `IGNORE_EXCEPTIONS` a dead
+  Redis does not raise — `set` is discarded and `get` returns `None` — so
+  `readback: None` against a `RedisCache` backend means Redis is not answering.
+
+Use `caches['default']`, not the module-level `cache`: that one is a
+`ConnectionProxy`, so `type(cache).__name__` reports `ConnectionProxy` and an
+`isinstance` check against a backend class is always `False`.
