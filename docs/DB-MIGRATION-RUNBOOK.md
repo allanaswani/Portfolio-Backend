@@ -646,24 +646,81 @@ anyone is let back in.
 
 ---
 
-## What is still unowned
+## Ownership and the ETL review (corrected 7 Oct 2026)
 
-Three things gate the cutover date and none belong to this repo:
+**The data team owns the ETLs, Metabase and airflow — that is this team.** An
+earlier version of this section listed them as "unowned" and treated them as
+external blockers on the cutover date. They are not. What follows is what the
+review of `datawarehouse-etls-master` actually found.
 
-1. **The ETLs** — 100+ jobs, data team. They carry **no passwords** and rely on
-   `trust` over `127.0.0.1`; the forwarder keeps that working, repointing them
-   does not.
-2. **Metabase** — holds connections, no named owner, **no systemd unit and
-   `PPID 1`**, so nobody knows what starts it. If it is stopped it may not come
-   back. Its 72 MB app database is inside this cluster and is read-write.
-3. **airflow** — `airflow_db` exists and something maintains it. Also
-   read-write, also inside this cluster.
-4. **The timezone split** — the old host runs on `+0545`, the new one on `+0300`
-   (EAT). Cron schedules against host local time, so every job moves by 2h45m if
-   it is rescheduled on the new host. Nobody owns which is correct.
-5. **Disk on the new host** — 108 GB free, 2–3 GB/day, **36–49 days**, and the
-   volume group has no free extents. `accounts_history` is 257 GB of the 463.
+### The ETLs are a one-file change, and the forwarder makes it zero
 
-The copy is the easy half. Every one of these resolves the old host by IP, and
-each one missed is an outage the morning after, with no obvious link back to
-this migration.
+Every production script resolves PostgreSQL through a single dict,
+`app.postgres` in `app_settings.py`, and that dict is:
+
+```python
+postgres = {'host': '127.0.0.1', ...}
+```
+
+**No ETL names `128.2.1.25` anywhere.** They name loopback on the host they run
+on, which is why they rely on `trust` over `127.0.0.1` and carry no passwords.
+
+Two consequences, both good:
+
+- The forwarder keeps every one of them working with **no file edited at all**.
+  Loopback on the old host continues to reach the database; the scripts cannot
+  tell the difference.
+- If the scripts are ever moved to the new host instead, it is **one line in one
+  file**, not a sweep of 100+ scripts.
+
+This supersedes the earlier claim that "every one of these resolves the old host
+by IP". It was wrong, and it made the migration look far more dangerous than it
+is.
+
+**One live exception.** `backfilling_transactions_diary.py` declares its own
+`postgres` and `postgres_local` dicts (lines 41-52) instead of importing
+`app_settings`, and uses them at line 224. Its own docstring says it is
+superseded by `transaction_diary_trino_daily.py` for daily loads, so it is
+probably not on cron - confirm, then either delete it or make it import
+`app_settings` like everything else. Every other hardcoded host in the repo is
+inside a commented-out line.
+
+Nothing in the shell wrappers bakes in a host either: they are all
+`python3.6 /data/apps/datascience/etls/<name>.py`, with no `psql -h`.
+
+### Hosts in `app_settings.py` that this migration does NOT touch
+
+Sources, not targets, and none of them move: `profits` / `profits_dr` /
+`profits_echo` (`10.20.18.11`), `merchant` (`10.50.61.84`), `aml`
+(`128.2.5.60`), `aml_prod` (`128.2.5.39`), `crm_prod` (`10.70.10.11`),
+`crm_uat`, `school_fees`, `imt`, `lendingcore`, `kocela` (Azure MySQL).
+
+**Worth one check:** `live_postgres` and `data_warehouse_postgres` both point at
+**`128.2.1.58`** - a different PostgreSQL host that has not come up anywhere in
+this migration. Establish whether anything still reads or writes there before
+the window, because if it does it is a second warehouse nobody has accounted
+for.
+
+### What actually remains, and it is ours
+
+1. **The 2021 dumps** - 126 GB in `/data/dumps`, dated 27 Oct 2021. Phase 1
+   deletes them. Since the data team owns this, it is our call to make, not a
+   confirmation to wait for.
+2. **Metabase** - owned, but the operational facts stand and are the real risk:
+   **no systemd unit and `PPID 1`**, so nothing is known to restart it, and its
+   72 MB app database is read-write inside this cluster. Give it a unit file
+   *before* the window rather than discovering at cutover that it does not come
+   back.
+3. **airflow** - `airflow_db` is read-write inside the cluster and must be in
+   the copy, which it is.
+4. **The timezone split** - old host `+0545`, new host `+0300` (EAT). Cron runs
+   against host local time, so every schedule moves 2h45m if a job is
+   rescheduled on the new host. This is the one item that is a decision rather
+   than a task, and it is ours to take.
+5. **Disk on the new host** - 108 GB free, 2-3 GB/day, 36-49 days, zero free
+   extents in the volume group. Phase 1 clears enough for the copy.
+   `accounts_history` is 257 GB of the 463 and a retention policy there is the
+   cheapest 100+ GB available, independent of this migration.
+
+The copy is still the easy half. The difference is that the hard half is now
+work we can schedule rather than four conversations we are waiting on.
