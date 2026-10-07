@@ -13,7 +13,8 @@ you paste: `datawarehouseworker-node1` is OLD, `converter-helper` is NEW.**
 | `/data` free | 107 GB | 63 GB |
 | Volume group free | **0** | **0** |
 
-Measured 24 Sep 2026. Everything moves: all five databases, 441 GB
+Measured 24 Sep 2026, and the size is stale: **the cluster is 463 GB**, see
+the corrections below. Everything moves: all five databases
 (**now 463 GB — see the findings section immediately below**).
 
 ---
@@ -281,7 +282,7 @@ Both are PostgreSQL 12 defaults. If `wal_level` is `minimal`, it needs a change
 and a **restart** of the old server — that is an outage in itself, so find out
 now rather than on the night.
 
-**[OLD]** Disk for WAL retention during the copy. A 441 GB base backup takes
+**[OLD]** Disk for WAL retention during the copy. A 463 GB base backup takes
 hours, and the old host must keep every WAL segment generated in that time:
 
 ```bash
@@ -324,7 +325,7 @@ mv /data/db_data/pgsql/12/data/data /data/db_data/pgsql/12/data/data.old
 
 `mv` rather than `rm` makes the deletion instant and reversible for a moment.
 But it must be deleted **before** the base backup starts, not during it:
-clearing only the dumps leaves 189 GB free, and the backup needs 441 GB, so it
+clearing only the dumps leaves 189 GB free, and the backup needs 463 GB, so it
 would fill the disk partway through.
 
 ```bash
@@ -341,8 +342,11 @@ df -Ph /data
 ```
 
 Expect roughly 573 GB free — 189 GB after the dumps, plus 384 GB from the data
-directory. The base backup needs 441 GB; below about 520 GB, stop and find more
-space rather than proceeding.
+directory. The base backup needs **463 GB**, not the 441 GB quoted when this
+was written, so the margin is ~110 GB rather than ~130 GB. **Below 540 GB free,
+stop and find more space rather than proceeding** - the copy also has to hold
+the WAL that accumulates while it runs, and the cluster grows 2-3 GB/day, so a
+figure measured weeks before the window is already low.
 
 ---
 
@@ -367,7 +371,7 @@ A reload, not a restart — no outage.
 
 **[OLD] Clear any file the `postgres` OS user cannot read — do this BEFORE
 starting the copy.** `pg_basebackup` sweeps the whole data directory at the very
-end, so a single unreadable file fails the run at 99% and the 441 GB starts
+end, so a single unreadable file fails the run at 99% and the 463 GB starts
 again. It cannot resume.
 
 ```bash
