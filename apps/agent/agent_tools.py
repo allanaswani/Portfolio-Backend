@@ -4,8 +4,9 @@ Each tool maps to a JSON schema (sent to the model) and an executor that queries
 the application models directly — the same data the dashboards read — so the
 agent's answers reflect live figures across **every module** (mortgages, leads,
 collections, HFDI projects, rights issue, EXCO initiatives, staff performance,
-insurance, trade finance, bank-wide deposits/loans, insights & analytics) rather
-than guesses. Results are bounded and JSON-serialised before being returned to
+insurance, trade finance, the service desk, referrals, the commercial pipeline,
+design briefs, the trade register, bank-wide deposits/loans, insights &
+analytics) rather than guesses. Results are bounded and JSON-serialised before being returned to
 the model as ``tool_result`` content.
 
 Safety: every executor is dispatched through ``run_tool`` which wraps the call in
@@ -19,6 +20,7 @@ from datetime import date, timedelta
 
 from core import warehouse
 from django.db.models import Count, Sum
+from django.utils import timezone
 
 from apps.mortgages.models import (
     Borrower, MortgageApplication, MortgageLoan, RepaymentScheduleItem,
@@ -37,6 +39,11 @@ from apps.staff_management.models import (
 from apps.gceo_dashboard.models import (
     CeoDepositMovement, CeoLoanMovementMonthlyBySegment,
 )
+from apps.service_desk.models import KbArticle, Ticket
+from apps.referrals.models import Referral
+from apps.commercial_pipeline.models import PipelineEntry
+from apps.design_briefs.models import DesignBrief
+from apps.trade_register.models import TradeRegisterEntry
 
 MAX_ROWS = 25
 
@@ -390,6 +397,142 @@ def _bank_loans_movement(limit=MAX_ROWS):
     } for r in rows]
 
 
+# -- Modules that had no tool until now --------------------------------------
+# The assistant is one agent behind nineteen entry points, so a module with no
+# tool is a module it cannot answer about - it does not refuse, it reasons from
+# nothing. These close that gap for the five remaining business modules. Same
+# shape as everything above: a bounded aggregate plus a clamped list, and no
+# free-form filtering.
+
+def _service_desk_summary(status=None, limit=MAX_ROWS):
+    qs = Ticket.objects.all()
+    if status:
+        qs = qs.filter(status=status)
+    return {
+        "total_tickets": Ticket.objects.count(),
+        "by_status": {r["status"]: r["n"] for r in
+                      Ticket.objects.values("status").annotate(n=Count("id"))},
+        "by_priority": {r["priority"]: r["n"] for r in
+                        Ticket.objects.values("priority").annotate(n=Count("id"))},
+        # Past its resolution deadline and still unresolved. Counted on the whole
+        # table rather than the filtered slice, so the number means the same
+        # thing whatever status was asked for.
+        "open_past_resolution_due": Ticket.objects.filter(
+            resolution_due_at__lt=timezone.now(), resolved_at__isnull=True).count(),
+        "unassigned": Ticket.objects.filter(assigned_to__isnull=True).count(),
+        "reopened_at_least_once": Ticket.objects.filter(reopened_count__gt=0).count(),
+        "kb_articles": KbArticle.objects.count(),
+        "tickets": [{
+            "reference": t.reference, "subject": t.subject,
+            "status": t.status, "priority": t.priority,
+            "department": t.requester_department, "branch": t.requester_branch,
+            "assigned_to": (t.assigned_to.get_full_name() or t.assigned_to.username)
+                           if t.assigned_to_id else None,
+            "raised": str(t.created_at.date()),
+            "resolved": str(t.resolved_at.date()) if t.resolved_at else None,
+        } for t in qs.select_related("assigned_to").order_by("-created_at")[:_clamp(limit)]],
+    }
+
+
+def _referrals_summary(status=None, limit=MAX_ROWS):
+    qs = Referral.objects.all()
+    if status:
+        qs = qs.filter(status=status)
+    return {
+        "total_referrals": Referral.objects.count(),
+        "by_status": {r["status"]: r["n"] for r in
+                      Referral.objects.values("status").annotate(n=Count("id"))},
+        "by_branch": {r["branch"] or "(unset)": r["n"] for r in
+                      Referral.objects.values("branch").annotate(n=Count("id"))
+                      .order_by("-n")[:15]},
+        "converted": Referral.objects.filter(converted_at__isnull=False).count(),
+        "contacted": Referral.objects.filter(contacted_at__isnull=False).count(),
+        "unallocated": Referral.objects.filter(assigned_to__isnull=True).count(),
+        "flagged_possible_duplicate": Referral.objects.filter(
+            is_possible_duplicate=True).count(),
+        "referrals": [{
+            "ref": r.referral_ref, "customer": r.customer_name,
+            "status": r.status, "branch": r.branch, "segment": r.segment,
+            "assigned_to": (r.assigned_to.get_full_name() or r.assigned_to.username)
+                           if r.assigned_to_id else None,
+            "created": str(r.created_at.date()),
+        } for r in qs.select_related("assigned_to").order_by("-created_at")[:_clamp(limit)]],
+    }
+
+
+def _commercial_pipeline_summary(kind=None, limit=MAX_ROWS):
+    qs = PipelineEntry.objects.all()
+    if kind:
+        qs = qs.filter(kind=kind)
+    return {
+        "total_entries": PipelineEntry.objects.count(),
+        "by_kind": {r["kind"]: r["n"] for r in
+                    PipelineEntry.objects.values("kind").annotate(n=Count("id"))},
+        "by_segment": {r["segment"] or "(unset)": r["n"] for r in
+                       PipelineEntry.objects.values("segment").annotate(n=Count("id"))
+                       .order_by("-n")[:15]},
+        "entries": [{
+            "kind": e.kind, "customer": e.customer_name, "rm": e.rm_name,
+            "branch": e.branch, "segment": e.segment,
+        } for e in qs[:_clamp(limit)]],
+    }
+
+
+def _design_briefs_summary(status=None, limit=MAX_ROWS):
+    qs = DesignBrief.objects.all()
+    if status:
+        qs = qs.filter(status=status)
+    return {
+        "total_briefs": DesignBrief.objects.count(),
+        "by_status": {r["status"]: r["n"] for r in
+                      DesignBrief.objects.values("status").annotate(n=Count("id"))},
+        "by_department": {r["department"] or "(unset)": r["n"] for r in
+                          DesignBrief.objects.values("department").annotate(n=Count("id"))
+                          .order_by("-n")[:15]},
+        "unassigned": DesignBrief.objects.filter(assigned_designer__isnull=True).count(),
+        "sent_back_for_rework": DesignBrief.objects.filter(rework_count__gt=0).count(),
+        "briefs": [{
+            "reference": b.reference, "item": b.design_item,
+            "type": b.item_type, "status": b.status, "priority": b.priority,
+            "department": b.department,
+            "designer": (b.assigned_designer.get_full_name()
+                         or b.assigned_designer.username)
+                        if b.assigned_designer_id else None,
+            "release_date": str(b.release_date) if b.release_date else None,
+            "reworks": b.rework_count,
+        } for b in qs.select_related("assigned_designer")
+                     .order_by("-created_at")[:_clamp(limit)]],
+    }
+
+
+def _trade_register_summary(limit=MAX_ROWS):
+    qs = TradeRegisterEntry.objects.all()
+    agg = qs.aggregate(commission=Sum("commission"), excise=Sum("excise_duty"))
+    return {
+        "total_entries": qs.count(),
+        "by_product_type": {r["product_type"] or "(unset)": r["n"] for r in
+                            qs.values("product_type").annotate(n=Count("id"))},
+        "by_action": {r["action"] or "(unset)": r["n"] for r in
+                      qs.values("action").annotate(n=Count("id"))},
+        "by_branch": {r["originating_branch"] or "(unset)": r["n"] for r in
+                      qs.values("originating_branch").annotate(n=Count("id"))
+                      .order_by("-n")[:15]},
+        # amount_fcy is in mixed currencies, so it is deliberately NOT summed:
+        # a total across currencies would be a meaningless number. Commission
+        # and excise duty are booked in KES, so those do add up.
+        "commission_total_kes": str(agg["commission"] or 0),
+        "excise_duty_total_kes": str(agg["excise"] or 0),
+        "entries": [{
+            "guarantee_ref": e.guarantee_ref, "product_type": e.product_type,
+            "action": e.action, "customer": e.our_customer,
+            "beneficiary": e.beneficiary, "currency": e.currency,
+            "amount_fcy": str(e.amount_fcy), "commission": str(e.commission),
+            "branch": e.originating_branch, "rm": e.rm_name,
+        } for e in qs.order_by("-id")[:_clamp(limit)]],
+    }
+
+
+
 # ── Tool registry ────────────────────────────────────────────────────────────
 
 _STATUS_LOAN = ["active", "closed", "default", "restructured"]
@@ -594,6 +737,80 @@ TOOL_DEFINITIONS = [
             "properties": {"limit": {"type": "integer", "description": f"Max rows (1-{MAX_ROWS})."}},
         },
     },
+    {
+        "name": "get_service_desk_summary",
+        "description": "Get the internal Service Desk (IT ticketing) overview: ticket "
+                       "counts by status and priority, how many are past their "
+                       "resolution deadline, how many are unassigned or have been "
+                       "reopened, the knowledge-base article count, and recent tickets.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string",
+                           "description": "Optional ticket status to filter the listed tickets by."},
+                "limit": {"type": "integer",
+                          "description": f"Max tickets to list (1-{MAX_ROWS})."},
+            },
+        },
+    },
+    {
+        "name": "get_referrals_summary",
+        "description": "Get the telesales Referrals pipeline: referral counts by status "
+                       "and branch, how many were contacted and converted, how many are "
+                       "still unallocated, duplicate flags, and recent referrals.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string",
+                           "description": "Optional referral status to filter the listed referrals by."},
+                "limit": {"type": "integer",
+                          "description": f"Max referrals to list (1-{MAX_ROWS})."},
+            },
+        },
+    },
+    {
+        "name": "get_commercial_pipeline",
+        "description": "Get the Commercial Pipeline: entry counts by kind and by segment, "
+                       "with the customer, RM and branch of recent entries.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string",
+                         "description": "Optional pipeline entry kind to filter by."},
+                "limit": {"type": "integer",
+                          "description": f"Max entries to list (1-{MAX_ROWS})."},
+            },
+        },
+    },
+    {
+        "name": "get_design_briefs_summary",
+        "description": "Get the Marketing Design Briefs board: brief counts by status and "
+                       "requesting department, how many are unassigned or have been sent "
+                       "back for rework, and recent briefs with their designer and "
+                       "release date.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string",
+                           "description": "Optional brief status to filter the listed briefs by."},
+                "limit": {"type": "integer",
+                          "description": f"Max briefs to list (1-{MAX_ROWS})."},
+            },
+        },
+    },
+    {
+        "name": "get_trade_register_summary",
+        "description": "Get the trade desk Register of guarantees and letters of credit: "
+                       "entry counts by product type, action and originating branch, total "
+                       "commission and excise duty in KES, and recent entries. Foreign "
+                       "currency amounts are per-entry and are not totalled, because the "
+                       "register holds several currencies.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer",
+                                     "description": f"Max entries to list (1-{MAX_ROWS})."}},
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -618,6 +835,11 @@ _DISPATCH = {
     "get_trade_finance_summary": _trade_finance_summary,
     "get_bank_deposits_movement": _bank_deposits_movement,
     "get_bank_loans_movement": _bank_loans_movement,
+    "get_service_desk_summary": _service_desk_summary,
+    "get_referrals_summary": _referrals_summary,
+    "get_commercial_pipeline": _commercial_pipeline_summary,
+    "get_design_briefs_summary": _design_briefs_summary,
+    "get_trade_register_summary": _trade_register_summary,
 }
 
 
