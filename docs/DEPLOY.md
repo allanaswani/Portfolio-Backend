@@ -532,31 +532,54 @@ mounts:   {{json .Mounts}}
 maxmem:   {{.HostConfig.Memory}}'
 ```
 
-Then on the host that needs it:
+Confirmed on the old host, 2026-10-07:
+
+```
+image:   redis:7-alpine
+cmd:     ["redis-server","--save","","--maxmemory","512mb","--maxmemory-policy","allkeys-lru"]
+net:     host
+ports:   {}            # none published - host networking, so 6379 directly
+restart: unless-stopped
+mounts:  one ANONYMOUS volume on /data, created by the image's VOLUME
+         declaration. Nothing writes to it: --save "" disables RDB snapshots
+         and appendonly defaults to no, so this Redis has no persistence and
+         the volume is an artefact, not a decision. Do not replicate it.
+maxmem:  0             # no container memory cap; Redis caps itself at 512mb
+```
+
+Then on the host that needs it — the same command plus one addition:
 
 ```bash
 grep -n '^REDIS_URL' /etc/hf/prod.env     # confirm host:port and db index first
 
-docker run -d --name hf-redis --restart unless-stopped --network=host \
-  redis:7-alpine \
-  redis-server --bind 127.0.0.1 --protected-mode yes \
-               --maxmemory 512mb --maxmemory-policy allkeys-lru \
-               --save '' --appendonly no
+docker run -d --name hf-redis --restart unless-stopped --network=host   redis:7-alpine   redis-server --save '' --maxmemory 512mb --maxmemory-policy allkeys-lru                --bind 127.0.0.1
 ```
 
-Three deliberate choices, all specific to this being a **cache** and not a
-datastore:
+`--save ''`, `--maxmemory` and `--maxmemory-policy` are the old host's values
+verbatim, and they are the right ones for a cache: no persistence, because
+nothing in it is worth surviving a restart, and an LRU ceiling, because every
+key is reconstructible and a cache without one grows until the box reclaims it.
 
-- `--bind 127.0.0.1` — `REDIS_URL` points at loopback, so nothing needs to reach
-  Redis across the network. Under `--network=host` the image's default
-  `0.0.0.0` bind would publish an unauthenticated Redis on port 6379 to the LAN,
-  where anyone could read cached payloads or issue `FLUSHALL`. Check whether the
-  old host does this; if it does, it is a finding for the same ticket as the
-  `pg_hba.conf` `trust` entries, not something to copy forward.
-- `--maxmemory` + `allkeys-lru` — a cache with no ceiling grows until the box
-  reclaims it. LRU eviction is correct here because every key is reconstructible.
-- `--save '' --appendonly no` — no persistence. There is nothing in this Redis
-  worth surviving a restart, and disk on the new host is the tighter constraint.
+`--bind 127.0.0.1` is the only addition. `REDIS_URL` is loopback, so nothing
+needs network access, and this stops the socket existing on the LAN at all.
+
+**On the old host's wider bind — do not raise this as an open-Redis finding
+without testing it.** It passes no `bind`, so it listens on `0.0.0.0:6379`, but
+Redis `protected-mode` defaults to `yes`, and with no `bind` directive and no
+`requirepass` that mode refuses every non-loopback client. So the exposure is
+very probably already closed by the default. Establish which it is before
+treating it as a vulnerability:
+
+```bash
+# from the OTHER host, i.e. not the one running this Redis
+redis-cli -h 128.2.1.25 -p 6379 ping
+```
+
+`DENIED Redis is running in protected mode` is the safe answer and needs no
+action. A `PONG` means an unauthenticated Redis really is reachable across the
+LAN, and that belongs on the same ticket as the `pg_hba.conf` `trust` entries.
+Either way `--bind 127.0.0.1` on new hosts costs nothing and does not rely on a
+default staying put.
 
 **No backend restart is needed** when Redis comes up: `django_redis` reconnects
 on the next cache call. A restart *is* needed if you take the other route and
