@@ -120,6 +120,12 @@ urlpatterns = [
     path("branch-department-costs/<int:pk>/",   lv.BranchDepartmentCostDetailView.as_view()),
     path("branch-department-costs/",            lv.BranchDepartmentCostListCreateView.as_view()),
 
+    # Operating expense mapping (Finance capture - which expense line each GL
+    # account rolls up to; the warehouse carries no such classification)
+    path("operating-expense-mappings/upload-csv/", lv.OperatingExpenseMappingCsvUploadView.as_view()),
+    path("operating-expense-mappings/<int:pk>/",   lv.OperatingExpenseMappingDetailView.as_view()),
+    path("operating-expense-mappings/",            lv.OperatingExpenseMappingListCreateView.as_view()),
+
     # Drawdowns (managed Drawdown + warehouse DrawdownDaily read-only)
     path("drawdowns/upload-csv/",   lv.DrawdownCsvUploadView.as_view()),
     path("drawdowns/<int:pk>/",     lv.DrawdownDetailView.as_view()),

@@ -14,6 +14,7 @@ from .models import (
     # Managed mirror tables for manual uploads of warehouse datasets
     DailySalesAccountsWithCtoUpload, DailyDormancyConvertedAccountUpload,
     MerchantBankTillManualUpload, BranchDepartmentCost,
+    OperatingExpenseMapping,
 )
 from apps.portfolio.models import RetailAllocatedPortfolioUpload
 
@@ -329,4 +330,50 @@ class BranchDepartmentCostSerializer(serializers.ModelSerializer):
         cleaned = " ".join(str(value or "").split())
         if not cleaned:
             raise serializers.ValidationError("department is required")
+        return cleaned
+
+
+# -- Operating expense mapping (Finance's GL -> expense line spreadsheet) ------
+
+class OperatingExpenseMappingSerializer(serializers.ModelSerializer):
+    """One general-ledger account and the expense line it rolls up to.
+
+    ``gl`` is unique on the model, which DRF turns into a UniqueValidator that
+    would 400 a re-submitted account before the view got the chance to UPDATE
+    it. Correcting a GL's classification has to be allowed -- that is the whole
+    point of the screen -- so the validator is dropped and the view upserts on
+    ``gl`` instead. The database's unique index still guarantees one row per GL.
+    """
+
+    class Meta:
+        model = OperatingExpenseMapping
+        fields = "__all__"
+        read_only_fields = ("updated_at", "updated_by")
+        extra_kwargs = {"gl": {"validators": []}}
+
+    def validate_gl(self, value):
+        """Normalise the account code: no spaces, and no Excel float tail.
+
+        A GL pasted from a spreadsheet arrives as "170150001", " 170150001 " or
+        -- when the cell was numeric and the sheet was saved as CSV --
+        "170150001.0". All three are the same account, and storing them as
+        three rows would split one expense line into three.
+        """
+        cleaned = "".join(str(value or "").split())
+        if cleaned.endswith(".0") and cleaned[:-2].isdigit():
+            cleaned = cleaned[:-2]
+        if not cleaned:
+            raise serializers.ValidationError("gl is required")
+        return cleaned
+
+    def validate_expense_type(self, value):
+        cleaned = " ".join(str(value or "").split())
+        if not cleaned:
+            raise serializers.ValidationError("expense_type is required")
+        return cleaned
+
+    def validate_operating_expense(self, value):
+        cleaned = " ".join(str(value or "").split())
+        if not cleaned:
+            raise serializers.ValidationError("operating_expense is required")
         return cleaned

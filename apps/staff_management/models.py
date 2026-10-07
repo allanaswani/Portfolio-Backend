@@ -1174,3 +1174,67 @@ from apps.staff_management.scorecard_automation.models import (  # noqa: E402,F4
     ScKpi, ScRole, ScRoleKpiMapping, ScEmployeePerformanceActual,
     ScEmployeeMonthlyPerformance,
 )
+
+
+class OperatingExpenseMapping(models.Model):
+    """Which expense line a general-ledger account belongs to.
+
+    Finance has kept this as a spreadsheet (``Operating_expenses_mapping.xlsx``):
+    249 GL accounts, each tagged with the expense type it rolls up to, the name
+    of the operating-expense line, and whether the spend is **Controllable** or
+    **Installed** (a fixed, already-committed outflow). Nothing in the warehouse
+    carries that classification — the GL postings have account codes and the
+    expense slides have category names, and this sheet is the only thing that
+    joins the two.
+
+    Captured here for the same reason as :class:`BranchDepartmentCost`: it is a
+    mapping only Finance can supply, and while it lives in one person's Downloads
+    folder no report can use it. The sheet's own columns are kept verbatim so a
+    re-export can be uploaded without renaming anything.
+
+    ``gl`` is stored as text, not a number. It is an identifier that is never
+    arithmetic, and a GL beginning with 0 must survive a round trip through
+    Excel and CSV; the uniqueness is on ``gl`` rather than the primary key so a
+    mistyped account can be corrected in place rather than deleted and re-added.
+
+    ``outflow_type`` is intentionally NOT a choices field. The observed values
+    are "Controllable", "Installed" and blank, but Finance owns that vocabulary
+    and a new word in next year's sheet must upload rather than fail validation.
+    """
+
+    gl = models.CharField(
+        max_length=32, unique=True, db_index=True, verbose_name="GL",
+        help_text="General ledger account code, e.g. 170150001.",
+    )
+    expense_type = models.CharField(
+        max_length=120, db_index=True, verbose_name="Expense type",
+        help_text='Roll-up line, e.g. "Staff costs", "ICT Expense".',
+    )
+    operating_expense = models.CharField(
+        max_length=160, verbose_name="Operating expense",
+        help_text='The expense line as Finance names it, e.g. "Software".',
+    )
+    outflow_type = models.CharField(
+        max_length=40, blank=True, default="", db_index=True,
+        verbose_name="Outflow type",
+        help_text='Observed values: "Controllable", "Installed", or blank.',
+    )
+    actual_gl_name = models.CharField(
+        max_length=160, blank=True, default="", verbose_name="Actual GL name",
+        help_text="The GL's own name, where it differs from the expense line.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    # Re-tagging one GL silently moves money between expense lines in every
+    # report that reads this table, so each change keeps its before-image.
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "operating_expense_mapping"
+        ordering = ["gl"]
+        verbose_name = "Operating expense mapping"
+        verbose_name_plural = "Operating expense mappings"
+
+    def __str__(self):
+        return f"{self.gl} · {self.expense_type}"

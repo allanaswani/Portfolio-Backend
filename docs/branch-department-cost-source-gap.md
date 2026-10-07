@@ -44,7 +44,83 @@ Endpoints (`/staff_management/`):
 * `branch-department-costs/upload-csv/` — bulk load, same upsert key
 
 CSV columns: `branch,department,year,month,amount,staff_cost,other_cost,notes`
-(the last three optional). The UI is **Administration → Branch Dept. Costs**.
+(the last three optional). The UI is **Administration → Costs & Expense
+Mapping**, first tab.
+
+## The companion table: which expense line a GL account belongs to
+
+`staff_management.OperatingExpenseMapping` (table `operating_expense_mapping`,
+migrations `0022` and `0023`) is the second tab on the same screen, and it
+answers the other half of the question. `BranchDepartmentCost` says how much a
+department spent; this says **which expense line a general-ledger account rolls
+up to**.
+
+It came from Finance's `Operating_expenses_mapping.xlsx`: 249 GL accounts, each
+tagged with an expense type (24 of them — "Staff costs", "ICT Expense",
+"Motor vehicle maintenance", …), the operating-expense line Finance names it
+by, and an outflow type.
+
+| column | meaning |
+| --- | --- |
+| `gl` | the account code, unique, stored as **text** — it is an identifier, never arithmetic |
+| `expense_type` | the roll-up line, e.g. `Staff costs` |
+| `operating_expense` | the expense line as Finance names it, e.g. `Software` |
+| `outflow_type` | `Controllable` (146), `Installed` (71, an already-committed fixed outflow) or blank (32) |
+| `actual_gl_name` | the GL's own name where it differs from the expense line (blank for 22) |
+
+Same reasoning as the cost table: **nothing in the warehouse carries this
+classification.** GL postings have account codes, the expense slides have
+category names, and this sheet was the only thing joining the two — while it
+lived in one person's Downloads folder, no report could use it.
+
+Endpoints (`/staff_management/`):
+
+* `operating-expense-mappings/` — list + upsert-on-POST (key: `gl`)
+* `operating-expense-mappings/<pk>/` — retrieve / update / delete
+* `operating-expense-mappings/upload-csv/` — bulk load, **takes the .xlsx**
+
+Required columns: `gl,expense_type,operating_expense`. `outflow_type` and
+`actual_gl_name` are optional because they are blank for some accounts in
+Finance's own sheet.
+
+Three decisions worth knowing:
+
+* **`gl` is unique but is not the primary key.** A mistyped account has to be
+  correctable in place; if `gl` were the key, an edit would mean delete and
+  re-add, losing the row's history.
+* **A re-upload is a correction, not a replacement.** Accounts the new sheet
+  does not mention are **left alone**. Treating an absent row as a deletion
+  would let somebody's filtered export silently empty the mapping.
+* **`outflow_type` is not a choices field.** Finance owns that vocabulary, and
+  a new word in next year's sheet has to upload rather than fail validation.
+  The form offers the two observed values as suggestions, not as a constraint.
+
+Each edit keeps its before-image (`simple_history`), because re-tagging one GL
+moves money between expense lines in every report that reads the table.
+
+### Excel uploads, not just CSV
+
+`core/csv_upload.py` now accepts `.xlsx` / `.xlsm` as well as `.csv`, for
+**every** uploader built on `AmendingCsvUploadView`. The upload modal had always
+advertised `.csv, .xlsx, .xls` and sent whatever was picked, while the backend
+answered `File must be a CSV` — so an Excel upload failed at the last step,
+after the on-screen validation had passed it.
+
+Three things the workbook reader has to get right, all of which have their own
+test:
+
+* a 9-digit GL stored as a number comes back as `170150001.0`, which would be a
+  different account from `170150001`; the float tail is dropped;
+* a date cell comes back as `datetime(2026, 10, 7, 0, 0)`, whose `str()` is
+  `"2026-10-07 00:00:00"` — a format no parser in `parse_date` matches, so
+  midnight datetimes are rendered as plain ISO dates;
+* a worksheet's reported extent runs past its last record (deleting rows in
+  Excel leaves the dimension behind), so entirely blank rows are dropped
+  instead of arriving as a few hundred blank failures in the results ZIP.
+
+The legacy binary `.xls` is **not** readable by openpyxl, so it is named in the
+error (`open it and Save As .xlsx`) rather than accepted and then failing deep
+in the parser.
 
 ## What a branch manager sees before Finance loads a month
 

@@ -26,7 +26,7 @@ import csv
 import io
 import re
 import zipfile
-from datetime import datetime
+from datetime import date, datetime, time
 
 import chardet
 from django.http import HttpResponse
@@ -52,6 +52,62 @@ def decode_csv_bytes(raw_data):
     if not detected or detected.lower() == "ascii":
         detected = "cp1252"
     return raw_data.decode(detected, errors="replace")
+
+
+def _xlsx_cell(value):
+    """Render one worksheet cell the way the CSV reader would have.
+
+    openpyxl returns typed values, the serializers all expect strings, and the
+    two disagree in ways that matter:
+
+    * a numeric code comes back as ``170150001`` (int) or ``170150001.0``
+      (float) depending on how the cell was formatted; the float tail would
+      make the same account a different key, so it is dropped.
+    * a date comes back as ``datetime(2026, 10, 7, 0, 0)``, whose ``str()`` is
+      ``"2026-10-07 00:00:00"`` -- which no date format in ``parse_date``
+      matches. ISO without the time does match, so dates are rendered that way.
+    * an empty cell is ``None``, which must read as "" and not the text "None".
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, datetime):
+        return value.date().isoformat() if value.time() == time(0, 0) else value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
+
+
+def read_workbook_rows(file_obj):
+    """Return ``(header_list, [row_list, ...])`` from an .xlsx / .xlsm upload.
+
+    The first row that has any non-empty cell is the header; leading blank rows
+    (common in an export that carries a title line) are skipped rather than
+    read as column names. Only the first worksheet is read -- these uploads are
+    single-table exports, and silently concatenating a second tab would merge
+    two different datasets.
+
+    Entirely empty rows are dropped. A worksheet's reported extent usually runs
+    past its last record (deleting rows in Excel leaves the dimension behind),
+    and those rows would otherwise arrive as a few hundred blank records in
+    ``failed_records.csv``. Every row is padded to the header's width, so a
+    short last row behaves like a CSV one rather than losing its keys.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = [[_xlsx_cell(c) for c in row] for row in ws.iter_rows(values_only=True)]
+    for index, row in enumerate(rows):
+        if any(cell != "" for cell in row):
+            width = len(row)
+            data = [r for r in rows[index + 1:] if any(cell != "" for cell in r)]
+            return row, [(r + [""] * width)[:width] for r in data]
+    return [], []
 
 
 class AmendingCsvUploadView(APIView):
@@ -167,14 +223,31 @@ class AmendingCsvUploadView(APIView):
         file_obj = request.FILES.get("file")
         if not file_obj:
             return Response({"error": "No file uploaded"}, status=status.HTTP_400_BAD_REQUEST)
-        if not file_obj.name.endswith(".csv"):
-            return Response({"error": "File must be a CSV"}, status=status.HTTP_400_BAD_REQUEST)
+        name = (file_obj.name or "").lower()
+        # .xlsx is accepted as well as .csv. The upload modal had always
+        # advertised Excel ("accept=.csv,.xlsx,.xls") and sent whatever was
+        # picked, while this gate answered "File must be a CSV" -- so an Excel
+        # upload failed at the last step, after the on-screen validation had
+        # passed it. The legacy .xls binary format is NOT readable by openpyxl,
+        # so it is named in the error rather than accepted and then failing
+        # deep in the parser; the modal no longer offers it either.
+        if not name.endswith((".csv", ".xlsx", ".xlsm")):
+            return Response(
+                {"error": "File must be a .csv or .xlsx. Excel's older .xls "
+                          "format cannot be read - open it and Save As .xlsx."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
-            raw_data = file_obj.read()
-            decoded_file = decode_csv_bytes(raw_data).splitlines()
-            reader = csv.DictReader(decoded_file)
-            raw_fieldnames = reader.fieldnames or []
+            if name.endswith((".xlsx", ".xlsm")):
+                header, data_rows = read_workbook_rows(file_obj)
+                raw_fieldnames = list(header)
+                reader = [dict(zip(raw_fieldnames, row)) for row in data_rows]
+            else:
+                raw_data = file_obj.read()
+                decoded_file = decode_csv_bytes(raw_data).splitlines()
+                reader = csv.DictReader(decoded_file)
+                raw_fieldnames = reader.fieldnames or []
 
             # Match headers tolerantly — a stray space, different case or a BOM
             # shouldn't make a column that IS present read as "missing".
@@ -184,7 +257,7 @@ class AmendingCsvUploadView(APIView):
             missing = [c for c in self.required_columns() if c not in fieldnames]
             if missing:
                 return Response(
-                    {"error": (f"The following columns are missing in the CSV: {missing}. "
+                    {"error": (f"The following columns are missing in the file: {missing}. "
                                f"Columns found: {raw_fieldnames}")},
                     status=status.HTTP_400_BAD_REQUEST,
                 )

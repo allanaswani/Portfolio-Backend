@@ -32,7 +32,7 @@ from .models import (
     DailyDormancyConvertedAccount, MerchantBankTillManualData, IapplyLoanApproval,
     Product, StaffEmployeeData, LeaveRecord, EmployeeRoleHistory, RmKPIBaseSummary,
     MissingEmployeeActual, TelesalesStaff, TelesalesDormantTillsAllocation,
-    BranchDepartmentCost, PremiumTypeMapping,
+    BranchDepartmentCost, PremiumTypeMapping, OperatingExpenseMapping,
 )
 from apps.portfolio.models import RetailAllocatedPortfolio
 from .serializers import (
@@ -45,6 +45,7 @@ from .serializers import (
     EmployeeRoleHistorySerializer, RmKPIBaseSummarySerializer,
     MissingEmployeeActualSerializer, TelesalesStaffSerializer,
     TelesalesDormantTillsAllocationSerializer, BranchDepartmentCostSerializer,
+    OperatingExpenseMappingSerializer,
     PremiumTypeMappingSerializer,
 )
 
@@ -979,6 +980,82 @@ class BranchDepartmentCostCsvUploadView(AmendingCsvUploadView):
         BranchDepartmentCost.objects.update_or_create(
             branch=data["branch"], department=data["department"],
             year=data["year"], month=data["month"],
+            defaults={**data, "updated_by": self.request.user.get_username()},
+        )
+        return None
+
+
+# -- Operating expense mapping (Finance's GL -> expense line spreadsheet) ------
+# The companion of BranchDepartmentCost on the same screen: that table says how
+# much a department spent, this one says which expense line a GL account belongs
+# to. It has lived in Finance's "Operating_expenses_mapping.xlsx" and nothing in
+# the warehouse carries the classification, so these endpoints are the capture
+# point. See apps/staff_management/models.py::OperatingExpenseMapping.
+
+
+@extend_schema(tags=TAG)
+class OperatingExpenseMappingListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = OperatingExpenseMappingSerializer
+    pagination_class = StandardPagination
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ["gl", "expense_type", "outflow_type"]
+    search_fields = ["gl", "expense_type", "operating_expense", "actual_gl_name"]
+    queryset = OperatingExpenseMapping.objects.all()
+
+    def perform_create(self, serializer):
+        data = serializer.validated_data
+        # Upsert on gl: re-sending an account re-tags it rather than stacking a
+        # second row, which would put the same money on two expense lines.
+        obj, _ = OperatingExpenseMapping.objects.update_or_create(
+            gl=data["gl"],
+            defaults={**data, "updated_by": self.request.user.get_username()},
+        )
+        serializer.instance = obj
+
+
+@extend_schema(tags=TAG)
+class OperatingExpenseMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = OperatingExpenseMappingSerializer
+    queryset = OperatingExpenseMapping.objects.all()
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user.get_username())
+
+
+@extend_schema(tags=TAG)
+class OperatingExpenseMappingCsvUploadView(AmendingCsvUploadView):
+    """CSV or XLSX: gl, expense_type, operating_expense[, outflow_type, actual_gl_name].
+
+    Upserts on ``gl``, so Finance can re-upload the whole spreadsheet after
+    editing it and every account is re-tagged in place. Accounts the new sheet
+    no longer mentions are LEFT ALONE rather than deleted -- a re-upload is a
+    correction, and treating an absent row as a deletion would let a filtered
+    export silently empty the mapping.
+    """
+
+    model = OperatingExpenseMapping
+    serializer_class = OperatingExpenseMappingSerializer
+    result_filename = "operating_expense_mapping_upload_results"
+    excluded_columns = ("id", "updated_at", "updated_by")
+
+    def required_columns(self):
+        # outflow_type is blank for 32 of the 249 accounts in Finance's own
+        # sheet and actual_gl_name for 22, so neither is demanded of the file.
+        return ["gl", "expense_type", "operating_expense"]
+
+    def amend_row(self, row):
+        # Blank optional columns are stored as "" (the model's default), never
+        # as the text "None"; the serializer rejects null for a non-null field.
+        for field in ("outflow_type", "actual_gl_name"):
+            row[field] = str(row.get(field) or "").strip()
+        return row
+
+    def save_valid(self, row, serializer):
+        data = serializer.validated_data
+        OperatingExpenseMapping.objects.update_or_create(
+            gl=data["gl"],
             defaults={**data, "updated_by": self.request.user.get_username()},
         )
         return None
