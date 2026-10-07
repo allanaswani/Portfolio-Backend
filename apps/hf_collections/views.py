@@ -139,11 +139,39 @@ class TotalBookMonthByMonthView(APIView):
 
 @extend_schema(tags=["Collections — Dashboard"])
 class CustomerCollectionDataCurrentBookView(APIView):
-    """Per-customer current book collection data (all rows, as the old backend)."""
+    """Per-customer current book. Agent -> own book; TL/Exco -> whole book.
+
+    This was the one view in this module that ignored the user entirely and
+    returned every customer in the book to anyone logged in, while its five
+    siblings all scoped on ``_is_team_level``. The scoped query it needed was
+    already written - ``customer_collection_data_current_book_data_not_rm`` in
+    ``collections_core`` - and was called from nowhere. Both queries return
+    identical keys, so this is a straight swap.
+
+    Pagination is opt-in: pass ``?page=`` and the response is a paginated
+    envelope, otherwise it stays the bare list the frontend already parses.
+    Changing the shape unconditionally would break every existing caller, and a
+    page cap applied silently would make any client-side total under-count -
+    which is the trap this codebase has hit before.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(cc.customer_collection_data_current_book_data())
+        if _is_team_level(request, self):
+            rows = _cached("collections:custbook:all",
+                           cc.customer_collection_data_current_book_data)
+        else:
+            code = _get_profile(request.user).sales_code or ""
+            rows = _cached(
+                f"collections:custbook:{code}",
+                lambda: cc.customer_collection_data_current_book_data_not_rm(code),
+            )
+
+        if "page" in request.query_params:
+            paginator = StandardPagination()
+            page = paginator.paginate_queryset(rows, request, view=self)
+            return paginator.get_paginated_response(page)
+        return Response(rows)
 
 
 @extend_schema(tags=["Collections — Dashboard"])
