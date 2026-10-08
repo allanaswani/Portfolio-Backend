@@ -850,12 +850,37 @@ _DISPATCH = {
 # and fail — and nothing leaves the bank until somebody deliberately turns it
 # on. See apps/agent/web_lookup.py for the guard on what may be sent.
 
-def tool_definitions():
-    """The tools to offer the model for this deployment.
+def _may_see_design_briefs(user):
+    """The design board's own door, asked exactly as its API asks it."""
+    from apps.design_briefs import rbac as design_rbac
+
+    return design_rbac.can_use_module(user)
+
+
+#: Tools that read a module not everybody is on. The value is a predicate on
+#: the signed-in user, and it is the SAME predicate the module's own API uses,
+#: so the assistant can never become a second way in to something the screen
+#: refuses. A tool listed here is not offered to a user who fails its check,
+#: and is refused even if the model names it anyway.
+#:
+#: Most tools are deliberately absent: they are bank-wide by design, or scoped
+#: to the caller inside their own queryset. Only a module with its own door
+#: belongs here.
+_MODULE_GATED = {
+    "get_design_briefs_summary": _may_see_design_briefs,
+}
+
+
+def tool_definitions(user=None):
+    """The tools to offer the model for this deployment, for this person.
 
     A function rather than a constant because whether the external lookups
     exist is decided by configuration, and a module-level list would freeze
     that at import time.
+
+    ``user`` filters out the module-gated tools the caller may not use. It
+    defaults to ``None``, which withholds them: a caller that forgot to pass
+    the user offers less than it could, never more than it should.
     """
     from . import bank_tools, rm_tools, trino_tools, web_lookup
 
@@ -872,7 +897,8 @@ def tool_definitions():
         tools = tools + trino_tools.TOOL_DEFINITIONS
     if web_lookup.enabled():
         tools = tools + web_lookup.TOOL_DEFINITIONS
-    return tools
+    return [t for t in tools
+            if t["name"] not in _MODULE_GATED or _MODULE_GATED[t["name"]](user)]
 
 
 def run_tool(name, tool_input, user=None):
@@ -883,6 +909,14 @@ def run_tool(name, tool_input, user=None):
     accidentally widen its own scope by ignoring the argument.
     """
     from . import bank_tools, rm_tools, trino_tools, web_lookup
+
+    # A module with its own door is refused here as well as being withheld
+    # from tool_definitions. Withholding alone is a prompt-level control, and
+    # the model can still name a tool it was not offered.
+    gate = _MODULE_GATED.get(name)
+    if gate is not None and not gate(user):
+        return json.dumps(
+            {"error": f"'{name}' reads a module you are not a member of."})
 
     # Everything scoped to the person asking goes through one path, so a new
     # scoped tool cannot be added without receiving the user.

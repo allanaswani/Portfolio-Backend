@@ -50,7 +50,27 @@ class BriefPagination(PageNumberPagination):
     max_page_size = 500
 
 
-class IsMarketingAdmin(IsAuthenticated):
+class CanUseDesignBoard(IsAuthenticated):
+    """The door to the module, checked by every view in this file.
+
+    Marketing decides who is on the board by assigning ``marketing_admin`` or
+    ``marketing_designer``; a signed-in user in neither group gets a 403 here
+    rather than an empty board, so "I cannot see it" and "there is nothing to
+    see" are never the same screen.
+
+    ``rbac.OPEN_TO_EVERYONE`` is the one switch that reopens the module to the
+    whole bank. It is false; flipping it there changes every view at once,
+    which is why the check lives in rbac and not in each view.
+    """
+
+    message = ("The design board is open to the Marketing design team. Ask "
+               "Marketing to add you if you need to raise artwork requests.")
+
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and rbac.can_use_module(request.user)
+
+
+class IsMarketingAdmin(CanUseDesignBoard):
     message = "Only the marketing department admin can do this."
 
     def has_permission(self, request, view):
@@ -194,11 +214,12 @@ def _get_or_none(request, reference):
 class BriefListCreateView(generics.ListCreateAPIView):
     """The queue, and raising a new brief.
 
-    Anyone signed in may raise one. See ``rbac`` for why that is deliberately
-    everybody.
+    Anyone on the board may raise one — which is whoever Marketing has put in
+    ``marketing_admin`` or ``marketing_designer``. See ``rbac`` for the switch
+    that would reopen it to the whole bank.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
     pagination_class = BriefPagination
 
     def get_serializer_class(self):
@@ -235,7 +256,7 @@ class BriefListCreateView(generics.ListCreateAPIView):
 class BriefDetailView(APIView):
     """One brief, by reference — which is what people paste at each other."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request, reference):
         brief = _get_or_none(request, reference)
@@ -273,7 +294,7 @@ class _TransitionView(APIView):
     always comes back with the same shape and a readable message.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
     serializer_class = None
 
     def check(self, user, brief):  # pragma: no cover - overridden
@@ -429,7 +450,7 @@ class DesignerListView(APIView):
     board as a designer.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request):
         group = Group.objects.filter(name=rbac.DESIGNER_GROUP).first()
@@ -449,7 +470,7 @@ class DepartmentListView(APIView):
     field is free text anyway.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request):
         names = set()
@@ -477,7 +498,7 @@ class MetaView(APIView):
     Hard-coding these in the frontend is how a status ends up spelled two ways.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request):
         return Response({
@@ -510,7 +531,7 @@ class BoardView(APIView):
     is.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request):
         # The wall display paginates across slides rather than clipping, so it
@@ -632,7 +653,7 @@ class MyPipelineView(APIView):
     is the department's, this is yours.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request):
         user = request.user
@@ -717,7 +738,7 @@ class SummaryView(APIView):
 class BriefTimelineView(generics.ListAPIView):
     """A brief's steps on their own, for anything that wants just the history."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
     serializer_class = BriefEventSerializer
 
     def get_queryset(self):
@@ -739,7 +760,7 @@ class BriefProofView(APIView):
     unseen for three days.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request, reference):
@@ -798,7 +819,7 @@ class _ProofImageView(APIView):
     guessing ids.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
     field = "thumbnail"
 
     def get(self, request, pk):
@@ -837,7 +858,7 @@ class BriefCommentView(APIView):
     conversation back into WhatsApp, which is the thing the board is replacing.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request, reference):
         brief = _get_or_none(request, reference)
@@ -882,7 +903,7 @@ class CommentResolveView(APIView):
     of open marks is the thing a designer works down.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def post(self, request, reference, pk):
         brief = _get_or_none(request, reference)
@@ -908,7 +929,7 @@ class BriefDeliverableView(APIView):
     does not silently un-tick finished work.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request, reference):
         brief = _get_or_none(request, reference)
@@ -942,7 +963,7 @@ class BriefDeliverableView(APIView):
 class DeliverableTickView(APIView):
     """Tick or un-tick one item. The designer's day-to-day action."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def post(self, request, reference, pk):
         brief = _get_or_none(request, reference)
@@ -972,7 +993,7 @@ class CalendarView(APIView):
     reads as what happened, not only as what is left.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseDesignBoard]
 
     def get(self, request):
         today = timezone.localdate()

@@ -164,7 +164,9 @@ class AgentChatView(APIView):
                 # Adaptive thinking; effort defaults to "high" (the quality setting).
                 thinking={"type": "adaptive"},
                 system=system,
-                tools=tool_definitions(),
+                # Per-person: a module-gated tool is not offered to somebody
+                # who is not on that module. See agent_tools._MODULE_GATED.
+                tools=tool_definitions(user),
                 messages=working,
             )
             if response.stop_reason != "tool_use":

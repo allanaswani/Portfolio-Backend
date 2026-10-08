@@ -20,6 +20,18 @@ from django.test import TestCase
 from apps.agent.agent_tools import run_tool, tool_definitions
 from apps.referrals.models import Referral
 
+
+def board_user(username="agent_tools_root"):
+    """Somebody who may see every module these tools read.
+
+    Four of the five tools are bank-wide and ignore the user entirely. Design
+    Briefs is gated on Marketing's two groups, so these tests - which are about
+    whether the QUERIES are valid, not about who may run them - pass a user who
+    is through that door. Who gets through it is tested in GatedToolTests.
+    """
+    return User.objects.create_user(
+        username=username, password="x", is_superuser=True, is_staff=True)
+
 NEW_TOOLS = {
     "get_service_desk_summary": [
         "total_tickets", "by_status", "by_priority",
@@ -44,20 +56,24 @@ NEW_TOOLS = {
 
 
 class ToolsAreOfferedTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = board_user()
+
     def test_all_five_are_offered_to_the_model(self):
-        names = [d["name"] for d in tool_definitions()]
+        names = [d["name"] for d in tool_definitions(self.user)]
         for name in NEW_TOOLS:
             with self.subTest(tool=name):
                 self.assertIn(name, names)
 
     def test_every_offered_tool_has_a_description_and_schema(self):
-        for d in tool_definitions():
+        for d in tool_definitions(self.user):
             with self.subTest(tool=d["name"]):
                 self.assertTrue(d.get("description"), "no description")
                 self.assertEqual(d["input_schema"]["type"], "object")
 
     def test_no_duplicate_tool_names(self):
-        names = [d["name"] for d in tool_definitions()]
+        names = [d["name"] for d in tool_definitions(self.user)]
         self.assertEqual(len(names), len(set(names)), f"duplicates in {names}")
 
 
@@ -69,10 +85,14 @@ class QueriesAreValidAgainstTheSchemaTests(TestCase):
     "nothing to report" to the model, and therefore to the reader.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = board_user()
+
     def test_each_tool_succeeds_on_an_empty_database(self):
         for name, keys in NEW_TOOLS.items():
             with self.subTest(tool=name):
-                out = json.loads(run_tool(name, {}))
+                out = json.loads(run_tool(name, {}, user=self.user))
                 self.assertNotIn(
                     "error", out,
                     msg=f"{name} failed instead of reporting an empty table: "
@@ -89,7 +109,7 @@ class QueriesAreValidAgainstTheSchemaTests(TestCase):
     def test_the_limit_argument_is_accepted_and_clamped(self):
         for name in NEW_TOOLS:
             with self.subTest(tool=name):
-                out = json.loads(run_tool(name, {"limit": 10_000}))
+                out = json.loads(run_tool(name, {"limit": 10_000}, user=self.user))
                 self.assertNotIn("error", out)
 
 
@@ -156,3 +176,59 @@ class ReferralsToolCountsTests(TestCase):
         out = json.loads(run_tool("get_referrals_summary", {"status": "nonsense"}))
         self.assertNotIn("error", out)
         self.assertEqual(out["referrals"], [])
+
+
+class GatedToolTests(TestCase):
+    """The assistant must not be a second way into a module with a door.
+
+    Design Briefs is Marketing's, gated on ``marketing_admin`` /
+    ``marketing_designer``. Without this, somebody the board refuses could ask
+    the assistant "give me the design briefs overview" and read every
+    department's briefs, designers and release dates anyway - the module page
+    would say no and the chat box would say yes.
+
+    The other four tools are bank-wide by design and deliberately stay open.
+    """
+
+    GATED = "get_design_briefs_summary"
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth.models import Group
+        from apps.design_briefs import rbac
+
+        cls.nobody = User.objects.create_user(username="agent_nobody", password="x")
+        cls.designer = User.objects.create_user(username="agent_designer", password="x")
+        cls.designer.groups.add(
+            Group.objects.get_or_create(name=rbac.DESIGNER_GROUP)[0])
+        cls.root = board_user("agent_gate_root")
+
+    def test_it_is_not_offered_to_somebody_who_is_not_on_the_board(self):
+        self.assertNotIn(self.GATED,
+                         [d["name"] for d in tool_definitions(self.nobody)])
+
+    def test_it_is_refused_even_if_the_model_names_it_anyway(self):
+        """Withholding the definition is a prompt-level control on its own."""
+        out = json.loads(run_tool(self.GATED, {}, user=self.nobody))
+        self.assertIn("error", out)
+        self.assertNotIn("total_briefs", out)
+
+    def test_a_caller_that_forgets_the_user_gets_nothing_rather_than_everything(self):
+        self.assertNotIn(self.GATED, [d["name"] for d in tool_definitions()])
+        self.assertIn("error", json.loads(run_tool(self.GATED, {})))
+
+    def test_a_designer_is_offered_it_and_may_run_it(self):
+        self.assertIn(self.GATED,
+                      [d["name"] for d in tool_definitions(self.designer)])
+        self.assertNotIn("error", json.loads(run_tool(self.GATED, {}, user=self.designer)))
+
+    def test_a_superuser_may_run_it(self):
+        self.assertNotIn("error", json.loads(run_tool(self.GATED, {}, user=self.root)))
+
+    def test_the_other_four_stay_open_to_everybody(self):
+        for name in NEW_TOOLS:
+            if name == self.GATED:
+                continue
+            with self.subTest(tool=name):
+                self.assertIn(name, [d["name"] for d in tool_definitions(self.nobody)])
+                self.assertNotIn("error", json.loads(run_tool(name, {}, user=self.nobody)))

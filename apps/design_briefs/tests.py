@@ -35,7 +35,24 @@ def user(username, group=None, email=None, superuser=False):
 
 
 class BoardTestCase(APITestCase):
+    """The per-brief rules, exercised with the module open to everyone.
+
+    These tests are about what a requester, a colleague and a designer may do
+    with a brief **once they are through the door** — the admin allocates, a
+    designer never approves their own work, an unrelated person gets a 404.
+    Who gets through the door at all is a separate rule with its own class
+    below, and ``rbac.OPEN_TO_EVERYONE`` ships ``False``.
+
+    It is turned on here so each test still exercises the rule it is named
+    after instead of every one of them failing identically at the gate, and so
+    that these rules stay covered if Marketing later reopens the module.
+    """
+
     def setUp(self):
+        patcher = mock.patch.object(rbac, "OPEN_TO_EVERYONE", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         self.admin = user("dept_admin", rbac.ADMIN_GROUP)
         self.designer = user("grace_designer", rbac.DESIGNER_GROUP)
         self.other_designer = user("ken_designer", rbac.DESIGNER_GROUP)
@@ -1169,3 +1186,93 @@ class MarkupTests(BoardTestCase):
         note = brief.events.filter(kind=BriefEvent.KIND_COMMENT).last().note
         self.assertIn("marked up", note)
         self.assertIn("v1", note)
+
+
+class ModuleGateTests(APITestCase):
+    """Who reaches the design board at all — with the switch as it ships.
+
+    Marketing said it would create the users and assign the module itself, so
+    the module is theirs to hand out: membership of ``marketing_admin`` or
+    ``marketing_designer`` is the whole of the answer, and a signed-in
+    colleague in neither group is refused rather than shown an empty board.
+
+    Deliberately NOT inheriting BoardTestCase — that class opens the module to
+    everyone so the workflow rules can be tested, which is the opposite of
+    what is being checked here.
+    """
+
+    def setUp(self):
+        self.admin = user("gate_admin", rbac.ADMIN_GROUP)
+        self.designer = user("gate_designer", rbac.DESIGNER_GROUP)
+        self.nobody = user("gate_nobody")
+        self.root = user("gate_root", superuser=True)
+
+    def test_the_switch_ships_closed(self):
+        """If this fails the module was reopened to the whole bank; that is
+        Marketing's call to make deliberately, not something to drift into."""
+        self.assertFalse(rbac.OPEN_TO_EVERYONE)
+
+    def test_a_signed_in_colleague_in_neither_group_is_refused(self):
+        self.client.force_authenticate(self.nobody)
+        self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 403)
+
+    def test_they_are_refused_the_board_too_not_just_the_list(self):
+        """An empty board and a closed door must not look the same."""
+        self.client.force_authenticate(self.nobody)
+        self.assertEqual(self.client.get(f"{BASE}board/").status_code, 403)
+
+    def test_they_cannot_raise_one_either(self):
+        self.client.force_authenticate(self.nobody)
+        r = self.client.post(f"{BASE}briefs/", {
+            "design_item": "Branch opening banner",
+            "department": "Branch Network",
+            "addressed_to": "Nakuru branch",
+        }, format="json")
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(DesignBrief.objects.count(), 0)
+
+    def test_the_refusal_says_who_to_ask(self):
+        self.client.force_authenticate(self.nobody)
+        self.assertIn("Marketing", str(self.client.get(f"{BASE}briefs/").data["detail"]))
+
+    def test_a_designer_gets_in(self):
+        self.client.force_authenticate(self.designer)
+        self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 200)
+
+    def test_the_admin_gets_in(self):
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 200)
+
+    def test_a_superuser_gets_in(self):
+        self.client.force_authenticate(self.root)
+        self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 200)
+
+    def test_anonymous_is_still_401_not_403(self):
+        self.assertIn(self.client.get(f"{BASE}briefs/").status_code, (401, 403))
+
+    def test_a_deactivated_designer_loses_access_while_keeping_the_group(self):
+        """Deactivating the account is enough; nobody has to remember to strip
+        the group as well."""
+        self.designer.is_active = False
+        self.designer.save()
+        self.assertFalse(rbac.can_use_module(self.designer))
+
+    def test_adding_the_group_is_all_it_takes(self):
+        """What Marketing actually does on the Users screen."""
+        self.client.force_authenticate(self.nobody)
+        self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 403)
+        self.nobody.groups.add(Group.objects.get_or_create(name=rbac.DESIGNER_GROUP)[0])
+        self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 200)
+
+    def test_flipping_the_switch_reopens_it_without_touching_a_view(self):
+        """The one-line change if Marketing later wants the whole bank in."""
+        with mock.patch.object(rbac, "OPEN_TO_EVERYONE", True):
+            self.client.force_authenticate(self.nobody)
+            self.assertEqual(self.client.get(f"{BASE}briefs/").status_code, 200)
+
+    def test_the_reports_are_still_admin_only_inside_the_board(self):
+        """The door does not flatten the roles behind it."""
+        self.client.force_authenticate(self.designer)
+        self.assertEqual(self.client.get(f"{BASE}summary/").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.get(f"{BASE}summary/").status_code, 200)

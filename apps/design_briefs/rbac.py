@@ -7,11 +7,9 @@ checked by name**, not a bespoke permission table.
 
 Three positions, and only three:
 
-* **Requester** — anyone signed in. Raises a brief, sees their own and their
-  department's, edits one before a designer picks it up, approves or sends it
-  back for rework, cancels their own. Deliberately everybody: the requests that
-  go missing today are the ones nobody can see, and narrowing who may raise one
-  narrows visibility, not volume.
+* **Requester** — raises a brief, sees their own and their department's, edits
+  one before a designer picks it up, approves or sends it back for rework,
+  cancels their own.
 * **Designer** (``marketing_designer``) — sees the whole board, starts and
   submits the briefs allocated to them. Cannot assign work, including to
   themselves, and cannot approve.
@@ -21,6 +19,18 @@ Three positions, and only three:
 
 Superusers are admins. ``business_performance`` is **not** implied here — this
 is Marketing's board, not Strategy's.
+
+**Who the module is open to is a single switch:** ``OPEN_TO_EVERYONE`` below.
+It is ``False``, which means only members of the two groups reach the module at
+all, and the department decides who those are by assigning the group. The
+module first shipped with it effectively ``True`` — the argument being that
+requests which go missing are the ones nobody can see — but that is the
+department's call to make, not this file's, and it was never asked for.
+
+Setting it ``True`` restores the open behaviour in one line: every signed-in
+user may then raise a brief and see their own department's, while everything
+else below still applies. Nothing else needs changing, on either side — the
+home tile reads the same two group names.
 
 The one rule worth stating twice: **a designer never approves their own work.**
 ``workflow.approve`` refuses it even for an admin who happens to be the
@@ -34,6 +44,11 @@ DESIGNER_GROUP = "marketing_designer"
 ADMIN_GROUPS = {ADMIN_GROUP}
 #: Anybody who sees the whole board rather than just their own briefs.
 BOARD_GROUPS = ADMIN_GROUPS | {DESIGNER_GROUP}
+
+#: Whether a signed-in user who is in NEITHER group may use the module.
+#: False = Marketing's board is Marketing's, and membership is granted by
+#: assigning one of the two groups above. See the module docstring.
+OPEN_TO_EVERYONE = False
 
 
 def _in(user, groups) -> bool:
@@ -197,3 +212,25 @@ def role_of(user) -> str:
     if is_designer(user):
         return "designer"
     return "requester"
+
+
+def can_use_module(user) -> bool:
+    """May this user reach the design board at all?
+
+    The gate every view checks first. With ``OPEN_TO_EVERYONE`` false this is
+    group membership; with it true it is simply "signed in", and the per-brief
+    rules below are what then narrow things down.
+
+    Inactive users are refused here rather than relied on being refused later:
+    a deactivated account that still holds the group would otherwise keep its
+    access until somebody noticed.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if not getattr(user, "is_active", False):
+        return False
+    if user.is_superuser:
+        return True
+    if OPEN_TO_EVERYONE:
+        return True
+    return user.groups.filter(name__in=BOARD_GROUPS).exists()
