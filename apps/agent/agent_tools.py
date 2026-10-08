@@ -460,20 +460,37 @@ def _referrals_summary(status=None, limit=MAX_ROWS):
     }
 
 
-def _commercial_pipeline_summary(kind=None, limit=MAX_ROWS):
-    qs = PipelineEntry.objects.all()
-    if kind:
-        qs = qs.filter(kind=kind)
+def _commercial_pipeline_summary(user=None, kind=None, limit=MAX_ROWS):
+    """The caller's own pipeline, or their team's if they lead one.
+
+    Scoped through ``commercial_pipeline.views.visible_to`` - the SAME function
+    the pipeline API uses - rather than reading the table. It read
+    ``PipelineEntry.objects.all()`` when this shipped, which meant an RM who
+    could only see their own lines on the page could ask the assistant and be
+    told every RM's customers, amounts and stages. A door closed on the screen
+    and left open in the chat box is not closed.
+    """
+    from apps.commercial_pipeline.views import sees_team, visible_to
+
+    if not user or not getattr(user, "is_authenticated", False):
+        # No user, no book. Returning counts "for the bank" here would be the
+        # same leak wearing an aggregate.
+        return {"error": "This tool needs to know who is asking."}
+
+    mine = visible_to(user)
+    qs = mine.filter(kind=kind) if kind else mine
     return {
-        "total_entries": PipelineEntry.objects.count(),
+        "scope": "team" if sees_team(user) else "own book",
+        "total_entries": mine.count(),
         "by_kind": {r["kind"]: r["n"] for r in
-                    PipelineEntry.objects.values("kind").annotate(n=Count("id"))},
-        "by_segment": {r["segment"] or "(unset)": r["n"] for r in
-                       PipelineEntry.objects.values("segment").annotate(n=Count("id"))
-                       .order_by("-n")[:15]},
+                    mine.values("kind").annotate(n=Count("id"))},
+        "by_stage": {r["broad_stage"] or "(unset)": r["n"] for r in
+                     mine.values("broad_stage").annotate(n=Count("id"))
+                     .order_by("-n")[:15]},
         "entries": [{
             "kind": e.kind, "customer": e.customer_name, "rm": e.rm_name,
             "branch": e.branch, "segment": e.segment,
+            "amount": e.amount, "stage": e.get_broad_stage_display() or None,
         } for e in qs[:_clamp(limit)]],
     }
 
@@ -769,9 +786,16 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        # Scoped to the caller - see _commercial_pipeline_summary and
+        # _USER_SCOPED. The description says so, because a model told it is
+        # reading "the" pipeline will present one RM's book as the bank's.
         "name": "get_commercial_pipeline",
-        "description": "Get the Commercial Pipeline: entry counts by kind and by segment, "
-                       "with the customer, RM and branch of recent entries.",
+        "description": "Get the signed-in person's Commercial Pipeline - their own "
+                       "lines, or their whole team's if they lead one; never the "
+                       "bank's. Assets, trade, deposits and insurance: counts by "
+                       "kind and by stage, with the customer, RM, amount and stage "
+                       "of recent lines. The 'scope' field in the reply says which "
+                       "it is, and must be respected when answering.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -870,6 +894,16 @@ _MODULE_GATED = {
     "get_design_briefs_summary": _may_see_design_briefs,
 }
 
+#: Tools in :data:`_DISPATCH` that must be handed the signed-in user, because
+#: what they may return depends on who is asking. ``rm_tools`` and
+#: ``bank_tools`` take the user through their own dispatch; these are the ones
+#: in this module that do.
+#:
+#: A tool belongs here when its rows belong to somebody. It is a set rather
+#: than a convention because the alternative - remembering to add ``user`` to
+#: the signature - is what let ``get_commercial_pipeline`` read every RM's book.
+_USER_SCOPED = {"get_commercial_pipeline"}
+
 
 def tool_definitions(user=None):
     """The tools to offer the model for this deployment, for this person.
@@ -951,7 +985,10 @@ def run_tool(name, tool_input, user=None):
     if fn is None:
         return json.dumps({"error": f"Unknown tool '{name}'."})
     try:
-        result = fn(**(tool_input or {}))
+        if name in _USER_SCOPED:
+            result = fn(user=user, **(tool_input or {}))
+        else:
+            result = fn(**(tool_input or {}))
         return json.dumps(result, default=str)
     except Exception as exc:  # surface a usable error to the model, don't 500
         return json.dumps({"error": f"Tool '{name}' failed: {exc}"})

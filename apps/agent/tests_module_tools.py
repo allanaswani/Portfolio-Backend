@@ -24,10 +24,11 @@ from apps.referrals.models import Referral
 def board_user(username="agent_tools_root"):
     """Somebody who may see every module these tools read.
 
-    Four of the five tools are bank-wide and ignore the user entirely. Design
-    Briefs is gated on Marketing's two groups, so these tests - which are about
-    whether the QUERIES are valid, not about who may run them - pass a user who
-    is through that door. Who gets through it is tested in GatedToolTests.
+    Three of the five tools are bank-wide and ignore the user entirely. Design
+    Briefs is gated on Marketing's two groups, and the Commercial Pipeline is
+    scoped to the caller's own book - so these tests, which are about whether
+    the QUERIES are valid rather than about who may run them, pass a superuser.
+    Who gets what is tested in GatedToolTests and PipelineToolScopeTests.
     """
     return User.objects.create_user(
         username=username, password="x", is_superuser=True, is_staff=True)
@@ -42,7 +43,7 @@ NEW_TOOLS = {
         "unallocated", "flagged_possible_duplicate", "referrals",
     ],
     "get_commercial_pipeline": [
-        "total_entries", "by_kind", "by_segment", "entries",
+        "scope", "total_entries", "by_kind", "by_stage", "entries",
     ],
     "get_design_briefs_summary": [
         "total_briefs", "by_status", "by_department", "unassigned",
@@ -105,6 +106,12 @@ class QueriesAreValidAgainstTheSchemaTests(TestCase):
         out = json.loads(run_tool("get_referrals_summary", {}))
         self.assertEqual(out["total_referrals"], 0)
         self.assertEqual(out["referrals"], [])
+
+    def test_the_pipeline_tool_refuses_rather_than_answer_for_nobody(self):
+        """With no user, ``visible_to`` would fall through to "rows nobody
+        typed" - which is every imported row. Refuse instead."""
+        out = json.loads(run_tool("get_commercial_pipeline", {}))
+        self.assertIn("error", out)
 
     def test_the_limit_argument_is_accepted_and_clamped(self):
         for name in NEW_TOOLS:
@@ -232,3 +239,69 @@ class GatedToolTests(TestCase):
             with self.subTest(tool=name):
                 self.assertIn(name, [d["name"] for d in tool_definitions(self.nobody)])
                 self.assertNotIn("error", json.loads(run_tool(name, {}, user=self.nobody)))
+
+
+class PipelineToolScopeTests(TestCase):
+    """The assistant must not be a second way into another RM's book.
+
+    ``get_commercial_pipeline`` read ``PipelineEntry.objects.all()`` when it
+    shipped. So an RM who was shown only their own lines on the page could ask
+    the assistant and be told every RM's customers, amounts and stages. It now
+    goes through ``commercial_pipeline.views.visible_to`` - the same function
+    the page uses - so there is one answer to "whose lines are these".
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth.models import Group
+
+        from apps.commercial_pipeline.models import PipelineEntry
+        from apps.portfolio.models import Profile
+
+        def rm(username, code, group=None):
+            u = User.objects.create_user(username=username, password="x")
+            Profile.objects.update_or_create(
+                user=u, defaults={"sales_code": code, "segment": "COMMERCIAL",
+                                  "branch": "Commercial"})
+            if group:
+                u.groups.add(Group.objects.get_or_create(name=group)[0])
+            return u
+
+        # portfolio_mgt is the RM group - the one that carries the My Pipeline
+        # link, and the one that used to widen a caller to the whole segment.
+        cls.rm = rm("pipe_rm", "CM301", group="portfolio_mgt")
+        cls.tl = rm("pipe_tl", "CM900", group="tl_portfolio")
+
+        PipelineEntry.objects.create(
+            kind=PipelineEntry.KIND_ASSET, customer_name="Ours Limited",
+            sales_code="CM301", rm_name="Pipe RM", segment="COMMERCIAL",
+            amount=1_000_000, product="Contract finance")
+        PipelineEntry.objects.create(
+            kind=PipelineEntry.KIND_TRADE, customer_name="Theirs Limited",
+            sales_code="CM302", rm_name="Other RM", segment="COMMERCIAL",
+            amount=2_000_000, product="LC")
+
+    def ask(self, user, **kwargs):
+        return json.loads(run_tool("get_commercial_pipeline", kwargs, user=user))
+
+    def test_an_rm_is_told_only_about_their_own_lines(self):
+        out = self.ask(self.rm)
+        self.assertEqual(out["scope"], "own book")
+        self.assertEqual(out["total_entries"], 1)
+        self.assertEqual([e["customer"] for e in out["entries"]], ["Ours Limited"])
+
+    def test_the_totals_are_scoped_too_not_just_the_listing(self):
+        """An aggregate over everybody is the same leak with the names taken
+        off: "the pipeline is 3m" tells an RM what their colleagues carry."""
+        out = self.ask(self.rm)
+        self.assertEqual(out["by_kind"], {"asset": 1})
+
+    def test_a_team_leader_is_told_about_the_team(self):
+        out = self.ask(self.tl)
+        self.assertEqual(out["scope"], "team")
+        self.assertEqual(out["total_entries"], 2)
+
+    def test_the_kind_filter_narrows_the_listing_within_the_scope(self):
+        out = self.ask(self.rm, kind="trade")
+        self.assertEqual(out["entries"], [], "the trade line is not theirs")
+        self.assertEqual(out["total_entries"], 1, "and the totals stay their own")
