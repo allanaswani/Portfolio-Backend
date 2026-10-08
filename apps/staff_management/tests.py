@@ -19,21 +19,39 @@ class ScorecardConfigEndpointTests(TestCase):
         self.client.force_authenticate(self.user)
 
     def test_role_create_update_delete(self):
+        """The contract is role_code / role_name / role_type / is_active.
+
+        Not ``name``/``description``. The Role KPI Mappings screen asks for
+        those four and no others, so ScorecardRoleSerializer exposes exactly
+        them, with ``role_name`` mapping to the model's canonical ``name``.
+        ``description`` stays on the model but no longer travels - the screen
+        has no field for it. See CSVUploadModal.tsx::scorecard_roles_data and
+        app/(dashboard)/management/scorecards/roles-kpi/page.tsx.
+        """
         # create
-        r = self.client.post("/staff_management/roles/", {"name": "RM", "weight": 1}, format="json")
+        r = self.client.post("/staff_management/roles/",
+                             {"role_code": "RM", "role_name": "RM",
+                              "role_type": "IC"}, format="json")
         self.assertEqual(r.status_code, 201, r.content)
         role_id = r.data["id"]
+        self.assertEqual(ScorecardRole.objects.get(pk=role_id).name, "RM",
+                         "role_name must land on the canonical name column")
         # update
-        r = self.client.patch(f"/staff_management/roles/{role_id}/", {"description": "Relationship Mgr"}, format="json")
+        r = self.client.patch(f"/staff_management/roles/{role_id}/",
+                              {"role_type": "MGR"}, format="json")
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(ScorecardRole.objects.get(pk=role_id).description, "Relationship Mgr")
+        self.assertEqual(ScorecardRole.objects.get(pk=role_id).role_type, "MGR")
         # delete
         r = self.client.delete(f"/staff_management/roles/{role_id}/")
         self.assertIn(r.status_code, (200, 204))
         self.assertFalse(ScorecardRole.objects.filter(pk=role_id).exists())
 
     def test_role_csv_upload(self):
-        csv_content = b"name,description,is_active\nBBM,Branch Manager,true\nCSO,Customer Service,true\n"
+        # The header the download template hands out - see
+        # CSVUploadModal.tsx::scorecard_roles_data.
+        csv_content = (b"role_code,role_name,role_type,is_active\n"
+                       b"BBM,BBM,MGR,true\n"
+                       b"CSO,CSO,IC,true\n")
         upload = SimpleUploadedFile("roles.csv", csv_content, content_type="text/csv")
         r = self.client.post("/staff_management/roles/upload-csv/", {"file": upload}, format="multipart")
         self.assertEqual(r.status_code, 201, r.content)
@@ -42,8 +60,10 @@ class ScorecardConfigEndpointTests(TestCase):
         self.assertTrue(ScorecardRole.objects.filter(name="CSO").exists())
 
     def test_kpi_csv_upload_reports_bad_rows(self):
-        # second row missing required 'name' → reported, first row imported
-        csv_content = b"name,category,weight\nDeposits Growth,deposits,2\n,loans,1\n"
+        # second row missing the required kpi_name -> reported, first imported
+        csv_content = (b"kpi_code,kpi_name,kpi_description\n"
+                       b"DEP,Deposits Growth,Deposit book growth\n"
+                       b"LOA,,Loan book growth\n")
         upload = SimpleUploadedFile("kpis.csv", csv_content, content_type="text/csv")
         r = self.client.post("/staff_management/kpis/upload-csv/", {"file": upload}, format="multipart")
         self.assertEqual(r.status_code, 201, r.content)

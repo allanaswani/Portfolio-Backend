@@ -55,8 +55,15 @@ class MortgageEndpointTests(TestCase):
         self.assertTrue(r.data["application_ref"].startswith("APP-"))
 
     def test_lead_funnel_and_convert(self):
+        # assigned_to matters: the funnel is RM-scoped, so an officer counts
+        # their own leads and nobody else's. A lead raised through the API is
+        # always owned - LeadListCreateView.perform_create stamps the capturing
+        # RM - so only a lead built straight through the ORM, as here, can be
+        # an orphan. Giving it an owner is what makes this a test of the funnel
+        # rather than an accidental test of the scoping.
         lead = Lead.objects.create(full_name="Mary K", interested_product=self.product,
-                                   estimated_loan_amount="3000000")
+                                   estimated_loan_amount="3000000",
+                                   assigned_to=self.user)
         r = self.client.get("/mortgages/leads/funnel/")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["total_leads"], 1)
@@ -68,6 +75,20 @@ class MortgageEndpointTests(TestCase):
         self.assertIsNotNone(lead.converted_application_id)
         # a borrower was auto-created from the lead
         self.assertTrue(Borrower.objects.filter(full_name="Mary K").exists())
+
+    def test_the_funnel_does_not_count_another_rms_leads(self):
+        """The scoping the test above now has to work around, asserted.
+
+        Without this, assigning the lead there looks like a fudge to make a
+        failing test pass, and the rule it is working around is not covered
+        anywhere.
+        """
+        other = User.objects.create_user("mort_other", password="x")
+        Lead.objects.create(full_name="Not Mine", interested_product=self.product,
+                            estimated_loan_amount="1000000", assigned_to=other)
+        r = self.client.get("/mortgages/leads/funnel/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["total_leads"], 0)
 
     def test_approve_then_disburse_generates_schedule(self):
         b = Borrower.objects.create(full_name="Paul O")

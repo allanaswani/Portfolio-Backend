@@ -260,8 +260,14 @@ class AdminUserManagementAPITests(TestCase):
         rows = resp.data["results"] if isinstance(resp.data, dict) else resp.data
         names = {r["name"] for r in rows}
         # 14 baseline + 4 mortgage + 3 registry + 1 business-performance
-        # + 2 telesales + 2 Customer 360 + 2 service desk roles.
-        self.assertEqual(len(names), 28)
+        # + 2 telesales + 2 Customer 360 + 2 service desk + 2 Marketing
+        # design-board roles.
+        #
+        # A running tally, so it has to be extended whenever core.roles grows.
+        # The count is the point: a role missing from the registry cannot be
+        # granted from the Users screen, which is how a module ships with
+        # nobody able to be put on it.
+        self.assertEqual(len(names), 30, sorted(names))
         self.assertIn("ceo", names)
         self.assertIn("staff_mgt", names)
         self.assertIn("mortgage_officer", names)
@@ -271,6 +277,10 @@ class AdminUserManagementAPITests(TestCase):
         # claim; its two roles must be assignable from this screen.
         self.assertIn("c360_management", names)
         self.assertIn("c360_rm", names)
+        # Marketing hands out its own design board; the two groups have to be
+        # grantable from this screen or nobody can be added to it.
+        self.assertIn("marketing_admin", names)
+        self.assertIn("marketing_designer", names)
 
 
 class MigrateLegacyAuthCommandTests(TestCase):
