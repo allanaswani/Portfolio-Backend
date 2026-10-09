@@ -63,6 +63,72 @@ MANUAL_ACTUALS = {
         "Mortgage sales at the non-market rate",
     "bancassurance_premiums": "Bancassurance — renewals and other products",
     "other_bancassurance_premiums": "Bancassurance — other products",
+
+    # ── the back-office cards ──
+    # Operations staff are measured on controls and service rather than on a
+    # balance: audit scores, turnaround, KYC cleanup, complaints logged,
+    # operation losses, cash management. Almost none of that is in a warehouse
+    # table, which is a statement about where the data lives and not a gap in
+    # the card. Each names the return it comes from, so whoever has to find the
+    # number knows who to ask.
+    "bo_nps": "Customer survey — Net Promoter Score",
+    "bo_crm": "CRM — complaints logged",
+    "bo_kyc": "KYC cleanup return",
+    "bo_branch_audit_branch_audit": "Internal Audit — branch audit score",
+    "bo_branch_audit_resolution": "Internal Audit — repeat findings resolved",
+    "bo_branch_audit_compliance": "Internal Audit — compliance score",
+    "bo_branch_audit_cash_management": "Internal Audit — cash management",
+    "bo_diaspora_audit": "Internal Audit — the diaspora return",
+    "bo_cash_management": "Cash management return",
+    "bo_operation_lossess": "Operational loss and fraud register",
+    "bo_trx_errors": "Transaction error return",
+    "bo_rbo_account_errors": "Back-office returns register",
+    "bo_trx_productivity": "Teller transaction count",
+    "bo_sales_productivity": "Team productivity return",
+    "bo_training_hours": "Learning system — training hours completed",
+    "bo_leave_management": "HR — leave days cleared",
+    "bo_events": "Branch events return",
+    "bo_branch_rtgs": "RTGS channel return",
+    "bo_digital_activation": "Digital activation return",
+    "bo_digital_customers": "Digital onboarding return",
+    "bo_re_activation": "Dormancy reactivation return",
+    "bo_active_customers": "Active-customer count",
+    "bo_account_opening_pb": "Account-opening turnaround — personal banking",
+    "bo_account_opening_bb": "Account-opening turnaround — business banking",
+    "bo_account_opening_ub": "Account-opening turnaround — ultimate banking",
+
+    # The sixteen whose own card names a feed the actuals template does not
+    # have, or names none at all. Loading them by hand is the only route until
+    # the desk says what they should read.
+    "bo_account_errors": "Account errors — the card names a sheet the "
+                         "actuals template does not have",
+    "bo_account_opening_sme": "SME account-opening turnaround — no such "
+                              "sheet on the actuals template",
+    "bo_bbm_financials": "Branch financials — no such sheet on the actuals "
+                         "template",
+    "bo_deposit_growth": "Deposit growth — no deposits sheet on the "
+                         "actuals template",
+    "bo_cost": "Cost reduction — there is no operating-cost data anywhere "
+               "in this warehouse",
+    "bo_npl": "NPL — the card names a sheet the template does not have",
+    "bo_rbo_monthly_summ": "Team productivity — the card names a summary "
+                           "sheet rather than a feed",
+    "bo_npl_reduce_p_l_provisions_from_diaspora":
+        "Diaspora provisions specifically",
+    "bo_customer_feedback_nil_client_complaints": "Client complaints",
+    "bo_customer_feedback_achieve_5_client_compliments": "Client compliments",
+    "bo_customer_feedback_achieve_3_ultimate_banking_client_co":
+        "Ultimate Banking client compliments",
+    "bo_customer_feedback_achieve_3_diaspora_banking_client_co":
+        "Diaspora Banking client compliments",
+    "bo_customer_journey_document_and_approve_the_customer_ser":
+        "Whether the customer service journey is documented and approved",
+    "bo_tds_track_ub_term_deposit_renewals":
+        "Ultimate Banking term-deposit renewals tracked",
+    "bo_term_deposits_track_diaspora_term_deposit_renewals_ret":
+        "Diaspora term-deposit renewals tracked",
+    "bo_tools_achieve_tat_of_1_day_for_mobile_banking_onboardi":
+        "Mobile banking onboarding turnaround",
 }
 
 #: KPI codes with no target anywhere: the DMC load carries no column for them
@@ -94,9 +160,20 @@ COLUMNS = ["sales_code", "staff_name", "staff_role", "kpi_code", "kpi_name",
 
 
 def _roster():
-    """Everybody with a card, from the per-person DMC roster."""
+    """Everybody with a card, from all three rosters.
+
+    The sales DMC tables answer for RMs. The back-office roster in
+    ``employee_role_history`` answers for branch operations managers, customer
+    service officers, tellers and the back office, who are on no sales roster -
+    that table is keyed on sales targets a teller does not have.
+
+    Listing only the sales side is how 101 people would have had figures that
+    nobody could load.
+    """
     from .live_scorecard import role_code_for
-    from .models import BranchEmployeeDmcData, BranchFinalEmployeeDmcData
+    from .models import (
+        BranchEmployeeDmcData, BranchFinalEmployeeDmcData,
+        EmployeeRoleHistory, StaffEmployeeData)
 
     seen, out = set(), []
     for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData):
@@ -111,6 +188,21 @@ def _roster():
                 continue
             seen.add(code)
             out.append((code, row.staff_name or "", row.staff_role or "", role))
+
+    # The back office. Names come from the HR record where there is one, and
+    # from the roster's own notes otherwise - which is where migration 0032 put
+    # them, because employee_role_history has nowhere else for a name.
+    names = {(code or "").strip().upper(): name for code, name
+             in StaffEmployeeData.objects.exclude(sales_code="")
+             .values_list("sales_code", "staff_name")}
+    for entry in (EmployeeRoleHistory.objects
+                  .filter(role_code__startswith="bo_").order_by("sales_code")):
+        code = (entry.sales_code or "").strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        name = names.get(code) or (entry.notes or "").split("|")[0].strip()
+        out.append((code, name, entry.role_code, entry.role_code))
     return out
 
 
@@ -251,8 +343,6 @@ def read_upload(stream):
     from openpyxl import load_workbook
 
     from .scorecard_automation.models import ScRoleKpiMapping
-    from .live_scorecard import role_code_for
-    from .models import BranchEmployeeDmcData, BranchFinalEmployeeDmcData
 
     book = load_workbook(stream, data_only=True, read_only=True)
     sheet = book[book.sheetnames[0]]
@@ -268,15 +358,11 @@ def read_upload(stream):
         return [], ["That file has no sales_code / kpi_code header row. "
                     "Download the template and fill that in."]
 
-    # Who holds which card, so a figure cannot be filed against the wrong line.
-    roles = {}
-    for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData):
-        for row in model.objects.exclude(sales_code=""):
-            code = (row.sales_code or "").strip().upper()
-            if code and code not in roles:
-                role = role_code_for(row.staff_role)
-                if role:
-                    roles[code] = role
+    # Who holds which card, so a figure cannot be filed against the wrong
+    # line. Built from the same three rosters _roster() uses, because a figure
+    # for a teller would otherwise be refused for not being on the SALES
+    # roster - which a teller never is.
+    roles = {code: role for code, _name, _title, role in _roster()}
     on_card = {}
     for mapping in ScRoleKpiMapping.objects.all():
         on_card.setdefault(mapping.role_code, set()).add(mapping.kpi_code)

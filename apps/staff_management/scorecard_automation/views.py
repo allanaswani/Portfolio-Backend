@@ -879,7 +879,7 @@ class ScorecardManualEntryView(APIView):
         from apps.staff_management.scorecard_manual import (
             MANUAL_ACTUALS, MANUAL_TARGETS, _default_month, _month_of,
             _number, apply_upload)
-        from apps.staff_management.live_scorecard import role_code_for, roster_row
+        from apps.staff_management.live_scorecard import resolve_person
         from .models import ScRoleKpiMapping
 
         if not _may_set_figures(request.user):
@@ -894,12 +894,15 @@ class ScorecardManualEntryView(APIView):
                 {"detail": "sales_code and kpi_code are both required."},
                 status=400)
 
-        row = roster_row(code)
-        role = role_code_for(getattr(row, "staff_role", "")) if row else None
-        if role is None:
+        # All three rosters, not just the sales one. A teller is on none of
+        # the sales tables, so resolving against them alone refused every
+        # back-office figure.
+        person = resolve_person(code)
+        role = person.role_code if person else ""
+        if not role:
             return Response(
-                {"detail": f"{code} is not on the DMC roster with a role that "
-                           f"has a card."}, status=400)
+                {"detail": f"{code} is on none of the rosters with a role "
+                           f"that has a card."}, status=400)
         if not ScRoleKpiMapping.objects.filter(
                 role_code=role, kpi_code=kpi).exists():
             return Response(
@@ -928,3 +931,124 @@ class ScorecardManualEntryView(APIView):
             "actual": actual, "month": month, "row": 0,
         }], who=who)
         return Response({"written": written, "month": month.isoformat()})
+
+
+# ── Administration: the cards, who holds them, and anyone's card ─────────────
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardCatalogueView(APIView):
+    """Every configured card, or one of them in full.
+
+    ``?role_code=`` returns that card's lines - weight, target, feed, this
+    role's own wording, and whether the line is measured, loadable or
+    stranded. Without it, a row per card.
+
+    The cards were seeded and then existed only in the database, with nowhere
+    to look at them. This is that place.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.scorecard_catalogue import (
+            cards, cards_without_holders)
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can see everybody's cards."},
+                status=403)
+
+        role = str(request.query_params.get("role_code") or "").strip()
+        found = cards(role)
+        if role and not found:
+            return Response(
+                {"detail": f"There is no card configured for {role}."},
+                status=404)
+        if role:
+            return Response(found[0])
+
+        by_family = {"sales": [], "back office": []}
+        for card in found:
+            by_family[card["family"]].append(card)
+        return Response({
+            "cards": found,
+            "totals": {
+                "cards": len(found),
+                "sales": len(by_family["sales"]),
+                "back_office": len(by_family["back office"]),
+                "lines": sum(c["lines"] for c in found),
+                "holders": sum(c["holders"] for c in found),
+            },
+            # Cards nobody holds. A question rather than a fault: seeding them
+            # onto somebody would have been a guess.
+            "without_holders": cards_without_holders(),
+        })
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardRosterView(APIView):
+    """Who holds which card, across all three rosters.
+
+    The sales DMC tables answer for RMs; ``employee_role_history`` answers for
+    the back office, who are on no sales roster because that table is keyed on
+    sales targets a teller does not have. Each row says which roster it came
+    off, so a card can be traced to the list behind it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.scorecard_catalogue import roster
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can see the roster."},
+                status=403)
+
+        rows = roster(
+            role_code=str(request.query_params.get("role_code") or "").strip(),
+            search=str(request.query_params.get("search") or "").strip())
+        limit = 500
+        return Response({
+            "total": len(rows),
+            "shown": min(len(rows), limit),
+            "rows": rows[:limit],
+            "by_family": {
+                "sales": sum(1 for r in rows if r["family"] == "sales"),
+                "back_office": sum(1 for r in rows
+                                   if r["family"] == "back office"),
+            },
+        })
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardForPersonView(APIView):
+    """Anyone's card, by sales code.
+
+    The same card the person sees, computed the same way, for somebody who has
+    to check it. ``my-card/`` stays the only route to your OWN card and takes
+    no parameter; this one is separate and gated, so the two cannot be confused
+    and there is no way to read a colleague's card through the personal route.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.live_scorecard import build_card
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can open somebody else's "
+                           "card."}, status=403)
+
+        code = str(request.query_params.get("sales_code") or "").strip()
+        if not code:
+            return Response({"detail": "sales_code is required."}, status=400)
+        try:
+            return Response(build_card(code))
+        except Exception as exc:  # noqa: BLE001 - reported, not a 500
+            return Response(
+                {"has_card": False, "reason": "live_failed",
+                 "sales_code": code,
+                 "detail": f"That card could not be computed: {exc}"})

@@ -1197,6 +1197,143 @@ def role_target(mapping, bases):
     return None, ""
 
 
+@dataclass(frozen=True)
+class Person:
+    """Who somebody is, and which card they hold."""
+
+    sales_code: str = ""
+    name: str = ""
+    role_code: str = ""
+    branch: str = ""
+    team_leader: str = ""
+    #: Which roster answered. On the card, so a figure can be traced to the
+    #: list it came off.
+    roster: str = ""
+    #: The DMC row, when there is one. Back-office staff have none, and their
+    #: targets come off the role's card instead.
+    dmc_row: object = None
+
+
+#: The ``List`` sheet's job titles for back-office staff, as
+#: ``staff_employee_data.job_title`` spells them. Only used when the role
+#: history has nothing - the roster is the authority, this is the fallback for
+#: somebody who joined since it was loaded.
+BO_TITLE_ALIASES = {
+    "branch operations manager": "bo_bom",
+    "bom": "bo_bom",
+    "customer service officer": "bo_cso",
+    "cso": "bo_cso",
+    "customer service officer - ultimate banking": "bo_cso_ub",
+    "customer service officer ultimate banking": "bo_cso_ub",
+    "customer service manager - diaspora banking": "bo_csm_diaspora",
+    "customer service manager diaspora banking": "bo_csm_diaspora",
+    "teller": "bo_teller",
+    "cash teller": "bo_cash_teller",
+    "cash centre teller": "bo_cash_centre_teller",
+    "cash center teller": "bo_cash_centre_teller",
+    "cash_centre teller": "bo_cash_centre_teller",
+    "cash_center teller": "bo_cash_centre_teller",
+    "retail back office officer": "bo_rbo",
+    "rbo": "bo_rbo",
+    "team leader: account opening (retail back office)": "bo_tl_rbo",
+    "team leader - retail back office": "bo_tl_rbo",
+}
+
+
+def bo_role_for(job_title):
+    """The back-office card for an HR job title, or None. None rather than a
+    guess, for the same reason :func:`role_code_for` returns None."""
+    folded = fold(job_title)
+    if folded in BO_TITLE_ALIASES:
+        return BO_TITLE_ALIASES[folded]
+    for alias in sorted(BO_TITLE_ALIASES, key=len, reverse=True):
+        if folded.startswith(alias + " ") or folded == alias:
+            return BO_TITLE_ALIASES[alias]
+    return None
+
+
+def resolve_person(sales_code):
+    """Who this sales code belongs to and which card they hold, or None.
+
+    Three rosters, most specific first, because one roster does not cover
+    everybody:
+
+    1. **the DMC roster** - sales staff, with their targets on the row. This
+       answers for every RM, ARM and BBC and is tried first because it brings
+       the targets with it.
+    2. **``employee_role_history``** - who holds which card, which is where the
+       back-office roster lives. A teller is not on the DMC roster at all: that
+       table is the sales roster, keyed on sales code and carrying sales
+       targets, and a teller has neither. Seeded from the workbook's own
+       ``List`` sheet by migration 0032, and correctable through the API that
+       was already there.
+    3. **``staff_employee_data``** by job title - the fallback for somebody who
+       joined since the roster was loaded. It carries both a sales code and a
+       job title, which is the only bridge in this estate between a person and
+       a non-sales role.
+
+    Returns ``None`` when no roster knows the code, which the card reports as
+    its own reason rather than as an empty page.
+    """
+    code = (sales_code or "").strip()
+    if not code:
+        return None
+
+    # 1. the sales roster
+    row = roster_row(code)
+    if row is not None:
+        role = role_code_for(row.staff_role)
+        if role is not None:
+            return Person(
+                sales_code=code, name=row.staff_name or "", role_code=role,
+                branch=row.staff_branch or row.staff_unit or "",
+                team_leader=getattr(row, "team_leader", "") or "",
+                roster="the branch DMC roster", dmc_row=row)
+
+    # 2. the role history - the back-office roster
+    from .models import EmployeeRoleHistory, StaffEmployeeData
+
+    held = (EmployeeRoleHistory.objects
+            .filter(sales_code__iexact=code, role_code__startswith="bo_")
+            .order_by("-start_date").first())
+    staff = StaffEmployeeData.objects.filter(sales_code__iexact=code).first()
+    if held is not None:
+        # The seeded rows keep name, branch, zone and line manager in notes,
+        # because employee_role_history has nowhere else for them. Live data
+        # from staff_employee_data wins where it exists.
+        parts = [piece.strip() for piece in (held.notes or "").split("|")]
+        parts += [""] * (4 - len(parts))
+        return Person(
+            sales_code=code,
+            name=(getattr(staff, "staff_name", "") or parts[0] or ""),
+            role_code=held.role_code,
+            branch=(getattr(staff, "staff_unit", "") or parts[1] or ""),
+            team_leader=parts[3] or "",
+            roster="the back-office roster")
+
+    # 3. the HR record, by job title
+    if staff is not None:
+        role = bo_role_for(staff.job_title)
+        if role is not None:
+            return Person(
+                sales_code=code, name=staff.staff_name or "", role_code=role,
+                branch=staff.staff_unit or staff.department or "",
+                roster="your HR record")
+
+    # Known to the DMC roster but holding a role no card covers - reported
+    # separately from "nobody has heard of this code", because they are
+    # different problems with different owners.
+    if row is not None:
+        return Person(sales_code=code, name=row.staff_name or "",
+                      role_code="", branch=row.staff_branch or "",
+                      roster="the branch DMC roster", dmc_row=row)
+    if staff is not None:
+        return Person(sales_code=code, name=staff.staff_name or "",
+                      role_code="", branch=staff.staff_unit or "",
+                      roster="your HR record")
+    return None
+
+
 def prorate_to(annual, as_at=None, counted=False):
     """An annual target sliced to the date the ACTUAL is as at.
 
@@ -1266,21 +1403,24 @@ def build_card(sales_code, profile=None):
     """The whole card for one RM, computed now."""
     from .scorecard_automation.models import ScKpi, ScRole, ScRoleKpiMapping
 
-    row = roster_row(sales_code)
-    if row is None:
-        return {"has_card": False, "reason": "not_on_dmc_roster",
+    person = resolve_person(sales_code)
+    if person is None:
+        return {"has_card": False, "reason": "not_on_any_roster",
                 "sales_code": sales_code,
-                "detail": "Your sales code is not on the DMC roster, which is "
-                          "where roles and targets come from. Administration "
-                          "maintains that list."}
-
-    role_code = role_code_for(row.staff_role)
-    if role_code is None:
+                "detail": "Your sales code is on none of the three rosters - "
+                          "the branch DMC roster, the back-office roster, or "
+                          "your HR record. Administration maintains those."}
+    if not person.role_code:
         return {"has_card": False, "reason": "role_has_no_card",
                 "sales_code": sales_code,
-                "detail": f"There is no scorecard for the role "
-                          f"{row.staff_role or 'on your roster row'!r}. The "
-                          f"cards cover the RM, ARM and BBC roles."}
+                "detail": f"There is no scorecard for your role on "
+                          f"{person.roster}. The cards cover the RM, ARM and "
+                          f"BBC roles on the sales side, and the branch "
+                          f"operations, customer service, teller and back "
+                          f"office roles."}
+
+    role_code = person.role_code
+    row = person.dmc_row
 
     mappings = list(ScRoleKpiMapping.objects.filter(role_code=role_code)
                     .order_by("kpi_order"))
@@ -1289,7 +1429,7 @@ def build_card(sales_code, profile=None):
                 "sales_code": sales_code,
                 "detail": f"The {role_code} card has no KPI lines configured."}
 
-    actuals = live_actuals(sales_code, row.staff_name or "")
+    actuals = live_actuals(sales_code, person.name)
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
@@ -1521,11 +1661,14 @@ def build_card(sales_code, profile=None):
         "live": True,
         "staff": {
             "sales_code": sales_code,
-            "name": row.staff_name or "",
+            "name": person.name,
             "title": (role.role_name if role else role_code),
             "role_code": role_code,
-            "branch": row.staff_branch or row.staff_unit or "",
-            "team_leader": getattr(row, "team_leader", "") or "",
+            "branch": person.branch,
+            "team_leader": person.team_leader,
+            # Which of the three rosters answered, so a card can be traced to
+            # the list it came off.
+            "roster": person.roster,
         },
         "period": {"label": datetime.date.today().strftime("%B %Y")},
         "target_source": target_table,

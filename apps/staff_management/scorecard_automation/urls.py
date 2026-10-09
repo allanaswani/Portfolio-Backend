@@ -43,6 +43,13 @@ urlpatterns = [
     path("manual-figures/upload/", views.ScorecardManualUploadView.as_view()),
     path("manual-figures/entry/", views.ScorecardManualEntryView.as_view()),
 
+    # Administration: what cards exist, who holds them, and anyone's card.
+    # The cards were seeded and then lived only in the database; these are
+    # where to look at them.
+    path("cards/", views.ScorecardCatalogueView.as_view()),
+    path("roster/", views.ScorecardRosterView.as_view()),
+    path("card-for/", views.ScorecardForPersonView.as_view()),
+
     # Automation actions
     path("missing_actuals/refresh/", views.RefreshMissingActualsView.as_view()),
     path("run/", views.RunMonthlyScorecardView.as_view()),

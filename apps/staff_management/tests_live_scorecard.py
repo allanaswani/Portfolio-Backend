@@ -90,10 +90,13 @@ class CardFromTheSystemTests(TestCase):
         defaults.update(kwargs)
         return BranchFinalEmployeeDmcData.objects.create(**defaults)
 
-    def test_without_a_roster_row_the_card_says_so(self):
+    def test_on_none_of_the_rosters_the_card_says_so(self):
+        """Three rosters are tried - the sales DMC roster, the back-office role
+        history, and the HR record - so the reason names all three rather than
+        only the one somebody happens to know about."""
         card = build_card("FJ4145")
         self.assertFalse(card["has_card"])
-        self.assertEqual(card["reason"], "not_on_dmc_roster")
+        self.assertEqual(card["reason"], "not_on_any_roster")
 
     def test_a_role_with_no_card_is_named_rather_than_guessed(self):
         self.roster(staff_role="Branch Manager")
