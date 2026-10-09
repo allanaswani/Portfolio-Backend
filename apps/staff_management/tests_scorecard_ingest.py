@@ -34,6 +34,8 @@ class Kpi:
     actuals_sheet: str = ""
     actuals_block: int = None
     negate: bool = False
+    allocation_column: str = ""
+    allocation_base_column: str = ""
     not_configured_reason: str = ""
 
 
@@ -209,7 +211,20 @@ class ActualsReaderTests(TestCase):
 
 
 class AllocationReaderTests(TestCase):
-    """The per-person targets, matched by column NAME so the sheet can grow."""
+    """The per-person targets, matched by column NAME so the sheet can grow.
+
+    Which column a KPI takes is a property of the KPI, exactly as its actuals
+    sheet is - so the reader is handed definitions rather than carrying a map
+    of its own, and a KPI added next year needs no change here.
+    """
+
+    DEFINITIONS = [
+        Kpi("deposit_growth_retail",
+            allocation_column="DEPOSITS/Deposit Growth",
+            allocation_base_column="DEPOSITS/deposit_base"),
+        Kpi("new_customers", allocation_column="New_Cust"),
+        Kpi("asset_growth", allocation_column="LOANS/asset_growth"),
+    ]
 
     def sheet(self):
         blank = [""] * 10
@@ -224,8 +239,13 @@ class AllocationReaderTests(TestCase):
                 ["Rongai", "BKA3327", "Benard", "SME BBC", "Nairobi", 261,
                  23_020_000, 38_400_000, 26_880_000, 8]]
 
+    def read(self, definitions=None, sheets=None):
+        return read_allocation(
+            workbook(sheets or {"Summary Allocation": self.sheet()}),
+            definitions if definitions is not None else self.DEFINITIONS)
+
     def test_targets_are_read_per_person_with_their_base(self):
-        rows, warnings = read_allocation(workbook({"Summary Allocation": self.sheet()}))
+        rows, _ = self.read()
         got = {(r["sales_code"], r["kpi_code"]): r for r in rows}
         deposits = got[("AMN3416", "deposit_growth_retail")]
         self.assertEqual(deposits["kpi_target"], 38_400_000)
@@ -235,17 +255,24 @@ class AllocationReaderTests(TestCase):
                          23_020_000, "each person carries their own base")
 
     def test_a_singly_named_column_is_found(self):
-        rows, _ = read_allocation(workbook({"Summary Allocation": self.sheet()}))
+        rows, _ = self.read()
         got = {(r["sales_code"], r["kpi_code"]): r["kpi_target"] for r in rows}
         self.assertEqual(got[("AMN3416", "new_customers")], 12)
 
     def test_a_column_the_sheet_lacks_is_reported_not_assumed_zero(self):
         """A target of zero would score every RM at nought or divide by
         nothing. Saying so is the only safe answer."""
-        _, warnings = read_allocation(workbook({"Summary Allocation": self.sheet()}))
+        rows, warnings = self.read()
         self.assertTrue(any("asset_growth" in w for w in warnings), warnings)
+        self.assertFalse(any(r["kpi_code"] == "asset_growth" for r in rows))
+
+    def test_a_kpi_with_no_allocation_column_is_simply_skipped(self):
+        """Its target is the same for everyone and comes from the role."""
+        rows, warnings = self.read([Kpi("training_hours")])
+        self.assertEqual(rows, [])
+        self.assertEqual(warnings, [])
 
     def test_a_missing_sheet_is_reported(self):
-        rows, warnings = read_allocation(workbook({"Something else": self.sheet()}))
+        rows, warnings = self.read(sheets={"Something else": self.sheet()})
         self.assertEqual(rows, [])
         self.assertTrue(warnings)

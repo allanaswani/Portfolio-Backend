@@ -258,32 +258,6 @@ def apply_actuals(result, eom_date, changed_by=""):
 # grows a column most years. ``base`` is the scorecard's "2025 FY" and
 # ``growth`` its "GROWTH"; the engine adds them to get "2026 FY".
 
-#: kpi_code -> (group label or None, column header, base column header or None)
-#: Matched case-insensitively on the group/header pair as the sheet spells it.
-ALLOCATION_COLUMNS = {
-    "deposit_growth_retail": ("DEPOSITS", "Deposit Growth", "deposit_base"),
-    "asset_growth": ("LOANS", "asset_growth", "Assets"),
-    "portfolio_aum": ("AUM", "AUMGrowth", "Starting AUM"),
-    "revenue_contribution": ("TOTAL INCOME CONTRIBUTION", "Growth",
-                             "2024 (Income+(FTP-LoanLoss))"),
-    "asset_drawdown": ("Disbursment", "Total", None),
-    "trade_finance_income": ("Trade income", "Total", None),
-    "new_customers": ("New_Cust", "", None),
-    "plot_sales_volume": ("Plot_Sales", "", None),
-    "plot_sales_value": ("PLOT_SALES_VALUE", "", None),
-    "banca_life": ("banca_life", "", None),
-    "banca_non_life": ("banca_non_life", "", None),
-    "banca_total": ("banca_total", "", None),
-    "casa": ("CASA", "", None),
-    "loan_approvals": ("loan_approvals", "", None),
-    "trade_loan_loss": ("trade_loan_loss", "", None),
-    "digital_adoption": ("DIGITAL_ADOPTION", "", None),
-    "collections_deposits": ("Collection_Deposits", "", None),
-    "ecosystem": ("Ecosystem_Partner", "", None),
-    "ppc": ("PPC", "2024.0", None),
-    "active_customers": ("ACTIVE", "2024.0", None),
-}
-
 #: Row holding the group labels, and the row holding the column headers.
 _ALLOC_GROUP_ROW = 2
 _ALLOC_HEADER_ROW = 3
@@ -337,13 +311,30 @@ def _grid(source, sheet_name):
     return [list(r) for r in wb[match].iter_rows(values_only=True)]
 
 
-def read_allocation(source, sheet_name="Summary Allocation"):
+def _split_column(spec):
+    """'DEPOSITS/Deposit Growth' -> ('DEPOSITS', 'Deposit Growth').
+
+    A singly-named column such as ``New_Cust`` has no slash and matches on the
+    name alone, in whichever of the two header rows it sits.
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    group, _, header = spec.partition("/")
+    return group.strip(), header.strip()
+
+
+def read_allocation(source, definitions, sheet_name="Summary Allocation"):
     """Per-person targets out of the allocation sheet.
+
+    ``definitions`` are the ``ScKpi`` rows carrying an ``allocation_column``,
+    passed in for the same reason the actuals reader takes them: the parser
+    stays testable without a database, and the caller decides what is in scope.
 
     Returns ``(rows, warnings)`` where a row is
     ``{sales_code, kpi_code, kpi_target, base_value}``. A column the sheet does
-    not carry is reported rather than assumed to be zero — a target of zero
-    scores every RM at either 0 or a division by nothing.
+    not carry is reported rather than treated as zero - a zero target scores
+    every RM at either nought or a division by nothing.
     """
     grid = _grid(source, sheet_name)
     warnings = []
@@ -353,14 +344,23 @@ def read_allocation(source, sheet_name="Summary Allocation"):
     labels = _alloc_labels(grid[_ALLOC_GROUP_ROW - 1], grid[_ALLOC_HEADER_ROW - 1])
 
     resolved = {}
-    for kpi_code, (group, header, base_header) in ALLOCATION_COLUMNS.items():
-        column = _find_column(labels, group, header)
+    for kpi in definitions:
+        spec = _split_column(kpi.allocation_column)
+        if spec is None:
+            continue
+        column = _find_column(labels, *spec)
         if column is None:
             warnings.append(
-                f"{kpi_code}: no column {group!r}/{header!r} on {sheet_name}.")
+                f"{kpi.kpi_code}: no column {kpi.allocation_column!r} on "
+                f"{sheet_name}.")
             continue
-        base = _find_column(labels, group, base_header) if base_header else None
-        resolved[kpi_code] = (column, base)
+        base_spec = _split_column(kpi.allocation_base_column)
+        base = _find_column(labels, *base_spec) if base_spec else None
+        if base_spec and base is None:
+            warnings.append(
+                f"{kpi.kpi_code}: no base column "
+                f"{kpi.allocation_base_column!r} on {sheet_name}.")
+        resolved[kpi.kpi_code] = (column, base)
 
     rows = []
     for raw in grid[_ALLOC_HEADER_ROW:]:
@@ -409,3 +409,140 @@ def apply_allocation(rows, year, source_label="", changed_by=""):
         else:
             unchanged += 1
     return {"created": created, "updated": updated, "unchanged": unchanged}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The roster
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ``List`` in the scorecard workbook is what decides whose card is whose::
+#
+#     sales_code | name | role | branch | BBM | e-mail1 | Zone | e-mail2
+#                | prorate_new | new/role_change
+#
+# The engine walks ``StaffEmployeeData`` and reads each person's role from
+# ``EmployeeRoleHistory``, so both have to carry these 91 people or nobody gets
+# scored. The HR roster is the better source for everything else about an
+# employee, so this only fills what is missing and never overwrites a name or a
+# branch that is already there.
+
+#: What the sheet calls a role -> the seeded ScRole.role_code. ARMs and BBCs
+#: use their segment's RM card, so several roles share one card; the role_code
+#: is still per role, because that is what a person's history records.
+ROSTER_ROLE_CODES = {
+    "sme rm": "sme_rm",
+    "sme arm": "sme_arm",
+    "sme bbc": "sme_bbc",
+    "pb rm": "pb_rm",
+    "pb arm": "pb_arm",
+    "pb bbc": "pb_bbc",
+    "ultimate rm": "ultimate_rm",
+    "diaspora rm": "diaspora_rm",
+    "diaspora arm": "diaspora_arm",
+    "mortgage business arm": "mortgage_business_arm",
+    "commercial rm": "commercial_rm",
+    "commercial rm- trade": "commercial_rm_trade",
+    "commercial rm - trade": "commercial_rm_trade",
+    "commercial rm trade": "commercial_rm_trade",
+}
+
+_ROSTER_HEADER_ROW = 1
+_ROSTER_COLUMNS = {
+    "sales_code": 0, "name": 1, "role": 2, "branch": 3, "bbm": 4,
+    "email": 5, "zone": 6, "prorate_new": 8,
+}
+
+
+def read_roster(source, sheet_name="List"):
+    """Who is on the scorecard, and which card they take.
+
+    Returns ``(rows, warnings)``. ``active_months`` comes from the sheet's
+    ``prorate_new`` column, which is how a joiner's target is cut down; 0 or
+    blank means the whole year. A role the seed does not know is reported
+    rather than mapped to something that looks close - being scored against
+    the wrong card is worse than not being scored.
+    """
+    grid = _grid(source, sheet_name)
+    if not grid or len(grid) <= _ROSTER_HEADER_ROW:
+        return [], [f"{sheet_name}: not in this workbook, or empty."]
+
+    rows, warnings, unknown = [], [], {}
+    for raw in grid[_ROSTER_HEADER_ROW:]:
+        def cell(key):
+            index = _ROSTER_COLUMNS[key]
+            return _text(raw[index]) if index < len(raw) else ""
+
+        code = cell("sales_code")
+        if not code:
+            continue
+        role = cell("role")
+        role_code = ROSTER_ROLE_CODES.get(role.strip().lower())
+        if role_code is None:
+            unknown[role] = unknown.get(role, 0) + 1
+            continue
+
+        months = _number(raw[_ROSTER_COLUMNS["prorate_new"]]) if             _ROSTER_COLUMNS["prorate_new"] < len(raw) else None
+        active_months = int(months) if months and 0 < months <= 12 else 12
+
+        rows.append({
+            "sales_code": code, "name": cell("name"), "role": role,
+            "role_code": role_code, "branch": cell("branch"),
+            "bbm": cell("bbm"), "email": cell("email"), "zone": cell("zone"),
+            "active_months": active_months,
+        })
+
+    for role, n in sorted(unknown.items()):
+        warnings.append(
+            f"{role!r}: {n} person(s) on {sheet_name} have a role the "
+            f"scorecard does not know, so they are not scored.")
+    return rows, warnings
+
+
+def apply_roster(rows, year, changed_by=""):
+    """Record each person and the card they are on for this year.
+
+    ``prorate_new`` becomes the role's start date, because that is what the
+    engine prorates from: a person active 5 months of the year starts in the
+    month that leaves 5 months in it.
+    """
+    import datetime
+
+    from .models import EmployeeRoleHistory, StaffEmployeeData
+
+    added_people = added_roles = updated_roles = unchanged = 0
+    year_end = datetime.date(year, 12, 31)
+
+    for row in rows:
+        staff = StaffEmployeeData.objects.filter(sales_code=row["sales_code"]).first()
+        if staff is None:
+            # Only what the scorecard needs. HR owns the rest, and a row
+            # invented here must not pretend to be an HR record.
+            StaffEmployeeData.objects.create(
+                staff_name=row["name"] or row["sales_code"],
+                sales_code=row["sales_code"],
+                staff_unit=row["branch"], staff_org_unit=row["branch"],
+                job_title=row["role"], is_active=True)
+            added_people += 1
+
+        start = datetime.date(year, 13 - row["active_months"], 1)
+        history = EmployeeRoleHistory.objects.filter(
+            sales_code=row["sales_code"], start_date__year=year).first()
+        if history is None:
+            EmployeeRoleHistory.objects.create(
+                sales_code=row["sales_code"], role_code=row["role_code"],
+                start_date=start, end_date=year_end,
+                notes=f"From the scorecard roster; {row['active_months']} active "
+                      f"month(s)." + (f" Loaded by {changed_by}." if changed_by else ""))
+            added_roles += 1
+        elif (history.role_code != row["role_code"]
+                or history.start_date != start):
+            history.role_code = row["role_code"]
+            history.start_date = start
+            history.end_date = year_end
+            history.save()
+            updated_roles += 1
+        else:
+            unchanged += 1
+
+    return {"people_added": added_people, "roles_added": added_roles,
+            "roles_updated": updated_roles, "roles_unchanged": unchanged}

@@ -291,7 +291,7 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
 
     def post(self, request):
         from apps.staff_management.scorecard_ingest import (
-            apply_allocation, read_allocation)
+            apply_allocation, apply_roster, read_allocation, read_roster)
 
         if not _may_load(request.user):
             return Response(
@@ -309,8 +309,14 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
         year = int(raw_year)
 
         sheet = str(request.data.get("sheet", "")).strip() or "Summary Allocation"
+        definitions = list(ScKpi.objects.filter(is_active=True)
+                           .exclude(allocation_column=""))
+        if not definitions:
+            return Response(
+                {"detail": "No KPI takes a per-person target yet, so there is "
+                           "nothing to read the allocation sheet for."}, status=400)
         try:
-            rows, warnings = read_allocation(upload, sheet)
+            rows, warnings = read_allocation(upload, definitions, sheet)
         except Exception as exc:  # noqa: BLE001
             return Response(
                 {"file": f"That workbook could not be read: {exc}"}, status=400)
@@ -320,6 +326,14 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
         for row in rows:
             by_kpi[row["kpi_code"]] = by_kpi.get(row["kpi_code"], 0) + 1
 
+        # The same workbook carries the roster, and the engine cannot score
+        # anybody whose role it does not know - so both are loaded together
+        # rather than leaving a second upload to be remembered.
+        try:
+            roster, roster_warnings = read_roster(upload)
+        except Exception as exc:  # noqa: BLE001
+            roster, roster_warnings = [], [f"List: could not be read: {exc}"]
+
         body = {
             "applied": False,
             "year": year,
@@ -327,7 +341,9 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
             "people": people,
             "by_kpi": [{"kpi_code": k, "people": n}
                        for k, n in sorted(by_kpi.items())],
-            "warnings": warnings,
+            "roster": len(roster),
+            "roles": sorted({r["role"] for r in roster}),
+            "warnings": warnings + roster_warnings,
         }
         if not self._asked_to_apply(request):
             return Response(body)
@@ -335,5 +351,6 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
         who = (request.user.get_full_name() or request.user.username).strip()
         body["saved"] = apply_allocation(
             rows, year, source_label=upload.name, changed_by=who)
+        body["roster_saved"] = apply_roster(roster, year, changed_by=who)
         body["applied"] = True
         return Response(body, status=201)

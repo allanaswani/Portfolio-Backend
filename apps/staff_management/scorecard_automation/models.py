@@ -83,6 +83,25 @@ class ScKpi(models.Model):
         default=False,
         help_text="Flip the sign of the value read from the sheet.")
 
+    # ── Where this KPI's TARGET comes from ───────────────────────────────
+    # The financial targets are allocated per person on the "Summary
+    # Allocation" sheet, whose columns are self-describing: DEPOSITS/Deposit
+    # Growth, LOANS/asset_growth, TOTAL INCOME CONTRIBUTION/Growth,
+    # Disbursment/Total, New_Cust, Plot_Sales, banca_life, banca_non_life,
+    # banca_total. Named here as "GROUP/Header" and matched case-insensitively
+    # by NAME rather than by position, because the sheet grows a column most
+    # years and a positional read would silently shift everybody's targets.
+    #
+    # Blank means this KPI's target is the same for everyone on the card - 48
+    # training hours, NPS of 60%, PAR of 2.5% - and comes from the role
+    # mapping instead.
+    allocation_column = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text='Per-person target column, e.g. "DEPOSITS/Deposit Growth".')
+    allocation_base_column = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text='Column holding the card\'s "2025 FY" base, if it has one.')
+
     #: Why a KPI is not yet scoreable, in words. A KPI whose block could not be
     #: established reads as unconfigured on the card rather than showing a
     #: figure that might be 860x out.
