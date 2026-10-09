@@ -11,6 +11,7 @@ import datetime
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.portfolio.models import Profile
@@ -502,13 +503,59 @@ class PropertySalesTests(TestCase):
         self.sale("Faith Muthinja", 1_000_000)
         self.assertEqual(self.line("number_of_property")["ytd_actual"], 1)
 
-    def test_a_name_that_is_not_on_the_return_is_not_reported_as_nil(self):
-        """A name spelt differently on the return reads exactly like somebody
-        who sold nothing. Those two must not look the same on a scorecard."""
+    def test_somebody_on_neither_return_is_not_reported_as_nil(self):
+        """A name spelt differently on a return reads exactly like somebody who
+        sold nothing. Those two must not look the same on a scorecard, so the
+        person has to be findable on the HFDI sales return or the
+        affordable-housing seller mapping before a nil is reported as a nil."""
         self.sale("Somebody Else", 1_000_000)
         units = self.line("number_of_property")
         self.assertIsNone(units["ytd_actual"])
-        self.assertIn("does not appear", units["pending"])
+        self.assertIn("neither", units["pending"])
+
+    def test_affordable_housing_units_count_towards_the_property_line(self):
+        """The HFDI return names the advisor who SOLD a unit; affordable
+        housing names whoever ASSISTED the buyer, and a branch RM earns the
+        synergy credit the second way."""
+        from apps.hfdi.models import (
+            AffordableHousingApplication, AFHSellerMapping)
+
+        AFHSellerMapping.objects.create(
+            staff_id=self.CODE, afh_name="faith m",
+            name="Faith Muthinja", staff_unit="Nyeri")
+        AffordableHousingApplication.objects.create(
+            application_id="AFH-1", name="A Buyer", assisted_by="Faith M",
+            preferred_typology="2 bed", typology="2 bed",
+            house_type="Apartment", mode_of_payment="Mortgage",
+            need_deposit_assitance="No", unit_price=5_000_000,
+            status="Approved",
+            timestamp=timezone.now())
+
+        units = self.line("number_of_property")
+        self.assertEqual(units["ytd_actual"], 1)
+        self.assertIn("affordable housing", units["as_at"])
+        self.assertEqual(
+            self.line("value_of_property_sales")["ytd_actual"], 5_000_000)
+
+    def test_the_two_returns_add_together(self):
+        from apps.hfdi.models import (
+            AffordableHousingApplication, AFHSellerMapping)
+
+        self.sale("Faith Muthinja", 8_200_000)
+        AFHSellerMapping.objects.create(
+            staff_id="OTHER", afh_name="faith muthinja",
+            name="Faith Muthinja")
+        AffordableHousingApplication.objects.create(
+            application_id="AFH-2", name="B Buyer",
+            assisted_by="Faith Muthinja", preferred_typology="1 bed",
+            typology="1 bed", house_type="Apartment",
+            mode_of_payment="Cash", need_deposit_assitance="No",
+            unit_price=3_000_000, status="Approved",
+            timestamp=timezone.now())
+
+        self.assertEqual(self.line("number_of_property")["ytd_actual"], 2)
+        self.assertEqual(
+            self.line("value_of_property_sales")["ytd_actual"], 11_200_000)
 
     def test_a_name_on_the_return_with_no_sales_this_year_is_a_real_nil(self):
         """Once the name is known to be on the return, nil means nil - and an

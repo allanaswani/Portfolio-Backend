@@ -280,11 +280,22 @@ class ScEmployeePerformanceActual(models.Model):
         return f"{self.sales_code} - {self.kpi_code} - {self.eom_date}"
 
     def save(self, *args, **kwargs):
-        if self.pk:
-            if not getattr(self, "_change_reason", None):
-                raise ValidationError("A change reason must be provided when updating this record.")
-            update_change_reason(self, self._change_reason)
+        """Require a reason for a CHANGE to somebody's recorded figure.
+
+        The reason is stamped AFTER the row is written, not before. Written
+        before, ``update_change_reason`` looks for a history record that the
+        save has not created yet and raises ``'NoneType' object has no
+        attribute 'history_change_reason'`` — so until this was reordered, no
+        row in this table could be updated at all, only inserted. The
+        requirement itself is kept: a correction to a figure somebody is paid
+        on should say who changed it and why.
+        """
+        reason = getattr(self, "_change_reason", None)
+        if self.pk and not reason:
+            raise ValidationError("A change reason must be provided when updating this record.")
         super().save(*args, **kwargs)
+        if reason:
+            update_change_reason(self, reason)
 
 
 class ScEmployeeMonthlyPerformance(models.Model):

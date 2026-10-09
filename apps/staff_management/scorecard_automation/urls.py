@@ -35,6 +35,14 @@ urlpatterns = [
     path("upload-actuals/", views.ScorecardActualsUploadView.as_view()),
     path("upload-allocation/", views.ScorecardAllocationUploadView.as_view()),
 
+    # Administration: the figures the system cannot compute - the survey, the
+    # learning system, HR, Audit - plus any target the DMC load has no column
+    # for. Admin only, because this is what everybody is measured on.
+    path("manual-figures/", views.ScorecardManualRowsView.as_view()),
+    path("manual-figures/template/", views.ScorecardManualTemplateView.as_view()),
+    path("manual-figures/upload/", views.ScorecardManualUploadView.as_view()),
+    path("manual-figures/entry/", views.ScorecardManualEntryView.as_view()),
+
     # Automation actions
     path("missing_actuals/refresh/", views.RefreshMissingActualsView.as_view()),
     path("run/", views.RunMonthlyScorecardView.as_view()),

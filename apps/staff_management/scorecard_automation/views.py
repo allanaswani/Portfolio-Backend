@@ -167,6 +167,27 @@ def _may_load(user):
                      or user.groups.filter(name__in=("staff_mgt", "Management")).exists()))
 
 
+def _may_set_figures(user):
+    """May this person type in what everybody is measured on?
+
+    Tighter than ``_may_load`` on purpose. That one accepts ``is_staff``, and
+    ``is_staff`` is legacy noise in this estate - a great many accounts carry
+    it for reasons that have nothing to do with administering scorecards. A
+    screen that sets the figures people are paid on needs a real signal, so
+    this takes a superuser or membership of an administration group and
+    nothing else.
+
+    ``_may_load`` is left alone rather than tightened, because the workbook
+    uploads behind it are in use and locking somebody out of a working screen
+    to make a point about a flag would be the wrong trade.
+    """
+    return bool(
+        user and user.is_authenticated
+        and (user.is_superuser
+             or user.groups.filter(
+                 name__in=("staff_mgt", "Management", "hr")).exists()))
+
+
 class _WorkbookUploadView(APIView):
     """Shared shape: read and report first, write only when asked.
 
@@ -687,3 +708,223 @@ class ScorecardDownloadView(APIView):
         response["Content-Disposition"] = (
             f'attachment; filename="Scorecard_{name}_{period}.xlsx"')
         return response
+
+
+# ── Administration: the figures the system cannot compute ────────────────────
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardManualRowsView(APIView):
+    """Which lines need a figure typed in, and what is already loaded.
+
+    Administration reads this to see the work: one row per person per line
+    that the warehouse cannot answer, with the figure if somebody has already
+    loaded one. Pass ``?sales_code=`` for one person.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.scorecard_manual import (
+            MANUAL_ACTUALS, MANUAL_TARGETS, _default_month,
+            rows_needing_a_figure)
+        from .models import ScEmployeeKpiTarget, ScEmployeePerformanceActual
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can see everybody's "
+                           "figures."}, status=403)
+
+        month = _default_month()
+        rows = rows_needing_a_figure(
+            str(request.query_params.get("sales_code") or "").strip())
+
+        targets = {(t.sales_code.strip().upper(), t.kpi_code): t.kpi_target
+                   for t in ScEmployeeKpiTarget.objects.filter(
+                       year=month.year)}
+        actuals = {((a.sales_code or "").strip().upper(), a.kpi_code): a.kpi_value
+                   for a in ScEmployeePerformanceActual.objects.filter(
+                       eom_date=month)}
+
+        out = []
+        for row in rows:
+            key = (row["sales_code"], row["kpi_code"])
+            out.append({**row,
+                        "target": targets.get(key) if row["needs_target"] else None,
+                        "actual": actuals.get(key) if row["needs_actual"] else None})
+        loaded = sum(1 for r in out
+                     if r["target"] is not None or r["actual"] is not None)
+        return Response({
+            "month": month.isoformat(),
+            "rows": out,
+            "total": len(out),
+            "loaded": loaded,
+            "outstanding": len(out) - loaded,
+            "manual_actual_kpis": MANUAL_ACTUALS,
+            "manual_target_kpis": MANUAL_TARGETS,
+        })
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardManualTemplateView(APIView):
+    """Download the template, generated from the roster.
+
+    Pre-filled with who and which line, so the only thing to type is the
+    number. A blank template that somebody has to match up by hand is how a
+    figure ends up against the wrong sales code.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.http import HttpResponse
+
+        from apps.staff_management.scorecard_manual import build_template
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can load everybody's "
+                           "figures."}, status=403)
+
+        code = str(request.query_params.get("sales_code") or "").strip()
+        buffer, count = build_template(code)
+        name = f"Scorecard_figures_{code or 'all'}.xlsx"
+        response = HttpResponse(
+            buffer.read(),
+            content_type="application/vnd.openxmlformats-officedocument"
+                         ".spreadsheetml.sheet")
+        response["Content-Disposition"] = f'attachment; filename="{name}"'
+        response["X-Rows"] = str(count)
+        return response
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardManualUploadView(_WorkbookUploadView):
+    """Load the filled template.
+
+    Read and report first, write only on a second call with ``apply=true`` -
+    these figures are part of what people are paid on, and an import that
+    silently replaced them would be worse than no import.
+    """
+
+    def post(self, request):
+        from apps.staff_management.scorecard_manual import (
+            apply_upload, read_upload)
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can load the figures."},
+                status=403)
+
+        upload, bad = self._file(request)
+        if bad is not None:
+            return bad
+
+        try:
+            entries, problems = read_upload(upload)
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            return Response(
+                {"detail": f"That file could not be read: {exc}"}, status=400)
+
+        preview = [{
+            "row": e["row"], "sales_code": e["sales_code"],
+            "kpi_code": e["kpi_code"], "target": e["target"],
+            "actual": e["actual"], "month": e["month"].isoformat(),
+        } for e in entries[:200]]
+
+        if str(request.data.get("apply", "")).strip().lower() not in (
+                "1", "true", "yes", "on"):
+            return Response({
+                "applied": False,
+                "found": len(entries),
+                "problems": problems,
+                "preview": preview,
+                "detail": (f"{len(entries)} figure(s) read and "
+                           f"{len(problems)} problem(s) found. Nothing has "
+                           f"been saved. Send the same file with apply=true "
+                           f"to save."),
+            })
+
+        if not entries:
+            return Response(
+                {"applied": False, "found": 0, "problems": problems,
+                 "detail": "There is nothing to save in that file."},
+                status=400)
+
+        who = (request.user.get_full_name() or request.user.username).strip()
+        written = apply_upload(entries, who=who)
+        return Response({
+            "applied": True,
+            "found": len(entries),
+            "problems": problems,
+            "written": written,
+            "detail": (f"Saved {written['targets']} target(s) and "
+                       f"{written['actuals']} actual(s). The cards show them "
+                       f"on the next reload."),
+        })
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardManualEntryView(APIView):
+    """Save one figure, for when a file is more trouble than it is worth.
+
+    Same validation as the upload: a figure against a sales code nobody holds,
+    or against a KPI that is not on that person's card, is refused rather than
+    saved somewhere nothing reads.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from apps.staff_management.scorecard_manual import (
+            MANUAL_ACTUALS, MANUAL_TARGETS, _default_month, _month_of,
+            _number, apply_upload)
+        from apps.staff_management.live_scorecard import role_code_for, roster_row
+        from .models import ScRoleKpiMapping
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only an administrator can set these figures."},
+                status=403)
+
+        code = str(request.data.get("sales_code") or "").strip().upper()
+        kpi = str(request.data.get("kpi_code") or "").strip()
+        if not code or not kpi:
+            return Response(
+                {"detail": "sales_code and kpi_code are both required."},
+                status=400)
+
+        row = roster_row(code)
+        role = role_code_for(getattr(row, "staff_role", "")) if row else None
+        if role is None:
+            return Response(
+                {"detail": f"{code} is not on the DMC roster with a role that "
+                           f"has a card."}, status=400)
+        if not ScRoleKpiMapping.objects.filter(
+                role_code=role, kpi_code=kpi).exists():
+            return Response(
+                {"detail": f"{kpi} is not on the {role} card, which is the "
+                           f"card {code} is measured on."}, status=400)
+
+        target = _number(request.data.get("target"))
+        actual = _number(request.data.get("actual"))
+        if target is not None and kpi not in MANUAL_TARGETS:
+            return Response(
+                {"detail": f"{kpi} takes its target from the DMC roster or the "
+                           f"role's card, so one set here would be ignored."},
+                status=400)
+        if actual is not None and kpi not in MANUAL_ACTUALS:
+            return Response(
+                {"detail": f"{kpi} is computed from the warehouse, so an actual "
+                           f"set here would never be used."}, status=400)
+        if target is None and actual is None:
+            return Response({"detail": "Give a target or an actual."},
+                            status=400)
+
+        month = _month_of(request.data.get("month")) or _default_month()
+        who = (request.user.get_full_name() or request.user.username).strip()
+        written = apply_upload([{
+            "sales_code": code, "kpi_code": kpi, "target": target,
+            "actual": actual, "month": month, "row": 0,
+        }], who=who)
+        return Response({"written": written, "month": month.isoformat()})

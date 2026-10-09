@@ -484,6 +484,50 @@ def _property_sales_ytd(staff_name, year):
     return (int(units or 0), float(value or 0), bool(ever), latest)
 
 
+def _afh_property_ytd(sales_code, staff_name, year):
+    """Affordable-housing units this person assisted → (units, value, known).
+
+    The second half of the property line, and the half that reaches bank
+    staff. The HFDI sales return names the property ADVISOR who sold the unit;
+    affordable housing names whoever ASSISTED the buyer, which is how a branch
+    RM earns the Group Synergies credit.
+
+    The chain is the bank's own: ``affordable_housing_applications.assisted_by``
+    is free text typed into the form, and ``afh_seller_mapping`` is the table
+    that resolves it to a member of staff - the same join the affordable
+    housing report uses (``hfcb_properties_reports/afh_applications.py``). The
+    mapping is matched on the staff id against the sales code or the PF number,
+    and on the name, because which of those the mapping carries varies.
+
+    ``known`` says whether this person is on the mapping at all, for the same
+    reason the HFDI reader checks the name: somebody missing from the mapping
+    reads as nil, and so does somebody who assisted nobody.
+    """
+    from django.db import connection
+
+    name = " ".join((staff_name or "").split()).strip()
+    code = sales_code.strip()
+    sql = """
+        WITH me AS (
+            SELECT LOWER(TRIM(afh_name)) AS afh_name
+            FROM afh_seller_mapping
+            WHERE UPPER(TRIM(COALESCE(staff_id, ''))) = UPPER(%s)
+               OR UPPER(TRIM(COALESCE(name, ''))) = UPPER(%s)
+        )
+        SELECT COUNT(*) FILTER (
+                   WHERE EXTRACT(YEAR FROM a.timestamp) = %s),
+               COALESCE(SUM(a.unit_price) FILTER (
+                   WHERE EXTRACT(YEAR FROM a.timestamp) = %s), 0),
+               (SELECT COUNT(*) FROM me)
+        FROM affordable_housing_applications a
+        JOIN me ON me.afh_name = LOWER(TRIM(COALESCE(a.assisted_by, '')))
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [code, name, year, year])
+        units, value, mapped = cur.fetchone()
+    return int(units or 0), float(value or 0), bool(mapped)
+
+
 def _new_accounts_ytd(sales_code, year, turnover_floor=None):
     """New customers this person opened this year → (count, latest open date).
 
@@ -737,27 +781,38 @@ def live_actuals(sales_code, staff_name=""):
 
     # ── HFDI property, which is the Group Synergies perspective ───────────
     def property_sales():
-        units, value, on_return, latest = _property_sales_ytd(staff_name, year)
-        if units is None:
-            return {
-                "property_units": _figure(
-                    None, problem="your roster row has no name to match "
-                                  "against the HFDI sales return"),
-                "property_value": _figure(
-                    None, problem="your roster row has no name to match "
-                                  "against the HFDI sales return"),
-            }
-        if not on_return:
-            # The return is keyed on a NAME. A name spelt differently there
-            # reads as nil sales, and so does a genuine nil - those two must
-            # not look the same on somebody's scorecard.
-            why = (f"\"{staff_name}\" does not appear anywhere on the HFDI "
-                   f"sales return, so a nil here cannot be told apart from a "
-                   f"name that is spelt differently there")
+        """Group Synergies property, from BOTH returns.
+
+        The HFDI sales return names the advisor who SOLD a unit; affordable
+        housing names whoever ASSISTED the buyer. A branch RM earns the
+        synergy credit the second way, which is why reading only the first
+        told most of them they were not on the return.
+
+        A person has to be findable on at least one of the two before a nil is
+        reported as a nil: missing from both reads exactly like assisting
+        nobody, and those must not look the same on a scorecard.
+        """
+        hfdi_units, hfdi_value, on_return, latest = _property_sales_ytd(
+            staff_name, year)
+        afh_units, afh_value, mapped = _afh_property_ytd(
+            sales_code, staff_name, year)
+
+        if not on_return and not mapped:
+            why = (f"{staff_name or sales_code} is on neither the HFDI sales "
+                   f"return nor the affordable-housing seller mapping, so a "
+                   f"nil here cannot be told apart from a name spelt "
+                   f"differently on one of them")
             return {"property_units": _figure(None, problem=why),
                     "property_value": _figure(None, problem=why)}
+
+        units = (hfdi_units or 0) + afh_units
+        value = (hfdi_value or 0) + afh_value
         at = latest or monthly
-        label = f"as at {at.day} {at:%b %Y}"
+        where = " and ".join(
+            part for part in (
+                "HFDI sales" if on_return else "",
+                "affordable housing" if mapped else "") if part)
+        label = f"{where}, as at {at.day} {at:%b %Y}"
         return {"property_units": _figure(units, at, label),
                 "property_value": _figure(value, at, label)}
 
@@ -1086,6 +1141,29 @@ def build_card(sales_code, profile=None):
     except Exception:  # noqa: BLE001 - an absent table must not blank the card
         allocations = {}
 
+    # Figures an administrator loaded for the lines the system cannot measure.
+    # Read for the last CLOSED month, which is the month a manual return is
+    # for; an older figure is not carried forward, because a survey score from
+    # four months ago presented as this month's is worse than a blank.
+    from .scorecard_automation.models import ScEmployeePerformanceActual
+    from .scorecard_manual import MANUAL_ACTUALS
+
+    # The row is keyed on the first of the month; the figure is AS AT its last
+    # day, and that is the date the target is sliced to.
+    loaded_as_at = last_closed_month_end(datetime.date.today())
+    loaded_month = loaded_as_at.replace(day=1)
+    loaded_actuals = {}
+    try:
+        with transaction.atomic():
+            loaded_actuals = {
+                row.kpi_code: float(row.kpi_value)
+                for row in ScEmployeePerformanceActual.objects.filter(
+                    sales_code__iexact=sales_code.strip(),
+                    eom_date=loaded_month)
+            }
+    except Exception:  # noqa: BLE001 - an absent table must not blank the card
+        loaded_actuals = {}
+
     role = ScRole.objects.filter(role_code=role_code).first()
 
     # The seeded definitions carry the card's own wording. Without them a line
@@ -1144,6 +1222,23 @@ def build_card(sales_code, profile=None):
         problem = figure["problem"] if figure else None
         failed = bool(figure.get("failed")) if figure else False
 
+        # The actual ladder, and it is only two rungs: what the system can
+        # measure, then what an administrator has typed in for the lines it
+        # cannot - the survey, the learning system, HR, Audit.
+        #
+        # The warehouse ALWAYS wins. A figure loaded by hand can never
+        # overwrite a measured one, so a stale upload cannot quietly replace a
+        # live number; and the card says which of the two it used, so a typed
+        # figure is never mistaken for a measured one.
+        if (actual is None and mapping.kpi_code in loaded_actuals
+                and mapping.kpi_code in MANUAL_ACTUALS):
+            actual = loaded_actuals[mapping.kpi_code]
+            as_at = loaded_as_at
+            as_at_label = f"loaded by Administration for {loaded_as_at:%b %Y}"
+            problem = None
+            failed = False
+            unwired = False
+
         # A threshold holds all year; everything else is sliced to the date
         # its own actual is as at.
         full_year = mapping.kpi_code in FULL_YEAR_TARGETS
@@ -1156,7 +1251,7 @@ def build_card(sales_code, profile=None):
         # and because the two are fixed by different people: a missing target
         # column is the DMC load, a failed read is the warehouse.
         pending = pending_label = ""
-        if source.pending:
+        if source.pending and actual is None:
             pending, pending_label = source.pending, "Not measured here"
         elif field and target_problem:
             pending = (f"Your targets could not be read from the DMC roster: "

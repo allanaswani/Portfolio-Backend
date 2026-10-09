@@ -170,6 +170,7 @@ bonus depends on it.
 | Weigted TAT / Weigted TAT (SLA) | role target: 100% | same table — share of applications inside the 7-day standard |
 | PAR | role target: 2.5% | `loans` over this RM's allocated customers — arrears balance over total balance; **threshold, lower is better** |
 | Asset Growth (where the DMC column is absent) | rate on the person's own December book | `loan_daily_balance_movement` growth |
+| Number of Property, Value of Property Sales (affordable housing half) | role target | `affordable_housing_applications` joined to `afh_seller_mapping` on `assisted_by` |
 
 Deposits and loans measure **GROWTH**, not position. A position passed off as
 growth would credit every RM with their entire opening book and read several
@@ -202,6 +203,17 @@ Four of those sources were already in this database and connected to nothing:
   denominator came from two different books would not be a ratio of anything.
   The allocation is de-duplicated first — it has no unique customer.
 
+**Property comes off TWO returns, and this matters.** The HFDI sales return
+names the advisor who **sold** a unit; `affordable_housing_applications` names
+whoever **assisted** the buyer. A branch RM earns the Group Synergies credit the
+second way, which is why reading only the first told most of them they were not
+on the return at all. The chain is the bank's own, the same join
+`hfcb_properties_reports/afh_applications.py` uses: `assisted_by` is free text
+typed into the form, and `afh_seller_mapping` resolves it to a member of staff,
+matched on the staff id against the sales code and on the name. A person has to
+be findable on at least one of the two returns before a nil is reported as a
+nil.
+
 ### Target wired, actual not available
 
 | Line | Why |
@@ -224,24 +236,65 @@ other banca products". Which products are "other" is recorded nowhere, and the
 cards carrying this line already count life and non-life beside it, so reading
 it as either would double one of those lines.
 
-## 5. How much of a card scores live
+## 5. The figures an administrator loads
 
-Share of each card's weight that is scored from live data today:
+Everything above is computed. What is left is measured somewhere this platform
+cannot reach — the customer survey (NPS), the learning system (training hours),
+HR (leave), Internal Audit, the branch's own engagement count, iApply covenant
+tracking, account-planning reviews — plus the handful of targets the DMC load
+has no column for. Those have nowhere to come from except a person typing them
+in, so there is now a screen where a person types them in:
 
-| Role | Scored live | Was |
-|---|---|---|
-| Commercial RM — Trade | 81% | 61% |
-| Diaspora RM / ARM | 81% | 61% |
-| Commercial RM | 76% | 60% |
-| SME RM / ARM / BBC | 72% | 56% |
-| PB RM / ARM / BBC | 71% | 55% |
-| Ultimate RM | 66% | 53% |
-| Mortgage Business ARM | 44% | 10% |
+**Administration → Scorecards → Figures to load**
+(`/management/scorecards/manual-figures`)
 
-The Mortgage Business card still trails because 40% of it is the two mortgage
-rate-split lines, which need a market/non-market rate flag on the drawdown.
+* The template is **generated from the roster**, not kept as a file: one row
+  per person per line that actually needs a figure, with their name, sales
+  code, role and KPI already filled in. A blank template somebody has to match
+  up by hand is how a figure ends up against the wrong sales code.
+* **Read first, write second.** The first upload reports what it found and
+  saves nothing; only a second call with `apply=true` writes.
+* A figure against a sales code nobody holds, or against a KPI that is not on
+  that person's card, is **refused** rather than written somewhere nothing
+  reads. So is an actual for a line the warehouse computes — accepting it would
+  be worse than refusing it, because the card would never read the figure and
+  whoever typed it would believe it had.
+* **The warehouse always wins.** A loaded figure is used only where the system
+  has nothing of its own, so a stale upload can never overwrite a live number —
+  and the card labels it "loaded by Administration for <month>", so a typed
+  figure is never mistaken for a measured one.
+* A figure is for the month that has **closed**, and an older one is **not
+  carried forward**: a survey score from four months ago presented as this
+  month's is worse than a blank.
+* Admin and superusers only, and the two tables it writes
+  (`sc_employee_kpi_targets`, `sc_employee_performance_actual_values`) both
+  already existed with nothing writing to them.
 
-## 6. Signing
+`ScEmployeePerformanceActual.save` had to be repaired to make this work: it
+called `update_change_reason` *before* `super().save()`, so it looked for a
+history record the save had not created yet and raised `'NoneType' object has
+no attribute 'history_change_reason'`. Until that was reordered, **no row in
+that table could be updated at all** — only inserted. The requirement is kept;
+only the order changed.
+
+## 6. How much of a card is covered
+
+| Role | Measured automatically | Loaded by Administration | Nowhere |
+|---|---|---|---|
+| Commercial RM — Trade | 81% | 19% | 0% |
+| Diaspora RM / ARM | 81% | 19% | 0% |
+| Commercial RM | 76% | 24% | 0% |
+| SME RM / ARM / BBC | 72% | 28% | 0% |
+| PB RM / ARM / BBC | 71% | 29% | 0% |
+| Ultimate RM | 66% | 34% | 0% |
+| Mortgage Business ARM | 44% | 56% | 0% |
+
+Every line of every card now has somewhere to come from. The Mortgage Business
+card leans hardest on the upload because 40% of it is the two mortgage
+rate-split lines, and splitting those automatically needs a market/non-market
+rate flag on the drawdown.
+
+## 7. Signing
 
 A live card cannot be signed. It is computed from feeds that move every night,
 so a signature on it would attest to a document that reads differently an hour
@@ -274,7 +327,7 @@ would go, not a zero — a zero reads as "achieved nothing", which is a differen
 statement from "nobody has this figure". An unsigned download says so on the
 sheet.
 
-## 7. What the lake does and does not hold
+## 8. What the lake does and does not hold
 
 `delta.gold_db`, 231 tables, searched by column rather than by guessing at
 table names. Worth recording so nobody searches it again:
@@ -307,27 +360,62 @@ mirrors it. Nothing in this module reads Trino at request time: a page that
 depends on a second database is a page that goes blank when that database is
 busy.
 
-## 8. Still to settle with the desk
+## 9. Still to settle with the desk
 
 1. **The two banca lines' axis.** The lines are *named* VIC / Group Synergies
    but *described* "life policies" / "non-life". The DMC roster and
    `premium_types_mapping` both carry the life/non-life split, so that is the
    axis used. The lake's `policy_insurer` confirms VIC is an insurer split
-   (Britam) and therefore a different question. If the cards mean the insurer
-   split, these two lines are reading the wrong half.
+   (Britam, against Pioneer and Geminia) and therefore a different question. If
+   the cards mean the insurer split, these two lines are reading the wrong half.
 2. **The caps the cards disagree on**: NPS (1.0 or 1.2), loan loss (1.0 or
    1.2), training and leave (1.0 on three cards), and whether a negative growth
    line may take a card negative.
 3. **Asset Growth**: the stated rate (43/38/36/21/100%) against the desk's own
    assigned figure, which differs on three of the five cards. Adding
-   `target_asset_growth_value` to the per-person DMC load settles it for good,
-   and overrides the rate automatically.
+   `target_asset_growth_value` to the per-person DMC load settles it for good
+   and overrides the rate automatically; so does loading it on the
+   Figures-to-load screen.
 4. **`target_pbt_revenue` and `target_loan_provisions`** are on the branch DMC
-   table and not the per-person one, and no role-wide figure can stand in for
-   them — they are per person by nature. Operating Profit, Income Contribution,
-   Direct Portfolio Contribution and Loan Loss are 15-20% of most cards and will
-   keep saying "No target column" until the DMC load carries them.
+   table and not the per-person one. Operating Profit, Income Contribution,
+   Direct Portfolio Contribution and Loan Loss are 15-20% of most cards, and
+   until the DMC load carries those two columns they come off the
+   Figures-to-load screen. Two columns in the ETL would make them automatic.
+   They are **not** taken from the branch row: a branch revenue target handed
+   to one RM reads as a couple of percent and paints a fully performing RM red.
 5. **The `weighted_dashboard_manual_sales_table` name match.** It is keyed on
-   `staff_name`. Every RM whose name is spelt differently there than on the DMC
-   roster will see "does not appear on the HFDI sales return" rather than a
-   figure. A seller code on that return would remove the whole class of problem.
+   `staff_name`, so an RM whose name is spelt differently there will see "on
+   neither return" rather than a figure. A seller code on that return would
+   remove the whole class of problem — the affordable-housing side already has
+   one, through `afh_seller_mapping.staff_id`.
+
+## 10. A separate finding: the affordable-housing upload drops rows
+
+Not fixed here, because it is another module's validation and not mine to
+loosen without a decision — but it bears directly on the property line, so it
+is recorded.
+
+`AffordableHousingApplicationSerializer` rejects a **blank** value in six
+fields: `assisted_by`, `typology`, `project_name`, `mode_of_payment`,
+`need_deposit_assitance` and `status`. The model declares all six
+`null=False, blank=False`.
+
+Verified against the serializer directly: a row with those blank comes back
+invalid on all six. So any row in an affordable-housing export with a blank in
+one of them is refused by `affordable-housing-applications/upload-csv/` rather
+than loaded — and `assisted_by` blank is a perfectly ordinary case (a walk-in
+with nobody named), as is `status` on a new application.
+
+`apps.hfdi.tests.AffordableHousingCsvUploadTests.test_application_upload_amends_and_upserts`
+has been failing for this reason: its row leaves five of the six blank, so
+nothing is written and the test's `objects.get(...)` raises `DoesNotExist`.
+The same test also asserts `obj.timestamp == "2024-03-05T14:30:00"` — a string
+— against a `DateTimeField`, so it has a second problem behind the first.
+
+**Why it matters here:** the scorecard's property line reads
+`affordable_housing_applications`. In production that table is filled by the
+ETL (`hfcb_properties_reports/afh_applications.py` reads it, so something
+upstream writes it), not by this endpoint, so the line is not starved today.
+But anyone loading a correction through the screen will lose rows without
+being told which, and whichever of the six fields can genuinely be blank
+should be `blank=True` on the model.
