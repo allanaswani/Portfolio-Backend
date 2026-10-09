@@ -2,7 +2,7 @@
 Portfolio service layer — encapsulates all raw SQL queries from old backend's core/core.py.
 Views call these functions; no logic lives in views.
 """
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.db import connection
@@ -537,6 +537,112 @@ def rm_balances(sales_code):
         "total_loans": loan,
         "loans_as_at": loan_at,
     }
+
+
+def rm_growth(table, sales_code):
+    """An RM's YTD GROWTH in one balance-movement table.
+
+    → ``{"position", "base", "growth", "as_at", "as_at_label", "problem"}``
+    where ``as_at`` is a real date, not a phrase.
+
+    The scorecard measures growth, not position: "Deposit Growth" against a
+    ``target_deposits_value`` is this year's movement — the balance now minus
+    last December's close. Scoring a position against a growth target would
+    credit every RM with their entire opening book and read several hundred
+    percent on day one.
+
+    Position and base are read in ONE statement with ONE set of filters, which
+    is the whole reason this is not two calls to :func:`_rm_balance`. The
+    position excludes INTERNAL ACCOUNTS and VIRTUAL; an opening balance that
+    did not exclude them would be measured over a different population, and the
+    difference between the two would not be growth at all — it would be the
+    internal accounts.
+
+    ``as_at`` is returned because the target has to be pro-rated to the same
+    date as the actual. A balance as at 30 September compared against a target
+    pro-rated to 9 October is nine days of plan the RM has not been given
+    credit for.
+    """
+    columns = _table_columns(table)
+    if not columns:
+        return {"position": None, "base": None, "growth": None, "as_at": None,
+                "as_at_label": None, "problem": f"{table} is not in the database"}
+
+    today = datetime.now().date()
+    base_column = f"dec_{str(today.year - 1)[-2:]}_bal"
+    if base_column not in columns:
+        return {"position": None, "base": None, "growth": None, "as_at": None,
+                "as_at_label": None,
+                "problem": f"{table} has no {base_column} column, so there is "
+                           f"no opening balance for {today.year} to grow from"}
+
+    # The ladder, but only rungs INSIDE this year: a position taken from last
+    # October would be compared against last December's close and come back as
+    # a negative "growth" for a book that has not shrunk.
+    months = [(c, lbl) for c, lbl in _closed_months()
+              if c in columns and c.endswith(f"_{str(today.year)[-2:]}_bal")]
+    ladder = [(c, "yesterday" if c == "yester_1_bal" else "2 days ago")
+              for c in ("yester_1_bal", "yester_2_bal") if c in columns]
+    ladder += [(c, f"as at {lbl}") for c, lbl in months]
+    if not ladder:
+        return {"position": None, "base": None, "growth": None, "as_at": None,
+                "as_at_label": None,
+                "problem": f"{table} has no balance column for {today.year} yet"}
+
+    wanted = [c for c, _ in ladder] + [base_column]
+    seg = ("AND COALESCE(customer_segment, '') <> ALL(%s)"
+           if "customer_segment" in columns else "")
+    params = [sales_code] + ([list(_BAL_EXCLUDE)] if seg else [])
+    sql = f"""
+        SELECT {", ".join(f"SUM({c}) FILTER (WHERE {c} > 0) AS {c}"
+                          for c in wanted)}
+        FROM {table}
+        WHERE TRIM(rm_code) = TRIM(%s)
+        {seg}
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, params)
+        row = dict(zip([c[0] for c in cur.description], cur.fetchone()))
+
+    position = as_at_label = as_at = None
+    for column, label in ladder:
+        value = row.get(column)
+        if value and float(value) > 0:
+            position, as_at_label = float(value), label
+            as_at = (today - timedelta(days=1 if column == "yester_1_bal" else 2)
+                     if column.startswith("yester_") else _month_end(column))
+            break
+
+    if position is None:
+        return {"position": None, "base": None, "growth": None, "as_at": None,
+                "as_at_label": None,
+                "problem": "this sales code has no balances in "
+                           f"{table} for {today.year}"}
+
+    base = row.get(base_column)
+    # A missing opening balance is NOT zero. An RM who has been in the seat for
+    # years and whose December column did not load would be credited with their
+    # whole book as growth.
+    if base is None:
+        return {"position": position, "base": None, "growth": None,
+                "as_at": as_at, "as_at_label": as_at_label,
+                "problem": f"no {base_column} balance for this sales code, so "
+                           f"this year's growth cannot be worked out"}
+
+    base = float(base)
+    return {"position": position, "base": base, "growth": position - base,
+            "as_at": as_at, "as_at_label": as_at_label, "problem": None}
+
+
+def _month_end(column):
+    """``sep_26_bal`` → ``date(2026, 9, 30)``."""
+    month, yy, _ = column.split("_")
+    year = 2000 + int(yy)
+    index = _MONTHS.index(month)
+    day = _MONTH_END[index]
+    if index == 1 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+        day = 29
+    return date(year, index + 1, day)
 
 
 def rm_revenue(sales_code):

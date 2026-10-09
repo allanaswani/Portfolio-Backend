@@ -24,6 +24,11 @@ urlpatterns = [
     # The signed-in person's own card, laid out as the card is.
     path("my-card/", views.ScorecardCardView.as_view()),
 
+    # Signing freezes the figures; the download renders the signed copy when
+    # there is one, and is marked unsigned when there is not.
+    path("my-card/sign/", views.ScorecardSignView.as_view()),
+    path("my-card/download/", views.ScorecardDownloadView.as_view()),
+
     # Loading the workbooks. Both read and report first; only a second call
     # with apply=true writes, and the actuals upload then runs the scorecard
     # itself so the RM's card is current without a second action.

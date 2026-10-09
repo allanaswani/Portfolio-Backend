@@ -363,3 +363,80 @@ class ScEmployeeKpiTarget(models.Model):
 
     def __str__(self):
         return f"{self.sales_code} - {self.kpi_code} - {self.year}"
+
+
+class ScorecardSignoff(models.Model):
+    """One person's card, frozen at the moment they signed it.
+
+    A live card cannot be signed. It is computed from feeds that move every
+    night, so a signature on "my card" would attest to a document that reads
+    differently an hour later — and the whole point of the signature is that
+    both sides agree on what the figures WERE.
+
+    So signing takes a copy. ``card`` is the complete response the page was
+    showing, scores and all, and the download renders from that copy rather
+    than recomputing. The score at the top of a signed card is the score that
+    was signed for, for ever.
+
+    Two signatures per period, held in one row because they are two halves of
+    the same act:
+
+    * the owner signs their own card, and cannot sign anybody else's — the view
+      resolves the sales code from their own profile, so there is no parameter
+      to forget to check;
+    * their line manager counter-signs, and the manager named on the DMC row is
+      the one the view will accept.
+
+    ``period`` is ``YYYY-MM``, which makes one row per person per month and
+    means re-signing the same month replaces that month's signature rather than
+    quietly stacking a second one.
+    """
+
+    sales_code = models.CharField(max_length=255, db_index=True)
+    #: YYYY-MM — the month the card was signed FOR, not the day it was signed.
+    period = models.CharField(max_length=7, db_index=True)
+
+    #: The complete card as it stood when it was signed.
+    card = models.JSONField(default=dict)
+    #: Copied out of ``card`` so a period can be listed and ranked without
+    #: unpacking every JSON blob.
+    performance_score = models.FloatField(null=True, blank=True)
+    scored_lines = models.PositiveSmallIntegerField(default=0)
+    pending_lines = models.PositiveSmallIntegerField(default=0)
+
+    signed_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="scorecards_signed")
+    #: The name as typed by the signer. Kept beside the FK because people leave
+    #: and a deactivated account must not erase who signed.
+    signed_by_name = models.CharField(max_length=255, blank=True, default="")
+    signed_at = models.DateTimeField(null=True, blank=True)
+    owner_comment = models.TextField(blank=True, default="")
+
+    manager_signed_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="scorecards_countersigned")
+    manager_signed_by_name = models.CharField(max_length=255, blank=True, default="")
+    manager_signed_at = models.DateTimeField(null=True, blank=True)
+    manager_comment = models.TextField(blank=True, default="")
+
+    history = HistoricalRecords()
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "sc_scorecard_signoffs"
+        verbose_name = "Scorecard Sign-off"
+        verbose_name_plural = "Scorecard Sign-offs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sales_code", "period"],
+                name="sc_unique_signoff_per_period"),
+        ]
+        indexes = [models.Index(fields=["period", "sales_code"])]
+
+    def __str__(self):
+        return f"{self.sales_code} {self.period}"
+
+    @property
+    def is_fully_signed(self):
+        return bool(self.signed_at and self.manager_signed_at)

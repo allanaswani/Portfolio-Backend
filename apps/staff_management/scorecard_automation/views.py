@@ -405,6 +405,27 @@ class ScorecardCardView(APIView):
                     "sales_code": sales_code,
                     "detail": f"Your card could not be computed: {exc}"}
         if live.get("has_card"):
+            # Whether this month's card has been signed, and by whom. The page
+            # needs it to know whether to offer the signature or show it, and
+            # a signed card must not quietly present different figures from the
+            # ones on the signed copy.
+            from apps.staff_management.scorecard_signoff import period_for
+            from .models import ScorecardSignoff
+
+            period = period_for()
+            signoff = ScorecardSignoff.objects.filter(
+                sales_code=sales_code, period=period).first()
+            live["signoff"] = _signoff_payload(signoff)
+            live["signoff_period"] = period
+            if signoff and signoff.signed_at and signoff.card:
+                # Signed: serve the copy that was signed, and say so. Showing
+                # live figures under a signature would mean the screen and the
+                # signed document disagree.
+                signed = dict(signoff.card)
+                signed["live"] = False
+                signed["signoff"] = live["signoff"]
+                signed["signoff_period"] = period
+                return Response(signed)
             return Response(live)
 
         rows = list(ScEmployeeMonthlyPerformance.objects
@@ -500,3 +521,169 @@ class ScorecardCardView(APIView):
             "lines": len(lines),
             "not_configured": pending,
         })
+
+
+# ── Signing and downloading a card ───────────────────────────────────────────
+
+
+def _own_sales_code(request):
+    """The caller's own sales code, or "". Never taken from the request body:
+    a card belongs to one person and there is no parameter to forget to check."""
+    from apps.portfolio.models import Profile
+
+    profile = Profile.objects.filter(user_id=request.user.id).first()
+    return (profile.sales_code or "").strip() if profile else ""
+
+
+def _signoff_payload(signoff):
+    if signoff is None:
+        return None
+    return {
+        "period": signoff.period,
+        "signed": bool(signoff.signed_at),
+        "signed_by": signoff.signed_by_name,
+        "signed_at": signoff.signed_at.isoformat() if signoff.signed_at else None,
+        "owner_comment": signoff.owner_comment,
+        "manager_signed": bool(signoff.manager_signed_at),
+        "manager_signed_by": signoff.manager_signed_by_name,
+        "manager_signed_at": (signoff.manager_signed_at.isoformat()
+                              if signoff.manager_signed_at else None),
+        "manager_comment": signoff.manager_comment,
+        "performance_score": signoff.performance_score,
+        "fully_signed": signoff.is_fully_signed,
+    }
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardSignView(APIView):
+    """Sign your own card, or counter-sign as the line manager.
+
+    Signing FREEZES the card. The live figures move every night, so a
+    signature against them would attest to a document that reads differently an
+    hour later; what is stored is the card as it was at the moment of signing,
+    and that copy is what the download renders from afterwards.
+
+    ``role=owner`` (the default) signs your own card. ``role=manager``
+    counter-signs somebody else's, and is accepted only from the person the
+    DMC roster names as their team leader — matched on name, because the roster
+    records a line manager's NAME and not their user account.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.utils import timezone
+
+        from apps.staff_management.live_scorecard import build_card, roster_row
+        from apps.staff_management.scorecard_signoff import period_for
+        from .models import ScorecardSignoff
+
+        role = str(request.data.get("role") or "owner").strip().lower()
+        comment = str(request.data.get("comment") or "").strip()
+        signer = (request.user.get_full_name() or request.user.username).strip()
+
+        if role == "owner":
+            sales_code = _own_sales_code(request)
+            if not sales_code:
+                return Response(
+                    {"detail": "Your profile has no sales code, so there is no "
+                               "card to sign."},
+                    status=status.HTTP_400_BAD_REQUEST)
+        else:
+            sales_code = str(request.data.get("sales_code") or "").strip()
+            if not sales_code:
+                return Response(
+                    {"detail": "sales_code is required to counter-sign."},
+                    status=status.HTTP_400_BAD_REQUEST)
+            row = roster_row(sales_code)
+            named = (getattr(row, "team_leader", "") or "").strip().lower()
+            # A manager signs the people the roster says are theirs. Anyone
+            # else counter-signing would make the second signature worthless.
+            if not request.user.is_superuser and named != signer.lower():
+                return Response(
+                    {"detail": f"{sales_code} is not on your team, so you "
+                               f"cannot counter-sign their card."},
+                    status=status.HTTP_403_FORBIDDEN)
+
+        card = build_card(sales_code)
+        if not card.get("has_card"):
+            return Response(card, status=status.HTTP_400_BAD_REQUEST)
+
+        period = period_for()
+        signoff, _ = ScorecardSignoff.objects.get_or_create(
+            sales_code=sales_code, period=period)
+
+        if role == "owner":
+            # The owner's signature is what fixes the figures. A manager
+            # counter-signing must not quietly re-freeze a different set.
+            signoff.card = card
+            signoff.performance_score = card.get("performance_score")
+            signoff.scored_lines = card.get("scored_lines") or 0
+            signoff.pending_lines = card.get("pending_lines") or 0
+            signoff.signed_by = request.user
+            signoff.signed_by_name = signer
+            signoff.signed_at = timezone.now()
+            signoff.owner_comment = comment
+        else:
+            if not signoff.signed_at:
+                return Response(
+                    {"detail": f"{sales_code} has not signed their own card "
+                               f"for {period} yet, so there is nothing to "
+                               f"counter-sign."},
+                    status=status.HTTP_409_CONFLICT)
+            signoff.manager_signed_by = request.user
+            signoff.manager_signed_by_name = signer
+            signoff.manager_signed_at = timezone.now()
+            signoff.manager_comment = comment
+
+        signoff.save()
+        return Response({"signoff": _signoff_payload(signoff)},
+                        status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardDownloadView(APIView):
+    """Download your card as the spreadsheet the desk sends.
+
+    The SIGNED copy when there is one, so the file and the signature agree;
+    the live figures otherwise, clearly marked unsigned on the sheet itself.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.http import HttpResponse
+
+        from apps.staff_management.live_scorecard import build_card
+        from apps.staff_management.scorecard_signoff import (
+            build_card_workbook, period_for)
+        from .models import ScorecardSignoff
+
+        sales_code = _own_sales_code(request)
+        if not sales_code:
+            return Response(
+                {"detail": "Your profile has no sales code, so there is no "
+                           "card to download."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        period = str(request.query_params.get("period") or period_for()).strip()
+        signoff = ScorecardSignoff.objects.filter(
+            sales_code=sales_code, period=period).first()
+
+        if signoff and signoff.signed_at and signoff.card:
+            card = signoff.card
+        else:
+            card = build_card(sales_code)
+            if not card.get("has_card"):
+                return Response(card, status=status.HTTP_400_BAD_REQUEST)
+
+        buffer = build_card_workbook(card, signoff)
+        name = ((card.get("staff") or {}).get("name")
+                or sales_code).replace(" ", "_")
+        response = HttpResponse(
+            buffer.read(),
+            content_type="application/vnd.openxmlformats-officedocument"
+                         ".spreadsheetml.sheet")
+        response["Content-Disposition"] = (
+            f'attachment; filename="Scorecard_{name}_{period}.xlsx"')
+        return response
