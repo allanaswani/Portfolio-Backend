@@ -213,3 +213,7 @@ pluggy==1.6.0
 gunicorn==23.0.0
 uvicorn[standard]==0.31.1
 whitenoise==6.8.2
+
+# Scorecard workbooks arrive as .xlsb as well as .xlsx — see
+# apps/staff_management/scorecard_ingest.py. Pure Python, read-only.
+pyxlsb==1.0.10

@@ -51,6 +51,43 @@ class ScKpi(models.Model):
     has_base_value = models.BooleanField(default=False)
     is_increasing = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
+
+    # ── Where this KPI's ACTUAL comes from ────────────────────────────────
+    # The actuals arrive as a workbook with one sheet per KPI, and reading a
+    # figure out of it needs three facts that are not guessable:
+    #
+    #   actuals_sheet   which sheet. Matched case-insensitively, because the
+    #                   cards spell it "Trade_Finance_Income" and the sheet is
+    #                   "Trade_Finance_income".
+    #   actuals_block   which repeat WITHIN the sheet. A sheet is not always 18
+    #                   columns: Banca_Assurance_Income is 118, six repeats of
+    #                   PF | Sales Code | Name | Role | Branch | Zone | Jan..Dec
+    #                   at columns 1-18, 21-38, 41-58, 61-78, 81-98, 101-118,
+    #                   unlabelled and composites of each other. The Commercial
+    #                   card's VIC line takes block 4; block 1 would read 2,410
+    #                   where the card says 2,076,987.
+    #   negate          whether to flip the sign. PL_Charge stores a loan loss
+    #                   positive and every card shows it negative.
+    #
+    # A month column holds a YTD CUMULATIVE value, so the ACTUAL for a review
+    # month is that month's cell as-is - never a sum of the months before it.
+    # Summing Jan-Aug for the line above gives 9,601,603 against a true
+    # 2,076,987.
+    actuals_sheet = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text="Sheet in the actuals workbook, e.g. Banca_Assurance_Income.")
+    actuals_block = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Which 18-column repeat within that sheet, 1-based.")
+    negate = models.BooleanField(
+        default=False,
+        help_text="Flip the sign of the value read from the sheet.")
+
+    #: Why a KPI is not yet scoreable, in words. A KPI whose block could not be
+    #: established reads as unconfigured on the card rather than showing a
+    #: figure that might be 860x out.
+    not_configured_reason = models.CharField(max_length=200, blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now_add=True)
 
