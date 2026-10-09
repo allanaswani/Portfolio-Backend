@@ -32,19 +32,10 @@ MAP = (pathlib.Path(__file__).resolve().parents[2]
 #: Every entry names the card it came off, because "the card" is eight
 #: different documents and they do not agree.
 KNOWN_DIFFERENCES = {
-    # ── PAR is a threshold, not a ratio ──────────────────────────────────
-    # 2.5% or under scores full marks, over it scores nothing: seven cards,
-    # seven consistent pass/fail outcomes, and no middle value anywhere. It is
-    # also the one line whose target is nowhere on the DMC roster (the roster
-    # carries an NPL amount, not a PAR percentage), so this tool leaves it
-    # unscored rather than scoring a percentage against a shilling value.
-    ("Business_Banking", "PAR"): "pass/fail threshold, not scored here",
-    ("Personal_Banking", "PAR"): "pass/fail threshold, not scored here",
-    ("Ultimate_RM", "PAR"): "pass/fail threshold, not scored here",
-    ("Diaspora", "PAR"): "pass/fail threshold, not scored here",
-    ("Commercial", "PAR"): "pass/fail threshold, not scored here",
-    ("Commercial_trade", "PAR"): "pass/fail threshold, not scored here",
-    ("Mortgage_Business", "PAR"): "pass/fail threshold, not scored here",
+    # PAR used to live here. It no longer does: the seven cards are unanimous
+    # that it is a pass/fail threshold at 2.5%, so it is scored that way and
+    # all seven now reproduce exactly. That is what this file is for - a
+    # difference that turns out to be a rule gets implemented and removed.
 
     # ── Capped at 1.0 on some cards, 1.2 on others ───────────────────────
     ("Business_Banking", "Training"): "capped at 1.0 on this card",
@@ -66,7 +57,10 @@ KNOWN_DIFFERENCES = {
 
     # ── Smaller-is-better lines this tool does not score ─────────────────
     ("Mortgage_Business", "TAT (Loan)"):
-        "turnaround days, measured outside the warehouse",
+        "the only card carrying this line, and it caps a zero-day turnaround "
+        "at 1.0 where the same arithmetic gives 1.2 elsewhere. Zero days also "
+        "means no applications, which this tool reports as no figure rather "
+        "than as perfect performance",
     ("Mortgage_Business", "Errors"):
         "application errors, measured outside the warehouse",
     ("Diaspora", "Audit"): "audit score, measured outside the warehouse",
@@ -117,7 +111,9 @@ class CardCalibrationTests(SimpleTestCase):
         unexplained = []
         for row, target, actual, stated in _lines():
             key = (row["role_sheet"], row["kpi_description"])
-            mine = score_for(actual, target, True)
+            # PAR is the one line scored as a threshold rather than a ratio.
+            is_par = row["kpi_description"].strip().upper() == "PAR"
+            mine = score_for(actual, target, not is_par, threshold=is_par)
             if abs(mine - stated) < 0.005:
                 self.assertNotIn(
                     key, KNOWN_DIFFERENCES,
@@ -134,10 +130,32 @@ class CardCalibrationTests(SimpleTestCase):
     def test_most_of_the_cards_reproduce_exactly(self):
         """A guard on the headline claim. If a change drops this, the claim
         made to the business about this tool stops being true."""
-        reproduced = sum(
-            1 for _, target, actual, stated in _lines()
-            if abs(score_for(actual, target, True) - stated) < 0.005)
-        self.assertGreaterEqual(reproduced, 88)
+        reproduced = 0
+        for row, target, actual, stated in _lines():
+            is_par = row["kpi_description"].strip().upper() == "PAR"
+            mine = score_for(actual, target, not is_par, threshold=is_par)
+            if abs(mine - stated) < 0.005:
+                reproduced += 1
+        self.assertGreaterEqual(reproduced, 95)
+
+    def test_par_is_pass_or_fail_at_two_and_a_half_percent(self):
+        """Seven cards, seven consistent outcomes and no middle value: at or
+        under 2.5% is full marks, over it is nothing. Scoring it in proportion
+        would hand partial credit for a limit that was broken."""
+        from .live_scorecard import SOURCES
+
+        source = SOURCES["par"]
+        self.assertTrue(source.threshold)
+        self.assertFalse(source.higher_is_better)
+        self.assertAlmostEqual(
+            score_for(0.009554, 0.025, False, threshold=True), 1.2)
+        self.assertAlmostEqual(
+            score_for(0.0, 0.025, False, threshold=True), 1.2)
+        self.assertAlmostEqual(
+            score_for(0.026044, 0.025, False, threshold=True), 0.0,
+            msg="just over the limit is still over it")
+        self.assertAlmostEqual(
+            score_for(0.4116, 0.025, False, threshold=True), 0.0)
 
     def test_a_negative_target_is_scored_by_distance_not_by_ratio(self):
         """One Personal Banking card: an income contribution target of -73.3m
@@ -147,15 +165,19 @@ class CardCalibrationTests(SimpleTestCase):
             score_for(-37_206_824.7, -73_297_195.3, True), 1.2)
 
     def test_the_lines_the_cards_disagree_on_are_not_scored_live(self):
-        """The capped-at-1.0 lines are all measures that live outside the
+        """The remaining capped-at-1.0 lines are measures that live outside the
         warehouse, so the disagreement does not reach anybody's score today.
-        If a future change starts scoring one of them, this fails and the cap
-        has to be decided first."""
+
+        If a future change starts scoring one of them, this fails - on purpose.
+        The cap has to be decided with the desk BEFORE the line goes live,
+        which is exactly what happened with PAR: the seven cards turned out to
+        agree that it is a pass/fail threshold, so it was implemented that way
+        and taken off this list."""
         outside = {
             "nps", "portfolio_nps", "portfolo_nps",
             "portfolio_coverage_engagement", "business_banking_training",
             "personal_banking_training", "leave_management", "audit",
-            "errors", "tat_loan", "par",
+            "errors",
         }
         for code in sorted(outside):
             with self.subTest(code):

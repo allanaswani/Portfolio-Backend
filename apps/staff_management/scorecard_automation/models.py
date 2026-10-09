@@ -164,11 +164,35 @@ class ScRoleKpiMapping(models.Model):
         ("full_year", "Full Year Target"),
         ("monthly", "Monthly Target"),
     ]
+    TARGET_BASIS_CHOICES = [
+        ("", "An absolute figure"),
+        ("rate_on_base", "A rate on the person's own base"),
+    ]
     role_code = models.CharField(max_length=100)
     kpi_order = models.IntegerField()
     kpi_code = models.CharField(max_length=100)
     mapping_category = models.CharField(max_length=50)
     kpi_target = models.FloatField(null=True, blank=True)
+
+    #: How ``kpi_target`` is to be read. Blank means it IS the target.
+    #:
+    #: ``rate_on_base`` means it is a rate to apply to the person's own base,
+    #: named by ``target_base``. Every card states Asset Growth that way - "Grow
+    #: by 43% of the Dec book Balance" - and the December book is in the
+    #: warehouse per RM, so the target can be worked out per person without a
+    #: column on the DMC load. Spelling the basis out rather than inferring it
+    #: from "is the value less than 1" matters: Diaspora's rate is 100%, which
+    #: that test would read as an absolute target of one shilling.
+    target_basis = models.CharField(
+        max_length=20, blank=True, default="", choices=TARGET_BASIS_CHOICES,
+        help_text="How kpi_target is to be read. Blank means it is the target "
+                  "itself; rate_on_base means multiply it by the base named "
+                  "in target_base.")
+    #: Which of the person's own figures the rate applies to.
+    target_base = models.CharField(
+        max_length=40, blank=True, default="",
+        help_text="Which of the person's own figures the rate applies to, "
+                  "e.g. december_loan_book.")
     effective_from = models.DateField()
     effective_to = models.DateField()
     bonus_effective_from = models.DateField()

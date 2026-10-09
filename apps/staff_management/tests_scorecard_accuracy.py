@@ -350,13 +350,187 @@ class EveryLineIsAccountedForTests(TestCase):
         codes = set(ScKpi.objects.values_list("kpi_code", flat=True))
         self.assertEqual(sorted(set(SOURCES) - codes), [])
 
-    def test_a_scored_line_names_both_a_target_and_an_actual(self):
-        """Half a mapping scores nothing, and reports the wrong reason for it."""
+    def test_a_scored_line_has_an_actual_and_a_route_to_a_target(self):
+        """Half a mapping scores nothing, and reports the wrong reason for it.
+
+        A route to a target is a DMC column OR a target on the role's card -
+        the second is how PAR, NPS, TAT, training and the property lines get
+        one, because there is no DMC column for any of them.
+        """
         from .live_scorecard import SOURCES
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        with_role_target = set(
+            ScRoleKpiMapping.objects.exclude(kpi_target=None)
+            .values_list("kpi_code", flat=True))
 
         for code, source in sorted(SOURCES.items()):
             if source.pending:
                 continue
             with self.subTest(code):
-                self.assertTrue(source.target_field, f"{code} has no target")
-                self.assertTrue(source.actual_key, f"{code} has no actual")
+                self.assertTrue(source.actual_key,
+                                f"{code} is scored but names no actual")
+                self.assertTrue(
+                    source.target_field or code in with_role_target,
+                    f"{code} is scored but nothing can give it a target: no "
+                    f"DMC column and no target on any role's card")
+
+
+class TargetLadderTests(TestCase):
+    """Where a line's target comes from when the DMC row has no column for it.
+
+    Three rungs, most specific first, and the order is the point: an explicit
+    figure for this person must always beat a derived one.
+    """
+
+    CODE = "JM4191"
+
+    def setUp(self):
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=4191, staff_name="Juspher Muriithi",
+            sales_code=self.CODE, staff_role="COMMERCIAL RM",
+            staff_branch="Rehani", active=1,
+            target_deposits_value=417_600_000)
+
+    def lines(self):
+        card = build_card(self.CODE)
+        self.assertTrue(card["has_card"], card)
+        return {ln["kpi_code"]: ln
+                for g in card["perspectives"] for ln in g["lines"]}
+
+    def test_a_role_wide_threshold_supplies_a_target_with_no_dmc_column(self):
+        """PAR, NPS, TAT, training and the property lines have no DMC column
+        and never will - their target is one number for everybody on the
+        card."""
+        par = self.lines()["par"]
+        self.assertEqual(par["annual_target"], 0.025)
+        self.assertEqual(par["target_source"], "the target on your role's card")
+
+    def test_a_threshold_is_not_prorated(self):
+        """NPS of 60% does not become 45% because it is September, and PAR's
+        2.5% ceiling does not loosen as the year runs on."""
+        par = self.lines()["par"]
+        self.assertTrue(par["full_year_target"])
+        self.assertEqual(par["ytd_target"], par["annual_target"])
+
+    def test_a_rate_target_is_taken_on_the_persons_own_base(self):
+        """Asset Growth has no column on the per-person DMC table, and every
+        card states it as a rate: "Grow by 21% of the Dec book Balance"."""
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        mapping = ScRoleKpiMapping.objects.get(
+            role_code="commercial_rm", kpi_code="asset_growth")
+        self.assertEqual(mapping.target_basis, "rate_on_base")
+        self.assertEqual(mapping.target_base, "december_loan_book")
+        self.assertAlmostEqual(mapping.kpi_target, 0.21)
+
+    def test_no_role_target_holds_a_single_rms_own_balance(self):
+        """Migration 0027 filled kpi_target from the eight calibration cards,
+        so for the financial lines it held one named RM's closing balance.
+        Read as a role target, every SME RM would be scored against Charles
+        Muchiri's book."""
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        suspect = ScRoleKpiMapping.objects.filter(
+            kpi_code__in=["asset_growth", "deposit_growth", "operating_profit",
+                          "income_contribution", "grow_deposits",
+                          "direct_portfolio_contribution", "loan_loss",
+                          "active_customers", "digital_adoption",
+                          "portfolio_management_aum_dec_previous_year"],
+            target_basis="").exclude(kpi_target=None)
+        self.assertFalse(
+            [(m.role_code, m.kpi_code, m.kpi_target) for m in suspect],
+            "a financial role target survived, which means somebody is being "
+            "scored against another RM's balance")
+
+    def test_the_dmc_column_still_wins(self):
+        """The ladder is an order, not a replacement."""
+        deposits = self.lines()["grow_deposits"]
+        self.assertEqual(deposits["annual_target"], 417_600_000)
+        self.assertIn("branch_employee_dmc_data", deposits["target_source"])
+
+    def test_a_target_of_nought_is_treated_as_no_target(self):
+        """It is how the cards say a line does not apply to a role - Mortgage
+        Business carries a property target of 0 - and dividing by it would
+        either crash or read as infinite achievement."""
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=9001, staff_name="Roy Gitonga",
+            sales_code="RG9001", staff_role="Mortgage Business ARM",
+            staff_branch="Rehani", active=1)
+        card = build_card("RG9001")
+        lines = {ln["kpi_code"]: ln
+                 for g in card["perspectives"] for ln in g["lines"]}
+        units = lines["number_of_property"]
+        self.assertIsNone(units["annual_target"])
+        self.assertIsNone(units["score"])
+        self.assertEqual(units["pending_label"], "No target set")
+
+
+class PropertySalesTests(TestCase):
+    """The HFDI sales return is keyed on a NAME, which is the whole problem."""
+
+    CODE = "FM4200"
+
+    def setUp(self):
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=4200, staff_name="Faith Muthinja",
+            sales_code=self.CODE, staff_role="Ultimate RM",
+            staff_branch="Rehani", active=1)
+
+    def sale(self, staff_name, value, when=None):
+        from apps.hfdi.models import WeightedDashboardManualSales
+
+        return WeightedDashboardManualSales.objects.create(
+            staff_name=staff_name, unit_name=f"Unit {value}",
+            unit_value=value,
+            sale_month=when or datetime.date.today().replace(day=1))
+
+    def line(self, code):
+        card = build_card(self.CODE)
+        return {ln["kpi_code"]: ln
+                for g in card["perspectives"] for ln in g["lines"]}[code]
+
+    def test_units_and_value_come_off_the_return(self):
+        self.sale("Faith Muthinja", 8_200_000)
+        self.sale("Faith Muthinja", 4_000_000)
+        self.assertEqual(self.line("number_of_property")["ytd_actual"], 2)
+        self.assertEqual(self.line("value_of_property_sales")["ytd_actual"],
+                         12_200_000)
+
+    def test_somebody_elses_sales_are_not_counted(self):
+        self.sale("Somebody Else", 50_000_000)
+        self.sale("Faith Muthinja", 1_000_000)
+        self.assertEqual(self.line("number_of_property")["ytd_actual"], 1)
+
+    def test_a_name_that_is_not_on_the_return_is_not_reported_as_nil(self):
+        """A name spelt differently on the return reads exactly like somebody
+        who sold nothing. Those two must not look the same on a scorecard."""
+        self.sale("Somebody Else", 1_000_000)
+        units = self.line("number_of_property")
+        self.assertIsNone(units["ytd_actual"])
+        self.assertIn("does not appear", units["pending"])
+
+    def test_a_name_on_the_return_with_no_sales_this_year_is_a_real_nil(self):
+        """Once the name is known to be on the return, nil means nil - and an
+        RM who sold nothing scores nothing, which is what the cards do."""
+        self.sale("Faith Muthinja", 9_000_000,
+                  when=datetime.date(datetime.date.today().year - 2, 6, 1))
+        units = self.line("number_of_property")
+        self.assertEqual(units["ytd_actual"], 0)
+        self.assertEqual(units["score"], 0.0)
+
+
+class ThresholdScoringTests(TestCase):
+    def test_par_is_met_or_not_met(self):
+        self.assertAlmostEqual(
+            score_for(0.009, 0.025, False, threshold=True), 1.2)
+        self.assertAlmostEqual(
+            score_for(0.025, 0.025, False, threshold=True), 1.2,
+            msg="exactly at the limit is within it")
+        self.assertAlmostEqual(
+            score_for(0.026, 0.025, False, threshold=True), 0.0,
+            msg="just over the limit is over it")
+
+    def test_a_higher_is_better_threshold_works_the_other_way(self):
+        self.assertAlmostEqual(score_for(0.65, 0.6, True, threshold=True), 1.2)
+        self.assertAlmostEqual(score_for(0.55, 0.6, True, threshold=True), 0.0)

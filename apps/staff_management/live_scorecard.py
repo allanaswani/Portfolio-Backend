@@ -120,6 +120,11 @@ class Source:
     #: Counted in whole units rather than money, so the pro-rated target is a
     #: whole number too — "589.578 new customers" means nothing.
     counted: bool = False
+    #: Pass or fail against the target rather than scored in proportion to it.
+    #: PAR is the one line the cards treat this way, and the seven that carry
+    #: it are unanimous: at or under 2.5% scores full marks, over it scores
+    #: nothing, and there is no middle value anywhere.
+    threshold: bool = False
     #: Why this line cannot be scored, when it cannot.
     pending: str = ""
 
@@ -193,18 +198,16 @@ _register(
 # Ultimate card is new customers holding more than two products. The roster
 # target is the plain new-customer count, so scoring the plain count against it
 # would pass unqualified customers off as qualified ones.
+# The turnover floor is the point of these two lines, and it is answerable:
+# daily_sales_accounts_with_cto carries the customer's CREDIT TURNOVER
+# (cust_cto) beside the account it opened. Counted distinct on the customer -
+# one customer opening three accounts is one new customer.
 _register(
     ["new_customer_min_turnover_of_10m"],
-    Source(target_field="target_new_customers", counted=True,
-           pending="This line counts only new customers with a minimum "
-                   "turnover of 10M. Turnover is not on the new-customer "
-                   "feed, so the qualifying count cannot be taken from here."))
+    Source(actual_key="new_customers_10m", counted=True))
 _register(
     ["new_customer_min_turnover_of_50m"],
-    Source(target_field="target_new_customers", counted=True,
-           pending="This line counts only new customers with a minimum "
-                   "turnover of 50M. Turnover is not on the new-customer "
-                   "feed, so the qualifying count cannot be taken from here."))
+    Source(actual_key="new_customers_50m", counted=True))
 _register(
     ["ultimate_rm_new_customers"],
     Source(target_field="target_new_customers", counted=True,
@@ -221,10 +224,8 @@ _register(
 
 _register(
     ["cross_sell_new_casa_accounts_focus_accounts"],
-    Source(target_field="target_focus_accounts", counted=True,
-           pending="Focus-account cross-sell is counted off the CASA opening "
-                   "return, which is not one of the tables this platform "
-                   "reads."))
+    Source(target_field="target_focus_accounts", actual_key="new_accounts",
+           counted=True))
 
 # ── Income ───────────────────────────────────────────────────────────────────
 # Two different formulas, and the cards state both:
@@ -295,17 +296,17 @@ _register(
 # The roster carries the unit plan. The CRM's amounts-sold feed has no
 # customer id, phone or e-mail, so a sale cannot be tied back to an RM; that is
 # an upstream gap recorded in docs/property-holdings-etl-gap.md.
+# The HFDI sales return the weighted-sales dashboard is built from records the
+# staff member who sold each unit, so a unit CAN be tied to a person - by name
+# rather than by code, which is why the reader checks the name is on the return
+# at all before reporting a nil as a nil.
 _register(
     ["number_of_property"],
-    Source(target_field="target_properties", counted=True,
-           pending="The unit plan is on the roster, but the property sales "
-                   "feed carries no customer identifier, so a sale cannot be "
-                   "tied to an RM. See docs/property-holdings-etl-gap.md."))
+    Source(target_field="target_properties", actual_key="property_units",
+           counted=True))
 _register(
     ["value_of_property_sales"],
-    Source(pending="The roster plans property in UNITS, not value, and the "
-                   "sales feed cannot be tied to an RM. See "
-                   "docs/property-holdings-etl-gap.md."))
+    Source(actual_key="property_value"))
 
 # ── Staff engagement ─────────────────────────────────────────────────────────
 _register(
@@ -318,8 +319,7 @@ _register(
 #: fall through, so the reason on the card is specific.
 for _code in (
     "nps", "portfolio_nps", "portfolo_nps", "portfolio_coverage_engagement",
-    "leave_management", "audit", "errors", "tat_loan", "weigted_tat",
-    "weigted_tat_sla_service_standards_query_response_time",
+    "leave_management", "audit", "errors",
     "banking_covenant_tracking_should_be_in_iapply",
     "tooling_and_account_planning_all_customers", "digital_adoption",
     "weighted_sales", "weighted_sales_dashboard",
@@ -330,10 +330,20 @@ for _code in (
 #: PAR is a ratio against a threshold, not an amount against a plan. The roster
 #: carries an NPL amount (``target_npl``), which is a different measure, so
 #: nothing is scored rather than scoring a percentage against a shilling value.
-SOURCES.setdefault("par", Source(
-    pending="PAR is a portfolio-at-risk RATIO measured against a threshold. "
-            "The roster carries an NPL amount, not a PAR percentage, so there "
-            "is nothing here to score the ratio against."))
+#: PAR is a RATIO against a threshold, and the threshold is 2.5% on all seven
+#: cards that carry it - which is a role target, not a DMC column. The ratio
+#: itself is arrears over book, both out of `loans` over this RM's allocated
+#: customers. Smaller is better.
+SOURCES["par"] = Source(actual_key="par", higher_is_better=False,
+                        threshold=True)
+
+#: Turnaround is in iApply: total_bank_tat is the bank's own time, which is
+#: what the card measures - `tat` includes waiting on the customer, and holding
+#: an RM to that is holding them to somebody else's delay.
+SOURCES["tat_loan"] = Source(actual_key="tat_days", higher_is_better=False)
+for _code in ("weigted_tat",
+              "weigted_tat_sla_service_standards_query_response_time"):
+    SOURCES[_code] = Source(actual_key="tat_within_sla")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,6 +448,150 @@ def _trade_ytd(sales_code, year):
     return float(commission or 0), float(volume or 0)
 
 
+def _property_sales_ytd(staff_name, year):
+    """HFDI property this person sold → (units, value, on_the_return, latest).
+
+    ``weighted_dashboard_manual_sales_table`` is the HFDI sales return the
+    weighted-sales dashboard is built from: one row per unit, carrying
+    ``staff_name``, ``unit_value`` and ``sale_month``. It is keyed on the
+    staff member's NAME, not a code, which is the whole reason for
+    ``on_the_return``: a name that is spelt differently on the DMC roster than
+    on the return reads as nil sales, and nil sales is also what somebody who
+    sold nothing reads as. Those two must not look the same on a scorecard, so
+    the name is looked for across every year before a nil is reported as a nil.
+    """
+    from django.db import connection
+
+    name = " ".join((staff_name or "").split()).strip()
+    if not name:
+        return None, None, False, None
+
+    sql = """
+        SELECT COUNT(*) FILTER (WHERE EXTRACT(YEAR FROM COALESCE(
+                   sale_month, booking_date)) = %s),
+               COALESCE(SUM(unit_value) FILTER (WHERE EXTRACT(YEAR FROM
+                   COALESCE(sale_month, booking_date)) = %s), 0),
+               COUNT(*),
+               MAX(COALESCE(sale_month, booking_date)) FILTER (
+                   WHERE EXTRACT(YEAR FROM COALESCE(
+                       sale_month, booking_date)) = %s)
+        FROM weighted_dashboard_manual_sales_table
+        WHERE UPPER(TRIM(COALESCE(staff_name, ''))) = UPPER(TRIM(%s))
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [year, year, year, name])
+        units, value, ever, latest = cur.fetchone()
+    return (int(units or 0), float(value or 0), bool(ever), latest)
+
+
+def _new_accounts_ytd(sales_code, year, turnover_floor=None):
+    """New customers this person opened this year → (count, latest open date).
+
+    ``daily_sales_accounts_with_cto`` is the new-account return, one row per
+    account, carrying ``sale_code``, the customer's open date and - the part
+    nothing was using - ``cust_cto``, the customer's CREDIT TURNOVER.
+
+    That is what makes "New Customer (Min Turnover of 10M)" answerable: pass
+    ``turnover_floor`` and only customers at or above it are counted. Counted
+    DISTINCT on the customer, because one customer opening three accounts is
+    one new customer.
+    """
+    from django.db import connection
+
+    floor_clause = "AND cust_cto >= %s" if turnover_floor else ""
+    params = [year, sales_code.strip()]
+    if turnover_floor:
+        params.append(turnover_floor)
+    sql = f"""
+        SELECT COUNT(DISTINCT cust_cif), MAX(cust_open_date)
+        FROM daily_sales_accounts_with_cto
+        WHERE EXTRACT(YEAR FROM cust_open_date) = %s
+          AND UPPER(TRIM(COALESCE(sale_code, ''))) = UPPER(TRIM(%s))
+          {floor_clause}
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, params)
+        count, latest = cur.fetchone()
+    return int(count or 0), latest
+
+
+def _tat_ytd(sales_code, year, sla_days=7):
+    """Loan turnaround for this person's applications this year.
+
+    → ``(average_days, share_within_sla, applications, latest)``
+
+    ``iapply_loan_approvals_data_dump`` carries ``seller_code`` and
+    ``total_bank_tat`` - the BANK's own turnaround, which is the one the card
+    measures. ``tat`` includes time spent waiting on the customer, and holding
+    an RM to that would be holding them to somebody else's delay.
+
+    Both figures are returned because the cards ask for both: "TAT (Loan)" is
+    a number of days against a 7-day target, and "Weigted TAT" is the share of
+    applications inside the standard against a 100% target.
+    """
+    from django.db import connection
+
+    sql = """
+        SELECT AVG(total_bank_tat), COUNT(*),
+               COUNT(*) FILTER (WHERE total_bank_tat <= %s),
+               MAX(creation_date)
+        FROM iapply_loan_approvals_data_dump
+        WHERE EXTRACT(YEAR FROM creation_date) = %s
+          AND UPPER(TRIM(COALESCE(seller_code, ''))) = UPPER(TRIM(%s))
+          AND total_bank_tat IS NOT NULL
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [sla_days, year, sales_code.strip()])
+        average, total, within, latest = cur.fetchone()
+    if not total:
+        return None, None, 0, None
+    return (float(average), float(within) / float(total), int(total),
+            latest.date() if hasattr(latest, "date") else latest)
+
+
+def _par(sales_code):
+    """Portfolio at risk for this person → (ratio, book, latest).
+
+    Arrears balance over total balance, both taken from ``loans`` over the
+    customers allocated to this RM in ``retail_allocated_portfolio``. ONE
+    table, ONE key, deliberately: the RM's live balance comes from
+    ``loan_daily_balance_movement`` on ``rm_code``, which is a different book
+    from the allocation, and a ratio whose numerator and denominator came from
+    two different books would not be a ratio of anything.
+
+    ``retail_allocated_portfolio`` has no unique customer, so the allocation is
+    de-duplicated before it is joined - without that, a customer allocated
+    twice counts twice and the ratio moves.
+
+    ``euro_book_balance`` is the outstanding value, despite the name. It is the
+    column collections calls ``loan_outstanding_value`` and the one the branch
+    NPL figure is summed from, so PAR here cannot disagree with the NPL on the
+    branch screens.
+    """
+    from django.db import connection
+
+    sql = """
+        WITH mine AS (
+            SELECT DISTINCT cust_id
+            FROM retail_allocated_portfolio
+            WHERE cust_id IS NOT NULL
+              AND UPPER(TRIM(COALESCE(sales_code, ''))) = UPPER(TRIM(%s))
+        )
+        SELECT COALESCE(SUM(l.euro_book_balance), 0),
+               COALESCE(SUM(l.euro_book_balance)
+                        FILTER (WHERE l.days_in_arrears > 0), 0)
+        FROM loans l
+        JOIN mine ON mine.cust_id = l.cust_id
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [sales_code.strip()])
+        book, arrears = cur.fetchone()
+    book = float(book or 0)
+    if not book:
+        return None, None
+    return float(arrears or 0) / book, book
+
+
 def _figure(value, as_at=None, label=None, problem=None, failed=False):
     """One figure, with its own as-at and its own reason for being absent.
 
@@ -450,7 +604,7 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
             "problem": problem, "failed": failed}
 
 
-def live_actuals(sales_code):
+def live_actuals(sales_code, staff_name=""):
     """Every figure the warehouse can give for this RM.
 
     Each entry is ``{"value", "as_at", "as_at_label", "problem"}``. ``as_at``
@@ -488,12 +642,22 @@ def live_actuals(sales_code):
             out.update(result)
 
     # ── Deposit and asset GROWTH ──────────────────────────────────────────
-    def growth(table):
+    # The opening balance is kept as well as the growth: it is the BASE a rate
+    # target is applied to ("Grow by 43% of the Dec book Balance"), so the one
+    # read answers both halves of the line.
+    bases = {}
+
+    def growth(table, base_name):
         g = svc.rm_growth(table, sales_code)
+        if g["base"] is not None:
+            bases[base_name] = g["base"]
         return _figure(g["growth"], g["as_at"], g["as_at_label"], g["problem"])
 
-    attempt("deposit_growth", lambda: growth("daily_balance_movement"))
-    attempt("asset_growth", lambda: growth("loan_daily_balance_movement"))
+    attempt("deposit_growth",
+            lambda: growth("daily_balance_movement", "december_deposit_book"))
+    attempt("asset_growth",
+            lambda: growth("loan_daily_balance_movement",
+                           "december_loan_book"))
 
     # ── Income ────────────────────────────────────────────────────────────
     def revenue():
@@ -570,6 +734,79 @@ def live_actuals(sales_code):
                 "trade_volume": _figure(volume, monthly, monthly_label)}
 
     attempt(("trade_income", "trade_volume"), trade)
+
+    # ── HFDI property, which is the Group Synergies perspective ───────────
+    def property_sales():
+        units, value, on_return, latest = _property_sales_ytd(staff_name, year)
+        if units is None:
+            return {
+                "property_units": _figure(
+                    None, problem="your roster row has no name to match "
+                                  "against the HFDI sales return"),
+                "property_value": _figure(
+                    None, problem="your roster row has no name to match "
+                                  "against the HFDI sales return"),
+            }
+        if not on_return:
+            # The return is keyed on a NAME. A name spelt differently there
+            # reads as nil sales, and so does a genuine nil - those two must
+            # not look the same on somebody's scorecard.
+            why = (f"\"{staff_name}\" does not appear anywhere on the HFDI "
+                   f"sales return, so a nil here cannot be told apart from a "
+                   f"name that is spelt differently there")
+            return {"property_units": _figure(None, problem=why),
+                    "property_value": _figure(None, problem=why)}
+        at = latest or monthly
+        label = f"as at {at.day} {at:%b %Y}"
+        return {"property_units": _figure(units, at, label),
+                "property_value": _figure(value, at, label)}
+
+    attempt(("property_units", "property_value"), property_sales)
+
+    # ── New customers, and the two turnover-qualified counts ──────────────
+    def new_accounts():
+        out_ = {}
+        for key, floor in (("new_accounts", None),
+                           ("new_customers_10m", 10_000_000),
+                           ("new_customers_50m", 50_000_000)):
+            count, latest = _new_accounts_ytd(sales_code, year, floor)
+            at = latest or monthly
+            out_[key] = _figure(count, at, f"as at {at.day} {at:%b %Y}")
+        return out_
+
+    attempt(("new_accounts", "new_customers_10m", "new_customers_50m"),
+            new_accounts)
+
+    # ── Loan turnaround, from iApply ──────────────────────────────────────
+    def turnaround():
+        days, within, applications, latest = _tat_ytd(sales_code, year)
+        if not applications:
+            why = ("no loan applications with a recorded bank turnaround for "
+                   "this sales code this year")
+            return {"tat_days": _figure(None, problem=why),
+                    "tat_within_sla": _figure(None, problem=why)}
+        at = latest or monthly
+        label = (f"{applications} application"
+                 f"{'' if applications == 1 else 's'}, as at "
+                 f"{at.day} {at:%b %Y}")
+        return {"tat_days": _figure(days, at, label),
+                "tat_within_sla": _figure(within, at, label)}
+
+    attempt(("tat_days", "tat_within_sla"), turnaround)
+
+    # ── Portfolio at risk ─────────────────────────────────────────────────
+    def par():
+        ratio, book = _par(sales_code)
+        if ratio is None:
+            return _figure(None, problem="no loans in your allocated book to "
+                                         "measure arrears against")
+        return _figure(ratio, today,
+                       f"arrears over a book of {book:,.0f}")
+
+    attempt("par", par)
+
+    # Not a figure anybody is scored on - the bases a rate target multiplies.
+    out["_bases"] = bases
     return out
 
 
@@ -667,6 +904,62 @@ def roster_row(sales_code):
     return None
 
 
+#: KPIs whose target is NOT pro-rated: a threshold is a threshold all year.
+#: NPS of 60% does not become 45% because it is September, and PAR's 2.5%
+#: ceiling does not loosen. Pro-rating these is the one thing that would make
+#: a threshold line meaningless.
+FULL_YEAR_TARGETS = {
+    "par", "nps", "portfolio_nps", "portfolo_nps",
+    "portfolio_coverage_engagement", "audit", "errors",
+    "tat_loan", "weigted_tat",
+    "weigted_tat_sla_service_standards_query_response_time",
+    "weighted_sales", "weighted_sales_dashboard", "leave_management",
+}
+
+#: What a ``target_base`` names, in terms of what the warehouse can give.
+#: Each is one of this person's OWN figures - the point of a rate target is
+#: that the number is theirs, not the role's.
+TARGET_BASES = {
+    "december_loan_book": "asset_growth",
+    "december_deposit_book": "deposit_growth",
+}
+
+
+def role_target(mapping, bases):
+    """The role's target for one line → (value, how it was arrived at).
+
+    Third rung of the ladder, and the narrowest. It is only ever reached when
+    the person has no figure of their own, and it means one of two things:
+
+    * an absolute that is genuinely the same for everybody on the card - PAR
+      2.5%, NPS 60%, 48 training hours, 2 property units;
+    * a RATE on one of the person's own figures, where the card states the
+      target that way: "Grow by 43% of the Dec book Balance". The rate is the
+      role's, the base is theirs, so the target still comes out per person.
+
+    Migration 0029 cleared every other role target, because 0027 had filled
+    them from the eight calibration cards and for the financial lines that
+    meant one named RM's own closing balance. Read as a role target, every SME
+    RM in the bank would have been scored against Charles Muchiri's book.
+    """
+    target = mapping.kpi_target
+    if target is None:
+        return None, ""
+    basis = getattr(mapping, "target_basis", "") or ""
+    if not basis:
+        return float(target), "the target on your role's card"
+
+    if basis == "rate_on_base":
+        base_name = getattr(mapping, "target_base", "") or ""
+        base = bases.get(base_name)
+        if base is None:
+            return None, ""
+        return float(target) * base, (
+            f"{float(target) * 100:.0f}% of your {base_name.replace('_', ' ')} "
+            f"of {base:,.0f}, as your card states it")
+    return None, ""
+
+
 def prorate_to(annual, as_at=None, counted=False):
     """An annual target sliced to the date the ACTUAL is as at.
 
@@ -694,7 +987,7 @@ def prorate_to(annual, as_at=None, counted=False):
 SCORE_CAP = 1.2
 
 
-def score_for(actual, target, higher_is_better):
+def score_for(actual, target, higher_is_better, threshold=False):
     """How far a line got, clamped to 0 … 1.2.
 
     ``1 + (actual - target) / abs(target)``, which is plain ``actual / target``
@@ -717,6 +1010,11 @@ def score_for(actual, target, higher_is_better):
     """
     if actual is None or not target:
         return None
+    if threshold:
+        # Met or not met. Scoring a threshold in proportion would hand partial
+        # credit for a limit that was broken.
+        met = actual >= target if higher_is_better else actual <= target
+        return SCORE_CAP if met else 0.0
     if higher_is_better:
         raw = 1 + (actual - target) / abs(target)
     else:
@@ -754,7 +1052,7 @@ def build_card(sales_code, profile=None):
                 "sales_code": sales_code,
                 "detail": f"The {role_code} card has no KPI lines configured."}
 
-    actuals = live_actuals(sales_code)
+    actuals = live_actuals(sales_code, row.staff_name or "")
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
@@ -769,6 +1067,24 @@ def build_card(sales_code, profile=None):
     except Exception as exc:  # noqa: BLE001 - reported on every line
         targets, target_table, target_columns = {}, "", set()
         target_problem = str(exc)
+
+    bases = actuals.pop("_bases", {})
+
+    # A target somebody allocated to this person by hand, which sits above the
+    # role's and below their own DMC column.
+    from .scorecard_automation.models import ScEmployeeKpiTarget
+
+    allocations = {}
+    try:
+        with transaction.atomic():
+            allocations = {
+                row.kpi_code: float(row.kpi_target)
+                for row in ScEmployeeKpiTarget.objects.filter(
+                    sales_code__iexact=sales_code.strip(),
+                    year=datetime.date.today().year)
+            }
+    except Exception:  # noqa: BLE001 - an absent table must not blank the card
+        allocations = {}
 
     role = ScRole.objects.filter(role_code=role_code).first()
 
@@ -787,12 +1103,37 @@ def build_card(sales_code, profile=None):
         weight = float(mapping.kpi_weight or 0)
         field = source.target_field
 
+        # ── the target ladder ─────────────────────────────────────────
+        # 1. the person's own column on the per-person DMC row
+        # 2. a per-person allocation somebody loaded for them
+        # 3. the role's own target - a shared threshold, or a rate on one of
+        #    this person's own figures
+        # An explicit figure for this person always beats a derived one.
         raw_target = targets.get(field) if field else None
         fy_target = (float(raw_target)
                      if raw_target not in (None, "") else None)
+        target_how = (f"{field} on your {target_table} row"
+                      if fy_target is not None else "")
+
+        if fy_target is None:
+            allocated = allocations.get(mapping.kpi_code)
+            if allocated is not None:
+                fy_target, target_how = allocated, "your own allocated target"
+
+        if fy_target is None:
+            fy_target, target_how = role_target(mapping, bases)
+
+        # A target of nought is not a target. It is how the cards say "this
+        # line does not apply to this role" - Mortgage Business carries a
+        # property target of 0 - and scoring against it would divide by zero.
+        if fy_target == 0:
+            fy_target, target_how = None, ""
+
         # Absent from the table is a different problem from NULL in the row,
-        # and the two need different people to fix them.
+        # and the two need different people to fix them. Neither matters once
+        # the ladder has found a target.
         target_missing = (bool(field) and not target_problem
+                          and fy_target is None
                           and field not in target_columns)
 
         figure = actuals.get(source.actual_key) if source.actual_key else None
@@ -803,7 +1144,12 @@ def build_card(sales_code, profile=None):
         problem = figure["problem"] if figure else None
         failed = bool(figure.get("failed")) if figure else False
 
-        ytd_target = prorate_to(fy_target, as_at, counted=source.counted)
+        # A threshold holds all year; everything else is sliced to the date
+        # its own actual is as at.
+        full_year = mapping.kpi_code in FULL_YEAR_TARGETS
+        ytd_target = (fy_target if full_year
+                      else prorate_to(fy_target, as_at,
+                                      counted=source.counted))
 
         # The missing TARGET is reported ahead of a failed read, because a line
         # with no target cannot be scored whatever the actual turns out to be,
@@ -818,12 +1164,14 @@ def build_card(sales_code, profile=None):
             pending_label = "Targets unreadable"
         elif target_missing:
             pending = (f"{target_table or 'The DMC roster'} has no {field} "
-                       f"column, so this line has no target to score against. "
-                       f"It is a column for the DMC load to add.")
+                       f"column, your role's card carries no target for this "
+                       f"line either, and nobody has allocated you one. It is "
+                       f"a column for the DMC load to add.")
             pending_label = "No target column"
-        elif field and fy_target is None:
-            pending = (f"{field} is blank on your DMC row, so there is no "
-                       f"target to score this line against.")
+        elif fy_target is None:
+            pending = ("Nothing sets a target for this line: your DMC row is "
+                       "blank for it, no target is allocated to you, and your "
+                       "role's card does not carry one.")
             pending_label = "No target set"
         elif unwired:
             pending = ("There is no live source wired for this line yet. The "
@@ -843,7 +1191,8 @@ def build_card(sales_code, profile=None):
             pending_label = "No figure yet"
 
         score = None if pending else score_for(
-            actual, ytd_target, source.higher_is_better)
+            actual, ytd_target, source.higher_is_better,
+            threshold=source.threshold)
         weighted = None if score is None else weight * score
         if weighted is not None:
             total += weighted
@@ -872,7 +1221,8 @@ def build_card(sales_code, profile=None):
             # at 120% and being presented as an achievement.
             "annual_target": fy_target,
             "target_field": field,
-            "target_source": target_table if fy_target is not None else "",
+            "target_source": target_how,
+            "full_year_target": full_year,
             "ytd_actual": actual,
             "score": score,
             "weighted_score": weighted,
