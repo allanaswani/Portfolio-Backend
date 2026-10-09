@@ -391,10 +391,30 @@ class ScorecardCardView(APIView):
                           "screen.",
             })
 
+        # Built from what the system already holds - the DMC roster for the
+        # role and the targets, the warehouse for the actuals - so the card
+        # exists without anybody uploading or running anything, and moves when
+        # the warehouse moves. A stored run, if there is one, is a snapshot of
+        # a closed month and is offered alongside rather than instead.
+        from apps.staff_management.live_scorecard import build_card
+
+        try:
+            live = build_card(sales_code, profile)
+        except Exception as exc:  # noqa: BLE001 - a broken read must not blank the page
+            live = {"has_card": False, "reason": "live_failed",
+                    "sales_code": sales_code,
+                    "detail": f"Your card could not be computed: {exc}"}
+        if live.get("has_card"):
+            return Response(live)
+
         rows = list(ScEmployeeMonthlyPerformance.objects
                     .filter(sales_code=sales_code)
                     .order_by("-eom_date", "kpi_order"))
         if not rows:
+            # Nothing live and nothing stored: say which of the two failed,
+            # since they are different problems.
+            if live.get("reason"):
+                return Response(live)
             role = EmployeeRoleHistory.objects.filter(
                 sales_code=sales_code,
                 start_date__lte=date.today(), end_date__gte=date.today()).first()
