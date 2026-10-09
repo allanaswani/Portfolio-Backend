@@ -344,6 +344,14 @@ def build_card(sales_code, profile=None):
     actuals = live_actuals(sales_code)
     role = ScRole.objects.filter(role_code=role_code).first()
 
+    # The seeded definitions carry the card's own wording. Without them a line
+    # renders as its slug - "Group Synergies 20 0" - which is not what anybody
+    # is measured on.
+    from .scorecard_automation.models import ScKpi
+
+    named = {k.kpi_code: k for k in ScKpi.objects.filter(
+        kpi_code__in=[m.kpi_code for m in mappings])}
+
     perspectives, seen = [], {}
     total = 0.0
     live_lines = pending_lines = 0
@@ -361,18 +369,34 @@ def build_card(sales_code, profile=None):
                       if fy_target is not None else None)
 
         actual = as_at = problem = None
+        unwired = False
         if source.actual_key:
-            actual, as_at, problem = actuals.get(
-                source.actual_key, (None, None, "no figure"))
+            if source.actual_key in actuals:
+                actual, as_at, problem = actuals[source.actual_key]
+            else:
+                # The KPI names a source this build does not compute yet.
+                # Saying "the warehouse could not be read" would send somebody
+                # looking for a database fault that does not exist.
+                unwired = True
 
-        pending = source.pending
-        if not pending and problem:
+        pending = pending_label = ""
+        if source.pending:
+            pending, pending_label = source.pending, "Not measured here"
+        elif unwired:
+            pending = (
+                "There is no live source wired for this line yet. The figure "
+                "exists in the business; it is not yet read from here.")
+            pending_label = "No source yet"
+        elif problem:
             pending = f"The warehouse could not be read for this line: {problem}"
-        if not pending and fy_target is None:
+            pending_label = "Could not read"
+        elif fy_target is None:
             pending = ("No target is set for this line on the DMC roster, so "
                        "there is nothing to score against.")
-        if not pending and actual is None:
+            pending_label = "No target set"
+        elif actual is None:
             pending = "The warehouse has no figure for this line yet."
+            pending_label = "No figure yet"
 
         score = None if pending else score_for(
             actual, ytd_target, source.higher_is_better)
@@ -391,14 +415,25 @@ def build_card(sales_code, profile=None):
         seen[name]["lines"].append({
             "kpi_order": mapping.kpi_order,
             "kpi_code": mapping.kpi_code,
-            "kpi_name": mapping.kpi_code.replace("_", " ").title(),
+            "kpi_name": (named[mapping.kpi_code].kpi_name
+                         if mapping.kpi_code in named
+                         else mapping.kpi_code.replace("_", " ").title()),
+            "measure_of_success": (named[mapping.kpi_code].kpi_description
+                                   if mapping.kpi_code in named else ""),
             "weight": weight,
             "ytd_target": ytd_target,
+            # The year's figure as the DMC roster holds it. Shown beside the
+            # prorated one so a target that looks an order of magnitude out
+            # can be spotted by the person it belongs to, rather than being
+            # silently capped at 120% and presented as an achievement.
+            "annual_target": fy_target,
+            "target_field": source.target_field,
             "ytd_actual": actual,
             "score": score,
             "weighted_score": weighted,
             "as_at": as_at,
             "pending": pending,
+            "pending_label": pending_label,
         })
 
     return {
