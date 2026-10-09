@@ -398,14 +398,23 @@ class ScorecardCardView(APIView):
             role = EmployeeRoleHistory.objects.filter(
                 sales_code=sales_code,
                 start_date__lte=date.today(), end_date__gte=date.today()).first()
-            if role is None:
-                reason, detail = "no_role", (
-                    "You are not on a scorecard roster yet, so no card applies "
-                    "to you. Administration loads the roster with the targets.")
-            else:
+            if role is not None:
                 reason, detail = "not_run", (
                     "Your card has not been generated yet. It is produced when "
                     "the month's actuals are loaded.")
+            elif not EmployeeRoleHistory.objects.exists():
+                # Nobody has a role, so this is not about this person. Saying
+                # "you are not on a roster" to all 91 people on a roster they
+                # ARE on is an accusation the tool is in no position to make.
+                reason, detail = "roster_not_loaded", (
+                    "The scorecard roster has not been loaded into the tool "
+                    "yet, so no cards exist for anybody. Nothing is wrong with "
+                    "your profile.")
+            else:
+                reason, detail = "no_role", (
+                    "The roster is loaded but does not list your sales code, "
+                    "so no card applies to you. Administration can check it "
+                    "against the scorecard workbook.")
             return Response({"has_card": False, "reason": reason,
                              "detail": detail, "sales_code": sales_code})
 
