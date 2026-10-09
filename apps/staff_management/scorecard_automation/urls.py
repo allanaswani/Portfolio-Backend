@@ -21,6 +21,12 @@ urlpatterns = [
     # Computed monthly performance (outputs)
     path("monthly_performance/", views.ScEmployeeMonthlyPerformanceListView.as_view()),
 
+    # Loading the workbooks. Both read and report first; only a second call
+    # with apply=true writes, and the actuals upload then runs the scorecard
+    # itself so the RM's card is current without a second action.
+    path("upload-actuals/", views.ScorecardActualsUploadView.as_view()),
+    path("upload-allocation/", views.ScorecardAllocationUploadView.as_view()),
+
     # Automation actions
     path("missing_actuals/refresh/", views.RefreshMissingActualsView.as_view()),
     path("run/", views.RunMonthlyScorecardView.as_view()),
