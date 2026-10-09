@@ -188,6 +188,19 @@ class ScRoleKpiMapping(models.Model):
         help_text="How kpi_target is to be read. Blank means it is the target "
                   "itself; rate_on_base means multiply it by the base named "
                   "in target_base.")
+    #: What this line says on THIS role's card.
+    #:
+    #: The wording is per role, not per KPI. One feed is read by several roles
+    #: against different wording: CASA is "open 4 funded accounts" on one card,
+    #: "6 per month" on another and "30 accounts a day" on a third, and Asset
+    #: Growth is "grow by 43% of the Dec book" for SME and 21% for Commercial.
+    #: With only ``ScKpi.kpi_description`` to go on, whichever role was seeded
+    #: first put its wording on everybody else's card - which is how the RM
+    #: cards came to show every role "43%".
+    #:
+    #: Blank means fall back to the KPI's own description, so nothing changes
+    #: for a line whose wording really is the same everywhere.
+    kpi_description = models.TextField(blank=True, default="")
     #: Which of the person's own figures the rate applies to.
     target_base = models.CharField(
         max_length=40, blank=True, default="",

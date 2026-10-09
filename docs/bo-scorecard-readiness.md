@@ -10,10 +10,16 @@ by `manage.py extract_bo_scorecards <workbook> --actuals <template>`, into
 `docs/bo-scorecard-kpi-map.csv` (132 KPI lines) and
 `docs/bo-scorecard-roster.csv` (101 people).
 
-Nothing is seeded yet. This is the groundwork, and it records the nine places
-the two workbooks do not agree — those need an answer before any of it is
-scored, because a line pointing at a sheet that does not exist cannot be
-getting its figure from there in the manual process either.
+**Seeded by migration 0031**: 10 roles, 51 KPIs, 132 mappings, every card's
+weights summing to exactly 1.000. Guarded by
+`apps/staff_management/tests_bo_scorecards.py`.
+
+What is NOT done is the roster — which of these 101 people holds which card —
+and section 5 still lists the places the two workbooks disagree. A line
+pointing at a sheet that does not exist cannot be getting its figure from
+there in the manual process either, so those are questions rather than
+defaults: the 16 KPIs behind them are seeded **inactive** with what the card
+claims.
 
 ---
 
@@ -44,24 +50,54 @@ still put the sheet name in the next column. The extractor falls back to the
 position **and then checks every name against the template's real sheet names**,
 which is what makes reading it positionally safe rather than a guess.
 
-## 2. The two pro-ration rules already hold here
+## 2. Three things that were wrong while reading it
 
-On these Q2_Jun_2026 cards the YTD target is:
+Each would have put a wrong number on somebody's card, and each is now a test.
 
-* the annual figure **× 6/12** for every money and count line
-  (−434,037 → −217,019; 2 → 1; 4 → 2; 48 → 24);
-* **unchanged** for every threshold — NPS 0.6, audit 1.0, audit resolution
-  0.85, compliance 0.9, productivity 0.8, operation losses 0.0.
+**The Target column is empty on nine of the ten cards.** Only BOM_SCORECARD
+heads column 5 "Target" and puts the annual figure there; the other nine head
+it **PM** — per month. Reading only "Target" left **120 of the 132 lines with
+no target at all**. The per-month figure is multiplied by 12 on the way in,
+because `kpi_target` means a yearly figure everywhere else in this system and
+special-casing the pro-ration for these cards would have been worse.
 
-That is the same pair of rules the RM card follows: pro-rate to the elapsed
-year, and never pro-rate a threshold. The `ytd_over_annual` column in the CSV
-records what each card actually did, so this is read off rather than assumed.
+**A KPI is keyed on its FEED, not its measure.** Keying on the measure split
+NPS into two codes over a trailing disambiguator and split KYC over a typo on
+one card ("clenup"), while lumping three different account-opening measures
+together. Keyed on the feed, 51 KPIs cover all 132 lines, and the code is also
+what somebody later asking "where does this number come from" would search for.
 
-Each card also carries `month_count` in its header (10 on these), which is
-worth confirming the meaning of — the figures are consistent with 6/12, not
-10/12.
+**A role cannot hold the same KPI twice**, and the cash-centre teller card has
+two lines both reading `Branch_Audit` — one labelled "Branch Audit", one "Cash
+Management". The first seed attempt died on the unique constraint. For a feed
+that any single card doubles up on, the measure goes into the code; worked out
+from the data rather than listed, and applied to every card using that feed so
+the code stays stable.
 
-## 3. The ten cards and the roster
+## 3. Pro-ration, and what counts as a threshold
+
+The YTD target is the annual figure sliced to the elapsed year for an accrual,
+and **not sliced at all** for a threshold. Which is which is read off the card
+rather than decided from the KPI's name:
+
+* the per-month figure and the YTD figure are the **same number** — NPS 0.6
+  against 0.6, branch audit 1 against 1 — so the line is a standard that holds
+  all year; or
+* the target is written as a **limit** — "< 2 Days", "<20%", "<5%" — in which
+  case it is a ceiling by construction, and its number is in the YTD column
+  rather than the target column, which is where it is taken from.
+
+28 of the 51 codes are thresholds on that test. Six codes are ones the cards
+**disagree** about, and the majority was taken: NPS (9 cards say threshold, 1
+says accrual), operation losses (6/1), branch audit (5/1), reactivation (4/1),
+CASA (2 say threshold, 4 say accrual → accrual), events (1/1 → accrual).
+
+Separately, the cards do not agree on how many months have elapsed: for the
+same Q2_Jun_2026 period, BOMCSO multiplies a monthly CRM target by 6 and CSO
+multiplies the same measure by 2. One consistent rule — the elapsed year — is
+applied to everybody, as it is on the RM cards.
+
+## 4. The ten cards and the roster
 
 | Card | Lines | Weight |
 |---|---|---|
@@ -101,7 +137,7 @@ should confirm it rather than have it guessed.
 
 There is also a `BMs` sheet with no KPI table, skipped.
 
-## 4. Where the two workbooks disagree — nine lines
+## 5. Where the two workbooks disagree — nine lines
 
 These name an actuals sheet that **is not in the template**:
 
@@ -121,7 +157,7 @@ And four template sheets are named by **no** card: `CSAT`, `Drawdown`,
 `HFCB_Properties_Value`, `SLA`. Two of those are the other half of the rename
 above; `CSAT` and `SLA` look like feeds nothing currently reads.
 
-## 5. Nine lines name no sheet at all
+## 6. Nine lines name no sheet at all
 
 | Card | Measure | Key initiative |
 |---|---|---|
@@ -139,7 +175,7 @@ Client compliments and complaints, a documented customer journey, and
 term-deposit renewal tracking are all returns somebody keeps rather than feeds —
 they belong on the **Figures to load** screen the RM cards already use.
 
-## 6. What the platform can already answer
+## 7. What the platform can already answer
 
 Against the 33 valid sheet names, these have a source in this database today:
 
@@ -160,21 +196,31 @@ So roughly a third of the back-office lines are computable from what is already
 here, and the rest are an upload — which is the same shape the RM cards ended
 up in, and the machinery for both already exists.
 
-## 7. What it would take
+## 8. What is left
 
-1. **Settle the nine disagreements** in section 4 and the three teller cards in
-   section 3. Those are questions for the desk, not inferences to make.
-2. **Seed the 10 cards** the way migration 0027 seeded the RM ones — roles, KPI
-   definitions, weights and perspectives, from `bo-scorecard-kpi-map.csv`. The
-   mapping is declared here, so no calibration pass is needed and nothing
-   should be seeded inactive.
-3. **Resolve the roster's roles to cards**, and decide whether the back-office
-   roster comes from `List` or from the DMC tables. These 101 people are
-   branch operations staff, and `branch_employee_dmc_data` is a SALES roster —
-   a teller may well not be on it, in which case `List` has to be loaded as its
-   own roster rather than derived.
-4. **Point each line at its source**, reusing `live_scorecard.SOURCES` — the
-   `Source` dataclass, the target ladder, the pro-ration and the scoring rule
-   all apply unchanged.
-5. **Extend `MANUAL_ACTUALS`** with the outside-the-warehouse sheets, which
-   makes them loadable on the screen that already exists.
+**Done**: the 10 cards, their 51 KPIs, 132 mappings with per-role weights,
+targets and wording, the threshold rule, and a source decision for every one of
+the 51 — so no back-office line can reach a card without somebody having
+decided what it is.
+
+**The roster is the next piece, and it needs a decision.** These 101 people are
+branch OPERATIONS staff; `branch_employee_dmc_data` is a SALES roster, so a
+teller may well not be on it. `staff_employee_data` carries both `sales_code`
+and `job_title`, which is the obvious bridge — resolve the card from the job
+title the way `role_code_for` resolves an RM's. That needs checking against
+production before it is built, because if the operations staff are not in that
+table either, `List` has to be loaded as its own roster and the "no uploads"
+rule does not survive contact with this group.
+
+Also still open:
+
+1. **The nine disagreements** in section 5 and the three teller cards in
+   section 4. Questions for the desk, not inferences to make.
+2. **Account-opening turnaround.** Three lines (PB, BB, UB) are a branch
+   service measure. iApply carries LOAN turnaround, which is a different
+   thing, so these are left unscored rather than pointed at it.
+3. **Extend `MANUAL_ACTUALS`** with the back-office control measures — audit
+   scores, KYC cleanup, complaints logged, operation losses, cash management,
+   productivity — which makes them loadable on the Figures to load screen that
+   already exists. The source entries name the return each comes from, so the
+   list is already written; it just has to be moved.

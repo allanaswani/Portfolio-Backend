@@ -65,6 +65,7 @@ COLUMNS = [
     "kpi_order", "perspective", "perspective_weight", "measure",
     "key_initiative", "weight", "target", "ytd_target", "actual",
     "pct_achievement", "weighted", "actuals_sheet", "ytd_over_annual",
+    "target_basis", "threshold", "target_from_ytd",
 ]
 
 
@@ -146,19 +147,6 @@ class Command(BaseCommand):
         if not rows:
             raise CommandError("No role cards were read from that workbook.")
 
-        with open(options["out"], "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        if roster:
-            with open(options["roster_out"], "w", newline="",
-                      encoding="utf-8") as handle:
-                writer = csv.DictWriter(
-                    handle, fieldnames=list(roster[0].keys()))
-                writer.writeheader()
-                writer.writerows(roster)
-
         # Check what the cards claim against what the actuals template has.
         known = {}
         if options["actuals"]:
@@ -172,6 +160,20 @@ class Command(BaseCommand):
                 # template ("Re_activation" against "RE_activation"), so the
                 # canonical spelling is written out rather than the card's.
                 row["actuals_sheet"] = match or f"{claimed} (NOT A SHEET)"
+
+
+        with open(options["out"], "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        if roster:
+            with open(options["roster_out"], "w", newline="",
+                      encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=list(roster[0].keys()))
+                writer.writeheader()
+                writer.writerows(roster)
 
         cards = sorted({r["sheet"] for r in rows})
         sheets = sorted({r["actuals_sheet"] for r in rows if r["actuals_sheet"]})
@@ -277,8 +279,13 @@ class Command(BaseCommand):
                 where["initiative"] = column
             elif "weight on" in label:
                 where["weight"] = column
-            elif label == "target":
+            elif label in ("target", "pm"):
+                # Nine of the ten cards leave "Target" out entirely and put a
+                # PM - per month - column there instead. Reading only "target"
+                # found nothing on those nine, which is how 120 of the 132
+                # lines came back with no target at all.
                 where["target"] = column
+                where["target_label"] = label
             elif "ytd target" in label:
                 where["ytd_target"] = column
             elif "actual" in label:
@@ -349,6 +356,31 @@ class Command(BaseCommand):
                 # line on a Q2 card, 1.0 for a threshold.
                 "ytd_over_annual": (round(ytd / target, 6)
                                     if target and ytd is not None else ""),
+                # Whether column 5 is the YEAR's target or a PER-MONTH one.
+                # The cards do not agree: BOM_SCORECARD heads it "Target" and
+                # puts the annual figure there, and the other nine head it
+                # "PM" and put a monthly one.
+                "target_basis": ("annual" if where.get("target_label")
+                                 == "target" else "monthly"),
+                # A line where the per-month figure and the YTD figure are the
+                # SAME is a threshold, not an accrual: NPS 0.6 against 0.6,
+                # branch audit 1 against 1. That is read off the card rather
+                # than decided from the KPI's name, and it is the only thing
+                # that distinguishes "60% all year" from "0.6 a month".
+                "threshold": (
+                    "yes" if (
+                        # Written as a limit - "< 1 Day", "<20%", "<5%" - in
+                        # which case the number is in the YTD column and the
+                        # line is a ceiling by construction.
+                        (target is None
+                         and "<" in _text(cells.get(where.get("target"))))
+                        or (target is not None and ytd is not None
+                            and abs(target - ytd) < 1e-9))
+                    else "no" if ytd is not None else ""),
+                # The figure to use when the target cell is prose. "< 2 Days"
+                # carries its 2 in the YTD column.
+                "target_from_ytd": ("yes" if target is None
+                                    and ytd is not None else "no"),
             })
         return out
 

@@ -315,6 +315,152 @@ _register(
            pending="Training hours are recorded in the learning system, not "
                    "here."))
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The back-office (non-sales) cards
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Ten cards: branch operations managers, customer service officers, tellers,
+# cash tellers and the retail back office. Seeded by migration 0031 from
+# ``2026_BO_Non_Sales_Scorecards - Q2 with_updated_targets.xlsb``.
+#
+# Every code is keyed on the FEED its card names, so ``bo_nps`` is the NPS
+# sheet and ``bo_kyc`` is the KYC sheet. That makes this list short: one entry
+# per feed, not one per card line.
+#
+# These are OPERATIONS staff, and most of what they are measured on is a
+# control or a service measure rather than a balance: audit scores, turnaround,
+# KYC cleanup, complaints logged, operation losses, cash management. Almost
+# none of that is in a warehouse table, which is why so many of these are
+# loaded rather than computed - and that is a statement about where the data
+# lives, not a gap in this card.
+
+# ── what the platform already measures ───────────────────────────────────
+# Provisions: the same loan-loss figure the RM card scores, and the same
+# direction. The BOM's card calls it NPL Management.
+_register(["bo_pl_charge"],
+          Source(actual_key="loan_loss", higher_is_better=False))
+
+# New and funded accounts, off the new-account return the RM card now uses.
+_register(["bo_casa", "bo_new_customers"],
+          Source(actual_key="new_accounts", counted=True))
+
+# Loan turnaround, from iApply. ``bo_branch_loan_tat`` is a number of days
+# against an SLA, and lower is better; the diaspora card's Weighted_TAT line is
+# the share inside the standard.
+_register(["bo_branch_loan_tat"],
+          Source(actual_key="tat_days", higher_is_better=False))
+_register(["bo_weighted_tat"], Source(actual_key="tat_within_sla"))
+
+# Property, from both returns - the HFDI sales return and affordable housing.
+_register(["bo_hfcb_properties_volume"],
+          Source(actual_key="property_units", counted=True))
+_register(["bo_hfcb_properties_value"], Source(actual_key="property_value"))
+
+# Bancassurance. The cards split VIC three ways and name a sheet for each, and
+# the life/non-life pair is the axis premium_types_mapping can express - the
+# same reading as the RM cards, and the same open question about whether VIC
+# means Britam rather than life.
+_register(["bo_vic"], Source(actual_key="banca_total"))
+_register(["bo_vic_life"], Source(actual_key="banca_life"))
+_register(["bo_vic_non_life"], Source(actual_key="banca_non_life"))
+
+# ── measured, but not for a person ───────────────────────────────────────
+# Account-opening turnaround is a BRANCH service measure. iApply's TAT is loan
+# turnaround and is not the same thing, so pointing these at it would put a
+# loan figure against an account-opening target.
+for _code, _what in (
+    ("bo_account_opening_pb", "personal banking"),
+    ("bo_account_opening_bb", "business banking"),
+    ("bo_account_opening_ub", "ultimate banking"),
+):
+    SOURCES[_code] = Source(pending=(
+        f"Account-opening turnaround for {_what}. The warehouse carries LOAN "
+        f"turnaround, in iApply, which is a different measure - so this comes "
+        f"off the account-opening return rather than being inferred from it."))
+
+# ── the control and service measures ─────────────────────────────────────
+# Each names the return it comes from, because "measured elsewhere" without
+# saying where is what sends somebody asking three people.
+for _code, _where in (
+    ("bo_nps", "the customer survey"),
+    ("bo_crm", "the CRM complaint log"),
+    ("bo_kyc", "the KYC cleanup return"),
+    ("bo_branch_audit_branch_audit", "Internal Audit"),
+    ("bo_branch_audit_resolution", "Internal Audit - repeat findings resolved"),
+    ("bo_branch_audit_compliance", "Internal Audit - compliance score"),
+    ("bo_diaspora_audit", "Internal Audit - the diaspora return"),
+    ("bo_branch_audit_cash_management", "Internal Audit - cash management"),
+    ("bo_cash_management", "the cash management return"),
+    ("bo_operation_lossess", "the operational loss and fraud register"),
+    ("bo_trx_errors", "the transaction error return"),
+    ("bo_rbo_account_errors", "the back-office returns register"),
+    ("bo_trx_productivity", "the teller transaction count"),
+    ("bo_sales_productivity", "the team productivity return"),
+    ("bo_training_hours", "the learning system"),
+    ("bo_leave_management", "HR"),
+    ("bo_events", "the branch events return"),
+    ("bo_branch_rtgs", "the RTGS channel return"),
+    ("bo_digital_activation", "the digital activation return"),
+    ("bo_digital_customers", "the digital onboarding return"),
+    ("bo_re_activation", "the dormancy reactivation return"),
+    ("bo_active_customers", "the active-customer count"),
+):
+    SOURCES[_code] = Source(pending=(
+        f"Measured in {_where}, which is not a table this platform reads. "
+        f"Administration loads it on the Figures to load screen."))
+
+# ── the lines whose own card does not say where the figure comes from ────
+# Migration 0031 seeds these inactive and records what each card claims. They
+# are listed here as well so the card gives a reason rather than falling
+# through to a generic one, and so the invariant test keeps holding.
+for _code, _why in (
+    ("bo_account_errors",
+     "the card names a sheet called Account_Errors, which the actuals "
+     "template does not have. Trx_Errors and RBO_Account_Errors both exist "
+     "and either could be meant, so neither is assumed."),
+    ("bo_account_opening_sme",
+     "the card names Account_Opening_sme. The template has PB, BB and UB "
+     "account-opening sheets and no SME one."),
+    ("bo_bbm_financials",
+     "the card names BBM_Financials, which is not one of the template's 37 "
+     "feeds."),
+    ("bo_deposit_growth",
+     "the card names Deposit_Growth, and the template has no deposits sheet "
+     "at all."),
+    ("bo_cost",
+     "the card names Cost. There is no operating-cost data anywhere in this "
+     "warehouse, so this cannot come from a feed as things stand."),
+    ("bo_npl",
+     "the card names NPL. PL_Charge is what every other NPL line on these "
+     "cards reads, and the difference is not explained."),
+    ("bo_rbo_monthly_summ",
+     "the card names RBO_Monthly_Summ, which is a summary sheet in the "
+     "scorecard workbook rather than a feed."),
+    ("bo_npl_reduce_p_l_provisions_from_diaspora",
+     "diaspora provisions specifically. The provision figure is not cut by "
+     "diaspora anywhere this platform reads."),
+    ("bo_customer_feedback_nil_client_complaints",
+     "client complaints, which are a return somebody keeps."),
+    ("bo_customer_feedback_achieve_5_client_compliments",
+     "client compliments, which are a return somebody keeps."),
+    ("bo_customer_feedback_achieve_3_ultimate_banking_client_co",
+     "Ultimate Banking client compliments, a return somebody keeps."),
+    ("bo_customer_feedback_achieve_3_diaspora_banking_client_co",
+     "Diaspora Banking client compliments, a return somebody keeps."),
+    ("bo_customer_journey_document_and_approve_the_customer_ser",
+     "whether the customer service journey has been documented and approved "
+     "- a yes or no somebody records, not a figure."),
+    ("bo_tds_track_ub_term_deposit_renewals",
+     "Ultimate Banking term-deposit renewals tracked."),
+    ("bo_term_deposits_track_diaspora_term_deposit_renewals_ret",
+     "Diaspora term-deposit renewals tracked."),
+    ("bo_tools_achieve_tat_of_1_day_for_mobile_banking_onboardi",
+     "mobile banking onboarding turnaround, which is not in iApply."),
+):
+    SOURCES[_code] = Source(pending=(
+        f"No live source: {_why} Administration loads it on the Figures to "
+        f"load screen."))
+
 #: Everything else the warehouse has no figure for. Listed rather than left to
 #: fall through, so the reason on the card is specific.
 for _code in (
@@ -971,6 +1117,42 @@ FULL_YEAR_TARGETS = {
     "weighted_sales", "weighted_sales_dashboard", "leave_management",
 }
 
+#: The back-office thresholds, read off those cards rather than decided from a
+#: KPI's name: a line whose PER-MONTH figure and YTD figure are the same number
+#: - or whose target is written as a limit, "< 2 Days" - is a ceiling or a
+#: standard that holds all year, not something that accrues. Migration 0031
+#: carries the same list and explains how it was arrived at.
+FULL_YEAR_TARGETS |= {
+    "bo_account_opening_bb",
+    "bo_account_opening_pb",
+    "bo_account_opening_sme",
+    "bo_account_opening_ub",
+    "bo_active_customers",
+    "bo_branch_audit_branch_audit",
+    "bo_branch_audit_cash_management",
+    "bo_branch_audit_compliance",
+    "bo_branch_audit_resolution",
+    "bo_branch_loan_tat",
+    "bo_branch_rtgs",
+    "bo_cash_management",
+    "bo_customer_feedback_nil_client_complaints",
+    "bo_customer_journey_document_and_approve_the_customer_ser",
+    "bo_diaspora_audit",
+    "bo_digital_activation",
+    "bo_npl_reduce_p_l_provisions_from_diaspora",
+    "bo_nps",
+    "bo_operation_lossess",
+    "bo_rbo_account_errors",
+    "bo_rbo_monthly_summ",
+    "bo_re_activation",
+    "bo_sales_productivity",
+    "bo_tds_track_ub_term_deposit_renewals",
+    "bo_tools_achieve_tat_of_1_day_for_mobile_banking_onboardi",
+    "bo_trx_errors",
+    "bo_trx_productivity",
+    "bo_weighted_tat",
+}
+
 #: What a ``target_base`` names, in terms of what the warehouse can give.
 #: Each is one of this person's OWN figures - the point of a rate target is
 #: that the number is theirs, not the role's.
@@ -1306,8 +1488,14 @@ def build_card(sales_code, profile=None):
             "kpi_name": (named[mapping.kpi_code].kpi_name
                          if mapping.kpi_code in named
                          else mapping.kpi_code.replace("_", " ").title()),
-            "measure_of_success": (named[mapping.kpi_code].kpi_description
-                                   if mapping.kpi_code in named else ""),
+            # This role's own wording first. One feed is read by several
+            # roles against different numbers - CASA is "open 4 funded
+            # accounts" on one card and "30 a day" on another - and the KPI's
+            # own description is whichever role happened to be seeded first.
+            "measure_of_success": (
+                getattr(mapping, "kpi_description", "")
+                or (named[mapping.kpi_code].kpi_description
+                    if mapping.kpi_code in named else "")),
             "weight": weight,
             "ytd_target": ytd_target,
             # The year's figure as the roster holds it, beside the pro-rated
