@@ -249,3 +249,61 @@ class ScEmployeeMonthlyPerformance(models.Model):
 
     def __str__(self):
         return f"{self.sales_code} - {self.eom_date}"
+
+
+class ScEmployeeKpiTarget(models.Model):
+    """A target that belongs to one person rather than to their role.
+
+    ``ScRoleKpiMapping.kpi_target`` is per ROLE, which covers the KPIs where
+    everybody on a card carries the same number - 48 training hours, NPS of
+    60%, PAR of 2.5%. It cannot express the financial targets, because those
+    are allocated per person: in the "Summary Allocation" sheet of the
+    scorecard workbook each RM has their own deposit growth, asset growth,
+    AUM growth and income contribution. On the Commercial card, one RM's
+    deposit growth target is 4.35x his own base - plainly not a role rate.
+
+    So this table holds the GROWTH column of the scorecard, per person, and
+    ``StaffEmployeeService.get_kpi_target_values`` prefers it when a row
+    exists. With no row the engine behaves exactly as it did, which is what
+    keeps this additive: a KPI nobody has allocated individually still takes
+    the role's target.
+
+    ``base_value`` is the scorecard's "2025 FY" column. It is optional,
+    because ``rm_kpi_base_summary`` already carries that per person; it is
+    here so that one upload can set both without needing two round trips, and
+    whichever is present at run time wins in that order.
+    """
+
+    sales_code = models.CharField(max_length=255, db_index=True)
+    kpi_code = models.CharField(max_length=100)
+    #: The performance year the target belongs to, e.g. 2026.
+    year = models.PositiveSmallIntegerField()
+
+    #: The GROWTH column: an absolute amount, or a rate when 0 < value < 1.
+    #: Read exactly as ScRoleKpiMapping.kpi_target is read, so the two are
+    #: interchangeable and the proration rules do not change.
+    kpi_target = models.FloatField()
+    #: The scorecard's "2025 FY" base, when the upload carried one.
+    base_value = models.FloatField(null=True, blank=True)
+
+    #: Where the number came from, so a figure can be traced to its file.
+    source = models.CharField(max_length=160, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "sc_employee_kpi_targets"
+        verbose_name = "Scorecard Employee KPI Target"
+        verbose_name_plural = "Scorecard Employee KPI Targets"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sales_code", "kpi_code", "year"],
+                name="sc_unique_employee_kpi_target_per_year",
+            )
+        ]
+        indexes = [models.Index(fields=["year", "kpi_code"])]
+
+    def __str__(self):
+        return f"{self.sales_code} - {self.kpi_code} - {self.year}"

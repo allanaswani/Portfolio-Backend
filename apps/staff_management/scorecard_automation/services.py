@@ -20,6 +20,7 @@ from apps.staff_management.models import (
 )
 from apps.staff_management.scorecard_automation.models import (
     ScKpi, ScRole, ScRoleKpiMapping, ScEmployeePerformanceActual,
+    ScEmployeeKpiTarget,
     ScEmployeeMonthlyPerformance,
 )
 
@@ -172,11 +173,25 @@ class RoleKPIMappingService:
             sales_code=sales_code, kpi_code=kpi_details.kpi_code, eom_date__year=year,
         ).first()
         base_value = float(base_summary.kpi_value) if base_summary else 0.0
-        prev_year_value = base_value
 
         proration_details = StaffEmployeeService.get_employee_target_proration_details(sales_code, role_start_date)
         active_months = proration_details.get("active_months", 12)
         kpi_target = role_kpi_mapping_details.kpi_target
+
+        # A target allocated to this person beats the one attached to their
+        # role. The financial KPIs are allocated individually - see
+        # ScEmployeeKpiTarget - and a role-level number cannot express them.
+        # With no row for this person the role's target stands, so this is
+        # additive: nothing already configured changes behaviour.
+        own = ScEmployeeKpiTarget.objects.filter(
+            sales_code=sales_code, kpi_code=kpi_details.kpi_code, year=year,
+        ).first()
+        if own is not None:
+            kpi_target = own.kpi_target
+            if own.base_value is not None:
+                base_value = float(own.base_value)
+
+        prev_year_value = base_value
 
         if kpi_details.has_base_value:
             if 0 < kpi_target < 1:
