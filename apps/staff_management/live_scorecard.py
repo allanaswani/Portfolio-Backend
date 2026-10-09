@@ -208,6 +208,36 @@ def _drawdowns_ytd(sales_code, year):
     return value, (f"as at {row[1]:%-d %b}" if row[1] else None)
 
 
+def _opening_balance(table, sales_code, year):
+    """Last December's closing balance for this RM, or None.
+
+    The card measures GROWTH, and growth needs an opening balance. The
+    warehouse keeps the year's closing columns as ``dec_25_bal``,
+    ``dec_24_bal`` and so on, so the base for 2026 is ``dec_25_bal``.
+
+    The column is checked for before it is named: the month columns are not a
+    uniform series - older periods are quarterly - and naming one that was
+    never created fails the whole statement, which is how a balance for an RM
+    sitting on hundreds of millions once came back as zero.
+    """
+    from django.db import connection
+
+    column = f"dec_{str(year - 1)[-2:]}_bal"
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT attname FROM pg_attribute "
+            "WHERE attrelid = to_regclass(%s) AND attnum > 0 "
+            "AND NOT attisdropped", [table])
+        columns = {r[0].lower() for r in cur.fetchall()}
+        if column not in columns:
+            return None, f"{table} has no {column} column to grow from"
+        cur.execute(
+            f"SELECT SUM({column}) FILTER (WHERE {column} > 0) "
+            f"FROM {table} WHERE TRIM(rm_code) = TRIM(%s)", [sales_code])
+        row = cur.fetchone()
+    return (float(row[0]) if row and row[0] is not None else None), None
+
+
 def live_actuals(sales_code):
     """Every figure the warehouse can give for this RM, with its own as-at.
 
@@ -239,14 +269,27 @@ def live_actuals(sales_code):
     attempt("_balances", balances)
     data = out.pop("_balances")[0] or {}
 
-    # Deposits and loans are a POSITION, and the card measures GROWTH. Without
-    # an opening balance the growth cannot be worked out, so the position is
-    # reported and the line stays pending rather than passing a balance off as
-    # a growth figure.
+    # The card measures GROWTH, not position, so each balance is taken against
+    # last December's close. A position passed off as growth would overstate
+    # every RM by their entire opening book.
     out["deposit_position"] = (
         data.get("total_deposit_balance"), data.get("deposits_as_at"), None)
     out["asset_position"] = (
         data.get("total_loans"), data.get("loans_as_at"), None)
+
+    def growth(table, position_key):
+        position, as_at, _ = out[position_key]
+        if position is None:
+            return None, None, f"no {position_key.split('_')[0]} position"
+        base, why = _opening_balance(table, sales_code, year)
+        if base is None:
+            return None, None, why or "no opening balance for this year"
+        return position - base, as_at, None
+
+    attempt("deposit_growth",
+            lambda: growth("daily_balance_movement", "deposit_position"))
+    attempt("asset_growth",
+            lambda: growth("loan_daily_balance_movement", "asset_position"))
 
     def revenue():
         rows = svc.rm_revenue(sales_code)
