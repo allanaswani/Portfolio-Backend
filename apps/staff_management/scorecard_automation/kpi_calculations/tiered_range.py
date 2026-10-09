@@ -6,6 +6,15 @@ from apps.staff_management.scorecard_automation.kpi_calculations.base import (
 class TieredRangeCalculator(CalculatorBase):
     """KPI score from a tiered range table keyed by kpi_code."""
     score_ranges = {
+        # PAR is pass or fail against the target rather than proportional to
+        # it. Read off the cards: 0.009554 against a 0.025 target scores 1.2
+        # and 0.02604 against the same target scores 0, with nothing in
+        # between on any of the eight. The target is 2.5% on every RM card, so
+        # the boundary is a constant here rather than a per-person figure.
+        "par": [
+            {"min": -1, "max": 0.025, "score": 1.2},
+            {"min": 0.025, "max": float("inf"), "score": 0},
+        ],
         "audit": [
             {"min": 0, "max": 1.65, "score": 1},
             {"min": 1.66, "max": 2.49, "score": 0.8},

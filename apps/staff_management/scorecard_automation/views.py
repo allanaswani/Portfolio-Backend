@@ -354,3 +354,120 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
         body["roster_saved"] = apply_roster(roster, year, changed_by=who)
         body["applied"] = True
         return Response(body, status=201)
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardCardView(APIView):
+    """The signed-in person's scorecard, shaped like the card they are sent.
+
+    One call rather than three, because the page is one document: a header, the
+    KPI lines grouped by perspective, and a total. Splitting it would mean the
+    browser deciding how a scorecard is laid out, and the layout is not the
+    browser's to decide.
+
+    Scoped to the caller by ``portfolio_profile.sales_code``. A Team Leader
+    looking at somebody else is a different screen with a different gate; this
+    one is only ever your own card, so there is no ``sales_code`` parameter to
+    forget to check.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import date
+
+        from apps.portfolio.models import Profile
+        from apps.staff_management.models import (
+            EmployeeRoleHistory, StaffEmployeeData)
+
+        profile = Profile.objects.filter(user_id=request.user.id).first()
+        sales_code = (profile.sales_code or "").strip() if profile else ""
+        if not sales_code:
+            return Response({
+                "has_card": False,
+                "reason": "no_sales_code",
+                "detail": "Your profile has no sales code, so there is no book "
+                          "to score. Administration can add one on the Users "
+                          "screen.",
+            })
+
+        rows = list(ScEmployeeMonthlyPerformance.objects
+                    .filter(sales_code=sales_code)
+                    .order_by("-eom_date", "kpi_order"))
+        if not rows:
+            role = EmployeeRoleHistory.objects.filter(
+                sales_code=sales_code,
+                start_date__lte=date.today(), end_date__gte=date.today()).first()
+            if role is None:
+                reason, detail = "no_role", (
+                    "You are not on a scorecard roster yet, so no card applies "
+                    "to you. Administration loads the roster with the targets.")
+            else:
+                reason, detail = "not_run", (
+                    "Your card has not been generated yet. It is produced when "
+                    "the month's actuals are loaded.")
+            return Response({"has_card": False, "reason": reason,
+                             "detail": detail, "sales_code": sales_code})
+
+        latest = rows[0].eom_date
+        lines = [r for r in rows if r.eom_date == latest]
+
+        staff = StaffEmployeeData.objects.filter(sales_code=sales_code).first()
+        role = EmployeeRoleHistory.objects.filter(
+            sales_code=sales_code, start_date__lte=latest).order_by("-start_date").first()
+        role_name = ""
+        if role:
+            found = ScRole.objects.filter(role_code=role.role_code).first()
+            role_name = found.role_name if found else role.role_code
+
+        # Grouped the way the card groups them, in the order they are scored.
+        perspectives, seen = [], {}
+        for line in lines:
+            name = line.mapping_category or "Other"
+            if name not in seen:
+                seen[name] = {"perspective": name, "weight": 0.0, "lines": []}
+                perspectives.append(seen[name])
+            bucket = seen[name]
+            bucket["weight"] += float(line.kpi_weight or 0)
+            bucket["lines"].append({
+                "kpi_order": line.kpi_order,
+                "kpi_code": line.kpi_code,
+                "kpi_name": line.kpi_name,
+                "measure_of_success": line.kpi_description,
+                "weight": float(line.kpi_weight or 0),
+                "prev_year_value": line.prev_year_value,
+                "target": line.kpi_target,
+                "curr_year_value": line.curr_year_value,
+                "ytd_target": line.ytd_target,
+                "ytd_actual": line.ytd_actual,
+                "score": line.ytd_score,
+                "weighted_score": line.ytd_weighted_score,
+                "notes": line.notes,
+            })
+
+        total = sum(float(line.ytd_weighted_score or 0) for line in lines)
+
+        # What the desk has not been able to configure yet, named rather than
+        # left as a silently missing row - an RM who cannot see why a line is
+        # absent assumes the tool lost it.
+        pending = list(
+            ScKpi.objects.filter(is_active=False)
+            .exclude(not_configured_reason="")
+            .values("kpi_code", "kpi_name", "not_configured_reason")[:40])
+
+        return Response({
+            "has_card": True,
+            "staff": {
+                "sales_code": sales_code,
+                "name": (staff.staff_name if staff else "")
+                        or (request.user.get_full_name() or request.user.username),
+                "title": role_name or (staff.job_title if staff else ""),
+                "branch": (staff.staff_unit if staff else "") or (
+                    profile.branch if profile else ""),
+            },
+            "period": {"eom_date": latest, "label": latest.strftime("%B %Y")},
+            "performance_score": round(total, 4),
+            "perspectives": perspectives,
+            "lines": len(lines),
+            "not_configured": pending,
+        })
