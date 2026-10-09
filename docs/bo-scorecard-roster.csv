@@ -1,0 +1,102 @@
+sales_code,pf_number,staff_name,role,branch,zone,line_manager,email
+EKN1329,1329,Eric Nguithi,BOM,Meru,Zone A,Annrita Mwirigi,annrita.mwirigi@hfcb.co.ke
+LMN1452,1452,Liza Muthoni Ndwiga,BOM,Thika,Zone A,Naomi Kagiri,naomi.kagiri@hfcb.co.ke
+JMW516,516,Joyce Wambugu,BOM,Mombasa,Zone B,Joyce Wambugu,joyce.wambugu@hfcb.co.ke
+SKM1327,1327,Samuel Kibiti,BOM,Nyeri,Zone A,Samuel Kibiti,samuel.kibiti@hfcb.co.ke
+FJK1799,1799,Faith Koima,BOM,Eldoret,Zone A,Weldon Korir,Weldon.Korir@hfcb.co.ke
+WKM1248,1248,Washington Gicheha,BOM,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+PFM1264,1264,Purity Morrison,BOM,Riverroad,Zone A,Silas Abudho,Silas.Abudho@hfcb.co.ke
+CMK1268,1268,Christabel Muthoki Katumo,BOM,Westlands,Zone B,Elizabeth Musula,Elizabeth.Musula@hfcb.co.ke
+MK1955,1955,Martin Kirimi,BOM,Embu,Zone A,Mary Muthoni,Mary.Muthoni@hfcb.co.ke
+JMK2006,2006,Jennifer Kiango,BOM,TRM,Zone A,Pheona Ondu,Pheona.Ondu@hfcb.co.ke
+JOO1695,1695,Jasper Ondari,BOM,TRM,Zone A,Pheona Ondu,Pheona.Ondu@hfcb.co.ke
+SAA1331,1331,Sylvia Ayiedza,BOM,Rongai,Zone A,Peter Mbuthia,Peter.Mbuthia@hfcb.co.ke
+DAO1815,1815,Diana Osewe,BOM,Kisumu,Zone A,Gordon Aram,Gordon.Aram@hfcb.co.ke
+VJK1459,1459,Veronica Karan,BOM,Nakuru,Zone A,Micah Kirwa,Micah.Kirwa@hfcb.co.ke
+GM1891,1891,Gideon Murimi Mugambi,BOM,Nanyuki,Zone A,Calvin Muchiri,Calvin.Muchiri@hfcb.co.ke
+EMM1995,1995,Elizabeth Mutinda,BOM,Machakos,Zone A,Stephen Mutava,Stephen.Mutava@hfcb.co.ke
+NJK1425,1425,Nelly Jebiwott Kibet,BOM,Naivasha,Zone A,Nelly Jebiwott Kibet,Nelly.Kibet@hfcb.co.ke
+HK3101,3101,Hillary Kimchas,BOM,Buruburu,Zone A,Christopher Kibugi,christopher.kibugi@hfcb.co.ke
+JOO3189,3189,James Oduor Okoth,BOM,Komarock,Zone A,Fredrick Mayaka,Fredrick.Mayaka@hfcb.co.ke
+MAO3167,3167,Mildred Ann Ogutu,BOM,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+EAR3038,3038,Eugenia Rota Rota,BOM,Harambee,Zone B,Anthony Ombati,Anthony.Ombati@hfcb.co.ke
+JMM3214,3214,Jordan Munene Mutuku,BOM,Hurlingham,Zone B,Mwihaki Muiruri,Mwihaki.Muiruri@hfcb.co.ke
+HC3302,3302,Hilda Chemutai,CSM_DB,Diaspora Banking,Diaspora Banking,Jennifer Kamoni,jennifer.kamoni@hfcb.co.ke
+RWM1670,1670,Rose Muthee,CSO,Nyeri,Zone A,Samuel Kibiti,samuel.kibiti@hfcb.co.ke
+MNN2081,2081,Milka Njeri Njoroge,CSO,Nanyuki,Zone A,Calvin Muchiri,Calvin.Muchiri@hfcb.co.ke
+HCS1419,1419,Henry Serem,CSO,Eldoret,Zone A,Weldon Korir,Weldon.Korir@hfcb.co.ke
+JAO2078,2078,Juliana Adhiambo Okoth,CSO,Kisumu,Zone A,Gordon Aram,Gordon.Aram@hfcb.co.ke
+SOM3223,3223,Sarah Okenyuri Mayienda,BOM,SameerPark,Zone B,Eric Weroh,Eric.Weroh@hfcb.co.ke
+ASI3192,3192,Antony Siajabu,BOM,Kitengela,Zone A,Robert Waichigo,Robert.Waichigo@hfcb.co.ke
+DA3079,3079,DAHABO ABDI,CSO,Meru,Zone A,Annrita Mwirigi,annrita.mwirigi@hfcb.co.ke
+TWM3229,3229,Tabitha Muita,CSO,Naivasha,Zone A,Nelly Jebiwott Kibet,Nelly.Kibet@hfcb.co.ke
+JKK3227,3227,Joseph Kinuthia,BOM,Naivasha,Zone A,Nelly Jebiwott Kibet,Nelly.Kibet@hfcb.co.ke
+JOO3376,3376,Jack Osumba Omondi,CSO,Westlands,Zone B,Elizabeth Musula,Elizabeth.Musula@hfcb.co.ke
+PID3366,3367,Peter Ibrae Dabasso,CSO,TRM,Zone A,Pheona Ondu,Pheona.Ondu@hfcb.co.ke
+LM3280,3280,Lynet Priscillar Mutwa,CSO,Kitengela,Zone A,Robert Waichigo,Robert.Waichigo@hfcb.co.ke
+RWW3529,3529,Rahab Wambui,CSO,left,Head Office,Reports Analytics,reports.analytics@hfcb.co.ke
+KMK1960,1960,Keziah Kioria,CSO,Machakos,Zone A,Stephen Mutava,Stephen.Mutava@hfcb.co.ke
+LWK3596,3596,Liza Wamaitha Kamunyu,CSO,Thika,Zone A,Naomi Kagiri,naomi.kagiri@hfcb.co.ke
+PS3507,3507,Pharace Simiyu Nyakuri,CSO,Nakuru,Zone A,Micah Kirwa,Micah.Kirwa@hfcb.co.ke
+JWK3142,3142,Jane Karathe,CSO,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+KMM3379,3379,Kennedy Mue Mwanthi,CSO,Rongai,Zone A,Peter Mbuthia,Peter.Mbuthia@hfcb.co.ke
+WWW3179,3179,Win Joy Mugabe,CSO,Hurlingham,Zone B,Mwihaki Muiruri,Mwihaki.Muiruri@hfcb.co.ke
+BAS3755,3755,Berit Sulwe,CSO,left,Head Office,Reports Analytics,reports.analytics@hfcb.co.ke
+EJS3782,3782,Emmy Sego,CSO,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+SNG3787,3787,Samuel Gitundu,CSO,RiverRoad,Zone A,Silas Abudho,Silas.Abudho@hfcb.co.ke
+ANM3404,3404,Anne Nduku Muthama,CSO_UB,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+CA3780,3780,Christine Adhiambo,Cash_Center,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+VOO3746,3746,Victor Orwa,CSO,Mombasa,Zone B,Joyce Wambugu,joyce.wambugu@hfcb.co.ke
+AMA3786,3786,Ahatha Ali,Teller,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+CSS3532,3532,Christopher Shema,CSO,Harambee,Zone B,Anthony Ombati,Anthony.Ombati@hfcb.co.ke
+EA3473,3473,Everline Anyango,Teller,Naivasha,Zone A,Nelly Jebiwott Kibet,Nelly.Kibet@hfcb.co.ke
+IO3870,3870,Ivan Ombiru,Teller,RiverRoad,Zone A,Silas Abudho,Silas.Abudho@hfcb.co.ke
+CWG3448,3448,Christine Wanjiku Gitonga,Teller,Nyeri,Zone A,Samuel Kibiti,samuel.kibiti@hfcb.co.ke
+MJS3454,3454,Mary Jerop Selembu,CSO,SameerPark,Zone B,Eric Weroh,Eric.Weroh@hfcb.co.ke
+JN3303,3303,Jane  Njoki,Teller,TRM,Zone A,Pheona Ondu,Pheona.Ondu@hfcb.co.ke
+JN3465,3465,Joseph Gatundu,Teller,Harambee,Zone B,Anthony Ombati,Anthony.Ombati@hfcb.co.ke
+PM3810,3810,Phyllis Mutheu Peter,CSO,Hurlingham,Zone B,Mwihaki Muiruri,Mwihaki.Muiruri@hfcb.co.ke
+LO3442,3442,Lorette Otieno,Teller,Hurlingham,Zone B,Mwihaki Muiruri,Mwihaki.Muiruri@hfcb.co.ke
+FA3508,3508,Flora Aketch,Teller,Meru,Zone A,Annrita Mwirigi,annrita.mwirigi@hfcb.co.ke
+ENW3871,3871,Edwin Wangui,Teller,Embu,Zone A,Mary Muthoni,Mary.Muthoni@hfcb.co.ke
+BOO3571,3571,Brian Ojode,Teller,Eldoret,Zone A,Weldon Korir,Weldon.Korir@hfcb.co.ke
+JN3581,3581,Jackson Njagi,CSO,Komarock,Zone A,Fredrick Mayaka,Fredrick.Mayaka@hfcb.co.ke
+BL3524,3524,Bruno Litiema,Teller,Mombasa,Zone B,Joyce Wambugu,joyce.wambugu@hfcb.co.ke
+RN3878,3878,Revin Nyawade,Teller,Thika,Zone A,Naomi Kagiri,naomi.kagiri@hfcb.co.ke
+JJN3756,3756,Janet Nabwire,CSO,Buruburu,Zone A,Christopher Kibugi,christopher.kibugi@hfcb.co.ke
+WN3965,3965,Walter Nyongesa,Teller,Rongai,Zone A,Peter Mbuthia,Peter.Mbuthia@hfcb.co.ke
+KRB3968,3968,Rebecca Koroso,Teller,Kisumu,Zone A,Gordon Aram,Gordon.Aram@hfcb.co.ke
+BBO3980,3980,Belinda Ojiambo,Teller,Buruburu,Zone A,Christopher Kibugi,christopher.kibugi@hfcb.co.ke
+RM3990,3990,Ronnie Migwi,Teller,Meru,Zone A,Annrita Mwirigi,annrita.mwirigi@hfcb.co.ke
+EMM3991,3991,Eric Mutuva,Teller,Nanyuki,Zone A,Calvin Muchiri,Calvin.Muchiri@hfcb.co.ke
+WO4025,4025,Wendy Achieng,Teller,Eldoret,Zone A,Weldon Korir,Weldon.Korir@hfcb.co.ke
+BE4022,4022,Billy Ekitela,Teller,Westlands,Zone B,Elizabeth Musula,Elizabeth.Musula@hfcb.co.ke
+CAN3531,3531,Charline Audrey,Teller,SameerPark,Zone B,Eric Weroh,Eric.Weroh@hfcb.co.ke
+SWK3992,3992,Sharon Wanjiru,Teller,Embu,Zone A,Mary Muthoni,Mary.Muthoni@hfcb.co.ke
+LNK3630,3630,Lee Kamau,Teller,Thika,Zone A,Naomi Kagiri,naomi.kagiri@hfcb.co.ke
+SNK4010,4010,Shannon Naeku,Teller,Kitengela,Zone A,Robert Waichigo,Robert.Waichigo@hfcb.co.ke
+TK3764,3764,Tony Kakai,Teller,Naivasha,Zone A,Nelly Jebiwott Kibet,Nelly.Kibet@hfcb.co.ke
+EFB4102,4102,Emeka Bahati,Teller,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+VKM4103,4103,Vincent Koome,Teller,Riverroad,Zone A,Silas Abudho,Silas.Abudho@hfcb.co.ke
+JAW4106,4106,Jenta Wandera,Teller,Buruburu,Zone A,Christopher Kibugi,christopher.kibugi@hfcb.co.ke
+CK4132,4132,Christine Kamande,Teller,Harambee,Zone B,Anthony Ombati,Anthony.Ombati@hfcb.co.ke
+BJM4144,4144,Brian Magothe,Teller,Nakuru,Zone A,Micah Kirwa,Micah.Kirwa@hfcb.co.ke
+SW4164,4164,Sylvia Wafula,Teller,Kisumu,Zone A,Gordon Aram,Gordon.Aram@hfcb.co.ke
+FO4213,4213,Francis Ochieng,Teller,Westlands,Zone B,Elizabeth Musula,Elizabeth.Musula@hfcb.co.ke
+DM4214,4214,Davies Mogare,Teller,Rongai,Zone A,Peter Mbuthia,Peter.Mbuthia@hfcb.co.ke
+EM4215,4215,Evans Muthama,Teller,TRM,Zone A,Pheona Ondu,Pheona.Ondu@hfcb.co.ke
+MM4230,4230,Michael Mutiso,Teller,Machakos,Zone A,Stephen Mutava,Stephen.Mutava@hfcb.co.ke
+BCK3783,3783,Bob Waigwa,Teller,Komarock,Zone A,Fredrick Mayaka,Fredrick.Mayaka@hfcb.co.ke
+CA4241,4241,Clinton Alulu,Teller,Nyeri,Zone A,Samuel Kibiti,samuel.kibiti@hfcb.co.ke
+ML4290,4290,Mildren Lila,Teller,Nakuru,Zone A,Micah Kirwa,Micah.Kirwa@hfcb.co.ke
+BG4291,4291,Brian Gikuri,Teller,Komarock,Zone A,Fredrick Mayaka,Fredrick.Mayaka@hfcb.co.ke
+JW4335,4335,John Wijass,Teller,Mombasa,Zone B,Joyce Wambugu,joyce.wambugu@hfcb.co.ke
+DM3795,3795,David Maina,Teller,Rehani,Zone C,Charles Munuve,Charles.Munuve@hfcb.co.ke
+RW4354,4354,Rebecca Wambua,Teller,Nanyuki,Zone A,Calvin Muchiri,Calvin.Muchiri@hfcb.co.ke
+AJL3925,3925,Atundo Longinus,RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke
+CNM3433,3433,Caroline Ndunge,RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke
+EWG3175,3175,Eva Wacu Gititi,RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke
+BN4018,4018,Brian Njenga,RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke
+RMN3940,3940,Ronkenolly Nyakwana,RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke
+DM3830,3830,Dius Muraguri,RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke
+SNM1905,1905,Samuel Nduati Muigai,TL_RBO,Retail Banking,Retail Back Office,Samuel Muigai,samuel.muigai@hfcb.co.ke

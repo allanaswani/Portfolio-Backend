@@ -442,16 +442,29 @@ class AffordableHousingApplication(models.Model):
     name = models.CharField(max_length=200, null=False, blank=False, verbose_name="Name")
     phone_number = models.BigIntegerField(null=True, blank=True, verbose_name="Phone Number")
     email = models.CharField(max_length=200, null=True, blank=True, verbose_name="Email")
-    assisted_by = models.CharField(max_length=200, null=False, blank=False, verbose_name="Assisted By")
+    # These six are blank=True because the real export has them blank.
+    #
+    # They were ported as blank=False, which made the CSV uploader REFUSE any
+    # row with a gap in one of them - and the gaps are ordinary, not errors: a
+    # walk-in applicant has nobody in "assisted by", a brand-new application
+    # has no status yet, and typology/payment/deposit-assistance are only
+    # filled in once the applicant has decided. A row was being dropped for
+    # being incomplete when incomplete is what an application IS at the start,
+    # and the scorecard's property line reads this table.
+    #
+    # ``application_id``, ``name`` and ``preferred_typology`` stay required:
+    # without those there is no application to speak of, and nothing to
+    # derive project_name or house_type from.
+    assisted_by = models.CharField(max_length=200, blank=True, default="", verbose_name="Assisted By")
     preferred_typology = models.CharField(max_length=200, null=False, blank=False, verbose_name="Preferred Typology")
-    typology = models.CharField(max_length=200, null=False, blank=False, verbose_name="Typology")
-    project_name = models.CharField(max_length=200, null=False, blank=False, verbose_name="Project Name", default="Project Name")
-    house_type = models.CharField(max_length=200, null=False, blank=False, verbose_name="House Type")
-    mode_of_payment = models.CharField(max_length=200, null=False, blank=False, verbose_name="Mode of Payment")
-    need_deposit_assitance = models.CharField(max_length=200, null=False, blank=False, verbose_name="Need Deposit Assistance")
+    typology = models.CharField(max_length=200, blank=True, default="", verbose_name="Typology")
+    project_name = models.CharField(max_length=200, blank=True, default="Project Name", verbose_name="Project Name")
+    house_type = models.CharField(max_length=200, blank=True, default="", verbose_name="House Type")
+    mode_of_payment = models.CharField(max_length=200, blank=True, default="", verbose_name="Mode of Payment")
+    need_deposit_assitance = models.CharField(max_length=200, blank=True, default="", verbose_name="Need Deposit Assistance")
     deposits = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Deposits")
     unit_price = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, verbose_name="Unit Price")
-    status = models.CharField(max_length=200, null=False, blank=False, verbose_name="Status")
+    status = models.CharField(max_length=200, blank=True, default="", verbose_name="Status")
     history = HistoricalRecords()
 
     class Meta:

@@ -5,6 +5,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.hfdi.models import (
@@ -128,9 +129,32 @@ class AffordableHousingCsvUploadTests(TestCase):
 
         obj = AffordableHousingApplication.objects.get(phone_number=254700000001)
         self.assertEqual(obj.house_type, "2BR")               # last parenthesised group
-        self.assertEqual(obj.timestamp, "2024-03-05T14:30:00")  # parsed timestamp
         self.assertEqual(obj.deposits, Decimal("1200"))         # commas stripped
         self.assertEqual(obj.unit_price, Decimal("3500000"))
+
+        # timestamp is a DateTimeField, so the parsed value comes back as a
+        # datetime and not as the ISO string the uploader handed it. This used
+        # to compare against the string and could never have passed.
+        #
+        # And it comes back in UTC: "05, March 2024 14:30" on the form is
+        # Nairobi local time, which is stored as 11:30 UTC. Asserting on the
+        # raw datetime would pin the test to the UTC offset, so it is read back
+        # in the project's own timezone - which is also the hour a person
+        # looking at the screen expects to see.
+        local = timezone.localtime(obj.timestamp)
+        self.assertEqual(
+            (local.year, local.month, local.day, local.hour, local.minute),
+            (2024, 3, 5, 14, 30))
+
+        # The five blank columns are what the real export looks like for a
+        # fresh application: nobody named in "assisted by", no status yet,
+        # typology and payment not decided. The row must land rather than be
+        # refused for being incomplete, because incomplete is what an
+        # application IS at the start - and the scorecard's property line
+        # reads this table.
+        self.assertEqual(obj.assisted_by, "")
+        self.assertEqual(obj.status, "")
+        self.assertEqual(obj.typology, "")
 
         # Re-upload same phone+timestamp → update, not duplicate.
         row["name"] = "Jane Updated"
