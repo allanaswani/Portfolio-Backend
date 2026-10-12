@@ -49,9 +49,22 @@ class Command(BaseCommand):
             except RuntimeError as exc:
                 raise CommandError(str(exc)) from exc
             except Exception as exc:  # noqa: BLE001 - the reason matters more
+                hint = ""
+                if "401" in str(exc) or "Invalid credentials" in str(exc):
+                    # A 401 means the connection REACHED Trino and the
+                    # credentials were refused. That is a different problem
+                    # from an unreachable host, and it has a different fix, so
+                    # it gets its own answer rather than the generic one.
+                    hint = (
+                        "\n\nThat is a 401, so the lake WAS reached and the "
+                        "credentials were refused. Check TRINO_USER and "
+                        "TRINO_PASSWORD in the environment file - and note "
+                        "that docker --env-file does NOT strip quotes, so "
+                        'TRINO_PASSWORD="secret" sends the quote marks as '
+                        "part of the password. No quotes, no trailing spaces.")
                 raise CommandError(
-                    f"The lake could not be queried: {exc}\n"
-                    f"Load the extract with --file instead, or through the "
+                    f"The lake could not be queried: {exc}{hint}\n\n"
+                    f"Or load the extract with --file, or through the "
                     f"Administration screen.") from exc
 
         if not rows:

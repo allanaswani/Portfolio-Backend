@@ -366,12 +366,30 @@ def fetch_from_trino():
             "TRINO_* variables in the environment file, or load the extract "
             "through the Administration screen instead.")
 
-    user = os.environ["TRINO_USER"]
+    user = os.environ.get("TRINO_USER", "")
+    password = os.environ.get("TRINO_PASSWORD", "")
+    if not user or not password:
+        raise RuntimeError(
+            "TRINO_USER or TRINO_PASSWORD is not set, so the lake cannot be "
+            "reached. Both go in the environment file alongside TRINO_HOST.")
+
+    # docker --env-file does NOT strip quotes: TRINO_PASSWORD="secret" passes
+    # the quote characters as part of the password, and Trino answers 401. The
+    # same goes for a trailing space. Stripped here rather than left to produce
+    # an authentication error nobody can tell from a wrong password.
+    for name, value in (("TRINO_USER", user), ("TRINO_PASSWORD", password)):
+        if value != value.strip() or value[:1] in ("'", '"'):
+            print(f"  note: {name} had surrounding quotes or whitespace in the "
+                  f"environment; using the trimmed value. docker --env-file "
+                  f"takes quotes literally, so they do not belong there.")
+    user = user.strip().strip("'\"")
+    password = password.strip().strip("'\"")
+
     connection = trino.dbapi.connect(
         host=host,
         port=int(os.environ.get("TRINO_PORT", "8443")),
         user=user,
-        auth=BasicAuthentication(user, os.environ["TRINO_PASSWORD"]),
+        auth=BasicAuthentication(user, password),
         catalog=os.environ.get("TRINO_CATALOG", "delta"),
         http_scheme="https",
         verify=False,
