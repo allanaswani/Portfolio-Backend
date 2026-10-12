@@ -4,6 +4,7 @@ from core.script_trigger import ScriptTriggerAPIView
 
 from . import views
 from . import legacy_views as lv
+from apps.staff_management import cost_views as cv
 from . import dsr_views as dsr
 from . import tl_views as tl
 from . import targets_views as tv
@@ -199,4 +200,21 @@ urlpatterns = [
     path("weighted-sales-daily-accounts/upload-csv/",     lv.DailySalesAccountsWithCtoUploadCsvView.as_view()),
     path("weighted-sales-dormancy-converted/upload-csv/", lv.DailyDormancyConvertedAccountUploadCsvView.as_view()),
     path("retail-allocated-portfolio/upload-csv/",        lv.RetailAllocatedPortfolioUploadCsvView.as_view()),
+
+    # ── Cost analysis ────────────────────────────────────────────────────────
+    # What replaces the hard-coded cost constants on the CEO deck. The summary
+    # is readable by anybody signed in, because the deck reads it; loading an
+    # extract or changing a mapping is an administrator's action, gated in the
+    # views themselves.
+    path("costs/summary/",            cv.CostSummaryView.as_view()),
+    path("costs/snapshots/",          cv.CostSnapshotsView.as_view()),
+    path("costs/upload/",             cv.CostUploadView.as_view()),
+    path("costs/load-from-lake/",     cv.CostTrinoLoadView.as_view()),
+    path("costs/postings/",           cv.CostPostingListView.as_view()),
+    path("costs/cost-centres/",       cv.CostCentreListCreateView.as_view()),
+    path("costs/cost-centres/<int:pk>/", cv.CostCentreDetailView.as_view()),
+    path("costs/subsidiaries/",       cv.SubsidiaryListCreateView.as_view()),
+    path("costs/subsidiaries/<int:pk>/", cv.SubsidiaryDetailView.as_view()),
+    path("costs/exclusions/",         cv.CostExclusionListCreateView.as_view()),
+    path("costs/exclusions/<int:pk>/", cv.CostExclusionDetailView.as_view()),
 ]

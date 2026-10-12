@@ -1238,3 +1238,238 @@ class OperatingExpenseMapping(models.Model):
 
     def __str__(self):
         return f"{self.gl} · {self.expense_type}"
+
+
+# ── SAP cost analysis ─────────────────────────────────────────────────────────
+#
+# The CEO deck's costs-per-department and costs-per-expense-line were HARD-CODED
+# in the frontend: eighteen departments by nine months, and ten expense lines,
+# typed in as constants. They were stale on arrival and April read 10,670 for
+# ICT, which is a part-month of postings presented as a month.
+#
+# The real thing is ``delta.gold_db.sap_cost_data`` in the lake - SAP document
+# postings with a cost centre and a GL account on every line. What was missing
+# was never the cost data; it was the two things that turn a posting into a
+# department figure:
+#
+#   * which DEPARTMENT a cost centre belongs to  -> SapCostCentre, below
+#   * which EXPENSE LINE a GL account rolls up to -> operating_expense_mapping,
+#     which has been in this database since migration 0023 with 249 GL accounts
+#     and nothing reading it for this
+#
+# So these models are the mapping and the mirror, and ``cost_analysis.py`` is
+# the arithmetic - lifted from the Finance notebook rather than invented, which
+# is why its rules are quoted there line by line.
+
+
+class SapCostCentre(models.Model):
+    """Which department and which branch a SAP cost centre is.
+
+    Read out of the Finance team's own cost-analysis notebook, where it was a
+    literal list of ~85 dicts. A posting without this mapping is a number with
+    nowhere to go, which is what the notebook calls ``unmapped`` and drops.
+
+    ``cost_department`` is the roll-up the CEO deck shows - RETAIL, ICT,
+    FINANCE, HR, TREASURY and so on. ``cost_department_2`` is a second level
+    that only branches use ("BRANCH BUSINESS"), and it is how a branch is told
+    apart from a head-office cost centre inside the same RETAIL department.
+
+    Editable, because cost centres are opened and renamed and a code change
+    should not be needed for either.
+    """
+
+    cost_centre = models.IntegerField(
+        unique=True, verbose_name="Cost centre",
+        help_text="SAP KOSTL, as it appears on the posting.")
+    cost_centre_name = models.CharField(max_length=120)
+    cost_department = models.CharField(
+        max_length=80,
+        help_text="The roll-up the CEO deck reports: RETAIL, ICT, FINANCE…")
+    cost_department_2 = models.CharField(
+        max_length=80, blank=True, default="",
+        help_text='Second level. "BRANCH BUSINESS" marks a branch cost '
+                  'centre, which is how a branch is told apart from a '
+                  'head-office one inside the same department.')
+    #: Set when ``cost_department_2`` says BRANCH BUSINESS, so the branch
+    #: screens do not have to know that string. Kept as a column rather than a
+    #: property because the summaries group on it in SQL.
+    is_branch = models.BooleanField(default=False)
+    #: Excluded from the operating-expense report. The notebook drops
+    #: BRANCH GROWTH, which is a holding cost centre and not a place.
+    is_reportable = models.BooleanField(
+        default=True,
+        help_text="Clear this for a holding cost centre that should not "
+                  "appear in the report, as BRANCH GROWTH does not.")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "sap_cost_centre"
+        ordering = ["cost_department", "cost_centre_name"]
+        verbose_name = "SAP cost centre"
+        verbose_name_plural = "SAP cost centres"
+        indexes = [models.Index(fields=["cost_department"])]
+
+    def save(self, *args, **kwargs):
+        # One source of truth for "is this a branch": the second department
+        # level the Finance mapping uses.
+        self.is_branch = (self.cost_department_2 or "").strip().upper() == \
+            "BRANCH BUSINESS"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.cost_centre} · {self.cost_centre_name}"
+
+
+class SapSubsidiary(models.Model):
+    """SAP company code -> which company in the group it is.
+
+    Six of them. Worth having because the cost report separates the bank from
+    HFCB-Properties, the insurance arm, the foundation and First Permanent, and
+    a department total that silently mixed them would overstate the bank.
+    """
+
+    company_code = models.IntegerField(unique=True)
+    subsidiary = models.CharField(max_length=80)
+    updated_at = models.DateTimeField(auto_now=True)
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "sap_subsidiary"
+        ordering = ["company_code"]
+        verbose_name = "SAP subsidiary"
+        verbose_name_plural = "SAP subsidiaries"
+
+    def __str__(self):
+        return f"{self.company_code} · {self.subsidiary}"
+
+
+class SapCostExclusion(models.Model):
+    """A GL account that LOOKS like an operating expense and is not.
+
+    Everything on a 7-series GL is an operating expense except these. In the
+    Finance notebook they are three numbers in an ``if`` with a comment, which
+    means nobody outside that notebook can see them or change them:
+
+        705190002  loan loss charges
+        701010014  lease liability interest
+        705190006  interest adjustments
+
+    Counting them would inflate every department's operating cost with charges
+    that belong in impairment and interest, so they are held here where they
+    can be seen and corrected.
+    """
+
+    gl = models.CharField(max_length=30, unique=True)
+    reason = models.CharField(max_length=200)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "sap_cost_exclusion"
+        ordering = ["gl"]
+        verbose_name = "SAP cost exclusion"
+        verbose_name_plural = "SAP cost exclusions"
+
+    def __str__(self):
+        return f"{self.gl} · {self.reason}"
+
+
+class SapCostPosting(models.Model):
+    """One SAP cost posting, as the extract gives it.
+
+    The grain is the document ITEM, which is what the lake holds and what the
+    notebook works from. Keeping it at that grain rather than pre-aggregating
+    is deliberate: a department total nobody can break down into its postings
+    is a figure nobody can defend, and the same rows answer the department
+    view, the branch view and the expense-line view without a second load.
+
+    ``amount`` and ``entry_month`` are computed on the way in rather than at
+    read time, because the whole screen is group-bys over them:
+
+    * ``amount`` is ``lcy_amount``, NEGATED when the debit/credit indicator is
+      ``H`` (credit). Without that, credits add to a cost instead of reducing
+      it and every total is wrong by twice the credits.
+    * ``entry_date`` comes from ``assignment_number`` as YYYYMMDD, falling back
+      to ``reference_document_number``, which is what the notebook does -
+      neither is reliably populated on its own.
+
+    ``snapshot_date`` is the extract the row came from. Each SAP extract is a
+    FULL replacement for its date, not an increment, so a load replaces the
+    snapshot rather than adding to it.
+    """
+
+    # Who and what
+    company_code = models.IntegerField(null=True, blank=True)
+    document_number = models.CharField(max_length=30, blank=True, default="")
+    item_number = models.CharField(max_length=10, blank=True, default="")
+    fiscal_year = models.IntegerField(null=True, blank=True, db_index=True)
+    posting_key = models.CharField(max_length=10, blank=True, default="")
+    cost_element_category = models.CharField(max_length=10, blank=True, default="")
+    debit_credit_indicator = models.CharField(
+        max_length=2, blank=True, default="",
+        help_text='SAP SHKZG. "H" is a credit, "S" a debit.')
+
+    # Where it lands
+    cost_centre = models.IntegerField(null=True, blank=True, db_index=True)
+    gl_account_number = models.CharField(max_length=30, blank=True, default="",
+                                         db_index=True)
+    vendor_number = models.CharField(max_length=30, blank=True, default="")
+    item_description = models.TextField(blank=True, default="")
+    origin = models.CharField(max_length=20, blank=True, default="")
+
+    # Money
+    lcy_amount = models.DecimalField(max_digits=20, decimal_places=2,
+                                     null=True, blank=True)
+    fcy_amount = models.DecimalField(max_digits=20, decimal_places=2,
+                                     null=True, blank=True)
+    payment_currency = models.CharField(max_length=10, blank=True, default="")
+    withholding_tax_base_amount = models.DecimalField(
+        max_digits=20, decimal_places=2, null=True, blank=True)
+    tax_code = models.CharField(max_length=10, blank=True, default="")
+    withholding_tax_code = models.CharField(max_length=10, blank=True, default="")
+    #: lcy_amount with the credit sign applied. See the class docstring.
+    amount = models.DecimalField(max_digits=20, decimal_places=2,
+                                 null=True, blank=True)
+
+    # Dates
+    assignment_number = models.CharField(max_length=30, blank=True, default="")
+    reference_document_number = models.CharField(max_length=30, blank=True,
+                                                 default="")
+    due_date = models.CharField(max_length=30, blank=True, default="")
+    terms_of_payment = models.CharField(max_length=20, blank=True, default="")
+    #: Derived from assignment_number, else reference_document_number.
+    entry_date = models.DateField(null=True, blank=True)
+    #: ``YYYY-MM`` of entry_date. A string on purpose: it is a grouping key and
+    #: sorts correctly in that shape, where "Sep-2026" does not.
+    entry_month = models.CharField(max_length=7, blank=True, default="",
+                                   db_index=True)
+
+    # Provenance
+    source_file = models.CharField(max_length=255, blank=True, default="")
+    snapshot_date = models.DateField(
+        null=True, blank=True, db_index=True,
+        help_text="The extract this row came from. Each SAP extract is a full "
+                  "replacement for its date, not an increment.")
+    loaded_at = models.DateTimeField(auto_now_add=True)
+    loaded_by = models.CharField(max_length=150, blank=True, default="")
+
+    class Meta:
+        managed = True
+        db_table = "sap_cost_posting"
+        verbose_name = "SAP cost posting"
+        verbose_name_plural = "SAP cost postings"
+        indexes = [
+            models.Index(fields=["snapshot_date", "fiscal_year"]),
+            models.Index(fields=["entry_month", "cost_centre"]),
+            models.Index(fields=["fiscal_year", "gl_account_number"]),
+        ]
+
+    def __str__(self):
+        return (f"{self.document_number}/{self.item_number} · "
+                f"{self.gl_account_number} · {self.amount}")
