@@ -144,16 +144,78 @@ department view, the branch view, the expense-line view and the subsidiary view
 without a second load. `costs/postings/` is filterable so any figure on the
 screen can be traced to its documents.
 
+## Verified against the live table, 2026-10-12
+
+The whole chain was run end to end against `delta.gold_db.sap_cost_data`, not
+just type-checked:
+
+| | |
+|---|---|
+| rows in the table | 1,979,137 across 63 source files |
+| the query returned | **44,769** rows, extract date **2026-10-08** |
+| read / kept / skipped | 44,769 / 44,769 / **0** |
+| postings with no usable date | **0** |
+| fiscal years present | 2026 only |
+| entry months present | 12 — 2025-11 through 2026-10 |
+| of those, 7-series | 21,518 postings, 4,176,806,819 |
+| on an **excluded** GL | **373,402,868** |
+| held out (BRANCH GROWTH) | −23,713,445 |
+| **reaches a department total** | 20,667 postings, **3,824,145,751** across 18 departments |
+
+Two things that confirms, which were assumptions until it ran:
+
+**The three GL exclusions are doing real work.** 373 million sits on loan-loss,
+lease-interest and interest-adjustment accounts inside the 7-series. Without
+rule 3 every department total would be inflated by that, which is roughly a
+tenth of the whole figure.
+
+**All 24 columns exist and the types are what the loader assumes.** 97 columns
+in all. `zuonr`, `hzuon`, `hkont` and `kostl` are **integers** in the lake, not
+varchars, and `gjahr` is a **varchar** year — all handled, and the zero skipped
+rows prove it.
+
+### The source file names, which the date depends on
+
+63 files, in four shapes:
+
+* `BSEG_dd-mm-yy` — most of them, e.g. `BSEG_08-10-26`
+* `BSEG_dd-mm-2026` and `BSEG_dd-mm-2026.xls` — four-digit year
+* `BSEG 10-12-25` — a space instead of an underscore, still matched
+* **`BSEG_2025`, `BSEG_2026`, `BSEG_Apr_2026` — no date at all**
+
+Those last three get a NULL `dt`, so `WHERE d.dt = m.max_dt` excludes them —
+correctly, since an undated file cannot be "the newest extract". Worth knowing
+because it means **three files totalling 76,585 rows are invisible to this
+report by design.** If any of them is meant to be loaded it needs a dated name.
+
+### Seven cost centres are not in the mapping
+
+Found on 7-series postings in the current extract, carrying 2,971,645 between
+them — 0.08% of the total, and named on the screen rather than absorbed:
+
+| Cost centre | Postings | Amount |
+|---|---|---|
+| 72019 | 1 | 2,209,210 |
+| 72003 | 12 | 462,815 |
+| 72004 | 1 | 104,439 |
+| 72028 | 3 | 87,600 |
+| 72027 | 6 | 48,905 |
+| 72005 | 1 | 35,482 |
+| 76007 | 2 | 23,194 |
+
+The `72xxx` block is almost certainly HFCB-Properties (72001, 72002, 72006,
+72007, 72009, 72010, 72012, 72016 and 72020 all are) and `76007` almost
+certainly HFCB-Group. **They have not been added**, because "almost certainly"
+is not a mapping and each needs its own name — which project is 72019? One row
+each on Administration → Cost Analysis → Cost centres settles it, and until
+then the screen says what they carry.
+
 ## Still open
 
-1. **Trino was not reachable from the development machine** when this was
-   built, so `sap_cost_data`'s column *types* were not re-verified against the
-   live table. The column *names* come from Finance's own query, which runs
-   against it. The first `load_sap_costs --dry-run` on the host confirms it.
-2. **The `dt` the query derives comes from the source file name**, as
-   `dd-mm-yyyy` or `dd-mm-yy`. A file named any other way lands with no
-   snapshot date and is reported rather than guessed at.
-3. **`cost_department_2` is only used to mark branches.** The notebook carries
+1. **`cost_department_2` is only used to mark branches.** The notebook carries
    it for a second reporting level that nothing here reads yet.
-4. **The notebook also produces a month-on-month view** with conditional
-   formatting. The same figures are on the screen; the MoM colouring is not.
+2. **The notebook also produces a month-on-month view** with conditional
+   formatting. The same figures are on the screen; the colouring is not.
+3. **Trino is intermittent from a laptop** — a `DESCRIBE` and a 44,769-row pull
+   both got through, and two attempts in between timed out on TCP connect. The
+   host reaches it reliably, which is where the scheduled load runs.
