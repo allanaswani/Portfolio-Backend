@@ -355,9 +355,19 @@ def fetch_from_trino():
     ``TRINO_HOST``, ``TRINO_PORT``, ``TRINO_USER``, ``TRINO_PASSWORD``.
     """
     import os
+    import urllib3
 
     import trino
     from trino.auth import BasicAuthentication
+
+    # The lake's certificate is not one this host trusts, so the connection
+    # below passes verify=False - deliberate, and unchanged here. urllib3 warns
+    # once per REQUEST, and the Trino client polls for results, so a single
+    # load printed the same warning a dozen times and buried the figures it
+    # was asked for. Silenced for this call only: a global filter would hide
+    # the warning for every other HTTPS call in the process, including ones
+    # where it would be news.
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     host = os.environ.get("TRINO_HOST")
     if not host:
