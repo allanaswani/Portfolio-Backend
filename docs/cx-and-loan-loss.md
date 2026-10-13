@@ -375,3 +375,99 @@ card now says "you are not on the training return, which covers up to
 Superuser, or `staff_mgt` / `Management` / `hr`. Not `cx` — the CX team
 maintain the survey, not this. Not `is_staff`. Reading is open to any signed-in
 user.
+
+
+---
+
+## 4. The card as a document
+
+Everything in this section came off somebody looking at a real card, which is
+why none of it was in the original design.
+
+### The bank is HFCB
+
+The sheet said `HFC PERFORMANCE SCORECARD`. HFC is the old name, and it must
+not go out on a document somebody puts their signature to.
+
+### The download is read-only
+
+A scorecard is a record, and a signed one is a record somebody has put their
+name to. Left editable, the first thing that happens to a downloaded card is
+that a figure gets changed in it and the file is forwarded, and nothing then
+distinguishes that copy from the one that was signed.
+
+So the sheet carries Excel's own protection and the workbook structure is
+locked. It is a **deterrent, not encryption** — a determined person can strip
+it — and it carries **no password**, because what this stops is the accident,
+which is the thing that actually happens, and a password nobody wrote down is
+a support call. Selecting and copying stay on: people have to be able to read
+the thing.
+
+### The tool's own plumbing is off the card
+
+`Lines scored: 14 of 19` and `Targets read from branch_employee_dmc_data` are
+gone from the sheet and from the RM's page, along with the per-line target
+source. They are internals — how many lines this managed to compute, and which
+warehouse table it read — and on somebody's performance record they read as a
+statement about the person. A table name on a bonus record also invites the
+question of what else is in the table.
+
+Nothing is hidden by it: a line with no figure still prints its own reason in
+the ACTUAL column, which is the same information said honestly and attached to
+the line it belongs to.
+
+The **Administration catalogue keeps its coverage count**, because there it is
+the whole point of the screen.
+
+### Two pending reasons were worse than the summary
+
+One named a warehouse table and asked for a column to be added to it. The
+other printed a raw Postgres error, complete with `LINE 5:` and a caret — on a
+document somebody signs. Both now say something a person can act on, and the
+technical text moves to a new **`diagnostic`** key on the line, so whoever has
+to fix it still has it and the card stays clean.
+
+### A signature can be withdrawn
+
+Signing is one button beside a long page, and people press it before they meant
+to — which is exactly what happened in the first week. Until now the only
+remedy was editing the database, and **a figure that can only be corrected in
+the database is a figure nobody can trust.**
+
+`my-card/unsign/`, a "Withdraw my signature" button, and
+`manage.py unsign_scorecard <code> [--list]` for the case the screen refuses.
+Migration `0038_signature_withdrawal`.
+
+The rules are narrow on purpose:
+
+* **your own card only** — the sales code comes from the signed-in profile, as
+  it does for signing, so there is no parameter to forget to check;
+* **not once the line manager has counter-signed** — at that point the two of
+  you have agreed a document and one side cannot quietly take it back. A
+  superuser can, because somebody has to be able to fix a genuine mistake, and
+  it is recorded against their name;
+* **the frozen copy is kept**, with `withdrawn_at` set. "This was signed and
+  then withdrawn" is part of the record; deleting the copy would hide it.
+
+### A real bug found on the way: nobody could counter-sign
+
+The line manager was read from **one of the roster's two manager columns**.
+`branch_employee_dmc_data` carries `team_leader_name` **and** `team_leader`,
+with nothing in the schema to say which the ETL fills, and
+`branch_final_employee_dmc_data` carries only `team_leader`.
+
+Read one and stop, and a card shows a blank line manager and **nobody can
+counter-sign it** — a silent failure of the whole sign-off, which looks like
+the manager simply not having got round to it. `live_scorecard.team_leader_of`
+now tries the name column first and falls back to the other. That is also the
+safe way round if one of them turns out to hold a code rather than a name: the
+name column wins, and the code column never matches a signer.
+
+### Lines with no feed now name the screen
+
+The old wording stopped at "measured outside the warehouse", which is true and
+reads as *this will never work*. **Weighted Sales**, **banking covenant
+tracking** and **tooling and account planning** have no feed and are not going
+to get one — they are counts somebody keeps, like the audit return and leave.
+All of them were already on the Figures-to-load screen; the reason now says so,
+which turns a dead end into one action.
