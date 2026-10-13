@@ -1,7 +1,7 @@
-# Customer experience, and where Loan Loss comes from
+# Customer experience, training hours, and where Loan Loss comes from
 
-Two questions, one answer each. The first needed building; the second turned
-out to need nothing but a check.
+Three questions. Two needed building; the third turned out to need nothing but
+a check.
 
 ---
 
@@ -235,9 +235,143 @@ note). If the table is behind, the card's figure is low and nothing in the card
 can tell that apart from a good year. `check_loan_loss` against the current
 workbook is the way to find out.
 
-### Still outstanding on this line
+### The target — it was never a DMC column
 
-`target_loan_provisions` is **not** a column on the per-person DMC table, so
-the Loan Loss line's *target* still comes off the Figures-to-load screen. The
-actual is measured; the plan is typed in until the DMC load carries that column
-(the same gap as `target_pbt_revenue`).
+The card used to say:
+
+> `branch_employee_dmc_data` has no `target_loan_provisions` column, your
+> role's card carries no target for this line either, and nobody has allocated
+> you one. It is a column for the DMC load to add.
+
+True, and the wrong conclusion. Reading the four cards that carry the line
+with numbers on it shows the desk **derives** the target, the same way every
+time:
+
+| card | prior year | growth | this year | rate |
+|---|---|---|---|---|
+| Commercial | −9,245,965.64 | +1,849,193.13 | −7,396,772.51 | 80% |
+| Commercial_trade | −20,053,060.49 | +4,010,612.10 | −16,042,448.39 | 80% |
+| Ultimate_RM | −4,537,193.86 | +3,024,795.91 | −1,512,397.95 | 33.3% |
+| Personal_Banking | −5,031,576.71 | −670,876.89 | −5,702,453.60 | 113.3% |
+
+`prior year + growth = this year` on all four, to the cent. The year's target
+is **the person's own prior-year provision times a rate the role sets** —
+Commercial and Commercial-Trade are told to cut provisions by a fifth,
+Ultimate by two thirds, Personal Banking is allowed 13.3% more.
+
+That is the shape Asset Growth already uses, so migration
+`0036_loan_loss_target_rate` seeds it the same way: `target_basis =
+"rate_on_base"`, the rate in `kpi_target`, against a new base
+`last_year_loan_loss` that `portfolio_service.rm_loan_loss` reads off
+`loans_mom_ifrs_movement` for the year before.
+
+Two things deliberately not done:
+
+* **The branch table's column is not used.** `target_loan_provisions` does
+  exist — on `branch_final_employee_dmc_data`, one row per *branch*. Giving an
+  RM the whole branch's allowance would be an order of magnitude too loose,
+  and because the line is scored smaller-is-better the error *flatters*: it
+  would show as full marks. The branch row is still read whole for somebody
+  with no per-person row (a BBM), where it is genuinely their own target.
+* **No rate is invented for a role whose card states none.** Business Banking,
+  Diaspora and Mortgage Business carry no numbered Loan Loss line among the
+  eight cards, so they get nothing and keep saying so.
+
+If the prior year cannot be read — `loans_mom_ifrs_movement` is ETL-fed and may
+not go back a year — the line now says *that*, naming the rate and the base,
+instead of sending somebody to add a DMC column that was never going to carry
+it.
+
+`target_pbt_revenue` is a separate and still-open gap: Operating Profit and
+Income Contribution take their target off the Figures-to-load screen.
+
+
+---
+
+## 3. Training hours — a line on every card, scored at last
+
+### What was wrong
+
+A training line sits on **all 22 cards**: `business_banking_training` on seven
+sales roles, `personal_banking_training` on five, and `bo_training_hours` on all
+ten back-office roles. Not one could be scored. The card said "Training hours
+are recorded in the learning system, not here", which was true and was also the
+end of the conversation.
+
+They are recorded in `2026 Training Returns Template - <Mon>_<yy>.xlsx`, which
+HR circulate monthly: one row per person, one column per month, hours in the
+cells. Ten sheets — eight of people (`Staff_Training_Returns` plus one per desk)
+and two of pivoted averages, which are derived and skipped by name.
+
+### What exists now
+
+`sc_training_return` (migration `0037_training_returns`), `training.py`,
+`manage.py load_training_returns`, two endpoints under
+`scorecard-automation/training/`, and **Administration → Scorecards → Training
+returns**.
+
+Upload-and-view, not edit-in-place — the opposite choice from the CX screen and
+deliberately so: this return is a system extract of 289 people across twelve
+months. That is not a form, and retyping it would be a worse record than the
+file.
+
+### It reproduces the cards
+
+Four of the eight calibration cards name an RM who appears on the August 2026
+return. The Jan–Aug sum gives the card's own stated actual **exactly on all
+four**, and the pro-rated target matches the card's stated YTD target on all
+four too:
+
+| card | on the return | hours | card's actual | target | card's target | score | card |
+|---|---|---|---|---|---|---|---|
+| Business_Banking | CM4236 | 36.0 | 36.0 | 32.0 | 32.0 | 1.000 | 1.000 |
+| Diaspora | EK4188 | 38.5 | 38.5 | 40.0 | 40.0 | 0.9625 | 0.9625 |
+| Commercial | JM4191 | 29.0 | 29.0 | 32.0 | 32.0 | 0.90625 | 0.90625 |
+| Commercial_trade | GW3961 | 69.0 | 69.0 | 32.0 | 32.0 | 1.000 | 1.000 |
+
+### Three decisions
+
+**The PF number is the key, not the sales code.** The roster has Charles
+Muchiri as `CMM4236`; the return has him as `CM4236`. Both say 4236. Matched on
+the code alone he has no training figure at all — and on a card that is
+indistinguishable from an RM who did none. `live_scorecard.pf_for` finds the PF
+off the DMC row, or the HR record for a back-office person who has no DMC row.
+
+**The as-at is the month the return reaches, not the person's own last
+figure.** This decides a score. Juspher Muriithi's 29 hours run out in June;
+sliced to June his target is 23.8 and he scores 122%, sliced to August it is 32
+and he scores 90.6% — which is what his card says. A blank month *inside* the
+return is no training that month; a blank month *beyond* it is not reported yet.
+Slicing to the person's own last figure would reward exactly the people who
+stopped training.
+
+**Training stops at full marks, and here the cards are unanimous.** Two cards
+score a training line above its target — Business Banking 36 hours against 32,
+Commercial-Trade 69 against 32 — and **both wrote exactly 1.0**. No training
+line on any card scores above full marks. That is a rule rather than the
+judgement call the survey cap needed, so the two `Training` entries that used to
+sit in `KNOWN_DIFFERENCES` are gone: they reproduce now.
+
+Calibration: **96 → 98 of 109**.
+
+**Not being on the return is not nought hours.** Three cards show 0.0 for
+somebody the return does not mention, which is the desk filling a blank. The
+card now says "you are not on the training return, which covers up to
+<month>" and names the PF matching as the likely cause.
+
+### Two bugs the tests caught
+
+* **`pf_of("4236.0")` returned `"42360"`.** openpyxl hands back a numeric cell
+  as a float, `str(4236.0)` is `"4236.0"`, and dropping the non-digits gives a
+  confident match against a different person — not a failed match, which would
+  at least be visible.
+* **A row with hours and no PF and no code was skipped before being counted.**
+  The cumulative-target row at the foot of each desk sheet (4, 8, 12 … 48) looks
+  exactly like a person whose identifying columns are blank, and the second of
+  those is somebody's score. Now counted and reported, never loaded.
+
+### Who may load one
+
+Superuser, or `staff_mgt` / `Management` / `hr`. Not `cx` — the CX team
+maintain the survey, not this. Not `is_staff`. Reading is open to any signed-in
+user.

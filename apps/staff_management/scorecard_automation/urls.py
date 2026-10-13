@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-from .. import cx_views
+from .. import cx_views, training_views
 
 urlpatterns = [
     # KPI definitions
@@ -51,6 +51,12 @@ urlpatterns = [
     path("cx/upload/", cx_views.CxUploadView.as_view()),
     path("cx/entry/", cx_views.CxEntryView.as_view()),
     path("cx/segments/", cx_views.CxSegmentsView.as_view()),
+
+    # HR's monthly training return. A training line sits on all 22 cards and
+    # none of them could be scored before this - the figures were in a
+    # workbook that went round by e-mail.
+    path("training/", training_views.TrainingReturnsView.as_view()),
+    path("training/upload/", training_views.TrainingUploadView.as_view()),
 
     # Administration: what cards exist, who holds them, and anyone's card.
     # The cards were seeded and then lived only in the database; these are

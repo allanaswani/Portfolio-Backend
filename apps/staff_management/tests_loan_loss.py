@@ -134,11 +134,13 @@ class TheFormulaIsStillInTheQueryTests(SimpleTestCase):
             "the loan-loss expression has changed. It must stay the "
             "workbook's own arithmetic: P&L charge less interest adjustment, "
             "negated because this query returns income categories.")
-        # Four statements carry it - the customer list, the customer revenue
-        # read, the RM revenue read the card itself uses, and the
-        # top-customers read - and they have to agree with each other.
+        # Five statements carry it - the customer list, the customer revenue
+        # read, the RM revenue read the card's ACTUAL uses, the top-customers
+        # read, and rm_loan_loss, which reads the prior year because that is
+        # what the card's TARGET is built on - and they have to agree with
+        # each other.
         self.assertEqual(
-            len(found), 4,
+            len(found), 5,
             "the loan-loss expression appears in a different number of "
             "statements than it did. If one was added, it must carry the "
             "same arithmetic; if one was dropped, something stopped "
@@ -149,3 +151,65 @@ class TheFormulaIsStillInTheQueryTests(SimpleTestCase):
         self.assertIn("loans_mom_ifrs_movement", text)
         # The year filter, without which the line would be since inception.
         self.assertIn("cust_code_strategy", text)
+
+
+class TheTargetComesFromThePersonsOwnPriorYearTests(SimpleTestCase):
+    """The Loan Loss line used to have no target at all, and the card blamed a
+    missing DMC column for it.
+
+    That was the wrong conclusion. The target was never a DMC column: all four
+    cards that carry the line with numbers on it derive it from the person's
+    OWN prior-year provision, times a rate the role sets. These check the
+    arithmetic against those four cards to the cent.
+    """
+
+    #: (card, prior year, this year's target, the rate that gets you there)
+    CARDS = [
+        ("Commercial", -9_245_965.63506646, -7_396_772.508053169, 0.80),
+        ("Commercial_trade", -20_053_060.48668547, -16_042_448.389348377, 0.80),
+        ("Ultimate_RM", -4_537_193.861367692, -1_512_397.9537892307, 1 / 3),
+        ("Personal_Banking", -5_031_576.707000633, -5_702_453.601267383,
+         1 + 0.670876894266751 / 5.031576707000633),
+    ]
+
+    def test_the_rate_on_the_prior_year_is_the_years_target(self):
+        for card, prior, stated, rate in self.CARDS:
+            with self.subTest(card):
+                self.assertAlmostEqual(prior * rate, stated, places=2)
+
+    def test_the_seeded_rates_are_the_ones_the_cards_state(self):
+        from importlib import import_module
+
+        module = import_module(
+            "apps.staff_management.migrations.0036_loan_loss_target_rate")
+        rates = module.RATES
+        self.assertAlmostEqual(rates["commercial_rm"], 0.80)
+        self.assertAlmostEqual(rates["commercial_rm_trade"], 0.80)
+        self.assertAlmostEqual(rates["ultimate_rm"], 1 / 3, places=6)
+        self.assertAlmostEqual(rates["pb_rm"], 1.1333, places=4)
+        self.assertEqual(module.BASE, "last_year_loan_loss")
+
+    def test_no_rate_is_invented_for_a_card_that_states_none(self):
+        """Business Banking, Diaspora and Mortgage Business carry no numbered
+        Loan Loss line among the eight cards. A rate borrowed from a
+        neighbouring role would be somebody's bonus."""
+        from importlib import import_module
+
+        module = import_module(
+            "apps.staff_management.migrations.0036_loan_loss_target_rate")
+        for role in ("sme_rm", "sme_arm", "sme_bbc", "diaspora_rm",
+                     "diaspora_arm", "mortgage_business_arm"):
+            with self.subTest(role):
+                self.assertNotIn(role, module.RATES)
+
+    def test_the_branch_tables_column_is_not_the_persons_target(self):
+        """``target_loan_provisions`` DOES exist - on the BRANCH table, one row
+        per branch. Handing an RM the whole branch's allowance would be an
+        order of magnitude too loose, and because this line is scored
+        smaller-is-better the error flatters: it shows as full marks."""
+        from .models import BranchEmployeeDmcData, BranchFinalEmployeeDmcData
+
+        per_person = {f.column for f in BranchEmployeeDmcData._meta.fields}
+        per_branch = {f.column for f in BranchFinalEmployeeDmcData._meta.fields}
+        self.assertNotIn("target_loan_provisions", per_person)
+        self.assertIn("target_loan_provisions", per_branch)

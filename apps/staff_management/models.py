@@ -1605,3 +1605,83 @@ class CxSegmentMetric(models.Model):
 
     def __str__(self):
         return f"{self.period} · {self.segment}"
+
+
+# ── Training hours, from the monthly training return ─────────────────────────
+#
+# A training line sits on EVERY ONE of the 22 cards - ``business_banking_
+# training`` on 7 sales roles, ``personal_banking_training`` on 5, and
+# ``bo_training_hours`` on all 10 back-office roles - and not one of them could
+# be scored. The card said "Training hours are recorded in the learning system,
+# not here", which was true and was the end of the conversation.
+#
+# They are recorded in ``2026 Training Returns Template - <Mon>_<yy>.xlsx``,
+# which HR circulate monthly: one row per person, one column per month, hours
+# in the cells. This table is where that return lands.
+#
+# Checked against the four calibration cards whose RM appears on the Aug 2026
+# return, and the Jan-Aug sum reproduces the card's stated actual EXACTLY on
+# all four: Charles Muchiri 36.0, Edward Kosgei 38.5, Juspher Muriithi 29.0,
+# Gladys Wambui 69.0.
+#
+# ``staff_pf`` is kept as well as the sales code, and it is the key that
+# matters. The return and the roster do not always spell a code the same way -
+# the roster has Charles Muchiri as CMM4236 and the return has CM4236 - but
+# the PF number is 4236 on both. Matching on the code alone loses him.
+
+
+class ScTrainingReturn(models.Model):
+    """One person's training hours for one month.
+
+    Stored per month rather than as a year-to-date total, because that is the
+    shape of the return and because a card is scored to a date: an RM's YTD at
+    the end of August is the sum of January to August, and keeping only a
+    total would make that impossible to work out after the next upload.
+    """
+
+    #: The first of the month the hours were earned in.
+    month = models.DateField(db_index=True)
+
+    #: The PF number, digits only. The key that actually matches - see the
+    #: note above. Blank only when the return omits it.
+    staff_pf = models.CharField(max_length=20, blank=True, default="",
+                                db_index=True)
+    #: The sales code as the RETURN spells it, which is not always how the
+    #: roster spells it.
+    sales_code = models.CharField(max_length=40, blank=True, default="",
+                                  db_index=True)
+    staff_name = models.CharField(max_length=160, blank=True, default="")
+    #: Branch and role as the return gives them - kept for the coverage
+    #: screen, not used for scoring.
+    branch = models.CharField(max_length=120, blank=True, default="")
+    staff_role = models.CharField(max_length=80, blank=True, default="")
+
+    #: Hours. Fractional: the return carries 5.4 and 6.45.
+    hours = models.FloatField()
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    source = models.CharField(max_length=160, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "sc_training_return"
+        ordering = ["-month", "staff_name"]
+        verbose_name = "Training return"
+        verbose_name_plural = "Training returns"
+        constraints = [
+            # One row per person per month. A re-upload of the same month
+            # corrects the figure rather than stacking a second one beside it,
+            # which would double somebody's year.
+            models.UniqueConstraint(
+                fields=["month", "staff_pf", "sales_code"],
+                name="sc_training_unique_person_month"),
+        ]
+        indexes = [
+            models.Index(fields=["month", "staff_pf"]),
+            models.Index(fields=["month", "sales_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.month:%b %Y} · {self.staff_name or self.sales_code}"

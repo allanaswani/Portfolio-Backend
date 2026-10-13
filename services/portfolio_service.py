@@ -867,3 +867,48 @@ def top_10_customers_per_income_category_for_rm(sales_code):
             cols = [c[0] for c in cur.description]
             result[category] = [dict(zip(cols, row)) for row in cur.fetchall()]
         return result
+
+
+def rm_loan_loss(sales_code, year=None):
+    """One RM's loan loss for a whole year, signed as the card shows it.
+
+    The same measure :func:`rm_revenue` returns, cut to one year and returned
+    as a POSITIVE provision charged — which is the convention the scorecard's
+    actual uses, and the opposite of the income category in ``rm_revenue``
+    (where a charge is a negative contribution to income).
+
+    It exists for the PREVIOUS year, because that is what the Loan Loss
+    target is built on. Every card that carries the line states the target as
+    a reduction on the person's own prior-year provision — Commercial and
+    Commercial-Trade at 20%, Ultimate at two thirds — so the prior year is
+    not history here, it is the plan.
+
+    Returns ``(value, problem)``. ``None`` with a reason rather than a zero:
+    an RM whose prior year cannot be read has no target, and scoring them
+    against a target of nought would divide by zero or hand them full marks
+    for a book nobody measured.
+    """
+    if year is None:
+        year = date.today().year - 1
+    query = f"""
+        WITH valid_portfolio AS ({RM_BOOK})
+        SELECT -SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)) AS loss,
+               COUNT(*) AS rows_seen
+        FROM loans_mom_ifrs_movement l
+        JOIN valid_portfolio vp ON l.cust_code_strategy::int = vp.cust_id
+        WHERE EXTRACT(YEAR FROM l.eom_date) = %s
+          AND l.cust_code_strategy ~ '^[0-9]+$'
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(query, [sales_code, year])
+        row = cursor.fetchone()
+    loss, rows_seen = (row or (None, 0))
+    if not rows_seen:
+        # No rows at all is NOT a nil provision. Either this RM's book had no
+        # movement that year or the IFRS movement table does not go back that
+        # far, and the two look identical from here - so neither is reported
+        # as a figure.
+        return None, (f"the IFRS movement table has no {year} rows for your "
+                      f"book, so last year's provision cannot be read")
+    # rm_revenue negates it; negate back to the charge the card shows.
+    return float(-(loss or 0)), ""

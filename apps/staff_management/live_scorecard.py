@@ -319,11 +319,20 @@ _register(
     Source(actual_key="property_value"))
 
 # ── Staff engagement ─────────────────────────────────────────────────────────
+# Training was the one line on EVERY card that nothing could score - seven
+# sales roles here, five on personal_banking_training and all ten back-office
+# roles on bo_training_hours below. It is read from HR's monthly training
+# return now; see :mod:`apps.staff_management.training`, which reproduces all
+# four calibration cards exactly.
+# Capped at full marks, and here the cards are UNANIMOUS: two of them score a
+# training line above its target - Business Banking at 36 hours against 32 and
+# Commercial-Trade at 69 against 32 - and both wrote exactly 1.0. No training
+# line on any card scores above full marks. (Contrast the survey lines above,
+# where the same cap had to be argued from a 6-to-5 count.)
 _register(
     ["business_banking_training", "personal_banking_training"],
     Source(target_field="target_training_hours", counted=True,
-           pending="Training hours are recorded in the learning system, not "
-                   "here."))
+           actual_key="training_hours", cap=1.0))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The back-office (non-sales) cards
@@ -502,6 +511,14 @@ _register(
 _register(
     ["portfolio_coverage_engagement"],
     Source(actual_key="cx_contactability", cap=1.0))
+
+# The back-office training line reads the same return as the sales cards. All
+# ten back-office roles carry it, and the return's main sheet covers tellers,
+# branch operations managers and customer service officers by name and PF.
+# There is no DMC row behind a back-office card, so the target comes off the
+# role's own card rather than a roster column.
+SOURCES["bo_training_hours"] = Source(actual_key="training_hours",
+                                      counted=True, cap=1.0)
 
 #: Everything else the warehouse has no figure for. Listed rather than left to
 #: fall through, so the reason on the card is specific.
@@ -835,8 +852,12 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
             "problem": problem, "failed": failed}
 
 
-def live_actuals(sales_code, staff_name=""):
+def live_actuals(sales_code, staff_name="", staff_pf=""):
     """Every figure the warehouse can give for this RM.
+
+    ``staff_pf`` is the PF number off the roster row. It is needed because
+    HR's training return keys on the PF and not always on the sales code -
+    the roster has Charles Muchiri as CMM4236 and the return has CM4236.
 
     Each entry is ``{"value", "as_at", "as_at_label", "problem"}``. ``as_at``
     is a real date, because the target is pro-rated to it.
@@ -889,6 +910,43 @@ def live_actuals(sales_code, staff_name=""):
     attempt("asset_growth",
             lambda: growth("loan_daily_balance_movement",
                            "december_loan_book"))
+
+    # ── Training hours, from HR's monthly return ──────────────────────────
+    # The as-at is the last month the return covers FOR THIS PERSON, not
+    # today: six months of hours scored against a full year's target is a
+    # miss that belongs to the return, not to the person.
+    def training():
+        from . import training as returns
+
+        hours, as_at, problem = returns.ytd_hours(sales_code, staff_pf, year)
+        if hours is None:
+            return _figure(None, problem=problem)
+        label = (f"training return to {as_at:%b %Y}" if as_at
+                 else "the training return")
+        return _figure(hours, as_at, label)
+
+    attempt("training_hours", training)
+
+    # ── Last year's provision, which is this year's Loan Loss TARGET ──────
+    # Not history. Every card that carries the Loan Loss line states its
+    # target as a reduction on the person's OWN prior-year provision -
+    # Commercial and Commercial-Trade at 20%, Ultimate at two thirds - so
+    # this read is what gives that line a target at all. The per-person DMC
+    # table has no provision column, and the branch table's one is the
+    # BRANCH's allowance, which is not a person's.
+    base_problems = {}
+
+    def last_year_provision():
+        value, problem = svc.rm_loan_loss(sales_code, year - 1)
+        if value is None:
+            base_problems["last_year_loan_loss"] = problem
+        else:
+            bases["last_year_loan_loss"] = value
+        # Not a figure anybody is scored on - it is the base of a target - so
+        # it is reported only through the target, never as an actual.
+        return _figure(None, problem=problem or "")
+
+    attempt("_last_year_loan_loss", last_year_provision)
 
     # ── Income ────────────────────────────────────────────────────────────
     def revenue():
@@ -1095,8 +1153,11 @@ def live_actuals(sales_code, staff_name=""):
 
     attempt(["cx_contactability", "cx_csat"], cx)
 
-    # Not a figure anybody is scored on - the bases a rate target multiplies.
+    # Not a figure anybody is scored on - the bases a rate target multiplies,
+    # and why any of them could not be read.
+    out.pop("_last_year_loan_loss", None)
     out["_bases"] = bases
+    out["_base_problems"] = base_problems
     return out
 
 
@@ -1449,6 +1510,39 @@ def resolve_person(sales_code):
     return None
 
 
+def pf_for(sales_code, dmc_row=None):
+    """This person's PF number, or ``""``.
+
+    Needed because HR's training return keys on the PF rather than the sales
+    code, and the two estates do not always spell a code the same way.
+
+    The DMC row carries it when there is one. A back-office person has no DMC
+    row - ``employee_role_history`` has no PF column either - so the HR record
+    is asked next, and a teller the HR extract has not reached is matched on
+    their sales code alone.
+    """
+    from django.db import transaction
+
+    from .models import StaffEmployeeData
+
+    if dmc_row is not None:
+        found = str(getattr(dmc_row, "staff_pf_number", "") or "").strip()
+        if found:
+            return found
+    code = (sales_code or "").strip()
+    if not code:
+        return ""
+    try:
+        # Its own savepoint: an absent HR table must cost a training figure,
+        # not the whole card.
+        with transaction.atomic():
+            staff = StaffEmployeeData.objects.filter(
+                sales_code__iexact=code).first()
+    except Exception:  # noqa: BLE001 - reported by the line, not raised
+        return ""
+    return str(getattr(staff, "staff_pf_number", "") or "").strip()
+
+
 def prorate_to(annual, as_at=None, counted=False):
     """An annual target sliced to the date the ACTUAL is as at.
 
@@ -1543,7 +1637,7 @@ def build_card(sales_code, profile=None):
                 "sales_code": sales_code,
                 "detail": f"The {role_code} card has no KPI lines configured."}
 
-    actuals = live_actuals(sales_code, person.name)
+    actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row))
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
@@ -1560,6 +1654,7 @@ def build_card(sales_code, profile=None):
         target_problem = str(exc)
 
     bases = actuals.pop("_bases", {})
+    base_problems = actuals.pop("_base_problems", {})
 
     # A target somebody allocated to this person by hand, which sits above the
     # role's and below their own DMC column.
@@ -1693,6 +1788,17 @@ def build_card(sales_code, profile=None):
         # with no target cannot be scored whatever the actual turns out to be,
         # and because the two are fixed by different people: a missing target
         # column is the DMC load, a failed read is the warehouse.
+        # A target the card states as a rate on one of this person's own
+        # figures, where that figure could not be read. Reported ahead of the
+        # DMC column, because the column is not what is missing: naming the
+        # DMC load here would send somebody to add a column that was never
+        # going to carry this line.
+        rate_basis = (getattr(mapping, "target_basis", "") or "") == "rate_on_base"
+        base_name = getattr(mapping, "target_base", "") or ""
+        base_missing = (fy_target is None and rate_basis
+                        and mapping.kpi_target is not None
+                        and bases.get(base_name) is None)
+
         pending = pending_label = ""
         if full_marks:
             # Nothing is pending: the line is settled, and by whom shows in
@@ -1700,6 +1806,15 @@ def build_card(sales_code, profile=None):
             pass
         elif source.pending and actual is None:
             pending, pending_label = source.pending, "Not measured here"
+        elif base_missing:
+            spelt = base_name.replace("_", " ")
+            pending = (
+                f"Your card sets this line at "
+                f"{float(mapping.kpi_target) * 100:.0f}% of your {spelt}, and "
+                f"that figure could not be read"
+                + (f": {base_problems[base_name]}." if base_name in base_problems
+                   else "."))
+            pending_label = "No base to work from"
         elif field and target_problem:
             pending = (f"Your targets could not be read from the DMC roster: "
                        f"{target_problem}")

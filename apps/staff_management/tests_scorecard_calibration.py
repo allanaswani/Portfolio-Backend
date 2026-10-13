@@ -38,8 +38,10 @@ KNOWN_DIFFERENCES = {
     # difference that turns out to be a rule gets implemented and removed.
 
     # ── Capped at 1.0 on some cards, 1.2 on others ───────────────────────
-    ("Business_Banking", "Training"): "capped at 1.0 on this card",
-    ("Commercial_trade", "Training"): "capped at 1.0 on this card",
+    # The two Training entries used to live here. They no longer do: the two
+    # cards that score a training line above its target BOTH wrote 1.0, which
+    # makes the cap a rule rather than a disagreement, so it is implemented
+    # and they reproduce. That is what this file is for.
     ("Business_Banking", "Leave magement"): "capped at 1.0 on this card",
     ("Diaspora", "Leave magement"): "capped at 1.0 on this card",
     # -- The two customer-survey lines, now scored live -------------------
@@ -86,8 +88,16 @@ KNOWN_DIFFERENCES = {
 }
 
 
-#: The two survey lines stop at full marks. Keyed on the cards own wording,
-#: because this file reads the cards and not the seeded KPI codes.
+#: The lines that stop at full marks rather than running on to 120%. Keyed on
+#: the cards own wording, because this file reads the cards and not the seeded
+#: KPI codes.
+#:
+#: Two survey lines and training. The survey pair is a judgement call on a
+#: 6-to-5 count (see the test below); training is not - both cards that score
+#: it above target wrote exactly 1.0 and none goes higher anywhere.
+FULL_MARKS_LINES = {"nps", "portfolio nps", "portfolo nps",
+                    "portfolio coverage (engagement)", "training"}
+#: Kept under its old name as well: the survey-cap test reads it by name.
 CX_LINES = {"nps", "portfolio nps", "portfolo nps",
             "portfolio coverage (engagement)"}
 CX_CAP = 1.0
@@ -99,7 +109,7 @@ def _rule(description):
     # PAR is the one line scored as a threshold rather than a ratio.
     if text == "par":
         return False, True, 1.2
-    return True, False, (CX_CAP if text in CX_LINES else 1.2)
+    return True, False, (CX_CAP if text in FULL_MARKS_LINES else 1.2)
 
 
 def _number(text):
@@ -162,8 +172,8 @@ class CardCalibrationTests(SimpleTestCase):
             if abs(mine - stated) < 0.005:
                 reproduced += 1
         self.assertGreaterEqual(
-            reproduced, 96,
-            "96 of the 109 card lines that state both a target and an actual")
+            reproduced, 98,
+            "98 of the 109 card lines that state both a target and an actual")
 
     def test_par_is_pass_or_fail_at_two_and_a_half_percent(self):
         """Seven cards, seven consistent outcomes and no middle value: at or
@@ -201,7 +211,6 @@ class CardCalibrationTests(SimpleTestCase):
         agree that it is a pass/fail threshold, so it was implemented that way
         and taken off this list."""
         outside = {
-            "business_banking_training", "personal_banking_training",
             "leave_management", "audit", "errors",
         }
         for code in sorted(outside):
@@ -254,6 +263,49 @@ class CardCalibrationTests(SimpleTestCase):
         # not a pass mark.
         self.assertAlmostEqual(
             score_for(0.2727272727, 0.6, True, cap=CX_CAP), 0.4545, places=4)
+
+    def test_training_is_live_and_the_cards_agree_on_its_cap(self):
+        """Training came off that list too, and on better evidence than the
+        survey lines.
+
+        Two cards score a training line above its target - Business Banking 36
+        hours against 32, Commercial-Trade 69 against 32 - and both wrote
+        exactly 1.0. No training line anywhere scores above full marks. So the
+        cap is a rule the cards agree on, not a judgement call, which is why
+        the two entries that used to sit in KNOWN_DIFFERENCES for this are
+        gone.
+
+        The figures come from HR's monthly return. All four cards whose RM is
+        on the August 2026 return reproduce their stated ACTUAL exactly -
+        36.0, 38.5, 29.0 and 69.0 - which is checked in tests_training.
+        """
+        from .live_scorecard import SOURCES
+
+        for code in ("business_banking_training", "personal_banking_training",
+                     "bo_training_hours"):
+            with self.subTest(code):
+                source = SOURCES[code]
+                self.assertFalse(source.pending,
+                                 f"{code} should read the training return")
+                self.assertEqual(source.actual_key, "training_hours")
+                self.assertEqual(source.cap, 1.0)
+
+        # 36 hours against a 32-hour target is full marks, not 112.5%.
+        self.assertAlmostEqual(score_for(36.0, 32.0, True, cap=1.0), 1.0)
+        self.assertAlmostEqual(score_for(69.0, 32.0, True, cap=1.0), 1.0)
+        # Below target is still proportional.
+        self.assertAlmostEqual(score_for(29.0, 32.0, True, cap=1.0), 0.90625)
+        self.assertAlmostEqual(score_for(38.5, 40.0, True, cap=1.0), 0.9625)
+
+    def test_no_training_line_on_any_card_scores_above_full_marks(self):
+        """The claim the cap rests on, counted off the cards."""
+        above = []
+        for row, target, actual, stated in _lines():
+            if row["kpi_description"].strip().lower() != "training":
+                continue
+            if stated > 1.0001:
+                above.append(f"{row['role_sheet']}: {stated}")
+        self.assertEqual(above, [])
 
     def test_the_cap_count_is_what_this_file_claims(self):
         """Reads the cards and counts, so the six-against-five above is not a
