@@ -453,3 +453,208 @@ class TheScreenTests(TestCase):
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0]["hours"], 19.0)
         self.assertEqual(rows[0]["branch"], "Buruburu")
+
+
+class TheCardIsTheBanksOwnDocumentTests(TestCase):
+    """What goes out on a signed scorecard, and what must not.
+
+    Each of these was asked for after somebody looked at a real card.
+    """
+
+    CODE = "FJ4145"
+
+    def setUp(self):
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=4145, staff_name="Fridah Jabani",
+            sales_code=self.CODE, staff_role="SME BBC", staff_branch="Nyeri",
+            staff_unit="Nyeri", active=1, target_training_hours=48,
+            target_deposits_value=38_400_000)
+
+    def sheet_text(self):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        from .scorecard_signoff import build_card_workbook
+
+        book = load_workbook(BytesIO(
+            build_card_workbook(build_card(self.CODE)).read()))
+        return book, "\n".join(
+            " ".join("" if c.value is None else str(c.value) for c in row)
+            for row in book.active.iter_rows())
+
+    def test_the_bank_is_hfcb(self):
+        """HFC is the old name. It must not go out on a document somebody puts
+        their signature to."""
+        _, text = self.sheet_text()
+        self.assertIn("HFCB PERFORMANCE SCORECARD", text)
+        self.assertNotIn("HFC PERFORMANCE", text)
+
+    def test_the_download_is_read_only(self):
+        """A scorecard is a record. Left editable, the first thing that happens
+        to a downloaded one is that a figure gets changed and the file is
+        forwarded, and nothing then tells that copy from the signed one."""
+        book, _ = self.sheet_text()
+        self.assertTrue(book.active.protection.sheet)
+        self.assertTrue(book.security.lockStructure)
+
+    def test_the_tools_own_plumbing_is_not_on_the_sheet(self):
+        """Lines scored and the warehouse table name used to print here. Both
+        are this tool's internals, and on somebody's performance record they
+        read as a statement about the person."""
+        _, text = self.sheet_text()
+        self.assertNotIn("Lines scored", text)
+        self.assertNotIn("Targets from", text)
+        self.assertNotIn("branch_employee_dmc_data", text)
+        self.assertNotIn("branch_final_employee_dmc_data", text)
+
+    def test_a_line_with_no_figure_still_says_why_on_the_sheet(self):
+        """Removing the summary must not remove the explanation. The reason
+        belongs on the line it is about, which is where it still is."""
+        _, text = self.sheet_text()
+        self.assertIn("Figures to load", text,
+                      "an unmeasured line should name where its figure comes "
+                      "from")
+
+    def test_an_unmeasured_line_names_the_screen_rather_than_shrugging(self):
+        """The old wording stopped at measured-outside-the-warehouse, which
+        reads as this-will-never-work. These lines are counts somebody keeps,
+        and there is a screen for them."""
+        from .live_scorecard import _NOT_IN_WAREHOUSE
+
+        self.assertIn("Figures to load", _NOT_IN_WAREHOUSE)
+
+    def test_the_lines_the_user_asked_about_are_loadable(self):
+        """Weighted Sales, covenant tracking and account planning have no feed
+        and are not going to get one - they are counts somebody keeps. What
+        matters is that there IS a route, the Figures to load screen, and that
+        all of them are on it."""
+        from .scorecard_manual import MANUAL_ACTUALS
+
+        for code in ("weighted_sales", "weighted_sales_dashboard",
+                     "banking_covenant_tracking_should_be_in_iapply",
+                     "tooling_and_account_planning_all_customers",
+                     "leave_management", "audit", "errors"):
+            with self.subTest(code):
+                self.assertIn(code, MANUAL_ACTUALS)
+
+
+class WithdrawingASignatureTests(TestCase):
+    """Signing is one button beside a long page, and people press it before
+    they meant to. Without a way back the only remedy was editing the
+    database, and a figure that can only be corrected in the database is a
+    figure nobody can trust."""
+
+    CODE = "FJ4145"
+    BASE = "/staff_management/scorecard-automation/my-card/"
+
+    def setUp(self):
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=4145, staff_name="Fridah Jabani",
+            sales_code=self.CODE, staff_role="SME BBC", staff_branch="Nyeri",
+            staff_unit="Nyeri", active=1, team_leader_name="A Manager", team_leader="A Manager",
+            target_deposits_value=38_400_000)
+        self.user = User.objects.create_user("fj", password="x")
+        Profile.objects.update_or_create(
+            user=self.user, defaults={"sales_code": self.CODE})
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def sign(self):
+        response = self.client.post(self.BASE + "sign/", {"role": "owner"})
+        self.assertEqual(response.status_code, 200, response.data)
+        return response
+
+    def test_you_can_take_back_a_signature_that_is_still_only_yours(self):
+        self.sign()
+        response = self.client.post(self.BASE + "unsign/", {})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["withdrawn"])
+        self.assertFalse(response.data["signoff"]["signed"])
+        self.assertTrue(response.data["signoff"]["withdrawn"])
+
+    def test_the_card_goes_back_to_live_figures(self):
+        self.sign()
+        self.client.post(self.BASE + "unsign/", {})
+        card = self.client.get(self.BASE).data
+        self.assertTrue(card["live"], "an unsigned card must read live again")
+
+    def test_the_copy_that_was_signed_is_kept(self):
+        """Signed-then-withdrawn is part of the record. Deleting the frozen
+        copy would hide it."""
+        from .scorecard_automation.models import ScorecardSignoff
+
+        self.sign()
+        self.client.post(self.BASE + "unsign/", {"reason": "by mistake"})
+
+        row = ScorecardSignoff.objects.get(sales_code=self.CODE)
+        self.assertIsNone(row.signed_at)
+        self.assertIsNotNone(row.withdrawn_at)
+        self.assertEqual(row.withdrawn_reason, "by mistake")
+        self.assertTrue(row.card, "the frozen card was deleted")
+
+    def test_you_can_sign_again_afterwards(self):
+        self.sign()
+        self.client.post(self.BASE + "unsign/", {})
+        again = self.sign()
+        self.assertTrue(again.data["signoff"]["signed"])
+
+    def test_withdrawing_what_was_never_signed_is_refused_plainly(self):
+        response = self.client.post(self.BASE + "unsign/", {})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("nothing to withdraw", response.data["detail"])
+
+    def test_once_the_manager_has_counter_signed_you_cannot_take_it_back(self):
+        """Both of you have agreed a document at that point, and one side
+        cannot quietly take it back."""
+        self.sign()
+        manager = User.objects.create_user(
+            "mgr", password="x", first_name="A", last_name="Manager")
+        boss = APIClient()
+        boss.force_authenticate(manager)
+        counter = boss.post(self.BASE + "sign/",
+                            {"role": "manager", "sales_code": self.CODE})
+        self.assertEqual(counter.status_code, 200, counter.data)
+
+        response = self.client.post(self.BASE + "unsign/", {})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("counter-signed", response.data["detail"])
+
+    def test_a_superuser_can_fix_a_genuine_mistake(self):
+        """Somebody has to be able to, and it is recorded against their
+        name."""
+        self.sign()
+        manager = User.objects.create_user(
+            "mgr2", password="x", first_name="A", last_name="Manager")
+        boss = APIClient()
+        boss.force_authenticate(manager)
+        boss.post(self.BASE + "sign/",
+                  {"role": "manager", "sales_code": self.CODE})
+
+        root = User.objects.create_superuser("root", "r@x.io", "x")
+        Profile.objects.update_or_create(
+            user=root, defaults={"sales_code": self.CODE})
+        admin = APIClient()
+        admin.force_authenticate(root)
+        response = admin.post(self.BASE + "unsign/", {})
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_you_cannot_withdraw_somebody_elses(self):
+        """The sales code comes from the signed-in profile, as it does for
+        signing, so there is no parameter to forget to check."""
+        from .scorecard_automation.models import ScorecardSignoff
+
+        self.sign()
+        other = User.objects.create_user("other", password="x")
+        Profile.objects.update_or_create(
+            user=other, defaults={"sales_code": "XX9999"})
+        theirs = APIClient()
+        theirs.force_authenticate(other)
+
+        response = theirs.post(self.BASE + "unsign/",
+                               {"sales_code": self.CODE})
+        self.assertEqual(response.status_code, 409,
+                         "it should have looked at THEIR card, not Jabani's")
+        self.assertIsNotNone(
+            ScorecardSignoff.objects.get(sales_code=self.CODE).signed_at,
+            "somebody else's signature was removed")

@@ -84,7 +84,7 @@ class TargetsComeFromThePersonsOwnRowTests(TestCase):
         lines = [ln for g in card["perspectives"] for ln in g["lines"]]
         profit = [ln for ln in lines if ln["kpi_code"] == "operating_profit"]
         self.assertTrue(profit, "the SME RM card has an Operating Profit line")
-        self.assertEqual(profit[0]["pending_label"], "No target column")
+        self.assertEqual(profit[0]["pending_label"], "No target set")
         self.assertIsNone(profit[0]["score"])
         self.assertIsNone(profit[0]["ytd_target"])
 
@@ -284,7 +284,9 @@ class SignoffTests(TestCase):
         text = "\n".join(
             " ".join("" if c.value is None else str(c.value) for c in row)
             for row in sheet.iter_rows())
-        self.assertIn("HFC PERFORMANCE SCORECARD", text)
+        # The bank is HFCB; HFC is the old name and must not go out on a
+        # document somebody signs.
+        self.assertIn("HFCB PERFORMANCE SCORECARD", text)
         self.assertIn("Fridah Jabani", text)
         self.assertIn(self.CODE, text)
         self.assertIn("SIGN-OFF", text)

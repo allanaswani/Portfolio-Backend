@@ -44,6 +44,7 @@ def build_card_workbook(card, signoff=None):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.workbook.protection import WorkbookProtection
 
     teal = "FF0B5C6B"          # HF teal, the brand colour used on the screens
     wb = Workbook()
@@ -62,7 +63,9 @@ def build_card_workbook(card, signoff=None):
         ws.cell(row=row, column=2, value=value)
         row += 1
 
-    ws.cell(row=row, column=1, value="HFC PERFORMANCE SCORECARD").font = Font(
+    # The bank is HFCB. "HFC" is the old name and must not go out on a
+    # document somebody puts their signature to.
+    ws.cell(row=row, column=1, value="HFCB PERFORMANCE SCORECARD").font = Font(
         bold=True, size=14, color=teal)
     row += 2
 
@@ -74,10 +77,16 @@ def build_card_workbook(card, signoff=None):
     put("Period", (card.get("period") or {}).get("label") or "")
     put("Performance score", _money((card.get("performance_score") or 0) * 100))
     ws.cell(row=row - 1, column=3, value="%")
-    put("Lines scored",
-        f"{card.get('scored_lines', 0)} of "
-        f"{card.get('scored_lines', 0) + card.get('pending_lines', 0)}")
-    put("Targets from", card.get("target_source") or "")
+    # "Lines scored: 14 of 19" and "Targets from branch_employee_dmc_data"
+    # used to be here. Both are off the sheet on purpose. They are this
+    # tool's own plumbing - how many lines it managed to compute and which
+    # warehouse table it read - and on a document somebody signs they read
+    # as a statement about the person. A table name on a bonus record also
+    # invites the question of what else is in the table.
+    #
+    # Nothing is hidden by this: a line with no figure still prints its own
+    # reason in the ACTUAL column, which is the honest version of the same
+    # information and is attached to the line it belongs to.
     row += 1
 
     for group in card.get("perspectives") or []:
@@ -167,6 +176,32 @@ def build_card_workbook(card, signoff=None):
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(index)].width = width
     ws.freeze_panes = "A2"
+
+    # ── read-only ─────────────────────────────────────────────────────────
+    # A scorecard is a record, and a signed one is a record somebody has put
+    # their name to. Left editable, the first thing that happens to a
+    # downloaded card is that a figure gets changed in it and the file is
+    # forwarded, and nothing then distinguishes that copy from the one that
+    # was signed.
+    #
+    # This is Excel's own sheet protection. It is a deterrent, not encryption -
+    # a determined person can strip it - and it carries no password, because a
+    # password nobody wrote down is a support call. What it does is stop the
+    # accident, which is the thing that actually happens, and make an
+    # alteration deliberate instead of casual.
+    ws.protection.sheet = True
+    ws.protection.enable()
+    for allowed in ("formatCells", "formatColumns", "formatRows",
+                    "insertColumns", "insertRows", "insertHyperlinks",
+                    "deleteColumns", "deleteRows", "sort", "autoFilter",
+                    "pivotTables"):
+        setattr(ws.protection, allowed, False)
+    # Selecting and copying stay on: people need to read the thing, and
+    # locking selection only makes it annoying without making it safer.
+    ws.protection.selectLockedCells = False
+    ws.protection.selectUnlockedCells = False
+    # Stops the sheet being renamed, moved or deleted around the protection.
+    wb.security = WorkbookProtection(lockStructure=True)
 
     buffer = BytesIO()
     wb.save(buffer)

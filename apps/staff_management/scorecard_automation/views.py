@@ -572,6 +572,14 @@ def _signoff_payload(signoff):
         "manager_comment": signoff.manager_comment,
         "performance_score": signoff.performance_score,
         "fully_signed": signoff.is_fully_signed,
+        # So the page can say "you withdrew this on the 9th" rather than
+        # showing an unsigned card with no explanation of why the signature
+        # somebody remembers making has gone.
+        "withdrawn": bool(signoff.withdrawn_at),
+        "withdrawn_at": (signoff.withdrawn_at.isoformat()
+                         if signoff.withdrawn_at else None),
+        "withdrawn_by": signoff.withdrawn_by_name,
+        "withdrawn_reason": signoff.withdrawn_reason,
     }
 
 
@@ -617,7 +625,12 @@ class ScorecardSignView(APIView):
                     {"detail": "sales_code is required to counter-sign."},
                     status=status.HTTP_400_BAD_REQUEST)
             row = roster_row(sales_code)
-            named = (getattr(row, "team_leader", "") or "").strip().lower()
+            # Either of the roster's two manager columns - see
+            # live_scorecard.team_leader_of. Reading one and stopping is how
+            # nobody can counter-sign anything.
+            from apps.staff_management.live_scorecard import team_leader_of
+
+            named = team_leader_of(row).strip().lower()
             # A manager signs the people the roster says are theirs. Anyone
             # else counter-signing would make the second signature worthless.
             if not request.user.is_superuser and named != signer.lower():
@@ -660,6 +673,84 @@ class ScorecardSignView(APIView):
         signoff.save()
         return Response({"signoff": _signoff_payload(signoff)},
                         status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=[_TAG])
+class ScorecardUnsignView(APIView):
+    """Withdraw your own signature, while it is still only yours.
+
+    Signing is one button next to a long page, and people press it before
+    they meant to - which is exactly what happened the first week this was
+    live. Without a way back, the only remedy was somebody editing the
+    database, and a figure that can only be corrected in the database is a
+    figure nobody can trust.
+
+    The rules are narrow on purpose:
+
+    * **you may only withdraw your own.** The sales code comes from the
+      signed-in profile, as it does for signing, so there is no parameter to
+      forget to check.
+    * **not once the line manager has counter-signed.** At that point the two
+      of you have agreed a document, and one side cannot quietly take it
+      back; a superuser can, because somebody has to be able to fix a
+      genuine mistake, and it is recorded against their name.
+    * **the frozen copy is kept, not deleted.** The card goes back to live
+      figures, and the copy that was signed stays on the row with
+      ``withdrawn_at`` set, because "this was signed and then withdrawn" is
+      part of the record and deleting it would hide it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.utils import timezone
+
+        from apps.staff_management.scorecard_signoff import period_for
+        from .models import ScorecardSignoff
+
+        sales_code = _own_sales_code(request)
+        if not sales_code:
+            return Response(
+                {"detail": "Your profile has no sales code, so there is no "
+                           "signature to withdraw."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        period = str(request.data.get("period") or period_for()).strip()
+        signoff = ScorecardSignoff.objects.filter(
+            sales_code=sales_code, period=period).first()
+        if signoff is None or not signoff.signed_at:
+            return Response(
+                {"detail": f"You have not signed your card for {period}, so "
+                           f"there is nothing to withdraw."},
+                status=status.HTTP_409_CONFLICT)
+
+        if signoff.manager_signed_at and not request.user.is_superuser:
+            manager = signoff.manager_signed_by_name or "your line manager"
+            return Response(
+                {"detail": f"{manager} has already counter-signed this card, "
+                           f"so it is an agreed document and you cannot "
+                           f"withdraw it on your own. Ask them to reopen it."},
+                status=status.HTTP_409_CONFLICT)
+
+        who = (request.user.get_full_name() or request.user.username).strip()
+        signoff.withdrawn_at = timezone.now()
+        signoff.withdrawn_by_name = who
+        signoff.withdrawn_reason = str(
+            request.data.get("reason") or "").strip()[:255]
+        # The signature comes off; the copy that was signed stays put.
+        signoff.signed_at = None
+        signoff.signed_by = None
+        signoff.manager_signed_at = None
+        signoff.manager_signed_by = None
+        signoff.save()
+
+        return Response({
+            "withdrawn": True,
+            "signoff": _signoff_payload(signoff),
+            "detail": (f"Your signature for {period} has been withdrawn. The "
+                       f"card is back to live figures and you can sign it "
+                       f"again when it reads right."),
+        }, status=status.HTTP_200_OK)
 
 
 @extend_schema(tags=[_TAG])

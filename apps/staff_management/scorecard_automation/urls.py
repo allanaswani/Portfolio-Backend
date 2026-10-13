@@ -28,6 +28,10 @@ urlpatterns = [
     # Signing freezes the figures; the download renders the signed copy when
     # there is one, and is marked unsigned when there is not.
     path("my-card/sign/", views.ScorecardSignView.as_view()),
+    # Signing is one button beside a long page and people press it before they
+    # meant to. Withdrawing is allowed while the signature is still only
+    # yours - see the view for why that is where the line is.
+    path("my-card/unsign/", views.ScorecardUnsignView.as_view()),
     path("my-card/download/", views.ScorecardDownloadView.as_view()),
 
     # Loading the workbooks. Both read and report first; only a second call

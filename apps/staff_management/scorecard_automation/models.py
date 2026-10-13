@@ -452,6 +452,14 @@ class ScorecardSignoff(models.Model):
     scored_lines = models.PositiveSmallIntegerField(default=0)
     pending_lines = models.PositiveSmallIntegerField(default=0)
 
+    #: Set when the owner withdrew their own signature before it was
+    #: counter-signed. The frozen ``card`` is KEPT: "this was signed and then
+    #: withdrawn" is part of the record, and deleting the copy would hide it.
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    withdrawn_by_name = models.CharField(max_length=255, blank=True,
+                                         default="")
+    withdrawn_reason = models.CharField(max_length=255, blank=True, default="")
+
     signed_by = models.ForeignKey(
         "auth.User", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="scorecards_signed")

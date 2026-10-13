@@ -139,9 +139,18 @@ class Source:
     pending: str = ""
 
 
+#: A line nothing here can compute, and what to DO about it.
+#:
+#: The old wording stopped at "measured outside the warehouse", which is true
+#: and leaves the reader at a dead end - it reads as "this will never work".
+#: These lines are not broken: they are counts somebody keeps (covenants
+#: reviewed, accounts planned, leave cleared, an audit score), and there is a
+#: screen for exactly that. Naming it turns a dead end into one action.
 _NOT_IN_WAREHOUSE = (
-    "This is measured outside the warehouse — the survey, HR, the audit return "
-    "or a branch's own count — so there is no live figure to show.")
+    "No system here holds this one — it is a count somebody keeps, like the "
+    "audit return, the learning system or a branch's own tally. Administration "
+    "enters it under Scorecards → Figures to load, and it then shows here "
+    "marked as entered rather than measured.")
 
 #: Seeded kpi_code -> Source. The codes are slugs of the cards' own wording, so
 #: several codes mean the same measure on different cards and share a source.
@@ -1463,7 +1472,7 @@ def resolve_person(sales_code):
             return Person(
                 sales_code=code, name=row.staff_name or "", role_code=role,
                 branch=row.staff_branch or row.staff_unit or "",
-                team_leader=getattr(row, "team_leader", "") or "",
+                team_leader=team_leader_of(row),
                 roster="the branch DMC roster", dmc_row=row)
 
     # 2. the role history - the back-office roster
@@ -1508,6 +1517,29 @@ def resolve_person(sales_code):
                       role_code="", branch=staff.staff_unit or "",
                       roster="your HR record")
     return None
+
+
+def team_leader_of(dmc_row):
+    """The line manager's name off a DMC row, from either column.
+
+    The per-person roster carries BOTH ``team_leader_name`` and
+    ``team_leader``, with nothing in the schema to say which the ETL fills -
+    and the branch roster carries only ``team_leader``. Reading one of them
+    and stopping is how a card ends up with a blank line manager and nobody
+    able to counter-sign it, which is a silent failure of the whole sign-off.
+
+    ``team_leader_name`` is preferred because its name says it holds a name;
+    ``team_leader`` is the fallback. If one of them turns out to hold a code
+    rather than a name, the name column still wins and the code column simply
+    never matches a signer - which is the safe way round.
+    """
+    if dmc_row is None:
+        return ""
+    for field in ("team_leader_name", "team_leader"):
+        found = str(getattr(dmc_row, field, "") or "").strip()
+        if found:
+            return found
+    return ""
 
 
 def pf_for(sales_code, dmc_row=None):
@@ -1816,15 +1848,22 @@ def build_card(sales_code, profile=None):
                    else "."))
             pending_label = "No base to work from"
         elif field and target_problem:
-            pending = (f"Your targets could not be read from the DMC roster: "
-                       f"{target_problem}")
-            pending_label = "Targets unreadable"
+            # The exception text is kept in ``diagnostic`` for whoever has to
+            # fix it, and off the card. A Postgres error on somebody's
+            # performance record tells them nothing and reads like a fault of
+            # theirs.
+            pending = ("Your targets could not be read just now. It is being "
+                       "looked at - nothing here is a reflection on your "
+                       "performance.")
+            pending_label = "Targets unavailable"
         elif target_missing:
-            pending = (f"{target_table or 'The DMC roster'} has no {field} "
-                       f"column, your role's card carries no target for this "
-                       f"line either, and nobody has allocated you one. It is "
-                       f"a column for the DMC load to add.")
-            pending_label = "No target column"
+            # This used to name the warehouse table and ask for a column to be
+            # added. True, and the wrong audience: it is on a document the
+            # person signs, where a table name reads as a statement about them
+            # and gives them nothing they can act on.
+            pending = ("No target is set for this line yet. Administration "
+                       "sets it under Scorecards \u2192 Figures to load.")
+            pending_label = "No target set"
         elif fy_target is None:
             pending = ("Nothing sets a target for this line: your DMC row is "
                        "blank for it, no target is allocated to you, and your "
@@ -1836,8 +1875,12 @@ def build_card(sales_code, profile=None):
                        "from here.")
             pending_label = "No source yet"
         elif problem and failed:
-            pending = f"The warehouse could not be read for this line: {problem}"
-            pending_label = "Could not read"
+            # Same again: the reason a read broke belongs with whoever fixes
+            # it, not on a scorecard.
+            pending = ("This figure could not be read just now. It is being "
+                       "looked at - nothing here is a reflection on your "
+                       "performance.")
+            pending_label = "Temporarily unavailable"
         elif problem:
             # Not a fault - the figure honestly is not there, and the reason
             # says which piece is missing.
@@ -1903,6 +1946,13 @@ def build_card(sales_code, profile=None):
             "score_cap": source.cap,
             "pending": pending,
             "pending_label": pending_label,
+            # What actually went wrong, for whoever has to fix it. Separate
+            # from ``pending`` so the person's own card and the signed
+            # download can stay free of table names and SQL while the
+            # Administration screens keep the detail.
+            "diagnostic": (problem if (failed and problem)
+                           else (target_problem if (field and target_problem)
+                                 else "")),
         })
 
     return {
