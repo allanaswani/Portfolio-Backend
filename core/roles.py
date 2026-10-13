@@ -114,6 +114,14 @@ NEW_ROLES = (
     # screen, and so the badge is not blank.
     "marketing_admin",
     "marketing_designer",
+    # Customer experience. The CX team maintain the contactability and
+    # satisfaction figures two lines on every RM scorecard are scored on -
+    # Portfolio Coverage (engagement) and Portfolio NPS. Until this group
+    # existed those figures arrived as an e-mailed spreadsheet and an
+    # administrator retyped them, so on most quarters both lines showed as
+    # "not measured". Registered here so an administrator can put somebody on
+    # the CX screen from the Users screen, and so the badge is not blank.
+    "cx",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -131,6 +139,8 @@ NEW_ROLE_DESCRIPTIONS = {
     "business_performance": "Strategy & Business Performance — executive cockpit + targets (director).",
     "telesales_supervisor": "Telesales — supervisor; allocates referrals and sees the whole queue.",
     "telesales_agent": "Telesales — agent; works the referrals allocated to them.",
+    "cx": "Customer experience — maintains the survey figures the RM "
+          "scorecards read (contactability and satisfaction).",
     # Wording mirrors c360/roles.py::C360_ROLE_DESCRIPTIONS.
     "c360_management": "Customer 360 — management / analytics (whole-book Level 1).",
     "c360_rm": "Customer 360 — relationship manager (own book).",
@@ -194,6 +204,10 @@ ROLE_TO_TIER = {
     # tier, so these only decide the badge on the Users screen.
     "marketing_admin": ROLE_MANAGER,
     "marketing_designer": ROLE_OFFICER,
+    # Customer experience — the CX screen gates on the group NAME, not the
+    # tier, so this only decides the badge on the Users screen. Manager
+    # because the figures behind it are part of what people are paid on.
+    "cx": ROLE_MANAGER,
 }
 
 # Backward-compatible alias (older imports referenced this name).

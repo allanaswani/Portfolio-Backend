@@ -53,6 +53,7 @@ the eight role cards, so a line carries the weight it carries on the card.
 
 from __future__ import annotations
 
+import calendar
 import datetime
 from dataclasses import dataclass
 
@@ -107,6 +108,12 @@ def role_code_for(staff_role):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+#: The most any line can score. 120% on all eight cards, for every line where
+#: a card shows a figure above its target - except the two customer-survey
+#: lines, which stop at full marks. See ``Source.cap``.
+SCORE_CAP = 1.2
+
+
 @dataclass(frozen=True)
 class Source:
     """Where one KPI's target and actual come from."""
@@ -125,6 +132,9 @@ class Source:
     #: it are unanimous: at or under 2.5% scores full marks, over it scores
     #: nothing, and there is no middle value anywhere.
     threshold: bool = False
+    #: The most this line may score. 1.2 everywhere but the customer-survey
+    #: lines - see the CX registrations below for the count that decided it.
+    cap: float = SCORE_CAP
     #: Why this line cannot be scored, when it cannot.
     pending: str = ""
 
@@ -461,10 +471,41 @@ for _code, _why in (
         f"No live source: {_why} Administration loads it on the Figures to "
         f"load screen."))
 
+# ── Customer experience: the survey lines ────────────────────────────────────
+# Both of these used to be unscoreable, because the figures arrived as an Excel
+# the CX team e-mailed round. They now live in ``cx_rm_metric``, which CX
+# maintain themselves - see :mod:`apps.staff_management.cx_metrics`.
+#
+# **The NPS line is fed by CSAT.** The line on the card is called Portfolio
+# NPS; the figure behind it is the RM's own CSAT from CX's Satisfaction sheet,
+# which is what the business scores. The per-segment NPS in CX's summary sheet
+# is a different measure and is not per RM, so it cannot score a personal card.
+#
+# **Both stop at full marks, not 120%.** Six card lines across the eight Q3
+# cards score a survey measure ABOVE its target, and the cards do not agree
+# what to do about it: three wrote exactly 1.0 (Ultimate_RM NPS, Diaspora NPS,
+# Personal_Banking coverage), one wrote 1.2 (Personal_Banking NPS, two lines
+# below a coverage line the same card capped at 1.0), one applied no cap and
+# wrote 1.667 (Mortgage_Business NPS), and one landed at 1.111 under no cap
+# (Commercial NPS).
+#
+# Counted over all nine numeric survey lines, a cap of 1.0 reproduces six, 1.2
+# reproduces five and no cap reproduces five - so 1.0 wins, but by one line.
+# What settles it is that 1.0 is the only cap more than one card applied here,
+# and that the instruction for an RM the measure does not apply to is "give
+# FULL MARKS" rather than give 120%. ``tests_scorecard_calibration`` counts
+# this off the cards and names the three it does not match; changing this
+# number and ``CX_CAP`` there is the whole of the other decision.
+_register(
+    ["nps", "portfolio_nps", "portfolo_nps"],
+    Source(actual_key="cx_csat", cap=1.0))
+_register(
+    ["portfolio_coverage_engagement"],
+    Source(actual_key="cx_contactability", cap=1.0))
+
 #: Everything else the warehouse has no figure for. Listed rather than left to
 #: fall through, so the reason on the card is specific.
 for _code in (
-    "nps", "portfolio_nps", "portfolo_nps", "portfolio_coverage_engagement",
     "leave_management", "audit", "errors",
     "banking_covenant_tracking_should_be_in_iapply",
     "tooling_and_account_planning_all_customers", "digital_adoption",
@@ -1006,9 +1047,83 @@ def live_actuals(sales_code, staff_name=""):
 
     attempt("par", par)
 
+    # ── Customer experience, from what CX maintain ────────────────────────
+    # Contactability and CSAT for one RM, for the newest period CX have
+    # loaded. Quarterly, so the as-at is the quarter's own end rather than the
+    # last closed month - the target is not pro-rated for these lines anyway
+    # (they are in FULL_YEAR_TARGETS: 60% is 60% in March and in December).
+    def cx():
+        from . import cx_metrics
+
+        row = cx_metrics.for_rm(sales_code)
+        if row is None:
+            period = cx_metrics.latest_period()
+            if not period:
+                why = ("the CX team have not loaded a survey period yet. "
+                       "Administration → Scorecards → Customer "
+                       "experience is where that happens.")
+            else:
+                why = (f"the CX survey for {period} does not include you. CX "
+                       f"key their return on the RM's NAME, so this is either "
+                       f"an RM they did not survey or a name spelt "
+                       f"differently from the roster - the Customer "
+                       f"experience screen names both.")
+            return {"cx_contactability": _figure(None, problem=why),
+                    "cx_csat": _figure(None, problem=why)}
+
+        label = f"CX survey, {row['period']}"
+        if row["full_marks"]:
+            # Not a figure. CX have marked this RM one the measure does not
+            # apply to, and the card honours that as a rule rather than
+            # inventing a percentage for it.
+            marked = _figure(None, cx_period_end(row["period"]),
+                             f"{label} — {row['note'] or 'full marks'}")
+            marked["full_marks"] = True
+            return {"cx_contactability": dict(marked), "cx_csat": dict(marked)}
+
+        as_at = cx_period_end(row["period"])
+        return {
+            "cx_contactability": _figure(
+                row["contactability"], as_at, label,
+                problem=None if row["contactability"] is not None else
+                f"{label} has no contactability figure for you"),
+            "cx_csat": _figure(
+                row["csat"], as_at, label,
+                problem=None if row["csat"] is not None else
+                f"{label} has no CSAT figure for you"),
+        }
+
+    attempt(["cx_contactability", "cx_csat"], cx)
+
     # Not a figure anybody is scored on - the bases a rate target multiplies.
     out["_bases"] = bases
     return out
+
+
+def cx_period_end(period):
+    """The last day of a CX period - ``2026-Q2`` or ``2026-06``.
+
+    The as-at date a survey figure carries. It is the period's end, not the
+    day it was loaded: a Q2 score is a Q2 score whenever CX get round to
+    typing it in.
+    """
+    text = str(period or "")
+    try:
+        year = int(text[:4])
+    except ValueError:
+        return None
+    rest = text[5:]
+    if rest.upper().startswith("Q"):
+        month = int(rest[1]) * 3
+    else:
+        try:
+            month = int(rest)
+        except ValueError:
+            return None
+    if not 1 <= month <= 12:
+        return None
+    last = calendar.monthrange(year, month)[1]
+    return datetime.date(year, month, last)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1358,11 +1473,10 @@ def prorate_to(annual, as_at=None, counted=False):
 # The card
 # ─────────────────────────────────────────────────────────────────────────────
 
-SCORE_CAP = 1.2
 
-
-def score_for(actual, target, higher_is_better, threshold=False):
-    """How far a line got, clamped to 0 … 1.2.
+def score_for(actual, target, higher_is_better, threshold=False,
+              cap=SCORE_CAP):
+    """How far a line got, clamped to 0 … ``cap`` (1.2 for almost every line).
 
     ``1 + (actual - target) / abs(target)``, which is plain ``actual / target``
     whenever the target is positive, and still means what it should when the
@@ -1388,15 +1502,15 @@ def score_for(actual, target, higher_is_better, threshold=False):
         # Met or not met. Scoring a threshold in proportion would hand partial
         # credit for a limit that was broken.
         met = actual >= target if higher_is_better else actual <= target
-        return SCORE_CAP if met else 0.0
+        return cap if met else 0.0
     if higher_is_better:
         raw = 1 + (actual - target) / abs(target)
     else:
         # Smaller is better, measured on magnitudes: nil is the best possible
         # outcome, not a division by zero. The provision lines are literally
         # titled "Nil provisions".
-        raw = SCORE_CAP if not actual else (abs(target) / abs(actual))
-    return max(0.0, min(SCORE_CAP, raw))
+        raw = cap if not actual else (abs(target) / abs(actual))
+    return max(0.0, min(cap, raw))
 
 
 def build_card(sales_code, profile=None):
@@ -1544,6 +1658,13 @@ def build_card(sales_code, profile=None):
         problem = figure["problem"] if figure else None
         failed = bool(figure.get("failed")) if figure else False
 
+        # A rule rather than a figure. CX mark some RMs "give full marks" on
+        # the survey lines because the measure does not apply to them - TSC
+        # scheme RMs, whose customers CX do not survey. That cannot go through
+        # the actual ladder: there is no percentage, and inventing one would
+        # make a decision somebody took indistinguishable from a measurement.
+        full_marks = bool(figure.get("full_marks")) if figure else False
+
         # The actual ladder, and it is only two rungs: what the system can
         # measure, then what an administrator has typed in for the lines it
         # cannot - the survey, the learning system, HR, Audit.
@@ -1573,7 +1694,11 @@ def build_card(sales_code, profile=None):
         # and because the two are fixed by different people: a missing target
         # column is the DMC load, a failed read is the warehouse.
         pending = pending_label = ""
-        if source.pending and actual is None:
+        if full_marks:
+            # Nothing is pending: the line is settled, and by whom shows in
+            # the as-at label.
+            pass
+        elif source.pending and actual is None:
             pending, pending_label = source.pending, "Not measured here"
         elif field and target_problem:
             pending = (f"Your targets could not be read from the DMC roster: "
@@ -1607,9 +1732,14 @@ def build_card(sales_code, profile=None):
             pending = "The warehouse has no figure for this line yet."
             pending_label = "No figure yet"
 
-        score = None if pending else score_for(
-            actual, ytd_target, source.higher_is_better,
-            threshold=source.threshold)
+        if full_marks:
+            # Full marks, not 120%. The instruction is "give full marks",
+            # which is the target met - not the target beaten.
+            score = 1.0
+        else:
+            score = None if pending else score_for(
+                actual, ytd_target, source.higher_is_better,
+                threshold=source.threshold, cap=source.cap)
         weighted = None if score is None else weight * score
         if weighted is not None:
             total += weighted
@@ -1652,6 +1782,10 @@ def build_card(sales_code, profile=None):
             "as_at": as_at_label,
             "as_at_date": as_at.isoformat() if as_at else None,
             "higher_is_better": source.higher_is_better,
+            # So the card can say why a line is at exactly 100% with no
+            # figure beside it, instead of looking like a bug.
+            "full_marks_rule": full_marks,
+            "score_cap": source.cap,
             "pending": pending,
             "pending_label": pending_label,
         })

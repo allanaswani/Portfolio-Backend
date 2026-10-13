@@ -42,15 +42,23 @@ KNOWN_DIFFERENCES = {
     ("Commercial_trade", "Training"): "capped at 1.0 on this card",
     ("Business_Banking", "Leave magement"): "capped at 1.0 on this card",
     ("Diaspora", "Leave magement"): "capped at 1.0 on this card",
-    ("Personal_Banking", "Portfolio Coverage (engagement)"):
-        "capped at 1.0 on this card",
-    ("Ultimate_RM", "Portfolio NPS"): "capped at 1.0 on this card",
-    ("Diaspora", "Portfolio NPS"): "capped at 1.0 on this card",
-    # The same measure, uncapped, on a different card. This is the clearest
-    # evidence that there is no single manual rule to reproduce.
+    # -- The two customer-survey lines, now scored live -------------------
+    # These are capped at 1.0 rather than 1.2 - see CX_CAP below for the
+    # count. Three of the cards that scored one of these above target now
+    # reproduce exactly (Personal_Banking coverage, Ultimate_RM and Diaspora
+    # NPS), which is why they are no longer listed here. Three do not:
     ("Mortgage_Business", "Portfolio NPS"):
-        "NOT capped on this card - scores 1.667 where two other cards cap the "
-        "same measure at 1.0",
+        "the only card that applied NO cap at all here - 1.0 against a 0.6 "
+        "target scores 1.667, where three other cards cap the same measure "
+        "at 1.0 and a fourth at 1.2",
+    ("Personal_Banking", "NPS"):
+        "capped at 1.2 on this card, where three cards cap the same measure "
+        "at 1.0 - including the coverage line on THIS card, two lines above",
+    ("Commercial", "Portfolio NPS"):
+        "0.6667 against 0.6 scores 1.1111 on this card, uncapped. The only "
+        "survey line anywhere between 1.0 and 1.2, and the one line a cap of "
+        "1.0 costs - and it costs 0.6% of this card, a 5%-weighted line "
+        "scoring 1.0 where the card gave it 1.1111",
     ("Commercial", "Loan Loss"):
         "capped at 1.0 on this card, where Commercial_trade caps the same "
         "measure at 1.2",
@@ -76,6 +84,22 @@ KNOWN_DIFFERENCES = {
         "year where the other seven are at 8/12, so its stated target and its "
         "stated score are not consistent with each other",
 }
+
+
+#: The two survey lines stop at full marks. Keyed on the cards own wording,
+#: because this file reads the cards and not the seeded KPI codes.
+CX_LINES = {"nps", "portfolio nps", "portfolo nps",
+            "portfolio coverage (engagement)"}
+CX_CAP = 1.0
+
+
+def _rule(description):
+    """(higher_is_better, threshold, cap) for one card line's own wording."""
+    text = description.strip().lower()
+    # PAR is the one line scored as a threshold rather than a ratio.
+    if text == "par":
+        return False, True, 1.2
+    return True, False, (CX_CAP if text in CX_LINES else 1.2)
 
 
 def _number(text):
@@ -111,9 +135,9 @@ class CardCalibrationTests(SimpleTestCase):
         unexplained = []
         for row, target, actual, stated in _lines():
             key = (row["role_sheet"], row["kpi_description"])
-            # PAR is the one line scored as a threshold rather than a ratio.
-            is_par = row["kpi_description"].strip().upper() == "PAR"
-            mine = score_for(actual, target, not is_par, threshold=is_par)
+            higher, threshold, cap = _rule(row["kpi_description"])
+            mine = score_for(actual, target, higher, threshold=threshold,
+                             cap=cap)
             if abs(mine - stated) < 0.005:
                 self.assertNotIn(
                     key, KNOWN_DIFFERENCES,
@@ -132,11 +156,14 @@ class CardCalibrationTests(SimpleTestCase):
         made to the business about this tool stops being true."""
         reproduced = 0
         for row, target, actual, stated in _lines():
-            is_par = row["kpi_description"].strip().upper() == "PAR"
-            mine = score_for(actual, target, not is_par, threshold=is_par)
+            higher, threshold, cap = _rule(row["kpi_description"])
+            mine = score_for(actual, target, higher, threshold=threshold,
+                             cap=cap)
             if abs(mine - stated) < 0.005:
                 reproduced += 1
-        self.assertGreaterEqual(reproduced, 95)
+        self.assertGreaterEqual(
+            reproduced, 96,
+            "96 of the 109 card lines that state both a target and an actual")
 
     def test_par_is_pass_or_fail_at_two_and_a_half_percent(self):
         """Seven cards, seven consistent outcomes and no middle value: at or
@@ -174,10 +201,8 @@ class CardCalibrationTests(SimpleTestCase):
         agree that it is a pass/fail threshold, so it was implemented that way
         and taken off this list."""
         outside = {
-            "nps", "portfolio_nps", "portfolo_nps",
-            "portfolio_coverage_engagement", "business_banking_training",
-            "personal_banking_training", "leave_management", "audit",
-            "errors",
+            "business_banking_training", "personal_banking_training",
+            "leave_management", "audit", "errors",
         }
         for code in sorted(outside):
             with self.subTest(code):
@@ -186,3 +211,67 @@ class CardCalibrationTests(SimpleTestCase):
                     SOURCES[code].pending,
                     f"{code} is now scored live, but the eight cards do not "
                     f"agree on how to cap it - decide the cap first")
+
+    def test_the_survey_lines_are_live_and_stop_at_full_marks(self):
+        """The CX lines came OFF the list above, and this is the decision that
+        let them.
+
+        Six card lines score a survey measure above its target. Three wrote
+        exactly 1.0 (Ultimate_RM NPS, Diaspora NPS, Personal_Banking
+        coverage), one wrote 1.2 (Personal_Banking NPS), one applied no cap
+        and wrote 1.667 (Mortgage_Business NPS), and one landed at 1.111 under
+        no cap at all (Commercial NPS).
+
+        So no cap reproduces every card, and the counts are close: of the nine
+        numeric survey lines on the cards, a cap of 1.0 reproduces six, a cap
+        of 1.2 reproduces five, and no cap at all reproduces five. 1.0 wins by
+        one line.
+
+        What settles it is not the one line. It is that 1.0 is the only cap
+        more than one card actually applied to these lines, and that the
+        business's own instruction for an RM the measure does not apply to is
+        "give FULL MARKS" rather than give 120%. The three cards 1.0 does not
+        match are named in KNOWN_DIFFERENCES above, and the whole decision is
+        two numbers - ``Source.cap`` on the two registrations in
+        ``live_scorecard`` and ``CX_CAP`` here - so the desk can have the
+        other answer whenever it wants it.
+        """
+        from .live_scorecard import SOURCES
+
+        for code in ("nps", "portfolio_nps", "portfolo_nps",
+                     "portfolio_coverage_engagement"):
+            with self.subTest(code):
+                source = SOURCES[code]
+                self.assertFalse(
+                    source.pending,
+                    f"{code} should be scored from what CX maintain")
+                self.assertEqual(source.cap, CX_CAP)
+                self.assertTrue(source.actual_key.startswith("cx_"))
+
+        # 1.0 against a 0.6 target is full marks, not 167%.
+        self.assertAlmostEqual(score_for(1.0, 0.6, True, cap=CX_CAP), 1.0)
+        # Below target is still scored in proportion - the cap is a ceiling,
+        # not a pass mark.
+        self.assertAlmostEqual(
+            score_for(0.2727272727, 0.6, True, cap=CX_CAP), 0.4545, places=4)
+
+    def test_the_cap_count_is_what_this_file_claims(self):
+        """Reads the cards and counts, so the six-against-five above is not a
+        number somebody once wrote in a comment and nobody checked again."""
+        tally = {1.0: 0, 1.2: 0, 1.6667: 0}
+        lines = 0
+        for row, target, actual, stated in _lines():
+            if row["kpi_description"].strip().lower() not in CX_LINES:
+                continue
+            lines += 1
+            for cap in tally:
+                if abs(score_for(actual, target, True, cap=cap)
+                       - stated) < 0.005:
+                    tally[cap] += 1
+        self.assertEqual(lines, 9, "the cards carry nine numeric survey lines")
+        self.assertEqual(tally[1.0], 6, "the cap this tool applies")
+        self.assertEqual(tally[1.2], 5, "the cap every other line uses")
+        self.assertEqual(tally[1.6667], 5, "no cap at all")
+        self.assertGreater(
+            tally[1.0], max(tally[1.2], tally[1.6667]),
+            "1.0 is only the chosen cap while it reproduces the most lines")

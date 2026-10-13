@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .. import cx_views
 
 urlpatterns = [
     # KPI definitions
@@ -42,6 +43,14 @@ urlpatterns = [
     path("manual-figures/template/", views.ScorecardManualTemplateView.as_view()),
     path("manual-figures/upload/", views.ScorecardManualUploadView.as_view()),
     path("manual-figures/entry/", views.ScorecardManualEntryView.as_view()),
+
+    # The CX team's own screen. Contactability and CSAT used to arrive as an
+    # Excel somebody e-mailed round, which is why two lines on every RM card
+    # were unscoreable; this is where CX keep them instead.
+    path("cx/", cx_views.CxMetricsView.as_view()),
+    path("cx/upload/", cx_views.CxUploadView.as_view()),
+    path("cx/entry/", cx_views.CxEntryView.as_view()),
+    path("cx/segments/", cx_views.CxSegmentsView.as_view()),
 
     # Administration: what cards exist, who holds them, and anyone's card.
     # The cards were seeded and then lived only in the database; these are

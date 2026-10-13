@@ -288,19 +288,46 @@ class LoadedFiguresReachTheCardTests(TestCase):
         return {ln["kpi_code"]: ln
                 for g in card["perspectives"] for ln in g["lines"]}[code]
 
-    def test_an_unloaded_line_says_it_is_measured_elsewhere(self):
+    def test_an_unloaded_line_names_the_survey_it_is_waiting_for(self):
+        """This line used to say "Not measured here", because nothing read the
+        survey. It IS measured here now - CX maintain it on their own screen -
+        so with nothing loaded the reason has to say which survey is missing
+        rather than imply the figure lives somewhere unreachable."""
         nps = self.line("nps")
         self.assertIsNone(nps["ytd_actual"])
-        self.assertEqual(nps["pending_label"], "Not measured here")
+        self.assertEqual(nps["pending_label"], "No figure yet")
+        self.assertIn("CX", nps["pending"])
 
     def test_a_loaded_figure_is_scored_against_the_role_threshold(self):
-        """NPS: 60% is the target on every card that carries it."""
+        """NPS: 60% is the target on every card that carries it.
+
+        Scored at 1.0 rather than 1.2 - the two customer-survey lines stop at
+        full marks where every other line runs to 120%. The count behind that
+        is in ``tests_scorecard_calibration``."""
         self.load("nps", 0.72)
         nps = self.line("nps")
         self.assertAlmostEqual(nps["ytd_actual"], 0.72)
         self.assertEqual(nps["annual_target"], 0.6)
-        self.assertAlmostEqual(nps["score"], 1.2)
+        self.assertAlmostEqual(nps["score"], 1.0)
+        self.assertAlmostEqual(nps["score_cap"], 1.0)
         self.assertFalse(nps["pending"])
+
+    def test_cx_beats_a_figure_somebody_typed_in(self):
+        """The two routes do not fight. A figure Administration typed in is
+        used where CX have none - which is what keeps a card completable in a
+        quarter CX have not loaded - but CX's own figure wins once it is
+        there, because the measured figure always wins."""
+        from . import cx_metrics
+
+        self.load("nps", 0.5)
+        cx_metrics.save([
+            {"period": "2026-Q2", "rm_name": "Vincent Ogare",
+             "sales_code": self.CODE, "contactability": 0.9, "csat": 0.3,
+             "full_marks": False, "note": "", "source": ""}], [], who="cx")
+
+        nps = self.line("nps")
+        self.assertAlmostEqual(nps["ytd_actual"], 0.3)
+        self.assertIn("CX survey", nps["as_at"])
 
     def test_the_card_says_the_figure_was_typed_in(self):
         """A hand-typed figure must never be mistaken for a measured one."""

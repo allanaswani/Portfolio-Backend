@@ -99,6 +99,12 @@ def build_card_workbook(card, signoff=None):
 
         for line in group.get("lines") or []:
             pending = line.get("pending")
+            # A line settled by rule rather than measured has no figure, and
+            # the ACTUAL column must say so rather than sit empty beside a
+            # 100% score. CX mark some RMs "give full marks" because the
+            # survey measure does not apply to them.
+            by_rule = (not pending and line.get("full_marks_rule")
+                       and line.get("ytd_actual") is None)
             values = [
                 line.get("kpi_order"),
                 line.get("kpi_name") or "",
@@ -108,7 +114,9 @@ def build_card_workbook(card, signoff=None):
                 # A pending line prints WHY, not a zero. A zero in this column
                 # reads as "achieved nothing", which is a different statement
                 # from "nobody has this figure".
-                pending if pending else _money(line.get("ytd_actual")),
+                pending if pending else (
+                    "Full marks by rule - this measure does not apply"
+                    if by_rule else _money(line.get("ytd_actual"))),
                 line.get("as_at") or "",
                 None if pending else _money((line.get("score") or 0) * 100),
                 None if pending else _money(
@@ -117,7 +125,7 @@ def build_card_workbook(card, signoff=None):
             for index, value in enumerate(values, start=1):
                 cell = ws.cell(row=row, column=index, value=value)
                 cell.border = box
-                if index in (2, 3, 6) and pending:
+                if index in (2, 3, 6) and (pending or by_rule):
                     cell.alignment = Alignment(wrap_text=True, vertical="top")
             row += 1
         row += 1

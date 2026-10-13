@@ -1473,3 +1473,135 @@ class SapCostPosting(models.Model):
     def __str__(self):
         return (f"{self.document_number}/{self.item_number} · "
                 f"{self.gl_account_number} · {self.amount}")
+
+
+# ── Customer experience: contactability, CSAT and segment NPS ─────────────────
+#
+# Two scorecard lines were unscoreable because the figures lived in an Excel the
+# CX team e-mailed round: "NPS" (target 60%) and "Portfolio Coverage
+# (engagement)" (target 80%). The card could not be finished until that arrived.
+#
+# These two tables are where CX keeps them instead, and the card reads them. The
+# shape is taken from the file CX already produce - "RM Contactability,
+# Satisfaction & Segment NPS & CES Q2 2026.xlsx" - so the first load is their
+# own workbook and nothing has to be re-keyed:
+#
+#   Contactability sheet  RM Name | %Contactability   -> portfolio coverage
+#   Satisfaction sheet    RM Name | % CSAT            -> the NPS line
+#   NPS & CES Summary     segment | NPS | CES         -> per-segment, no RM
+#
+# One thing in that file is a RULE and not a number. Four RMs carry the text
+# "TSC- Give full marks" instead of a percentage, because they are TSC-scheme
+# RMs the measure does not apply to. That is kept as a FLAG rather than
+# converted to a percentage - see ``full_marks`` below.
+
+
+class CxRmMetric(models.Model):
+    """One RM's customer-experience figures for one period.
+
+    Keyed on the RM NAME as the CX file spells it, because that is the only key
+    the file has: it carries no sales code. ``sales_code`` is resolved against
+    the roster on the way in and kept here, so the card does not have to match
+    names at read time - and a name that resolves to nobody is reported rather
+    than dropped, because a missing RM is a missing score.
+
+    ``csat`` feeds the card's NPS line. That is the business's own choice, and
+    it is worth being precise about rather than quiet: the card line is called
+    NPS, the figure behind it is the RM's CSAT from the Satisfaction sheet, and
+    the per-segment NPS in :class:`CxSegmentMetric` is a different measure that
+    is not per RM. Calling CSAT "NPS" in the database would have hidden that.
+    """
+
+    #: ``2026-Q2`` or ``2026-06``. The CX file is quarterly; a month is
+    #: accepted so the cadence can change without a migration.
+    period = models.CharField(
+        max_length=10, db_index=True,
+        help_text="2026-Q2 for a quarter, or 2026-06 for a month.")
+    #: Exactly as the CX file spells it, trailing spaces and all - that string
+    #: is how a correction finds its row again.
+    rm_name = models.CharField(max_length=160)
+    #: Resolved from the name against the roster. Blank when no roster knows
+    #: that name, which the screen reports.
+    sales_code = models.CharField(max_length=40, blank=True, default="",
+                                  db_index=True)
+
+    #: Share of the portfolio contacted - the Contactability sheet. Feeds
+    #: "Portfolio Coverage (engagement)", target 80%.
+    contactability = models.FloatField(null=True, blank=True)
+    #: Customer satisfaction - the Satisfaction sheet. Feeds the NPS line,
+    #: target 60%.
+    csat = models.FloatField(null=True, blank=True)
+
+    #: The TSC rule, kept as a flag rather than a number.
+    #:
+    #: Four RMs in the Q2 file have "TSC- Give full marks" where a percentage
+    #: would be. Writing 1.0 there would make a business rule indistinguishable
+    #: from a measured 100%, and writing 0 would score them nought on a measure
+    #: that does not apply to them. So the figures stay NULL, this is set, and
+    #: the card scores the line at exactly full marks and says why.
+    full_marks = models.BooleanField(
+        default=False,
+        help_text='Set for an RM the measure does not apply to - the file says '
+                  '"TSC- Give full marks". The card scores 100% and says so.')
+    #: What the file actually said, when it was not a number.
+    note = models.CharField(max_length=160, blank=True, default="")
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    source = models.CharField(max_length=160, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "cx_rm_metric"
+        ordering = ["-period", "rm_name"]
+        verbose_name = "CX metric (RM)"
+        verbose_name_plural = "CX metrics (RM)"
+        constraints = [
+            # One row per RM per period, so a correction replaces the figure
+            # rather than stacking a second one beside it.
+            models.UniqueConstraint(fields=["period", "rm_name"],
+                                    name="cx_unique_rm_per_period"),
+        ]
+        indexes = [models.Index(fields=["period", "sales_code"])]
+
+    def __str__(self):
+        return f"{self.period} · {self.rm_name}"
+
+
+class CxSegmentMetric(models.Model):
+    """Net Promoter Score and Customer Effort Score for one segment.
+
+    From the file's own summary sheet: SME, Personal Banking, Commercial,
+    Ultimate, Mortgage Business, Scheme Admin, HFCB Properties, HFCB
+    Bancassurance, and an overall figure.
+
+    Not per RM, so no scorecard line reads it today. It is kept because it is
+    the real NPS, it is in the same file, and throwing it away would mean
+    asking CX for it again the first time somebody wants it on a dashboard.
+    """
+
+    period = models.CharField(max_length=10, db_index=True)
+    segment = models.CharField(max_length=80)
+    nps = models.FloatField(null=True, blank=True)
+    ces = models.FloatField(null=True, blank=True)
+    #: True for the "OVERALL NPS" row, which is not a segment.
+    is_overall = models.BooleanField(default=False)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "cx_segment_metric"
+        ordering = ["-period", "segment"]
+        verbose_name = "CX metric (segment)"
+        verbose_name_plural = "CX metrics (segment)"
+        constraints = [
+            models.UniqueConstraint(fields=["period", "segment"],
+                                    name="cx_unique_segment_per_period"),
+        ]
+
+    def __str__(self):
+        return f"{self.period} · {self.segment}"
