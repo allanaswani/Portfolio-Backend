@@ -742,10 +742,47 @@ PROPERTY_UNIT_TABLES = (
 )
 
 
-#: Postgres expressions for the first and last word of a name. A middle name
-#: is the whole problem here, so the two ends are what get compared.
+#: Postgres expressions for the first and last word of a name. Kept because
+#: they are cheap to filter on; the decision is made on the token SET below.
 _FIRST = "UPPER(split_part(TRIM({0}), ' ', 1))"
 _LAST = "UPPER(regexp_replace(TRIM({0}), '^.*\\s', ''))"
+
+
+def name_tokens(name):
+    """A name as a set of words, upper case, punctuation dropped.
+
+    Order is deliberately thrown away, and the affordable-housing return is
+    why. Its ``assisted_by`` column holds names as whoever typed them:
+    ``Mugambi  stephen`` with two spaces, ``Evans  oduor``, ``Stanley mwangi
+    ithage``. Some are written surname first and some given name first, in the
+    same column of the same file.
+
+    Comparing the first and last words fails on every reversed one - STEPHEN
+    MUGAMBI against Mugambi stephen shares both words and matches neither end
+    - so the words themselves are what get compared.
+    """
+    import re as _re
+
+    cleaned = _re.sub(r"[^A-Za-z ]", " ", str(name or "").upper())
+    return {word for word in cleaned.split() if len(word) > 1}
+
+
+def names_agree(one, other):
+    """Do two spellings name the same person?
+
+    True when the word sets are equal, or when one is contained in the other
+    and they share at least TWO words. Two is the floor on purpose: one shared
+    word makes every Joseph in the bank the same Joseph.
+
+    This is a comparison, not a decision - the caller still requires the match
+    to be unique before using it.
+    """
+    mine, theirs = name_tokens(one), name_tokens(other)
+    if not mine or not theirs:
+        return False
+    if mine == theirs:
+        return True
+    return len(mine & theirs) >= 2 and (mine <= theirs or theirs <= mine)
 
 
 def resolve_feed_name(tables, column, name):
@@ -783,11 +820,13 @@ def resolve_feed_name(tables, column, name):
         SELECT nm, (UPPER(nm) = UPPER(%s)) AS is_exact
         FROM names
         WHERE UPPER(nm) = UPPER(%s)
-           OR ({_FIRST.format('nm')} = {_FIRST.format('%s')}
-               AND {_LAST.format('nm')} = {_LAST.format('%s')})
+           OR {_FIRST.format('nm')} = {_FIRST.format('%s')}
+           OR {_LAST.format('nm')} = {_LAST.format('%s')}
+           OR {_FIRST.format('nm')} = {_LAST.format('%s')}
+           OR {_LAST.format('nm')} = {_FIRST.format('%s')}
     """
     with connection.cursor() as cur:
-        cur.execute(sql, [name, name, name, name])
+        cur.execute(sql, [name] * 6)
         rows = cur.fetchall()
 
     if not rows:
@@ -796,10 +835,14 @@ def resolve_feed_name(tables, column, name):
     if exact:
         return exact[0], "exact", [nm for nm, _ in rows]
 
-    # No exact spelling. One candidate is an answer; two is a question.
-    distinct = sorted({" ".join(nm.split()).upper() for nm, _ in rows})
+    # The SQL above is a cheap filter on the two ends of the name. The
+    # decision is made here on the words themselves, because the
+    # affordable-housing return writes some names surname-first - see
+    # names_agree.
+    agreed = [nm for nm, _ in rows if names_agree(nm, name)]
+    distinct = sorted({" ".join(nm.split()).upper() for nm in agreed})
     if len(distinct) == 1:
-        return rows[0][0], "first-last", [nm for nm, _ in rows]
+        return agreed[0], "same words", [nm for nm, _ in rows]
     return "", "", [nm for nm, _ in rows]
 
 
