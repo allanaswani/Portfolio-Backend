@@ -35,10 +35,12 @@ def a_card(sheet="Commercial", name="Juspher Muriithi", code="JM4191",
     }
 
 
-def a_line(description, feed_key, actual=None, target=None, weight=0.05):
+def a_line(description, feed_key, actual=None, target=None, weight=0.05,
+           ytd_target=None):
     return {
         "description": description, "measure": "As per assigned Target",
-        "weight": weight, "ytd_target": target, "actual": actual,
+        "weight": weight, "prev_fy": None, "growth": None,
+        "annual_target": target, "ytd_target": ytd_target, "actual": actual,
         "feed_key": feed_key, "slug": W.DESCRIPTION_ALIASES.get(
             W.slug(description), W.slug(description)),
     }
@@ -136,13 +138,16 @@ class WhatGetsWrittenTests(TestCase):
         self.assertEqual(report["measured_here"], 1)
 
     def test_a_target_the_dmc_load_has_no_column_for_is_written(self):
+        """And it is the ANNUAL figure, not the year-to-date one beside it."""
         cards = [a_card(lines=[
-            a_line("Loan Loss", "PL_Charge", target=-4_931_181.67),
+            a_line("Loan Loss", "PL_Charge", target=-7_396_772.51,
+                   ytd_target=-4_931_181.67),
         ])]
         entries, _ = W.plan(cards)
-        self.assertIn(("target", "loan_loss", -4_931_181.67),
+        self.assertIn(("target", "loan_loss", -7_396_772.51),
                       [(e["kind"], e["kpi_code"], e["value"])
                        for e in entries])
+        self.assertNotIn(-4_931_181.67, [e["value"] for e in entries])
 
     def test_active_customers_resolves_through_the_alias(self):
         """The workbook says "(2 months active)", the seeded card says "(two
@@ -241,6 +246,16 @@ class TheRealWorkbookTests(TestCase):
                       "Commercial", "Commercial_trade", "SNR_MGR_ULTIMATE",
                       "BDM_Mortgages"):
             self.assertIn(sheet, W.ROLE_SHEETS)
+
+    def test_the_target_written_is_the_ANNUAL_one(self):
+        """ScEmployeeKpiTarget holds a year's target and the card pro-rates
+        it. Loading the workbook's YTD figure would have it pro-rated a
+        second time: Business Banking's operating profit is 6,245,102 for the
+        year and 4,163,401 to August, and loading the latter would have
+        scored that person against 2.8m."""
+        self.assertEqual(W.COL_ANNUAL_TARGET, 7)
+        self.assertEqual(W.COL_YTD_TARGET, 8)
+        self.assertLess(W.COL_ANNUAL_TARGET, W.COL_YTD_TARGET)
 
     def test_the_columns_are_where_the_workbook_puts_them(self):
         """Read off row 5 of a role sheet: COUNT | KPI | KPI Description |

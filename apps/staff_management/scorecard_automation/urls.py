@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-from .. import audit_views, cx_views, training_views
+from .. import audit_views, cx_views, training_views, workbook_views
 
 urlpatterns = [
     # KPI definitions
@@ -47,6 +47,12 @@ urlpatterns = [
     path("manual-figures/template/", views.ScorecardManualTemplateView.as_view()),
     path("manual-figures/upload/", views.ScorecardManualUploadView.as_view()),
     path("manual-figures/entry/", views.ScorecardManualEntryView.as_view()),
+
+    # The desk's own scorecard workbook. The command needs the file on the
+    # host, and the workbook lives on somebody's laptop - which is the step
+    # that stops it being used. This is the upload.
+    path("manual-figures/workbook/",
+         workbook_views.ScorecardWorkbookUploadView.as_view()),
 
     # The CX team's own screen. Contactability and CSAT used to arrive as an
     # Excel somebody e-mailed round, which is why two lines on every RM card

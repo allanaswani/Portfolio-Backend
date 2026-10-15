@@ -48,10 +48,24 @@ ROLE_SHEETS = (
     "Commercial_trade", "BMs", "SNR_MGR_ULTIMATE", "BDM_Mortgages",
 )
 
-#: Columns on a card row, counting from zero.
+#: Columns on a card row, counting from zero::
+#:
+#:   0 COUNT  1 KPI  2 Description  3 Measure of Success  4 Weight
+#:   5 2025 FY  6 GROWTH  7 2026 FY  8 YTD Target  9 ACTUAL
+#:   10 % SCORE  11 Weighted  12 feed key
+#:
+#: **The target written is the ANNUAL one, column 7, not the YTD in column
+#: 8.** ``ScEmployeeKpiTarget`` holds a year's target and the card pro-rates
+#: it to the date the actual is as at - so loading the workbook's YTD figure
+#: would have it pro-rated a second time. Business Banking's operating profit
+#: is 6,245,102 for the year and 4,163,401 to August; loading the latter as
+#: the annual target would have scored that person against 2.8m.
 COL_DESCRIPTION = 2
 COL_MEASURE = 3
 COL_WEIGHT = 4
+COL_PREV_FY = 5
+COL_GROWTH = 6
+COL_ANNUAL_TARGET = 7
 COL_YTD_TARGET = 8
 COL_ACTUAL = 9
 COL_FEED_KEY = 12
@@ -230,6 +244,11 @@ def read_workbook(path_or_stream):
                     "description": description,
                     "measure": str(row[COL_MEASURE] or "").strip(),
                     "weight": _number(row[COL_WEIGHT]),
+                    "prev_fy": _number(row[COL_PREV_FY]),
+                    "growth": _number(row[COL_GROWTH]),
+                    "annual_target": _number(row[COL_ANNUAL_TARGET]),
+                    # Kept for the report, so a reader can see the desk's own
+                    # pro-rating beside the annual figure that is written.
                     "ytd_target": _number(row[COL_YTD_TARGET]),
                     "actual": _number(row[COL_ACTUAL]),
                     "feed_key": feed_key,
@@ -319,10 +338,12 @@ def plan(cards):
                 summary["actuals"] += 1
                 report["actuals"] += 1
                 wrote = True
-            if line["ytd_target"] is not None and code in MANUAL_TARGETS:
+            # The ANNUAL target - see the note on the column constants.
+            if line["annual_target"] is not None and code in MANUAL_TARGETS:
                 entries.append({
                     "kind": "target", "sales_code": card["sales_code"],
-                    "kpi_code": code, "value": line["ytd_target"],
+                    "kpi_code": code, "value": line["annual_target"],
+                    "ytd_was": line["ytd_target"],
                     "sheet": card["sheet"], "line": line["description"]})
                 summary["targets"] += 1
                 report["targets"] += 1
@@ -373,3 +394,31 @@ def save(entries, who="", month=None):
                     defaults={"kpi_target": entry["value"]})
                 written["targets"] += 1
     return written
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The screen
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def read_upload(upload):
+    """Read an uploaded workbook.
+
+    ``pyxlsb`` wants a real file rather than a Django upload, so the bytes are
+    written to a temporary one and removed afterwards. A 15 MB .xlsb through
+    memory is cheaper than asking somebody to get a file onto a server.
+    """
+    import os
+    import tempfile
+
+    handle, path = tempfile.mkstemp(suffix=".xlsb")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            for chunk in upload.chunks():
+                out.write(chunk)
+        return read_workbook(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
