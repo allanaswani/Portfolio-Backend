@@ -129,6 +129,16 @@ MANUAL_ACTUALS = {
         "Diaspora term-deposit renewals tracked",
     "bo_tools_achieve_tat_of_1_day_for_mobile_banking_onboardi":
         "Mobile banking onboarding turnaround",
+    # The desk's scorecard workbook carries a figure for this and the platform
+    # cannot work it out: "active" is two months of activity on the account,
+    # and the warehouse holds the customer list with no activity flag to apply
+    # that test to. Without it being loadable, mapping the workbook's line to
+    # this code would change nothing - the figure would be read and dropped.
+    "active_customers":
+        "Active customers - two months of activity on the account, which no "
+        "warehouse table flags",
+    "bo_active_customers":
+        "Active clients - the same measure, for the branch",
 }
 
 #: KPI codes with no target anywhere: the DMC load carries no column for them
