@@ -137,6 +137,11 @@ class Source:
     cap: float = SCORE_CAP
     #: Why this line cannot be scored, when it cannot.
     pending: str = ""
+    #: What to say when the figure IS there but no target is. The generic
+    #: message blames the DMC row, which is wrong for a line whose target is
+    #: missing for a reason of its own - the dormancy rate being the case this
+    #: was added for.
+    no_target_reason: str = ""
 
 
 #: A line nothing here can compute, and what to DO about it.
@@ -489,6 +494,33 @@ for _code, _why in (
         f"No live source: {_why} Administration loads it on the Figures to "
         f"load screen."))
 
+# ── Dormancy ─────────────────────────────────────────────────────────────────
+# Five back-office cards carry this at 8-10%. The reactivations ARE in the
+# warehouse - one row per account brought back, with a branch code and a date -
+# so the figure is read and shown.
+#
+# It is NOT scored, and that is the honest answer rather than a gap. The cards
+# measure a "Branch Dormancy score", which is a RATE: the BOM card states 0.53,
+# the CSO card 0.31, the Ultimate CSO card 0.19. A rate needs a denominator -
+# the accounts that were dormant to begin with - and the only dormancy table in
+# this estate holds the CONVERTED accounts, which is the numerator. There is no
+# dormant-account base anywhere, and ``accounts.account_status`` is a
+# current-state column, so it cannot say what was dormant in January either.
+#
+# So the count is shown with its own as-at and the line says what is missing.
+# Scoring a count of reactivations against a target of 0.384 would read as
+# 31,000%, and inventing the denominator would be worse than either.
+_register(
+    ["bo_re_activation"],
+    Source(actual_key="dormancy_reactivations", counted=True,
+           no_target_reason=(
+               "This line is a RATE on your card - accounts reactivated "
+               "against accounts that were dormant. The reactivations are "
+               "counted here, but the dormant base they are measured against "
+               "is not held anywhere this platform reads, so the rate cannot "
+               "be worked out. Administration can enter the score under "
+               "Scorecards \u2192 Figures to load.")))
+
 # ── Internal Audit ───────────────────────────────────────────────────────────
 # Nine lines across eight roles, and not one of them could be scored: the
 # figures arrive as a short table from Internal Audit and nothing held it.
@@ -686,17 +718,51 @@ def _trade_ytd(sales_code, year):
     return float(commission or 0), float(volume or 0)
 
 
-def _property_sales_ytd(staff_name, year):
-    """HFDI property this person sold → (units, value, on_the_return, latest).
+#: The two unit-level property feeds, both keyed on the staff member's NAME.
+#:
+#: They are the SAME DATA in two shapes, and that is the thing to get right
+#: here. Column for column:
+#:
+#:   weighted_dashboard_manual_sales_table   project_name, unit_name,
+#:       unit_status, staff_name, payment_mode, lead_id, unit_value,
+#:       total_payments, prev_year_paid_amounts, curr_year_paid_amounts,
+#:       perc_paid, booking_date, sale_month, etl_date_updated
+#:
+#:   hfdi_projects_inventory_sales_data      project_name, unit_name,
+#:       unit_status, staff_name, unit_value, payment_mode, booking_date,
+#:       sale_month, total_payments, perc_paid, perc_paid_prev_month,
+#:       prev_year_paid_amounts, curr_year_paid_amounts, jan_paid_amount …
+#:
+#: One is the HFDI sales return the weighted-sales dashboard is built from; the
+#: other is the HFCB Properties CRM inventory. **Adding them would count every
+#: unit twice**, so they are UNIONed and de-duplicated on (project, unit).
+PROPERTY_UNIT_TABLES = (
+    "weighted_dashboard_manual_sales_table",
+    "hfdi_projects_inventory_sales_data",
+)
 
-    ``weighted_dashboard_manual_sales_table`` is the HFDI sales return the
-    weighted-sales dashboard is built from: one row per unit, carrying
-    ``staff_name``, ``unit_value`` and ``sale_month``. It is keyed on the
-    staff member's NAME, not a code, which is the whole reason for
-    ``on_the_return``: a name that is spelt differently on the DMC roster than
-    on the return reads as nil sales, and nil sales is also what somebody who
-    sold nothing reads as. Those two must not look the same on a scorecard, so
-    the name is looked for across every year before a nil is reported as a nil.
+
+def _property_sales_ytd(staff_name, year):
+    """HFDI and CRM property this person sold → (units, value, seen, latest).
+
+    Read across BOTH unit-level feeds and de-duplicated, because they hold the
+    same units in two shapes — see :data:`PROPERTY_UNIT_TABLES`. Summing them
+    would double every unit and every shilling, which on a line scored against
+    a target of two units would read as four.
+
+    De-duplicated on ``(project_name, unit_name)`` folded, keeping the most
+    recently sold copy. A row whose ``unit_name`` is blank is NOT collapsed —
+    two different units sharing an empty name are still two units, and merging
+    them would under-count instead.
+
+    Both feeds are keyed on the staff member's NAME rather than a code, which
+    is the whole reason for ``seen``: a name spelt differently on the roster
+    than on the feed reads as nil sales, and so does somebody who genuinely
+    sold nothing. Those two must never look the same on a scorecard, so the
+    name is looked for across every year before a nil is reported as a nil.
+
+    A table that is not present is skipped rather than fatal: the CRM feed is
+    an unmanaged mirror and is absent from a test database.
     """
     from django.db import connection
 
@@ -704,20 +770,47 @@ def _property_sales_ytd(staff_name, year):
     if not name:
         return None, None, False, None
 
-    sql = """
-        SELECT COUNT(*) FILTER (WHERE EXTRACT(YEAR FROM COALESCE(
-                   sale_month, booking_date)) = %s),
-               COALESCE(SUM(unit_value) FILTER (WHERE EXTRACT(YEAR FROM
-                   COALESCE(sale_month, booking_date)) = %s), 0),
+    present = [table for table in PROPERTY_UNIT_TABLES
+               if _table_columns(table)]
+    if not present:
+        return None, None, False, None
+
+    branches, params = [], []
+    for index, table in enumerate(present):
+        branches.append(f"""
+            SELECT UPPER(TRIM(COALESCE(project_name, ''))) AS project,
+                   UPPER(TRIM(COALESCE(unit_name, ''))) AS unit,
+                   unit_value,
+                   COALESCE(sale_month, booking_date) AS sold_on,
+                   {index} AS feed,
+                   ROW_NUMBER() OVER () AS rn
+            FROM {table}
+            WHERE UPPER(TRIM(COALESCE(staff_name, ''))) = UPPER(TRIM(%s))
+        """)
+        params.append(name)
+
+    sql = f"""
+        WITH everything AS ({' UNION ALL '.join(branches)}),
+        keyed AS (
+            SELECT *,
+                   CASE WHEN unit = '' THEN 'row:' || feed || ':' || rn
+                        ELSE 'unit:' || project || '|' || unit END AS dedupe
+            FROM everything
+        ),
+        one_per_unit AS (
+            SELECT DISTINCT ON (dedupe) dedupe, unit_value, sold_on
+            FROM keyed
+            ORDER BY dedupe, sold_on DESC NULLS LAST, feed
+        )
+        SELECT COUNT(*) FILTER (WHERE EXTRACT(YEAR FROM sold_on) = %s),
+               COALESCE(SUM(unit_value) FILTER (
+                   WHERE EXTRACT(YEAR FROM sold_on) = %s), 0),
                COUNT(*),
-               MAX(COALESCE(sale_month, booking_date)) FILTER (
-                   WHERE EXTRACT(YEAR FROM COALESCE(
-                       sale_month, booking_date)) = %s)
-        FROM weighted_dashboard_manual_sales_table
-        WHERE UPPER(TRIM(COALESCE(staff_name, ''))) = UPPER(TRIM(%s))
+               MAX(sold_on) FILTER (WHERE EXTRACT(YEAR FROM sold_on) = %s)
+        FROM one_per_unit
     """
     with connection.cursor() as cur:
-        cur.execute(sql, [year, year, year, name])
+        cur.execute(sql, params + [year, year, year])
         units, value, ever, latest = cur.fetchone()
     return (int(units or 0), float(value or 0), bool(ever), latest)
 
@@ -793,6 +886,42 @@ def _new_accounts_ytd(sales_code, year, turnover_floor=None):
     """
     with connection.cursor() as cur:
         cur.execute(sql, params)
+        count, latest = cur.fetchone()
+    return int(count or 0), latest
+
+
+def _dormancy_ytd(brn_code, year):
+    """Accounts reactivated in this branch this year → ``(count, as_at)``.
+
+    ``daily_dormancy_converted_accounts`` is one row per account that was
+    brought back from dormancy, carrying ``brn_code`` and
+    ``reactivation_date``. Counted by branch because the card's line is a
+    BRANCH measure - it sits on the branch operations manager, the customer
+    service officers and the cash centre teller.
+
+    ``action_user`` is on the table too, and is deliberately not used: there
+    is nothing here to say whether it holds a sales code, a PF number or a
+    Windows login, and attributing a reactivation to the wrong person is
+    worse than attributing it to the branch, which is who the card measures.
+
+    Returns ``(None, None)`` when the branch has no code, because counting
+    nought reactivations for a branch nobody can identify would read as a
+    branch that reactivated nothing.
+    """
+    from django.db import connection
+
+    code = str(brn_code or "").strip()
+    if not code:
+        return None, None
+
+    sql = """
+        SELECT COUNT(*), MAX(reactivation_date)
+        FROM daily_dormancy_converted_accounts
+        WHERE TRIM(brn_code::text) = TRIM(%s)
+          AND EXTRACT(YEAR FROM reactivation_date) = %s
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [code, year])
         count, latest = cur.fetchone()
     return int(count or 0), latest
 
@@ -886,7 +1015,8 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
             "problem": problem, "failed": failed}
 
 
-def live_actuals(sales_code, staff_name="", staff_pf="", branch=""):
+def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
+                 brn_code=""):
     """Every figure the warehouse can give for this RM.
 
     ``staff_pf`` is the PF number off the roster row. It is needed because
@@ -894,7 +1024,9 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch=""):
     the roster has Charles Muchiri as CMM4236 and the return has CM4236.
 
     ``branch`` is needed for the audit lines, which are the one measure on
-    the card that belongs to a place rather than a person.
+    the card that belongs to a place rather than a person. ``brn_code`` is
+    the same idea for dormancy, which the warehouse keys on the code rather
+    than the name.
 
     Each entry is ``{"value", "as_at", "as_at_label", "problem"}``. ``as_at``
     is a real date, because the target is pro-rated to it.
@@ -947,6 +1079,19 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch=""):
     attempt("asset_growth",
             lambda: growth("loan_daily_balance_movement",
                            "december_loan_book"))
+
+    # ── Dormancy reactivations, by BRANCH ─────────────────────────────────
+    def dormancy():
+        count, latest = _dormancy_ytd(brn_code, year)
+        if count is None:
+            return _figure(None, problem=(
+                "the roster records no branch code against your sales code, "
+                "and this is a branch measure"))
+        label = (f"reactivations to {latest:%d %b %Y}" if latest
+                 else f"reactivations in {year}")
+        return _figure(float(count), latest, label)
+
+    attempt("dormancy_reactivations", dormancy)
 
     # ── Internal Audit, by BRANCH ─────────────────────────────────────────
     # The only measure here that is not personal. One row serves every person
@@ -1122,10 +1267,11 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch=""):
             sales_code, staff_name, year)
 
         if not on_return and not mapped:
-            why = (f"{staff_name or sales_code} is on neither the HFDI sales "
-                   f"return nor the affordable-housing seller mapping, so a "
-                   f"nil here cannot be told apart from a name spelt "
-                   f"differently on one of them")
+            why = (f"{staff_name or sales_code} is on none of the three "
+                   f"property feeds - the HFDI sales return, the HFCB "
+                   f"Properties CRM inventory, or the affordable-housing "
+                   f"seller mapping - so a nil here cannot be told apart "
+                   f"from a name spelt differently on one of them")
             return {"property_units": _figure(None, problem=why),
                     "property_value": _figure(None, problem=why)}
 
@@ -1589,6 +1735,44 @@ def resolve_person(sales_code):
     return None
 
 
+def brn_code_for(sales_code, dmc_row=None):
+    """This person's branch CODE, or ``""``.
+
+    The warehouse keys dormancy on ``brn_code`` rather than the branch name.
+    The DMC row carries it; a back-office person has no DMC row, so the code
+    is looked up from any roster row sharing their branch - which is sound,
+    because the measure being read is the branch's and not theirs.
+    """
+    from django.db import transaction
+
+    from .models import BranchEmployeeDmcData, BranchFinalEmployeeDmcData
+
+    if dmc_row is not None:
+        found = str(getattr(dmc_row, "brn_code", "") or "").strip()
+        if found:
+            return found
+
+    from .models import StaffEmployeeData
+
+    try:
+        with transaction.atomic():
+            staff = StaffEmployeeData.objects.filter(
+                sales_code__iexact=(sales_code or "").strip()).first()
+            branch = str(getattr(staff, "staff_unit", "") or "").strip()
+            if not branch:
+                return ""
+            for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData):
+                row = (model.objects
+                       .filter(staff_branch__iexact=branch)
+                       .exclude(brn_code__isnull=True)
+                       .values_list("brn_code", flat=True).first())
+                if row:
+                    return str(row).strip()
+    except Exception:  # noqa: BLE001 - costs a figure, not the card
+        return ""
+    return ""
+
+
 def team_leader_of(dmc_row):
     """The line manager's name off a DMC row, from either column.
 
@@ -1740,7 +1924,7 @@ def build_card(sales_code, profile=None):
                 "detail": f"The {role_code} card has no KPI lines configured."}
 
     actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row),
-                           person.branch)
+                           person.branch, brn_code_for(sales_code, row))
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
@@ -1936,9 +2120,9 @@ def build_card(sales_code, profile=None):
                        "sets it under Scorecards \u2192 Figures to load.")
             pending_label = "No target set"
         elif fy_target is None:
-            pending = ("Nothing sets a target for this line: your DMC row is "
-                       "blank for it, no target is allocated to you, and your "
-                       "role's card does not carry one.")
+            pending = source.no_target_reason or (
+                "No target is set for this line yet. Administration sets it "
+                "under Scorecards \u2192 Figures to load.")
             pending_label = "No target set"
         elif unwired:
             pending = ("There is no live source wired for this line yet. The "
