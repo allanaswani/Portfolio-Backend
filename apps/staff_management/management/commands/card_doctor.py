@@ -81,6 +81,58 @@ BRANCH_FEEDS = [
 ]
 
 
+def _by_name(text):
+    """Roster rows whose staff name contains this text → [(code, name)].
+
+    All three rosters, because a teller is on none of the sales ones.
+    """
+    from apps.staff_management.models import (
+        BranchEmployeeDmcData, BranchFinalEmployeeDmcData, EmployeeRoleHistory,
+        StaffEmployeeData,
+    )
+
+    from django.db.models import Q
+
+    words = [w for w in str(text or "").split() if w]
+    if not words:
+        return []
+
+    # Every word, not the whole string. The roster carries the full legal
+    # name - ABED KIPKOECH LELGO - and what somebody types off a screenshot
+    # is "Abed Lelgo", so matching the string whole finds nothing. This is
+    # the same middle-name problem the property feeds have.
+    matches = Q()
+    for word in words:
+        matches &= Q(staff_name__icontains=word)
+
+    out = {}
+    for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData,
+                  StaffEmployeeData):
+        try:
+            rows = (model.objects
+                    .filter(matches)
+                    .exclude(sales_code="")
+                    .values_list("sales_code", "staff_name")[:40])
+        except Exception:  # noqa: BLE001 - a missing table must not stop this
+            continue
+        for sales_code, staff_name in rows:
+            key = (sales_code or "").strip().upper()
+            if key and key not in out:
+                out[key] = (staff_name or "").strip()
+    try:
+        notes_match = Q()
+        for word in words:
+            notes_match &= Q(notes__icontains=word)
+        for sales_code, notes in EmployeeRoleHistory.objects.filter(
+                notes_match).values_list("sales_code", "notes")[:40]:
+            key = (sales_code or "").strip().upper()
+            if key and key not in out:
+                out[key] = (notes or "").split("|")[0].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(out.items())
+
+
 def _exists(cursor, table):
     cursor.execute(
         "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
@@ -99,7 +151,11 @@ class Command(BaseCommand):
     help = "Explain why one person's scorecard has no actuals."
 
     def add_arguments(self, parser):
-        parser.add_argument("sales_code")
+        parser.add_argument(
+            "who",
+            help="A sales code, or a name - \"Abed Lelgo\" works as well as "
+                 "AKL3116. A name that matches several people lists them "
+                 "rather than picking one.")
         parser.add_argument(
             "--like", default="",
             help="Extra text to look for in the name columns - a surname "
@@ -178,15 +234,32 @@ class Command(BaseCommand):
             brn_code_for, pf_for, resolve_person, roster_row)
 
         write = self.stdout.write
-        code = options["sales_code"].strip()
+        code = options["who"].strip()
         limit = options["rows"]
 
         person = resolve_person(code)
         if person is None:
-            raise CommandError(
-                f"{code} is on none of the three rosters, so there is no card "
-                f"to explain. That is the answer: Administration maintains "
-                f"those lists.")
+            # Not a code this estate knows. Before giving up, look for it as a
+            # NAME - which is what somebody holding a screenshot actually has,
+            # and hunting for the code is the step that makes this a chore.
+            found = _by_name(code)
+            if len(found) == 1:
+                code = found[0][0]
+                person = resolve_person(code)
+                write(f"\n  (matched \"{options['who'].strip()}\" to "
+                      f"{code} on the roster)")
+            elif found:
+                lines = "\n".join(
+                    f"      {c:<12} {n}" for c, n in found[:12])
+                raise CommandError(
+                    f"{code!r} matches {len(found)} people on the roster. "
+                    f"Run it again with one of these codes:\n{lines}")
+            else:
+                raise CommandError(
+                    f"{code!r} is on none of the three rosters, as a code or "
+                    f"as a name, so there is no card to explain. That is "
+                    f"itself the answer: Administration maintains those "
+                    f"lists.")
 
         row = roster_row(code)
         pf = pf_for(code, row)
@@ -218,6 +291,23 @@ class Command(BaseCommand):
             for table, columns, purpose in NAME_FEEDS:
                 self._probe(cursor, table, columns, purpose, needle_name,
                             limit)
+
+            # The commonest single fault on a property line, and the one a
+            # list of row counts cannot show: the feeds hold this person
+            # under a different spelling of the same name.
+            if name:
+                from apps.staff_management.live_scorecard import (
+                    PROPERTY_UNIT_TABLES, resolve_feed_name)
+
+                spelling, how, candidates = resolve_feed_name(
+                    PROPERTY_UNIT_TABLES, "staff_name", name)
+                if how == "first-last":
+                    write(f"      {'spelt there as:':<24} {spelling!r} "
+                          f"(matched on first and last name, not exactly)")
+                elif not spelling and candidates:
+                    write(f"      {'ambiguous:':<24} "
+                          f"{', '.join(repr(c) for c in candidates[:6])} - "
+                          f"too alike to choose between, so none was used")
 
             write("")
             write("  -- keyed on the PF number ---------------------------")

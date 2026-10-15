@@ -742,6 +742,67 @@ PROPERTY_UNIT_TABLES = (
 )
 
 
+#: Postgres expressions for the first and last word of a name. A middle name
+#: is the whole problem here, so the two ends are what get compared.
+_FIRST = "UPPER(split_part(TRIM({0}), ' ', 1))"
+_LAST = "UPPER(regexp_replace(TRIM({0}), '^.*\\s', ''))"
+
+
+def resolve_feed_name(tables, column, name):
+    """How a feed spells this person's name → ``(spelling, how, candidates)``.
+
+    The roster and the property feeds do not agree on middle names. The DMC
+    roster carries the full legal name because HR does — ``ABED KIPKOECH
+    LELGO``, whose sales code AKL3116 is built from all three initials — and
+    the HFDI and CRM returns carry what the salesperson types, which is
+    ``Abed Lelgo``. Matched exactly, those are two different people, and the
+    card then says he sold nothing.
+
+    So: the exact spelling first, and failing that the one candidate whose
+    FIRST and LAST words both match. ``how`` is ``"exact"``, ``"first-last"``
+    or ``""``.
+
+    The uniqueness test is what keeps this safe. If two people in the feed
+    share a first and last name — which happens, and is precisely when
+    guessing is most expensive — nothing is matched and both are returned in
+    ``candidates`` for a human to settle. Crediting one person's property
+    sales to another is worse than crediting them to nobody.
+    """
+    from django.db import connection
+
+    name = " ".join((name or "").split()).strip()
+    present = [t for t in tables if _table_columns(t)]
+    if not name or not present:
+        return "", "", []
+
+    parts = [f'SELECT DISTINCT TRIM("{column}") AS nm FROM "{t}" '
+             f'WHERE "{column}" IS NOT NULL AND TRIM("{column}") <> \'\''
+             for t in present]
+    sql = f"""
+        WITH names AS ({' UNION '.join(parts)})
+        SELECT nm, (UPPER(nm) = UPPER(%s)) AS is_exact
+        FROM names
+        WHERE UPPER(nm) = UPPER(%s)
+           OR ({_FIRST.format('nm')} = {_FIRST.format('%s')}
+               AND {_LAST.format('nm')} = {_LAST.format('%s')})
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [name, name, name, name])
+        rows = cur.fetchall()
+
+    if not rows:
+        return "", "", []
+    exact = [nm for nm, is_exact in rows if is_exact]
+    if exact:
+        return exact[0], "exact", [nm for nm, _ in rows]
+
+    # No exact spelling. One candidate is an answer; two is a question.
+    distinct = sorted({" ".join(nm.split()).upper() for nm, _ in rows})
+    if len(distinct) == 1:
+        return rows[0][0], "first-last", [nm for nm, _ in rows]
+    return "", "", [nm for nm, _ in rows]
+
+
 def _property_sales_ytd(staff_name, year):
     """HFDI and CRM property this person sold → (units, value, seen, latest).
 
@@ -774,6 +835,12 @@ def _property_sales_ytd(staff_name, year):
                if _table_columns(table)]
     if not present:
         return None, None, False, None
+
+    # How these feeds spell him, which is not always how the roster does.
+    spelling, _how, _candidates = resolve_feed_name(
+        PROPERTY_UNIT_TABLES, "staff_name", name)
+    if spelling:
+        name = spelling
 
     branches, params = [], []
     for index, table in enumerate(present):
