@@ -26,17 +26,95 @@ from django.db import connections, models, router, transaction
 from django.utils import timezone
 
 # Column names that mean "when was this row last refreshed", best first.
+#
+# ``etl_date_updated`` leads the list because it is the only column in this
+# warehouse that the ETL itself stamps - every other candidate is a business
+# date that happens to correlate with loading. It was missing, and that alone
+# left four of the biggest feeds unmonitored: the picker only falls back to an
+# unnamed column when there is exactly ONE date column on the table, and
+# ``daily_balance_movement`` has two (``open_date`` and ``etl_date_updated``),
+# so it answered "no date column" and the dashboard could not have told anyone
+# that feed had stopped.
+#
+# Thirteen of the fifteen "Undated" tables turned out to be this: a date column
+# that was there under a name nobody had written down. The spellings below -
+# ``updated``, ``creation_date``, ``trx_date``, ``date_created_at``,
+# ``tmstamp`` - are the same handful of ideas as the names already here, and
+# ``eom_date`` is a month-end key, which the cadence rules then judge monthly.
+#
+# Three tables genuinely carry no date column at all - ``ceo_deposit_movement``,
+# ``portfolio_rm_revenue`` and ``security_detail`` - and they stay Undated,
+# which is the honest answer for them. Row count is all this can watch there.
 FRESHNESS_CANDIDATES = [
-    "updated_at", "last_updated", "modified_at", "created_at", "date_created",
+    "etl_date_updated",
+    "updated_at", "last_updated", "modified_at", "updated",
+    "created_at", "date_created", "creation_date", "date_created_at",
     "report_date", "snapshot_date", "as_of_date", "business_date", "value_date",
-    "run_date", "load_date", "date", "txn_date", "transaction_date",
+    "run_date", "load_date", "eom_date", "entry_month", "sale_month",
+    "date", "txn_date", "transaction_date", "trx_date", "tmstamp",
 ]
 
-# How stale is stale. A table refreshed less often than daily is judged on the
-# looser threshold; there is no schedule metadata to read, so the dashboard
-# reports the age and lets the reader judge, with these only colouring the row.
+# ── How stale is stale, and why one threshold was not enough ─────────────────
+#
+# This started as a flat seven days for every table, and that was wrong for
+# three of the five tables it then reported as stale:
+#
+#   ceo_loan_movement_monthly_by_segment   14 days on dates_eom
+#   portfolio_rm_deposit_trends            14 days on dates_eom
+#   product_mapping                        55 days on date_created
+#
+# None of those is a stopped ETL. ``dates_eom`` is a month END: on the 15th of
+# October the newest value a monthly feed can possibly hold is 30 September,
+# which is a fortnight old and perfectly correct - a month-end table is
+# ALWAYS between two and five weeks "old" and crosses seven days every month.
+# And ``product_mapping`` is reference data whose date column records when a
+# product was ADDED, so its age measures how long since the bank launched
+# something, not whether the table is loaded.
+#
+# Three false alarms out of five is worse than no dashboard: it teaches people
+# that the red rows are noise, and then the one real stopped feed on the list
+# gets ignored with them. So freshness is now judged against the table's own
+# cadence.
 WARN_DAYS = 2
 STALE_DAYS = 7
+
+#: A month-end key. The value IS the period, not the moment of loading, so a
+#: monthly table is judged on whether it has the last CLOSED month.
+MONTH_END_COLUMNS = {
+    "dates_eom", "date_eom", "eom_date", "eom", "month_end", "month_ending",
+    "period_end", "reporting_month", "month", "entry_month", "sale_month",
+}
+
+#: Grace after a month closes before the feed is late. The warehouse loads a
+#: month end within a few days of it; a fortnight means it did not.
+MONTH_END_WARN_DAYS = 10
+MONTH_END_STALE_DAYS = 20
+
+#: Date columns that record when a row was CREATED rather than refreshed. On a
+#: reference table that is a launch date, and ageing it says nothing.
+CREATION_COLUMNS = {"date_created", "created_at", "created"}
+
+#: Table-name endings that mean reference data somebody maintains by hand.
+REFERENCE_SUFFIXES = ("_mapping", "_mappings", "_lookup", "_types", "_codes",
+                      "_categories", "_config", "_settings")
+
+
+def cadence_of(table, column):
+    """``"monthly"``, ``"reference"`` or ``"daily"`` for one table.
+
+    Read off the table and column NAMES, because there is no schedule
+    metadata anywhere in this estate to read instead. That is a guess, but a
+    far better one than assuming every feed is daily - and the cadence is put
+    on the row so the dashboard can show which rule it applied rather than
+    just a colour.
+    """
+    name = (column or "").strip().lower()
+    if name in MONTH_END_COLUMNS:
+        return "monthly"
+    table = (table or "").strip().lower()
+    if name in CREATION_COLUMNS and table.endswith(REFERENCE_SUFFIXES):
+        return "reference"
+    return "daily"
 
 # ── Why this scan is on a leash ───────────────────────────────────────────────
 # The first version of this had no timeouts and hung until gunicorn killed the
@@ -162,18 +240,41 @@ def _last_seen(cursor, table, column):
     return row[0] if row else None
 
 
-def _classify(exists, rows, age_days):
+def _classify(exists, rows, age_days, cadence="daily"):
     if not exists:
         return "missing"
     if rows == 0:
         return "empty"
+    if cadence == "reference":
+        # Reference data that somebody maintains by hand. Its date column is a
+        # launch date, so age carries no information about whether the table is
+        # loaded - and colouring it red month after month is how a dashboard
+        # trains people to stop reading it. Reported as what it is.
+        return "reference"
     if age_days is None:
         return "unknown"
-    if age_days >= STALE_DAYS:
+    warn, stale = ((MONTH_END_WARN_DAYS, MONTH_END_STALE_DAYS)
+                   if cadence == "monthly" else (WARN_DAYS, STALE_DAYS))
+    if cadence == "monthly":
+        # Judged on the last CLOSED month, not on today. A month-end table is
+        # inherently two to five weeks old and must not go red for it.
+        age_days = max(0, age_days - _days_since_month_closed())
+    if age_days >= stale:
         return "stale"
-    if age_days >= WARN_DAYS:
+    if age_days >= warn:
         return "warning"
     return "ok"
+
+
+def _days_since_month_closed(today=None):
+    """How long ago the most recent month end was.
+
+    The baseline a monthly feed is measured from: on 15 October the newest
+    month end that exists is 30 September, so a monthly table holding it is
+    nought days late, not fifteen.
+    """
+    today = today or timezone.localdate()
+    return today.day
 
 
 def _row(model, table, alias, field, exists, count, is_estimate, last_seen,
@@ -195,13 +296,19 @@ def _row(model, table, alias, field, exists, count, is_estimate, last_seen,
         "freshness_column": field.name if field else None,
         "last_seen": last_seen,
         "age_days": age_days,
+        # Which rule was applied, so the dashboard can say "monthly feed, one
+        # month behind" instead of a bare colour - and so a reader can tell a
+        # cadence this guessed wrong from a feed that really has stopped.
+        "cadence": cadence_of(table, field.name if field else ""),
         # An explicit status wins; otherwise classify on what was measured.
         # Note that an error alone no longer forces "error": a table whose rows
         # were counted but whose date column was too slow to read is present
         # and populated, and calling that broken data would alert the team
         # about four healthy tables, every day, forever. It is "unknown" —
         # freshness could not be judged — with the reason attached.
-        "status": status or _classify(exists, count, age_days),
+        "status": status or _classify(
+            exists, count, age_days,
+            cadence_of(table, field.name if field else "")),
         "error": error,
     }
 
@@ -421,7 +528,10 @@ def table_health(app_label=None, use_cache=True):
 
     rows.sort(key=lambda r: (
         {"unreachable": -1, "missing": 0, "error": 1, "empty": 2, "stale": 3,
-         "warning": 4, "unknown": 5, "skipped": 6, "ok": 7}.get(r["status"], 9),
+         "warning": 4, "unknown": 5, "skipped": 6, "ok": 7,
+         # Reference data is not a problem and not a feed. It sorts last,
+         # after healthy, because nobody needs to look at it.
+         "reference": 8}.get(r["status"], 9),
         r["table"],
     ))
     # A scan that could not reach the database is not an answer worth keeping
@@ -439,7 +549,11 @@ def summarise(rows):
     counts = {}
     for row in rows:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
-    healthy = counts.get("ok", 0) + counts.get("warning", 0)
+    # Reference data counts as healthy: it is loaded, it is just not a feed,
+    # so leaving it out would make the headline "54 healthy of 80" when
+    # nothing is wrong with the rest.
+    healthy = (counts.get("ok", 0) + counts.get("warning", 0)
+               + counts.get("reference", 0))
     # Tables whose state was never established. Counting them as problems would
     # report a database outage as thirty-two broken ETLs and send the team
     # looking in the wrong place.
