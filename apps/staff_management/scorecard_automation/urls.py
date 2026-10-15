@@ -53,6 +53,10 @@ urlpatterns = [
     # that stops it being used. This is the upload.
     path("manual-figures/workbook/",
          workbook_views.ScorecardWorkbookUploadView.as_view()),
+    # The back-office template: a row per person per measure, so one upload
+    # fills every back-office card rather than ten.
+    path("manual-figures/bo-actuals/",
+         workbook_views.BoActualsUploadView.as_view()),
 
     # The CX team's own screen. Contactability and CSAT used to arrive as an
     # Excel somebody e-mailed round, which is why two lines on every RM card
