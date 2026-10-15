@@ -846,6 +846,35 @@ def resolve_feed_name(tables, column, name):
     return "", "", [nm for nm, _ in rows]
 
 
+def _table_rows(table):
+    """Roughly how many rows a table holds, or 0 if it is absent.
+
+    Deliberately an estimate from the planner statistic rather than a count:
+    this is asked of three warehouse tables on every card build, and the
+    question is only ever "does this feed hold anything", which an estimate
+    answers as well as a scan.
+    """
+    from django.db import connection
+
+    if not _table_columns(table):
+        return 0
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT GREATEST(reltuples::bigint, 0) FROM pg_class "
+                "WHERE relname = %s", [table])
+            row = cur.fetchone()
+            estimate = int(row[0]) if row else 0
+            if estimate:
+                return estimate
+            # reltuples is -1 on a table that has never been analysed, and 0
+            # on a genuinely empty one. One cheap probe settles it.
+            cur.execute(f'SELECT 1 FROM "{table}" LIMIT 1')
+            return 1 if cur.fetchone() else 0
+    except Exception:  # noqa: BLE001 - an unreadable feed counts as absent
+        return 0
+
+
 def _property_sales_ytd(staff_name, year):
     """HFDI and CRM property this person sold → (units, value, seen, latest).
 
@@ -1377,13 +1406,37 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             sales_code, staff_name, year)
 
         if not on_return and not mapped:
-            why = (f"{staff_name or sales_code} is on none of the three "
-                   f"property feeds - the HFDI sales return, the HFCB "
-                   f"Properties CRM inventory, or the affordable-housing "
-                   f"seller mapping - so a nil here cannot be told apart "
-                   f"from a name spelt differently on one of them")
-            return {"property_units": _figure(None, problem=why),
-                    "property_value": _figure(None, problem=why)}
+            # Absent from all three. That used to be reported as "no figure",
+            # on the ground that a name spelt differently reads the same as
+            # somebody who sold nothing. It is time to be less cautious,
+            # because the two can now be told apart:
+            #
+            #   * names are matched on their WORDS, in any order, so the
+            #     middle-name and surname-first spellings that caused this
+            #     no longer miss;
+            #   * the feeds can be asked whether they hold anything at all.
+            #
+            # A feed carrying thousands of units that does not mention this
+            # person means they sold none. Reporting that as "no figure"
+            # leaves the line unscored for ever and quietly drags the card -
+            # a nil they can challenge is better than a blank they cannot.
+            #
+            # The honest exception is a feed that is EMPTY. Then absence
+            # proves nothing, and the old answer is still the right one.
+            populated = any(
+                _table_rows(table) for table in
+                list(PROPERTY_UNIT_TABLES) + ["affordable_housing_applications"]
+            )
+            if not populated:
+                why = ("no property feed holds any data at all, so this "
+                       "cannot be told apart from sales nobody has loaded")
+                return {"property_units": _figure(None, problem=why),
+                        "property_value": _figure(None, problem=why)}
+
+            label = (f"nil - {staff_name or sales_code} is on none of the "
+                     f"three property feeds")
+            return {"property_units": _figure(0.0, monthly, label),
+                    "property_value": _figure(0.0, monthly, label)}
 
         units = (hfdi_units or 0) + afh_units
         value = (hfdi_value or 0) + afh_value

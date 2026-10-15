@@ -520,21 +520,34 @@ class PropertySalesTests(TestCase):
         self.sale("Faith Muthinja", 1_000_000)
         self.assertEqual(self.line("number_of_property")["ytd_actual"], 1)
 
-    def test_somebody_on_neither_return_is_not_reported_as_nil(self):
-        """A name spelt differently on a return reads exactly like somebody who
-        sold nothing. Those two must not look the same on a scorecard, so the
-        person has to be findable on the HFDI sales return or the
-        affordable-housing seller mapping before a nil is reported as a nil."""
+    def test_absent_from_a_POPULATED_feed_is_a_nil(self):
+        """Somebody the feeds do not mention sold nothing, and the card now
+        says so.
+
+        This used to report "no figure", because a name spelt differently
+        reads the same as somebody who sold nothing. Two things changed and
+        the caution is no longer worth its cost: names are matched on their
+        WORDS in any order, so the middle-name and surname-first spellings
+        that caused the misses no longer miss; and the feeds can be asked
+        whether they hold anything at all.
+
+        A feed carrying other people's units that does not carry yours means
+        you sold none. Reporting that as "no figure" leaves the line unscored
+        for ever and quietly drags the card - a nil somebody can challenge is
+        better than a blank they cannot."""
         self.sale("Somebody Else", 1_000_000)
         units = self.line("number_of_property")
+        self.assertEqual(units["ytd_actual"], 0.0)
+        self.assertFalse(units["pending"])
+        self.assertIn("nil", units["as_at"])
+        self.assertIn("none of the three property feeds", units["as_at"])
+
+    def test_absent_from_an_EMPTY_feed_is_still_no_figure(self):
+        """The honest exception. If no property feed holds anything, absence
+        proves nothing about this person and a nil would be an invention."""
+        units = self.line("number_of_property")
         self.assertIsNone(units["ytd_actual"])
-        # The wording matters less than the distinction it draws: a name
-        # spelt differently on a feed must not read like somebody who sold
-        # nothing. There are three feeds now - the HFDI sales return, the
-        # HFCB Properties CRM inventory and the affordable-housing mapping -
-        # so this asserts the meaning rather than the old word "neither".
-        self.assertIn("none of the three property feeds", units["pending"])
-        self.assertIn("spelt differently", units["pending"])
+        self.assertIn("no property feed holds any data", units["pending"])
 
     def test_affordable_housing_units_count_towards_the_property_line(self):
         """The HFDI return names the advisor who SOLD a unit; affordable
