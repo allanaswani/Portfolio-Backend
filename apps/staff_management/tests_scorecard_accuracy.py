@@ -373,10 +373,25 @@ class EveryLineIsAccountedForTests(TestCase):
             with self.subTest(code):
                 self.assertTrue(source.actual_key,
                                 f"{code} is scored but names no actual")
+                # A line may deliberately carry a figure with no target, so
+                # long as it SAYS so and the target is loadable. Dormancy is
+                # the case: the reactivations are counted from the warehouse
+                # but the rate they are scored as needs a dormant base that
+                # does not exist, so the figure is shown, the reason is on the
+                # card, and Administration enters the score. Without
+                # no_target_reason this guard still fires, which is the point
+                # of it - half a mapping scores nothing and reports the wrong
+                # reason for it.
+                from .scorecard_manual import MANUAL_TARGETS
+
+                explained = bool(source.no_target_reason) and (
+                    code in MANUAL_TARGETS)
                 self.assertTrue(
-                    source.target_field or code in with_role_target,
+                    source.target_field or code in with_role_target
+                    or explained,
                     f"{code} is scored but nothing can give it a target: no "
-                    f"DMC column and no target on any role's card")
+                    f"DMC column, no target on any role's card, and no "
+                    f"no_target_reason naming a route to one")
 
 
 class TargetLadderTests(TestCase):
@@ -513,7 +528,13 @@ class PropertySalesTests(TestCase):
         self.sale("Somebody Else", 1_000_000)
         units = self.line("number_of_property")
         self.assertIsNone(units["ytd_actual"])
-        self.assertIn("neither", units["pending"])
+        # The wording matters less than the distinction it draws: a name
+        # spelt differently on a feed must not read like somebody who sold
+        # nothing. There are three feeds now - the HFDI sales return, the
+        # HFCB Properties CRM inventory and the affordable-housing mapping -
+        # so this asserts the meaning rather than the old word "neither".
+        self.assertIn("none of the three property feeds", units["pending"])
+        self.assertIn("spelt differently", units["pending"])
 
     def test_affordable_housing_units_count_towards_the_property_line(self):
         """The HFDI return names the advisor who SOLD a unit; affordable

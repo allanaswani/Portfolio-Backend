@@ -153,6 +153,17 @@ MANUAL_TARGETS = {
     "portfolio_management_aum_dec_previous_year":
         "per person, and no DMC column carries it",
     "weighted_sales": "the weighted-sales dashboard target, per person",
+    # Migration 0041 cleared this one's role target, because the seeded figure
+    # was one named person's own - Joseph Kinuthia's at Naivasha for the BOM -
+    # and read as a role target it scored every branch operations manager in
+    # the bank against Naivasha's dormancy. It has to be loadable here, or the
+    # card's own message ("Administration can enter the score under Figures to
+    # load") would be untrue and the line would be stranded: a figure shown
+    # with no target anybody can ever give it.
+    "bo_re_activation": "a branch dormancy RATE. The reactivations are counted "
+                        "from the warehouse, but the dormant base they are "
+                        "measured against is not held anywhere, so the score "
+                        "is entered here",
 }
 
 COLUMNS = ["sales_code", "staff_name", "staff_role", "kpi_code", "kpi_name",
