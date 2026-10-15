@@ -73,7 +73,10 @@ KNOWN_DIFFERENCES = {
         "than as perfect performance",
     ("Mortgage_Business", "Errors"):
         "application errors, measured outside the warehouse",
-    ("Diaspora", "Audit"): "audit score, measured outside the warehouse",
+    # ("Diaspora", "Audit") used to be here. It reproduces now: the audit
+    # score is read from Internal Audit's branch return, scored
+    # lower-is-better and capped at full marks, and 1.6337 against a target
+    # of 1.65 gives the 1.0 the card states.
 
     # ── Two genuine judgement calls, both deliberate ─────────────────────
     ("Ultimate_RM", "Asset Growth"):
@@ -92,11 +95,18 @@ KNOWN_DIFFERENCES = {
 #: the cards own wording, because this file reads the cards and not the seeded
 #: KPI codes.
 #:
-#: Two survey lines and training. The survey pair is a judgement call on a
-#: 6-to-5 count (see the test below); training is not - both cards that score
-#: it above target wrote exactly 1.0 and none goes higher anywhere.
+#: Two survey lines, training and the audit score. The survey pair is a
+#: judgement call on a 6-to-5 count (see the test below); training is not -
+#: both cards that score it above target wrote exactly 1.0 and none goes
+#: higher anywhere - and the audit score has one calibration point which also
+#: wrote exactly 1.0 for an actual that beat its target.
 FULL_MARKS_LINES = {"nps", "portfolio nps", "portfolo nps",
-                    "portfolio coverage (engagement)", "training"}
+                    "portfolio coverage (engagement)", "training", "audit"}
+
+#: Lines where SMALLER is better. The audit score is a grade - "Annual audit
+#: score of 1.65" means 1.65 or better, and better means smaller - and PAR is
+#: a limit. Everything else on the cards is a quantity to grow.
+LOWER_IS_BETTER_LINES = {"audit"}
 #: Kept under its old name as well: the survey-cap test reads it by name.
 CX_LINES = {"nps", "portfolio nps", "portfolo nps",
             "portfolio coverage (engagement)"}
@@ -109,7 +119,8 @@ def _rule(description):
     # PAR is the one line scored as a threshold rather than a ratio.
     if text == "par":
         return False, True, 1.2
-    return True, False, (CX_CAP if text in FULL_MARKS_LINES else 1.2)
+    cap = CX_CAP if text in FULL_MARKS_LINES else 1.2
+    return text not in LOWER_IS_BETTER_LINES, False, cap
 
 
 def _number(text):
@@ -172,8 +183,8 @@ class CardCalibrationTests(SimpleTestCase):
             if abs(mine - stated) < 0.005:
                 reproduced += 1
         self.assertGreaterEqual(
-            reproduced, 98,
-            "98 of the 109 card lines that state both a target and an actual")
+            reproduced, 99,
+            "99 of the 109 card lines that state both a target and an actual")
 
     def test_par_is_pass_or_fail_at_two_and_a_half_percent(self):
         """Seven cards, seven consistent outcomes and no middle value: at or
@@ -211,7 +222,7 @@ class CardCalibrationTests(SimpleTestCase):
         agree that it is a pass/fail threshold, so it was implemented that way
         and taken off this list."""
         outside = {
-            "leave_management", "audit", "errors",
+            "leave_management", "errors",
         }
         for code in sorted(outside):
             with self.subTest(code):
@@ -306,6 +317,48 @@ class CardCalibrationTests(SimpleTestCase):
             if stated > 1.0001:
                 above.append(f"{row['role_sheet']}: {stated}")
         self.assertEqual(above, [])
+
+    def test_the_audit_score_is_live_lower_is_better_and_capped(self):
+        """It came off the not-scored-live list because the figures now exist:
+        Internal Audit's branch return holds the score and the implementation
+        rate, and nine lines across eight roles read it.
+
+        Three decisions, all of which the one calibration point agrees with.
+        The score is **lower-is-better** - 1.65 is a grade, and "Annual audit
+        score of 1.65" means achieve 1.65 or better; read the other way round
+        the branches with the worst audits would come top. It is **capped at
+        full marks**, because a graded control score is not a sales target and
+        beating it by a hundredth should not pay 120%. And it is scored **in
+        proportion rather than pass/fail**, so 1.70 against 1.65 reads as 97%
+        and not as nought.
+        """
+        from .live_scorecard import SOURCES
+
+        for code in ("audit", "bo_branch_audit_branch_audit",
+                     "bo_diaspora_audit"):
+            with self.subTest(code):
+                source = SOURCES[code]
+                self.assertFalse(source.pending)
+                self.assertEqual(source.actual_key, "audit_score")
+                self.assertFalse(source.higher_is_better)
+                self.assertEqual(source.cap, 1.0)
+
+        # The Diaspora card: 1.6337 against 1.65 scores 1.0.
+        self.assertAlmostEqual(
+            score_for(1.633636363636363, 1.65, False, cap=1.0), 1.0)
+        # A near miss is a near miss.
+        self.assertAlmostEqual(score_for(1.70, 1.65, False, cap=1.0),
+                               1.65 / 1.70, places=4)
+
+    def test_implementation_is_the_other_way_up(self):
+        """Same return, opposite direction: 85% or better, and better is
+        larger. No card states a score for it, so it keeps the ordinary cap."""
+        from .live_scorecard import SOURCES
+
+        source = SOURCES["bo_branch_audit_resolution"]
+        self.assertEqual(source.actual_key, "audit_implementation")
+        self.assertTrue(source.higher_is_better)
+        self.assertEqual(source.cap, 1.2)
 
     def test_the_cap_count_is_what_this_file_claims(self):
         """Reads the cards and counts, so the six-against-five above is not a

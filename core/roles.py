@@ -122,6 +122,12 @@ NEW_ROLES = (
     # "not measured". Registered here so an administrator can put somebody on
     # the CX screen from the Users screen, and so the badge is not blank.
     "cx",
+    # Internal Audit. Nine scorecard lines across eight roles read their
+    # branch return - the audit score and the implementation rate - and it
+    # used to arrive as a short table in a mail. Registered so an
+    # administrator can put the audit team on their own screen rather than
+    # filing the figures for them.
+    "audit",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
@@ -141,6 +147,8 @@ NEW_ROLE_DESCRIPTIONS = {
     "telesales_agent": "Telesales — agent; works the referrals allocated to them.",
     "cx": "Customer experience — maintains the survey figures the RM "
           "scorecards read (contactability and satisfaction).",
+    "audit": "Internal Audit — files the branch audit score and "
+             "implementation rate the scorecards read.",
     # Wording mirrors c360/roles.py::C360_ROLE_DESCRIPTIONS.
     "c360_management": "Customer 360 — management / analytics (whole-book Level 1).",
     "c360_rm": "Customer 360 — relationship manager (own book).",
@@ -208,6 +216,8 @@ ROLE_TO_TIER = {
     # tier, so this only decides the badge on the Users screen. Manager
     # because the figures behind it are part of what people are paid on.
     "cx": ROLE_MANAGER,
+    # Gated on the group NAME, not the tier - this only decides the badge.
+    "audit": ROLE_MANAGER,
 }
 
 # Backward-compatible alias (older imports referenced this name).

@@ -1685,3 +1685,85 @@ class ScTrainingReturn(models.Model):
 
     def __str__(self):
         return f"{self.month:%b %Y} · {self.staff_name or self.sales_code}"
+
+
+# ── Internal Audit: the branch score and the implementation rate ─────────────
+#
+# Nine scorecard lines across eight roles read this one small table:
+#
+#   audit                           diaspora_rm, diaspora_arm      score 1.65
+#   bo_branch_audit_branch_audit    6 back-office roles            score 1.65
+#   bo_diaspora_audit               bo_csm_diaspora                score 1.65
+#   bo_branch_audit_resolution      bo_bom, bo_cash_teller, bo_cso  impl. 85%
+#
+# None of them could be scored: the figures arrive as a short table from
+# Internal Audit - eight branches, a score and an implementation rate - and
+# nothing here held it.
+#
+# It is a BRANCH measure feeding PERSONAL cards, which is what makes it
+# different from everything else in this module. One row serves every person
+# in that branch, so a branch whose name is spelt differently here from the
+# roster silently takes the score away from all of them at once.
+#
+# **The audit score is LOWER-IS-BETTER.** 1.65 is a grade, not a quantity:
+# "Annual audit score of 1.65" means achieve 1.65 or better, and better means
+# smaller. The Diaspora card confirms it - an actual of 1.6337 against a target
+# of 1.65 scores full marks. Scored the other way round, the branches with the
+# worst audits would come top.
+
+
+class ScAuditReturn(models.Model):
+    """One branch's audit result for one period.
+
+    Two measures, because the card treats them as two lines:
+
+    * ``audit_score`` - the graded audit score, 1.65 or better. Smaller is
+      better.
+    * ``implementation`` - how much of what the audit asked for has been done,
+      85% or better. Larger is better.
+
+    Kept in one row because they arrive in one table and are about the same
+    audit; split across two tables, loading half of it would be easy to miss.
+    """
+
+    #: ``2026`` for an annual audit, or ``2026-09`` if it ever becomes
+    #: monthly. The audit score is annual today - the target says so.
+    period = models.CharField(
+        max_length=10, db_index=True,
+        help_text="2026 for the annual audit, or 2026-09 for a month.")
+
+    #: The branch exactly as Internal Audit spell it.
+    branch = models.CharField(max_length=120)
+    #: Folded for matching - upper case, no punctuation, no "BRANCH" suffix.
+    #: Stored rather than computed at read time so the match is one indexed
+    #: lookup instead of a scan over every row.
+    branch_key = models.CharField(max_length=120, db_index=True, default="")
+
+    #: The graded score. SMALLER IS BETTER - see the note above.
+    audit_score = models.FloatField(null=True, blank=True)
+    #: Implementation of audit findings, 0-1. Larger is better.
+    implementation = models.FloatField(null=True, blank=True)
+
+    note = models.CharField(max_length=200, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    source = models.CharField(max_length=160, blank=True, default="")
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "sc_audit_return"
+        ordering = ["-period", "branch"]
+        verbose_name = "Audit return"
+        verbose_name_plural = "Audit returns"
+        constraints = [
+            # One row per branch per period, so a correction replaces the
+            # figure rather than stacking a second one beside it - and a
+            # second row would be read by whichever came first, silently.
+            models.UniqueConstraint(fields=["period", "branch_key"],
+                                    name="sc_audit_unique_branch_period"),
+        ]
+        indexes = [models.Index(fields=["period", "branch_key"])]
+
+    def __str__(self):
+        return f"{self.period} · {self.branch}"

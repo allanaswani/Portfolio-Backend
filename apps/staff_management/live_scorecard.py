@@ -489,6 +489,31 @@ for _code, _why in (
         f"No live source: {_why} Administration loads it on the Figures to "
         f"load screen."))
 
+# ── Internal Audit ───────────────────────────────────────────────────────────
+# Nine lines across eight roles, and not one of them could be scored: the
+# figures arrive as a short table from Internal Audit and nothing held it.
+#
+# **The score is LOWER-IS-BETTER.** 1.65 is a grade, not a quantity - "Annual
+# audit score of 1.65" means achieve 1.65 or better, and better is smaller.
+# The Diaspora card settles it: 1.6337 against a target of 1.65 scores full
+# marks, and read the other way round the branches with the worst audits would
+# come top.
+#
+# **Capped at full marks.** That card is the only calibration point this line
+# has, and it wrote exactly 1.0 for an actual that beat its target. A graded
+# control score is not a sales target: beating it by a hundredth should not pay
+# 120%. Scored in proportion rather than pass/fail, so a near miss reads as a
+# near miss - 1.70 against 1.65 is 97%, not nought.
+_register(
+    ["audit", "bo_branch_audit_branch_audit", "bo_diaspora_audit"],
+    Source(actual_key="audit_score", higher_is_better=False, cap=1.0))
+
+# Implementation of what the audit asked for: 85% or better, and better is
+# larger. No card states a score for this line, so it keeps the ordinary cap.
+_register(
+    ["bo_branch_audit_resolution"],
+    Source(actual_key="audit_implementation"))
+
 # ── Customer experience: the survey lines ────────────────────────────────────
 # Both of these used to be unscoreable, because the figures arrived as an Excel
 # the CX team e-mailed round. They now live in ``cx_rm_metric``, which CX
@@ -861,12 +886,15 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
             "problem": problem, "failed": failed}
 
 
-def live_actuals(sales_code, staff_name="", staff_pf=""):
+def live_actuals(sales_code, staff_name="", staff_pf="", branch=""):
     """Every figure the warehouse can give for this RM.
 
     ``staff_pf`` is the PF number off the roster row. It is needed because
     HR's training return keys on the PF and not always on the sales code -
     the roster has Charles Muchiri as CMM4236 and the return has CM4236.
+
+    ``branch`` is needed for the audit lines, which are the one measure on
+    the card that belongs to a place rather than a person.
 
     Each entry is ``{"value", "as_at", "as_at_label", "problem"}``. ``as_at``
     is a real date, because the target is pro-rated to it.
@@ -919,6 +947,48 @@ def live_actuals(sales_code, staff_name="", staff_pf=""):
     attempt("asset_growth",
             lambda: growth("loan_daily_balance_movement",
                            "december_loan_book"))
+
+    # ── Internal Audit, by BRANCH ─────────────────────────────────────────
+    # The only measure here that is not personal. One row serves every person
+    # in the branch, which is why a branch name spelt differently from the
+    # roster takes the score away from all of them at once rather than from
+    # one card - and why the match is exact or a UNIQUE prefix, never a loose
+    # one. See apps.staff_management.audit_returns.
+    def audit():
+        from . import audit_returns
+
+        found = audit_returns.for_branch(branch)
+        if found is None:
+            period = audit_returns.latest_period()
+            if not period:
+                why = ("Internal Audit's return has not been loaded yet. "
+                       "Administration \u2192 Scorecards \u2192 Audit returns "
+                       "is where that happens")
+            elif not (branch or "").strip():
+                why = ("the roster records no branch against your sales code, "
+                       "and this is a branch measure")
+            else:
+                why = (f"the {period} audit return does not cover "
+                       f"{branch}. It is keyed on the branch name, so this is "
+                       f"either a branch Internal Audit did not report or a "
+                       f"name spelt differently from the roster - the Audit "
+                       f"returns screen names both")
+            return {"audit_score": _figure(None, problem=why),
+                    "audit_implementation": _figure(None, problem=why)}
+
+        label = f"{found['branch']} audit, {found['period']}"
+        return {
+            "audit_score": _figure(
+                found["audit_score"], None, label,
+                problem=None if found["audit_score"] is not None else
+                f"{label} carries no score"),
+            "audit_implementation": _figure(
+                found["implementation"], None, label,
+                problem=None if found["implementation"] is not None else
+                f"{label} carries no implementation rate"),
+        }
+
+    attempt(["audit_score", "audit_implementation"], audit)
 
     # ── Training hours, from HR's monthly return ──────────────────────────
     # The as-at is the last month the return covers FOR THIS PERSON, not
@@ -1669,7 +1739,8 @@ def build_card(sales_code, profile=None):
                 "sales_code": sales_code,
                 "detail": f"The {role_code} card has no KPI lines configured."}
 
-    actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row))
+    actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row),
+                           person.branch)
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
