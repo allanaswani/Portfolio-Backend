@@ -284,17 +284,21 @@ def plan(cards):
     """Decide what would be written for each card → ``(entries, report)``.
 
     Resolves each card to a person on OUR roster and each line to a kpi_code,
-    then splits the lines three ways: a figure to write, a figure the
-    platform measures for itself and will not take from a spreadsheet, and a
-    line that could not be mapped.
+    then splits the lines two ways: a figure to write, and a line that could
+    not be mapped.
+
+    A figure is written whether or not the platform also measures that line.
+    The card prefers its own measurement wherever it has one - the warehouse
+    wins the actual ladder, and a loaded target gives way to the person's own
+    DMC column - so what is loaded here can only ever fill a blank. The count
+    of lines that sit behind a live source is reported rather than refused.
     """
-    from .live_scorecard import resolve_person
-    from .scorecard_manual import MANUAL_ACTUALS, MANUAL_TARGETS
+    from .live_scorecard import SOURCES, resolve_person
 
     lookup = kpi_lookup()
     entries, report = [], {
         "cards": [], "actuals": 0, "targets": 0,
-        "measured_here": 0, "unmapped": [], "no_person": [],
+        "behind_a_live_source": 0, "unmapped": [], "no_person": [],
     }
 
     for card in cards:
@@ -305,7 +309,7 @@ def plan(cards):
             "sales_code": card["sales_code"], "period": card["period"],
             "role_code": person.role_code if person else "",
             "matched": bool(person and person.role_code),
-            "actuals": 0, "targets": 0, "measured_here": 0, "unmapped": 0,
+            "actuals": 0, "targets": 0, "unmapped": 0,
         }
         if not summary["matched"]:
             report["no_person"].append({
@@ -329,17 +333,19 @@ def plan(cards):
                 })
                 continue
 
-            wrote = False
-            if line["actual"] is not None and code in MANUAL_ACTUALS:
+            source = SOURCES.get(code)
+            if (line["actual"] is not None and source is not None
+                    and not source.pending and source.actual_key):
+                report["behind_a_live_source"] += 1
+            if line["actual"] is not None:
                 entries.append({
                     "kind": "actual", "sales_code": card["sales_code"],
                     "kpi_code": code, "value": line["actual"],
                     "sheet": card["sheet"], "line": line["description"]})
                 summary["actuals"] += 1
                 report["actuals"] += 1
-                wrote = True
             # The ANNUAL target - see the note on the column constants.
-            if line["annual_target"] is not None and code in MANUAL_TARGETS:
+            if line["annual_target"] is not None:
                 entries.append({
                     "kind": "target", "sales_code": card["sales_code"],
                     "kpi_code": code, "value": line["annual_target"],
@@ -347,13 +353,6 @@ def plan(cards):
                     "sheet": card["sheet"], "line": line["description"]})
                 summary["targets"] += 1
                 report["targets"] += 1
-                wrote = True
-            if not wrote and line["actual"] is not None:
-                # The platform measures this one. Taking it from a
-                # spreadsheet would undo the thing that makes the card worth
-                # trusting, so it is counted and left alone.
-                summary["measured_here"] += 1
-                report["measured_here"] += 1
         report["cards"].append(summary)
     return entries, report
 

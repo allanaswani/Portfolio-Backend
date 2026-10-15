@@ -2127,7 +2127,6 @@ def build_card(sales_code, profile=None):
     # for; an older figure is not carried forward, because a survey score from
     # four months ago presented as this month's is worse than a blank.
     from .scorecard_automation.models import ScEmployeePerformanceActual
-    from .scorecard_manual import MANUAL_ACTUALS
 
     # The row is keyed on the first of the month; the figure is AS AT its last
     # day, and that is the date the target is sliced to.
@@ -2211,15 +2210,22 @@ def build_card(sales_code, profile=None):
         full_marks = bool(figure.get("full_marks")) if figure else False
 
         # The actual ladder, and it is only two rungs: what the system can
-        # measure, then what an administrator has typed in for the lines it
-        # cannot - the survey, the learning system, HR, Audit.
+        # measure, then what an administrator has loaded for the lines it did
+        # not - the survey, the learning system, HR, Audit.
         #
         # The warehouse ALWAYS wins. A figure loaded by hand can never
         # overwrite a measured one, so a stale upload cannot quietly replace a
-        # live number; and the card says which of the two it used, so a typed
+        # live number; and the card says which of the two it used, so a loaded
         # figure is never mistaken for a measured one.
-        if (actual is None and mapping.kpi_code in loaded_actuals
-                and mapping.kpi_code in MANUAL_ACTUALS):
+        #
+        # The rung is open to EVERY line, not only the ones nothing here can
+        # measure. Restricting it to those sounded like a safety rail and was
+        # the opposite: a line we measure on the wrong key - branch loan
+        # turnaround, read from iApply on a seller code a branch manager does
+        # not have - produced nothing AND refused the figure somebody had
+        # loaded for it. Since the warehouse still wins wherever it answers,
+        # opening the rung costs nothing and only ever fills a blank.
+        if actual is None and mapping.kpi_code in loaded_actuals:
             actual = loaded_actuals[mapping.kpi_code]
             as_at = loaded_as_at
             as_at_label = f"loaded by Administration for {loaded_as_at:%b %Y}"

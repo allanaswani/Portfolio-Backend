@@ -82,8 +82,10 @@ class ScorecardWorkbookUploadView(APIView):
                 "detail": (
                     f"Read {len(cards)} card(s) and {report['lines']} line(s). "
                     f"{planned['actuals']} actual(s) and {planned['targets']} "
-                    f"target(s) would be written; {planned['measured_here']} "
-                    f"line(s) are computed here and would be left alone. "
+                    f"target(s) would be written, of which "
+                    f"{planned['behind_a_live_source']} sit behind a figure "
+                    f"the platform measures itself and will only fill a "
+                    f"blank. "
                     f"Nothing has been saved yet - send it again with apply "
                     f"to save."),
             })

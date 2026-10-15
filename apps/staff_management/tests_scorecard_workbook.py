@@ -125,17 +125,24 @@ class WhatGetsWrittenTests(TestCase):
             ("tooling_and_account_planning_all_customers", 3.0), written)
         self.assertEqual(report["unmapped"], [])
 
-    def test_a_line_the_platform_measures_is_left_alone(self):
-        """Taking a deposit figure out of a spreadsheet when the balance
-        tables hold it would undo the thing that makes the card worth
-        trusting. It is counted, and skipped."""
+    def test_a_line_the_platform_measures_is_written_as_a_fallback(self):
+        """A line the balance tables hold is still taken from the workbook -
+        and is reported as sitting behind a live source.
+
+        Refusing it sounded like the safe choice and was not: the card prefers
+        its own measurement wherever it has one, so the loaded figure can only
+        ever fill a blank, and refusing it left a dash on every line measured
+        on a key the person does not have."""
         cards = [a_card(lines=[
             a_line("Grow Deposits", "Deposit_Growth_Retail",
                    actual=-11_367_780.96),
         ])]
         entries, report = W.plan(cards)
-        self.assertEqual([e for e in entries if e["kind"] == "actual"], [])
-        self.assertEqual(report["measured_here"], 1)
+        self.assertEqual(
+            [(e["kpi_code"], e["value"]) for e in entries
+             if e["kind"] == "actual"],
+            [("grow_deposits", -11_367_780.96)])
+        self.assertEqual(report["behind_a_live_source"], 1)
 
     def test_a_target_the_dmc_load_has_no_column_for_is_written(self):
         """And it is the ANNUAL figure, not the year-to-date one beside it."""

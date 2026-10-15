@@ -64,22 +64,23 @@ class Command(BaseCommand):
 
         write("")
         write(f"  {'card':24} {'person':24} {'code':10} "
-              f"{'role':20} act tgt measured unmapped")
+              f"{'role':20} act tgt unmapped")
         for card in planned["cards"]:
             flag = "" if card["matched"] else "   <- reaches nobody"
             write(f"  {card['sheet']:24} {card['staff_name'][:22]:24} "
                   f"{card['sales_code']:10} {card['role_code']:20} "
                   f"{card['actuals']:3} {card['targets']:3} "
-                  f"{card['measured_here']:8} {card['unmapped']:8}{flag}")
+                  f"{card['unmapped']:8}{flag}")
 
         write("")
         write(f"  to write        {planned['actuals']} actual(s), "
               f"{planned['targets']} target(s)")
-        # Not a shortfall. These are the lines the platform works out for
-        # itself, and a spreadsheet must not overwrite them.
-        write(f"  left measured   {planned['measured_here']} line(s) the "
-              f"platform computes itself - deliberately not taken from the "
-              f"workbook")
+        # Not a shortfall, and not a refusal either: these were written,
+        # but the platform measures them too and its own figure wins wherever
+        # it produces one. What is loaded for them only fills a blank.
+        write(f"  fallback only   {planned['behind_a_live_source']} line(s) "
+              f"the platform also measures - it wins where it answers, so "
+              f"these stand in only where it does not")
 
         if planned["no_person"]:
             write("")

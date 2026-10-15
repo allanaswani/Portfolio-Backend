@@ -274,39 +274,144 @@ def read_workbook(path_or_stream):
     return rows, report
 
 
+def roster_code_for_name(staff_name):
+    """The one roster sales code whose name agrees with this → code or "".
+
+    The third rung of the identity ladder in :func:`plan`, for a person this
+    workbook only ever names one way. ``staff_employee_data`` is the HR
+    roster: it carries a name AND a sales code, which is the only bridge here
+    between the two.
+
+    Narrowed on the longest word of the name before comparing, so this is one
+    indexed query per person rather than a scan of the roster, and it returns
+    a code only when exactly ONE roster row agrees - an ambiguous name is no
+    answer at all, and guessing would post a branch's figures to a stranger.
+    """
+    from .live_scorecard import name_tokens, names_agree
+    from .models import StaffEmployeeData
+
+    tokens = name_tokens(staff_name or "")
+    if len(tokens) < 2:
+        return ""
+    longest = max(tokens, key=len)
+    found = set()
+    for row in (StaffEmployeeData.objects
+                .filter(staff_name__icontains=longest)
+                .exclude(sales_code="")
+                .exclude(sales_code__isnull=True)
+                .only("staff_name", "sales_code")[:400]):
+        if names_agree(staff_name, row.staff_name):
+            found.add((row.sales_code or "").strip().upper())
+    found.discard("")
+    return found.pop() if len(found) == 1 else ""
+
+
 def plan(rows):
     """What would be written → ``(entries, report)``.
 
-    A figure is only written for a KPI the person's own card carries, and only
-    where the platform cannot measure it for itself.
+    A figure is written for every KPI the person's own card carries. It does
+    NOT matter whether the platform also measures that line: the card prefers
+    its own measurement wherever it has one (see the actual ladder in
+    ``live_scorecard``), so a figure loaded here can only ever fill a blank.
+
+    That is deliberate, and it is the whole value of this template for the
+    branch cards. Branch loan turnaround, CASA, new customers, VIC and the
+    property lines all HAVE a source here - and every one of those sources
+    reads the person's own seller code, which a branch manager, a teller or a
+    CSO does not sell under. The source answers nothing for them, and before
+    this the figure sitting on the template's own sheet was discarded on the
+    way in for a line the platform only nominally measures.
     """
-    from .live_scorecard import resolve_person
+    from .live_scorecard import SOURCES, name_tokens, resolve_person
     from .scorecard_automation.models import ScRoleKpiMapping
-    from .scorecard_manual import MANUAL_ACTUALS
 
     entries, report = [], {
-        "written": 0, "measured_here": 0, "not_on_their_card": 0,
+        "written": 0, "behind_a_live_source": 0, "not_on_their_card": 0,
+        "by_name_in_workbook": 0, "by_roster_name": 0,
         "no_person": [], "people": set(),
     }
-    people = {}
+
+    # ── who each row belongs to ───────────────────────────────────────────
+    # The template does not use one identifier throughout. Eric Nguithi is
+    # EKN1329 on Active_Customers and ENGUITHI on Account_Opening_PB: the
+    # second is an AD username, and a card is keyed on the sales code. Taking
+    # the column at its word dropped three whole sheets - 311 figures the
+    # branches had already reported - and showed a dash in their place.
+    #
+    # So three rungs, most certain first:
+    #   1. the identifier in the column, read as a sales code
+    #   2. a sales code the same NAME carries on another sheet of THIS
+    #      workbook. The strongest rung after the first: it is the uploader's
+    #      own spelling on both sides, so the names are compared as equal
+    #      word sets rather than loosely, and no outside table is consulted
+    #   3. the HR roster by name, for somebody this workbook only ever names
+    #      one way
+    # Rungs 2 and 3 are counted in the report, so a load never silently
+    # re-attributes a figure.
+    people, lends = {}, {}
+
+    def resolve(identifier):
+        if identifier not in people:
+            people[identifier] = (resolve_person(identifier)
+                                  if identifier else None)
+        return people[identifier]
+
+    # Rung 2 needs a pass of its own: a later sheet may be the one that
+    # carries the sales code.
+    for row in rows:
+        person = resolve(row["sales_code"])
+        if person is not None and person.role_code:
+            key = frozenset(name_tokens(row["staff_name"] or ""))
+            if len(key) >= 2:
+                lends.setdefault(key, set()).add(person.sales_code)
+
+    stood_in = {}
+
+    def person_for(row):
+        """→ (person, how). ``how`` is "" when the column itself answered."""
+        person = resolve(row["sales_code"])
+        if person is not None and person.role_code:
+            return person, ""
+
+        key = frozenset(name_tokens(row["staff_name"] or ""))
+        if len(key) < 2:
+            return None, ""
+        if key in stood_in:
+            return stood_in[key]
+
+        found = (None, "")
+        codes = lends.get(key, set())
+        if len(codes) == 1:
+            candidate = resolve(next(iter(codes)))
+            if candidate is not None and candidate.role_code:
+                found = (candidate, "by_name_in_workbook")
+        if found[0] is None:
+            code = roster_code_for_name(row["staff_name"] or "")
+            candidate = resolve(code) if code else None
+            if candidate is not None and candidate.role_code:
+                found = (candidate, "by_roster_name")
+        stood_in[key] = found
+        return found
+
+    seen_unresolved = set()
 
     for row in rows:
-        key = row["sales_code"] or row["staff_pf"]
-        if key not in people:
-            person = resolve_person(row["sales_code"]) if row["sales_code"] \
-                else None
-            people[key] = person
-            if person is None or not person.role_code:
+        person, how = person_for(row)
+        if person is None or not person.role_code:
+            mark = row["sales_code"] or row["staff_name"]
+            if mark not in seen_unresolved:
+                seen_unresolved.add(mark)
                 report["no_person"].append({
                     "sales_code": row["sales_code"],
                     "staff_name": row["staff_name"], "role": row["role"],
                     "why": ("no sales code in the template"
                             if not row["sales_code"]
-                            else "that sales code holds no card here"),
+                            else "neither that code nor that name holds a "
+                                 "card here"),
                 })
-        person = people[key]
-        if person is None or not person.role_code:
             continue
+        if how:
+            report[how] += 1
 
         on_card = set(ScRoleKpiMapping.objects
                       .filter(role_code=person.role_code,
@@ -319,16 +424,20 @@ def plan(rows):
             continue
 
         for code in sorted(on_card):
-            if code not in MANUAL_ACTUALS:
-                report["measured_here"] += 1
-                continue
+            # Reported, not skipped: worth knowing that this one is a
+            # fallback and will give way to the warehouse if it answers.
+            source = SOURCES.get(code)
+            if source is not None and not source.pending and source.actual_key:
+                report["behind_a_live_source"] += 1
+            # The RESOLVED code, not the column: a card is read by sales
+            # code, and the column may hold a username.
             entries.append({
-                "kind": "actual", "sales_code": row["sales_code"],
+                "kind": "actual", "sales_code": person.sales_code,
                 "kpi_code": code, "value": row["value"],
                 "sheet": row["sheet"], "how": row["how"],
                 "as_at_month": row["as_at_month"]})
             report["written"] += 1
-            report["people"].add(row["sales_code"])
+            report["people"].add(person.sales_code)
 
     report["people"] = len(report["people"])
     # One line per person who reached nothing, not one per sheet they are on.

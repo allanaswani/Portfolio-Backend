@@ -62,8 +62,8 @@ class Command(BaseCommand):
         write("")
         write(f"  to write          {planned['written']:,} figure(s) for "
               f"{planned['people']} people")
-        write(f"  left measured     {planned['measured_here']:,} line(s) the "
-              f"platform computes itself")
+        write(f"  fallback only     {planned['behind_a_live_source']:,} "
+              f"line(s) the platform also measures - it wins where it answers")
         write(f"  not on their card {planned['not_on_their_card']:,} "
               f"(a teller and a BOM share a template)")
 

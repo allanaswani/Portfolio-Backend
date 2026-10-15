@@ -342,9 +342,24 @@ class LoadedFiguresReachTheCardTests(TestCase):
         nps = self.line("nps")
         self.assertIsNone(nps["ytd_actual"])
 
-    def test_a_typed_figure_cannot_overwrite_a_measured_one(self):
-        """The warehouse always wins, so a stale upload cannot quietly replace
-        a live number."""
+    def test_a_loaded_figure_stands_in_on_a_line_the_platform_measures(self):
+        """Drawdowns HAS a source here, and a loaded figure still shows where
+        that source produces nothing.
+
+        This rung used to be closed to any line the platform measures. That
+        read as a safeguard and was the opposite: the lines it shut out were
+        the ones measured on a key the person does not have - branch loan
+        turnaround, read from iApply on a seller code a branch manager never
+        sells under - so the source answered nothing AND the figure somebody
+        had loaded was refused, leaving a dash.
+
+        The safeguard that matters is a different one, and it still holds: the
+        measured figure wins wherever there IS one. That is
+        ``test_cx_beats_a_figure_somebody_typed_in``, which puts a real
+        measurement up against a loaded figure and watches the measurement
+        win. Here there is none, so the loaded figure shows - labelled, so it
+        can never be mistaken for a measurement."""
         self.load("drawdowns", 999_999_999)
         drawdowns = self.line("drawdowns")
-        self.assertNotEqual(drawdowns["ytd_actual"], 999_999_999)
+        self.assertEqual(drawdowns["ytd_actual"], 999_999_999)
+        self.assertIn("loaded by Administration", drawdowns["as_at"])

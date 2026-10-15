@@ -32,15 +32,17 @@ def _coverage(kpi_code, source, has_target):
     a figure nobody has loaded yet with one nobody can ever load, and those go
     to different people.
     """
-    from .scorecard_manual import MANUAL_ACTUALS, MANUAL_TARGETS
+    from .scorecard_manual import MANUAL_TARGETS
 
     if not has_target and kpi_code not in MANUAL_TARGETS:
         return "stranded"
     if source is not None and not source.pending and source.actual_key:
         return "measured"
-    if kpi_code in MANUAL_ACTUALS:
-        return "loadable"
-    return "stranded"
+    # Every line will now USE a figure somebody loads for it, so none of them
+    # is stranded for want of an actual. MANUAL_ACTUALS still says which ones
+    # we ASK for, which is what drives the typing template - a different
+    # question from which ones will accept an answer.
+    return "loadable"
 
 
 def cards(role_code=""):
@@ -96,7 +98,10 @@ def cards(role_code=""):
                     "full_year": mapping.kpi_code in FULL_YEAR_TARGETS,
                     "feed": (kpi.actuals_sheet if kpi else ""),
                     "coverage": state,
-                    "loadable_actual": mapping.kpi_code in MANUAL_ACTUALS,
+                    # Any line will take a loaded figure; the warehouse
+                    # simply wins wherever it produces one.
+                    "loadable_actual": True,
+                    "asked_for": mapping.kpi_code in MANUAL_ACTUALS,
                     "loadable_target": mapping.kpi_code in MANUAL_TARGETS,
                     "is_active": bool(kpi.is_active) if kpi else False,
                     "not_configured_reason": (

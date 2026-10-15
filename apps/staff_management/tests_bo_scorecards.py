@@ -19,6 +19,7 @@ of which would have put a wrong number on somebody's card:
 """
 
 import csv
+import datetime
 import pathlib
 
 from django.test import TestCase
@@ -185,3 +186,106 @@ class ExtractionTests(TestCase):
                     f"{code} names {name}, which the template does not have, "
                     f"but it is seeded active")
                 self.assertTrue(kpi.not_configured_reason)
+
+
+class BoActualsIdentityTests(TestCase):
+    """The back-office template does not use one identifier throughout.
+
+    The same branch manager is ``EKN1329`` on the Active_Customers sheet and
+    ``ENGUITHI`` - an AD username - on Account_Opening_PB, Account_Opening_BB
+    and Branch_Loan_TAT. A card is keyed on the sales code, so reading the
+    column at its word dropped three whole sheets and showed a dash in place
+    of figures the branch had already reported.
+    """
+
+    CODE = "EKN1329"
+
+    def setUp(self):
+        from .models import EmployeeRoleHistory
+
+        # get_or_create: migration 0032 seeds this roster from the sales
+        # workbook's own List sheet, so the row may already be there.
+        EmployeeRoleHistory.objects.get_or_create(
+            sales_code=self.CODE, role_code="bo_bom",
+            start_date=datetime.date(2026, 1, 1),
+            defaults={"role_status": "active"})
+
+    @staticmethod
+    def _row(code, kpi_code, value, sheet, name="Eric Nguithi"):
+        return {
+            "sheet": sheet, "how": "latest", "kpi_codes": [kpi_code],
+            "sales_code": code, "staff_pf": "",
+            "staff_name": name, "role": "BOM", "branch": "Kiambu",
+            "value": value, "as_at_month": datetime.date(2026, 8, 1),
+            "months_with_a_figure": 8,
+        }
+
+    def test_a_username_sheet_reaches_the_card_the_sales_code_names(self):
+        from . import bo_actuals
+
+        entries, report = bo_actuals.plan([
+            self._row(self.CODE, "bo_active_customers", -2.689,
+                      "Active_Customers"),
+            self._row("ENGUITHI", "bo_account_opening_pb", 0.501,
+                      "Account_Opening_PB"),
+            self._row("ENGUITHI", "bo_branch_loan_tat", 3.355,
+                      "Branch_Loan_TAT"),
+        ])
+        # Every figure lands under the SALES code, not the username.
+        self.assertEqual({e["sales_code"] for e in entries}, {self.CODE})
+        self.assertEqual(
+            {(e["kpi_code"], e["value"]) for e in entries},
+            {("bo_active_customers", -2.689),
+             ("bo_account_opening_pb", 0.501),
+             ("bo_branch_loan_tat", 3.355)})
+        # And the two that stood in on the name are declared, so a load never
+        # silently re-attributes somebody's figures.
+        self.assertEqual(report["by_name_in_workbook"], 2)
+        self.assertEqual(report["no_person"], [])
+
+    def test_branch_loan_tat_is_written_though_the_platform_measures_it(self):
+        """``tat_days`` reads iApply on the person's own seller code, which a
+        branch manager does not sell under. The source is live, answers
+        nothing for them, and the figure is on the template's own sheet."""
+        from . import bo_actuals
+
+        entries, report = bo_actuals.plan([
+            self._row(self.CODE, "bo_branch_loan_tat", 3.355,
+                      "Branch_Loan_TAT"),
+        ])
+        self.assertEqual([(e["kpi_code"], e["value"]) for e in entries],
+                         [("bo_branch_loan_tat", 3.355)])
+        self.assertEqual(report["behind_a_live_source"], 1)
+
+    def test_an_unknown_name_is_reported_rather_than_guessed(self):
+        from . import bo_actuals
+
+        entries, report = bo_actuals.plan([
+            self._row("ZZTHOMPSON", "bo_account_opening_pb", 1.0,
+                      "Account_Opening_PB", name="Someone Entirely Else"),
+        ])
+        self.assertEqual(entries, [])
+        self.assertEqual(len(report["no_person"]), 1)
+
+    def test_one_name_lending_two_codes_is_refused(self):
+        """Two people spelt the same way lend nothing. Guessing would post a
+        branch's figures to a stranger."""
+        from . import bo_actuals
+        from .models import EmployeeRoleHistory
+
+        EmployeeRoleHistory.objects.get_or_create(
+            sales_code="EKN9999", role_code="bo_cso",
+            start_date=datetime.date(2026, 1, 1),
+            defaults={"role_status": "active"})
+        entries, report = bo_actuals.plan([
+            self._row(self.CODE, "bo_active_customers", 1.0,
+                      "Active_Customers"),
+            self._row("EKN9999", "bo_active_customers", 2.0,
+                      "Active_Customers"),
+            self._row("ENGUITHI", "bo_account_opening_pb", 3.0,
+                      "Account_Opening_PB"),
+        ])
+        wrote = {(e["sales_code"], e["kpi_code"]) for e in entries}
+        self.assertNotIn(("EKN1329", "bo_account_opening_pb"), wrote)
+        self.assertNotIn(("EKN9999", "bo_account_opening_pb"), wrote)
+        self.assertEqual(report["by_name_in_workbook"], 0)
