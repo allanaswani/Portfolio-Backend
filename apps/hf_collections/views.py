@@ -45,12 +45,66 @@ def _is_team_level(request, view):
 
 @extend_schema(tags=["Collections"])
 class CollectionListCreateView(generics.ListCreateAPIView):
+    """The collections diary.
+
+    Filtered, and scoped. Both had to be fixed together.
+
+    The customer page asked for ``?account_no=<id>``. There is no
+    ``account_no`` on this model - it is ``loan_account_no`` - and it was not
+    a declared filter either, so django-filter ignored it and the request
+    came back with every collections entry in the bank, shown on one
+    customer's page as their own contact history.
+
+    So an unrecognised filter is refused rather than ignored. A list endpoint
+    that quietly drops a filter and returns the whole table turns a typo into
+    a disclosure, and the caller gets no hint that anything went wrong.
+
+    And the queryset is the officer's own book. This view read
+    ``Collection.objects.all()`` for anybody authenticated, while its five
+    siblings in this module all scoped on ``_is_team_level``.
+    """
+
     permission_classes = [IsAuthenticated]
     serializer_class = CollectionSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
-    filterset_fields = ["cust_id", "collection_officer_code", "collection_status", "recording_date"]
+    filterset_fields = ["cust_id", "loan_account_no",
+                        "collection_officer_code", "collection_status",
+                        "recording_date"]
     queryset = Collection.objects.all()
+
+    #: Query parameters that are not filters. Everything else must be a
+    #: declared filter or the request is refused.
+    NOT_FILTERS = {"page", "page_size", "limit", "offset", "ordering",
+                   "format", "search"}
+
+    def list(self, request, *args, **kwargs):
+        unknown = sorted(
+            set(request.query_params) - set(self.filterset_fields)
+            - self.NOT_FILTERS)
+        if unknown:
+            return Response(
+                {"detail": (
+                    f"Not a filter on the collections diary: "
+                    f"{', '.join(unknown)}. This is refused rather than "
+                    f"ignored, because ignoring it would return every entry "
+                    f"in the bank. The filters are: "
+                    f"{', '.join(self.filterset_fields)}."),
+                 "unknown_filters": unknown,
+                 "filters": list(self.filterset_fields)},
+                status=status.HTTP_400_BAD_REQUEST)
+        return super().list(request, *args, **kwargs)
+
+    def get_queryset(self):
+        rows = Collection.objects.all()
+        if _is_team_level(self.request, self):
+            return rows
+        code = (_get_profile(self.request.user).sales_code or "").strip()
+        if not code:
+            # No sales code means no book. An empty diary is the honest
+            # answer; the whole bank's is not.
+            return rows.none()
+        return rows.filter(collection_officer_code__iexact=code)
 
 
 @extend_schema(tags=["Collections"])

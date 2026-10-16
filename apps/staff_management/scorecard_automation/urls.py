@@ -66,6 +66,11 @@ urlpatterns = [
     # fills every back-office card rather than ten.
     path("manual-figures/bo-actuals/",
          workbook_views.BoActualsUploadView.as_view()),
+    # People's OWN signed scorecards, many at a time. The master workbook
+    # carries one card per role; everybody else's targets are on their own
+    # file and exist nowhere else.
+    path("manual-figures/scorecards/",
+         workbook_views.ScorecardCardsUploadView.as_view()),
 
     # The CX team's own screen. Contactability and CSAT used to arrive as an
     # Excel somebody e-mailed round, which is why two lines on every RM card

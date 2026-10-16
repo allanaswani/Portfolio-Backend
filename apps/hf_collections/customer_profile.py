@@ -165,6 +165,76 @@ def loans_for(cust_id):
     return rows
 
 
+def key_dates(cust_id, loans):
+    """The dates an officer works an account to → a list of rows.
+
+    A collections call turns on dates: when the next instalment falls, when
+    they last actually paid, what they promised and whether that day has
+    passed. Those were spread across three feeds and none of them was on the
+    page, so an officer had to hold them in their head or go and look.
+
+    Each row is ``{label, date, note}`` and a date the feed does not have is
+    left out rather than shown as a dash - a list of dashes is not a list of
+    dates.
+    """
+    import datetime
+
+    from .models import Collection, PromiseToPay
+
+    today = datetime.date.today()
+    rows = []
+
+    def day(value):
+        return value.date() if hasattr(value, "date") else value
+
+    def add(label, value, note=""):
+        value = day(value)
+        if value:
+            rows.append({"label": label, "date": value, "note": note})
+
+    if loans:
+        worst = loans[0]
+        add("Next instalment due", worst.get("next_installment_date"))
+        add("Last payment received", worst.get("last_transaction_date"))
+        add("Loan opened", worst.get("open_date"))
+        add("Loan matures", worst.get("expiry_date"))
+
+    promise = (PromiseToPay.objects
+               .filter(cust_id=cust_id)
+               .order_by("-promised_date").first())
+    if promise is not None and promise.promised_date:
+        overdue = promise.promised_date < today
+        add("Promised to pay", promise.promised_date,
+            note=(f"{promise.promised_amount:,.0f} - "
+                  + ("still open" if promise.status == PromiseToPay.STATUS_OPEN
+                     else promise.get_status_display().lower())
+                  + (", that day has passed" if overdue
+                     and promise.status == PromiseToPay.STATUS_OPEN else "")))
+
+    entry = (Collection.objects
+             .filter(cust_id=cust_id)
+             .order_by("-recording_date").first())
+    if entry is not None:
+        add("Last contacted", entry.recording_date,
+            note=(entry.contactibility or "").strip())
+        add("Next action due", entry.next_action_date,
+            note=(entry.next_action or "").strip())
+
+    # Soonest first among the dates still ahead, then the past, most recent
+    # first - which is the order an officer reads them in.
+    ahead = sorted((r for r in rows if r["date"] >= today),
+                   key=lambda r: r["date"])
+    behind = sorted((r for r in rows if r["date"] < today),
+                    key=lambda r: r["date"], reverse=True)
+    for row in ahead:
+        row["when"] = "ahead"
+        row["days"] = (row["date"] - today).days
+    for row in behind:
+        row["when"] = "past"
+        row["days"] = (today - row["date"]).days
+    return ahead + behind
+
+
 def profile(cust_id):
     """The whole page in one call.
 
@@ -200,6 +270,9 @@ def profile(cust_id):
         "bio": bio,
         "contacts": contacts,
         "loans": loans,
+        # The dates an officer works the account to, gathered from the loan,
+        # the promise and the diary - see ``key_dates``.
+        "dates": key_dates(cust_id, loans),
         "products": products,
         "collateral": collaterals,
         "delay_officers": officers,

@@ -1335,6 +1335,26 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             prior = found.get(year - 1)
             if prior and prior[0]:
                 bases[base_name] = float(prior[0])
+            else:
+                # Say WHY, rather than leaving the card to report only that
+                # the figure "could not be read". The lake's feed does not
+                # currently reach back a year, and the person reading this
+                # needs to know that the answer is a workbook load or an ETL
+                # backfill - not a retry.
+                from . import active_channels
+
+                span = active_channels.coverage()
+                if span["rows"] and span["first_month"]:
+                    base_problems[base_name] = (
+                        f"the activity feed starts at "
+                        f"{span['first_month']:%b %Y} and so does not reach "
+                        f"{year - 1}. Until it does, this line's target comes "
+                        f"from the scorecard workbook, which carries the "
+                        f"{year} figure for each person")
+                else:
+                    base_problems[base_name] = (
+                        "the customer activity feed has not been loaded yet "
+                        "- run load_active_channels")
 
             this_year = found.get(year)
             if this_year is None:

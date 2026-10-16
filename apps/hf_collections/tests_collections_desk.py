@@ -3,6 +3,7 @@ allocating the customers nobody is calling.
 """
 
 import datetime
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import connection
@@ -10,10 +11,12 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from . import allocation, customer_profile, officer
-from .models import CollectionAllocation
+from .models import Collection, CollectionAllocation
 
 MINE = "AN3773"
 THEIRS = "CO1004"
+#: The loan account ``a_loan`` creates by default.
+LOAN = "0150000296"
 
 
 def make_the_feeds():
@@ -417,3 +420,161 @@ class TheApiIsScopedTests(TestCase):
         # Still 403 for this user, which is the point - but the shape is
         # exercised by the team-leader test below.
         self.assertEqual(res.status_code, 403)
+
+
+class TheDiaryShowsOneCustomersOwnEntriesTests(TestCase):
+    """It was showing the whole bank's.
+
+    The page asked for ``collections/?account_no=<id>``. There is no
+    ``account_no`` on this model - it is ``loan_account_no`` - and it was not
+    a declared filter either. django-filter IGNORES a filter it does not
+    recognise, so the request filtered nothing and every collections entry in
+    the bank came back under one customer's name.
+    """
+
+    LIST = "/hf_collections/collections/"
+
+    def setUp(self):
+        from apps.portfolio.models import Profile
+
+        self.user = get_user_model().objects.create_user(
+            username="diary_officer", password="x")
+        Profile.objects.update_or_create(
+            user=self.user, defaults={"sales_code": MINE})
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+        Collection.objects.create(
+            cust_id=1, loan_account_no=5001, customer_name="Mine",
+            collection_officer_code=MINE, recording_date=datetime.date(2026, 9, 1))
+        Collection.objects.create(
+            cust_id=2, loan_account_no=5002, customer_name="Another customer",
+            collection_officer_code=MINE, recording_date=datetime.date(2026, 9, 1))
+        Collection.objects.create(
+            cust_id=3, loan_account_no=5003, customer_name="Another officer",
+            collection_officer_code=THEIRS, recording_date=datetime.date(2026, 9, 1))
+
+    def rows(self, response):
+        data = response.data
+        return data["results"] if isinstance(data, dict) else data
+
+    def test_filtering_by_customer_returns_only_that_customer(self):
+        res = self.client.get(self.LIST, {"cust_id": 1})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual([r["customer_name"] for r in self.rows(res)],
+                         ["Mine"])
+
+    def test_the_loan_account_is_a_real_filter_now(self):
+        res = self.client.get(self.LIST, {"loan_account_no": 5002})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual([r["customer_name"] for r in self.rows(res)],
+                         ["Another customer"])
+
+    def test_an_unknown_filter_is_refused_not_ignored(self):
+        """The whole bug. Ignoring it returned the entire table, and the
+        caller got no hint that anything had gone wrong."""
+        res = self.client.get(self.LIST, {"account_no": 5001})
+        self.assertEqual(res.status_code, 400, res.data)
+        self.assertIn("account_no", res.data["unknown_filters"])
+        self.assertIn("loan_account_no", res.data["filters"])
+
+    def test_pagination_is_not_mistaken_for_a_filter(self):
+        res = self.client.get(self.LIST, {"page": 1, "page_size": 5})
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_an_officer_sees_only_their_own_entries(self):
+        """This view read Collection.objects.all() for anybody logged in,
+        while its five siblings all scoped."""
+        res = self.client.get(self.LIST)
+        names = {r["customer_name"] for r in self.rows(res)}
+        self.assertEqual(names, {"Mine", "Another customer"})
+        self.assertNotIn("Another officer", names)
+
+    def test_an_account_with_no_sales_code_sees_an_empty_diary(self):
+        """An empty diary is the honest answer. The whole bank's is not."""
+        from apps.portfolio.models import Profile
+
+        Profile.objects.update_or_create(
+            user=self.user, defaults={"sales_code": ""})
+        res = self.client.get(self.LIST)
+        self.assertEqual(self.rows(res), [])
+
+
+class TheKeyDatesPanelTests(TestCase):
+    """"Date card": the dates an officer works an account to.
+
+    They were spread across the loan, the promise and the diary, and none of
+    them was on the page.
+    """
+
+    def setUp(self):
+        make_the_feeds()
+        a_customer(1)
+        a_product()
+        a_loan(1)
+
+    def test_it_gathers_the_loan_the_promise_and_the_diary(self):
+        from .models import PromiseToPay
+
+        today = datetime.date.today()
+        PromiseToPay.objects.create(
+            cust_id=1, loan_account_no=LOAN, customer_name="Simon",
+            collection_officer_code=MINE,
+            promised_amount=Decimal("50000"),
+            promised_date=today + datetime.timedelta(days=5),
+            promised_on=today)
+        Collection.objects.create(
+            cust_id=1, loan_account_no=LOAN, customer_name="Simon",
+            collection_officer_code=MINE, contactibility="Contacted",
+            next_action="Call again", recording_date=today,
+            next_action_date=today + datetime.timedelta(days=2))
+
+        rows = customer_profile.profile(1)["dates"]
+        labels = [r["label"] for r in rows]
+        self.assertIn("Next instalment due", labels)
+        self.assertIn("Promised to pay", labels)
+        self.assertIn("Last contacted", labels)
+        self.assertIn("Next action due", labels)
+
+    def test_dates_still_ahead_come_first_soonest_first(self):
+        from .models import PromiseToPay
+
+        today = datetime.date.today()
+        PromiseToPay.objects.create(
+            cust_id=1, loan_account_no=LOAN,
+            collection_officer_code=MINE, promised_amount=Decimal("1"),
+            promised_date=today + datetime.timedelta(days=9),
+            promised_on=today)
+        Collection.objects.create(
+            cust_id=1, loan_account_no=LOAN,
+            collection_officer_code=MINE, recording_date=today,
+            next_action_date=today + datetime.timedelta(days=1))
+
+        rows = customer_profile.profile(1)["dates"]
+        ahead = [r for r in rows if r["when"] == "ahead"]
+        self.assertEqual(ahead, sorted(ahead, key=lambda r: r["date"]))
+        self.assertTrue(all(r["days"] >= 0 for r in ahead))
+
+    def test_a_date_the_feed_does_not_have_is_left_out_not_dashed(self):
+        """A list of dashes is not a list of dates."""
+        a_customer(8)
+        a_loan(8, loan_account_no="ACC8", next_installment_date=None,
+               open_date=None, expiry_date=None)
+        rows = customer_profile.profile(8)["dates"]
+        self.assertNotIn("Next instalment due", [r["label"] for r in rows])
+        self.assertTrue(all(r["date"] is not None for r in rows))
+
+    def test_a_promise_whose_day_has_passed_says_so(self):
+        from .models import PromiseToPay
+
+        today = datetime.date.today()
+        PromiseToPay.objects.create(
+            cust_id=1, loan_account_no=LOAN,
+            collection_officer_code=MINE, promised_amount=Decimal("50000"),
+            promised_date=today - datetime.timedelta(days=4),
+            promised_on=today - datetime.timedelta(days=20),
+            status=PromiseToPay.STATUS_OPEN)
+        rows = customer_profile.profile(1)["dates"]
+        promised = [r for r in rows if r["label"] == "Promised to pay"][0]
+        self.assertEqual(promised["when"], "past")
+        self.assertIn("that day has passed", promised["note"])
