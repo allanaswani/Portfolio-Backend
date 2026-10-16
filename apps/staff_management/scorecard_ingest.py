@@ -335,6 +335,13 @@ def read_allocation(source, definitions, sheet_name="Summary Allocation"):
     ``{sales_code, kpi_code, kpi_target, base_value}``. A column the sheet does
     not carry is reported rather than treated as zero - a zero target scores
     every RM at either nought or a division by nothing.
+
+    ``kpi_target`` is the YEAR'S TARGET, not the growth the sheet stores
+    beside the base. The sheet lays each measure out as base, growth, and the
+    two added; the card reads ``kpi_target`` and ignores ``base_value``, so
+    the addition has to happen here or every one of these loads understated
+    by the person's opening book. Where no base column is declared the figure
+    is already the year's, and is taken as it stands.
     """
     grid = _grid(source, sheet_name)
     warnings = []
@@ -360,20 +367,43 @@ def read_allocation(source, definitions, sheet_name="Summary Allocation"):
             warnings.append(
                 f"{kpi.kpi_code}: no base column "
                 f"{kpi.allocation_base_column!r} on {sheet_name}.")
-        resolved[kpi.kpi_code] = (column, base)
+        resolved[kpi.kpi_code] = (column, base, bool(kpi.negate))
 
     rows = []
     for raw in grid[_ALLOC_HEADER_ROW:]:
         code = _text(raw[_ALLOC_CODE_COLUMN]) if len(raw) > _ALLOC_CODE_COLUMN else ""
         if not code:
             continue
-        for kpi_code, (column, base) in resolved.items():
+        for kpi_code, (column, base, negate) in resolved.items():
             target = _number(raw[column]) if column < len(raw) else None
             if target is None:
                 continue
             base_value = None
             if base is not None and base < len(raw):
                 base_value = _number(raw[base])
+
+            # A target is a LEVEL, not an increment.
+            #
+            # Where a base column is declared, the column beside it holds the
+            # GROWTH and the year's target is the two added - which is what
+            # the sheet's own third column shows, and what the printed cards
+            # carry in "2026 FY". The card reads kpi_target and ignores
+            # base_value, so storing the growth alone understated every one
+            # of these by the person's whole opening book.
+            #
+            # Where no base is declared the column is already the year's
+            # figure - Disbursment/Total, New_Cust, banca_total - and those
+            # reproduced the printed cards exactly as they stood.
+            if base_value is not None:
+                target = target + base_value
+
+            # Loan loss is held positive on this sheet and printed negative
+            # on the card. The flag was only ever consulted by the actuals
+            # reader; it belongs here too, and with it the loan-loss target
+            # reproduces the printed card to the cent.
+            if negate:
+                target = -target
+
             rows.append({
                 "sales_code": code, "kpi_code": kpi_code,
                 "kpi_target": target, "base_value": base_value,

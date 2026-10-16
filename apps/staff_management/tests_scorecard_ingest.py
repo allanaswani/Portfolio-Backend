@@ -244,15 +244,32 @@ class AllocationReaderTests(TestCase):
             workbook(sheets or {"Summary Allocation": self.sheet()}),
             definitions if definitions is not None else self.DEFINITIONS)
 
-    def test_targets_are_read_per_person_with_their_base(self):
+    def test_the_target_is_the_year_not_the_growth(self):
+        """The sheet lays each measure out as base, growth, and the two
+        added - and the card reads ``kpi_target`` and ignores
+        ``base_value``. Storing the growth alone understated every one of
+        these by the person's whole opening book, which makes everybody look
+        like they are three times over target."""
         rows, _ = self.read()
         got = {(r["sales_code"], r["kpi_code"]): r for r in rows}
         deposits = got[("AMN3416", "deposit_growth_retail")]
-        self.assertEqual(deposits["kpi_target"], 38_400_000)
+        self.assertEqual(deposits["kpi_target"], 46_240_000 + 38_400_000)
         self.assertEqual(deposits["base_value"], 46_240_000,
                          "deposit_base is the card's 2025 FY")
         self.assertEqual(got[("BKA3327", "deposit_growth_retail")]["base_value"],
                          23_020_000, "each person carries their own base")
+        self.assertEqual(got[("BKA3327", "deposit_growth_retail")]["kpi_target"],
+                         23_020_000 + 38_400_000)
+
+    def test_a_column_with_no_base_is_already_the_years_figure(self):
+        """``Disbursment/Total``, ``New_Cust`` and ``banca_total`` are totals
+        on that sheet, and reproduced the printed cards exactly as they
+        stood. Only the columns with a base beside them are increments."""
+        rows, _ = self.read()
+        got = {(r["sales_code"], r["kpi_code"]): r for r in rows}
+        new_customers = got[("AMN3416", "new_customers")]
+        self.assertEqual(new_customers["kpi_target"], 12)
+        self.assertIsNone(new_customers["base_value"])
 
     def test_a_singly_named_column_is_found(self):
         rows, _ = self.read()

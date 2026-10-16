@@ -131,3 +131,81 @@ class WhenTheSheetIsNotThereTests(TestCase):
         self.assertEqual(summary["targets"], 0)
         self.assertEqual(year, 2026)
         self.assertIn("no such sheet", summary["why"])
+
+
+class TheTargetIsTheYearNotTheGrowthTests(TestCase):
+    """Against the real workbook, and against the printed cards beside it.
+
+    ``Summary Allocation`` lays every measure out in three columns - a base,
+    a growth, and the two added. The reader took the GROWTH and stored the
+    base beside it, unused, because the card reads ``kpi_target`` and nothing
+    else. Abed Lelgo's Direct Portfolio Contribution would have loaded as
+    33.5m rather than 201m: understated by his whole opening book, which
+    makes everybody look like they are three times over target.
+    """
+
+    def setUp(self):
+        if not WORKBOOK.exists():
+            self.skipTest("the scorecard workbook is not on this machine")
+
+    def read(self):
+        from .scorecard_ingest import read_allocation
+
+        definitions = list(ScKpi.objects.filter(is_active=True)
+                           .exclude(allocation_column=""))
+        rows, _warnings = read_allocation(str(WORKBOOK), definitions)
+        return {(r["sales_code"].upper(), r["kpi_code"]): r for r in rows}
+
+    def test_abeds_contribution_is_the_year_not_the_increment(self):
+        row = self.read()[("AKL3116", "direct_portfolio_contribution")]
+        self.assertAlmostEqual(row["base_value"], 167_574_340.56, places=1)
+        # base + growth, which is the sheet's own third column.
+        self.assertAlmostEqual(row["kpi_target"], 201_089_208.68, places=1)
+
+    def test_loan_loss_comes_out_negative_as_the_card_prints_it(self):
+        """It is held positive on that sheet. ``negate`` was only ever
+        consulted by the actuals reader; applying it here reproduces the
+        printed card to the cent."""
+        row = self.read()[("JM4191", "loan_loss")]
+        self.assertLess(row["kpi_target"], 0)
+        self.assertAlmostEqual(row["kpi_target"], -7_396_772.51, places=0)
+
+    def test_a_column_with_no_base_is_left_as_the_years_figure(self):
+        row = self.read()[("JM4191", "net_loan_disbursments")]
+        self.assertIsNone(row["base_value"])
+        self.assertAlmostEqual(row["kpi_target"], 780_000_000.0, places=0)
+
+    def test_it_reproduces_the_printed_cards_far_more_often_than_before(self):
+        """24 of the 40 lines that appear on both a printed card and the
+        allocation sheet now agree to the shilling. Before the fix it was
+        the handful with no base column. The rest are lines where the two
+        sheets carry genuinely different numbers - a revision, not a
+        formula."""
+        from . import scorecard_workbook as w
+
+        allocation = self.read()
+        cards, _report = w.read_workbook(str(WORKBOOK))
+        lookup = w.kpi_lookup()
+
+        exact = compared = 0
+        for card in cards:
+            code = (card["sales_code"] or "").upper()
+            if not code:
+                continue
+            role, slugs = max(
+                lookup.items(),
+                key=lambda kv: sum(1 for ln in card["lines"]
+                                   if ln["slug"] in kv[1]))
+            for line in card["lines"]:
+                kpi = slugs.get(line["slug"])
+                row = allocation.get((code, kpi))
+                if row is None or line["annual_target"] is None:
+                    continue
+                compared += 1
+                if abs(row["kpi_target"] - line["annual_target"]) < 1:
+                    exact += 1
+
+        self.assertGreater(compared, 30, "nothing was compared")
+        self.assertGreaterEqual(
+            exact, 20,
+            f"only {exact} of {compared} lines reproduce the printed card")
