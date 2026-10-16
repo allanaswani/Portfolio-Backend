@@ -140,3 +140,55 @@ class PromiseToPay(models.Model):
         """How much of the promise never arrived. Never negative."""
         promised = self.promised_amount or 0
         return max(promised - (self.amount_paid or 0), 0)
+
+
+class CollectionAllocation(models.Model):
+    """A customer this desk allocated to an officer, because nobody had.
+
+    Deliberately NOT written to ``loans.delay_officer``. That is a warehouse
+    table the ETL rewrites from core banking every night, so anything put
+    there is gone by morning - and it would be arguing with the source of
+    truth besides. An officer's book is the union of the two: what core
+    banking assigned, plus what was allocated here for the customers it left
+    blank.
+
+    One row per customer, not per loan. A customer with three loans in
+    arrears is one person to call.
+    """
+
+    cust_id = models.BigIntegerField(unique=True, db_index=True)
+    customer_name = models.CharField(max_length=255, blank=True, default="")
+    branch = models.CharField(max_length=60, blank=True, default="")
+
+    collection_officer_code = models.CharField(max_length=100, db_index=True)
+    collection_officer_name = models.CharField(max_length=255, blank=True,
+                                               default="")
+
+    #: What was owed when this was allocated. Kept because it is the only
+    #: record of what the officer was actually handed - the live figure moves
+    #: the moment they start working it, and a book that looks small at
+    #: review time may have been large when it was given out.
+    arrears_at_allocation = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0)
+
+    allocated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    allocated_by = models.CharField(max_length=255, blank=True, default="")
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    #: Cleared rather than deleted, so a reallocation keeps its history and
+    #: somebody can be asked why a customer moved.
+    is_active = models.BooleanField(default=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "hf_collections_allocation"
+        verbose_name = "Collections allocation"
+        verbose_name_plural = "Collections allocations"
+        ordering = ["-allocated_at"]
+        indexes = [models.Index(fields=["collection_officer_code",
+                                        "is_active"])]
+
+    def __str__(self):
+        return f"{self.cust_id} -> {self.collection_officer_code}"

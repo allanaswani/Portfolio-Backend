@@ -1,4 +1,4 @@
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -365,4 +365,210 @@ class PromiseToPayRefreshView(APIView):
                 f"{moved} promise(s) changed status against the repayments "
                 f"feed."),
             **ptp.kept_rate(),
+        })
+
+
+def _a_date(value):
+    """``YYYY-MM-DD`` from a query string → date, or None.
+
+    None rather than an error: a malformed date in a filter should fall back
+    to the default window, not refuse to show the page.
+    """
+    import datetime
+
+    try:
+        return datetime.date.fromisoformat(str(value).strip())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ── The customer page ────────────────────────────────────────────────────────
+
+@extend_schema(tags=["Collections"])
+class CustomerProfileView(APIView):
+    """Everything about one customer, in one read.
+
+    The page was showing a dash for product, loan type, branch and bucket -
+    the front end read those keys and the API returned none of them - and
+    "# Contacts 0", where that count was the number of DIARY entries rather
+    than the customer's phone numbers. A customer nobody has called is not a
+    customer with no number.
+
+    Scoped: an officer sees a customer who is on their own book, by core
+    banking's assignment or by an allocation made here. A team leader sees
+    anybody. Without this an officer could read any customer in the bank by
+    changing the number in the URL.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cust_id):
+        from . import customer_profile
+        from .models import CollectionAllocation
+
+        data = customer_profile.profile(cust_id)
+
+        if not _is_team_level(request, self):
+            code = (_get_profile(request.user).sales_code or "").strip()
+            mine = {o.lower() for o in data["delay_officers"]}
+            allocated = CollectionAllocation.objects.filter(
+                cust_id=cust_id, is_active=True,
+                collection_officer_code__iexact=code).exists()
+            if not code or (code.lower() not in mine and not allocated):
+                return Response(
+                    {"detail": "That customer is not on your book."},
+                    status=status.HTTP_403_FORBIDDEN)
+
+        return Response(data)
+
+
+# ── What an officer is carrying, and what they brought in ────────────────────
+
+@extend_schema(tags=["Collections"])
+class OfficerContributionView(APIView):
+    """One officer's book, collections, promises and diary.
+
+    Defaults to the signed-in officer. A team leader may ask for anybody by
+    passing ``collection_officer_code``; an officer asking for somebody else
+    is given their own, rather than an error - the question "how am I doing"
+    has an answer either way.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from . import officer as officer_module
+
+        asked = str(request.query_params.get("collection_officer_code")
+                    or "").strip()
+        own = (_get_profile(request.user).sales_code or "").strip()
+        code = asked if (asked and _is_team_level(request, self)) else own
+
+        if not code:
+            return Response(
+                {"detail": "Your profile has no sales code, so there is no "
+                           "book to report on."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(officer_module.contribution(
+            code,
+            since=_a_date(request.query_params.get("from")),
+            until=_a_date(request.query_params.get("to"))))
+
+
+@extend_schema(tags=["Collections"])
+class OfficerLeaderboardView(APIView):
+    """Every officer holding delinquent loans, by what came in.
+
+    Team leaders only. An officer comparing themselves against named
+    colleagues is a different conversation from a team leader running a desk,
+    and this screen is the second one.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from . import officer as officer_module
+
+        if not _is_team_level(request, self):
+            return Response(
+                {"detail": "Only a team leader can see the whole desk."},
+                status=status.HTTP_403_FORBIDDEN)
+
+        return Response(officer_module.leaderboard(
+            since=_a_date(request.query_params.get("from")),
+            until=_a_date(request.query_params.get("to"))))
+
+
+# ── Allocation ───────────────────────────────────────────────────────────────
+
+@extend_schema(tags=["Collections"])
+class CollectionAllocationView(APIView):
+    """Hand the customers nobody is calling to the officers who can.
+
+    GET  lists who is waiting, and what a run would do.
+    POST does it, and only with ``confirm``.
+
+    Never touches ``loans``: that table is rewritten from core banking every
+    night, so a write there is gone by morning. Allocations live in
+    ``hf_collections_allocation`` and an officer's book is the union of the
+    two. A customer core banking HAS assigned is never moved - that is
+    another system making a decision, and overriding it quietly is how two
+    desks end up believing different things about who is calling whom.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _officers(self, request):
+        """Who to allocate to.
+
+        Named in the request, or every officer who already holds delinquent
+        loans - which is the team, as core banking understands it.
+        """
+        from . import officer as officer_module
+
+        given = request.data.get("officers") or request.query_params.get(
+            "officers") or []
+        if isinstance(given, str):
+            given = [part.strip() for part in given.split(",") if part.strip()]
+        if given:
+            return given
+
+        return [row["collection_officer_code"]
+                for row in officer_module.leaderboard()]
+
+    def get(self, request):
+        from . import allocation
+
+        if not _is_team_level(request, self):
+            return Response(
+                {"detail": "Only a team leader can allocate customers."},
+                status=status.HTTP_403_FORBIDDEN)
+
+        limit = request.query_params.get("limit")
+        assignments, report = allocation.plan(
+            self._officers(request),
+            limit=int(limit) if limit else None,
+            branch=request.query_params.get("branch") or None)
+        return Response({
+            "allocated": False, "report": report,
+            "would_assign": assignments[:200],
+            "detail": (
+                f"{report['unallocated']} customer(s) are on nobody's book. "
+                f"{report['assigned']} would be shared across "
+                f"{report['officers']} officer(s). Nothing has been written - "
+                f"send it again with confirm."),
+        })
+
+    def post(self, request):
+        from . import allocation
+
+        if not _is_team_level(request, self):
+            return Response(
+                {"detail": "Only a team leader can allocate customers."},
+                status=status.HTTP_403_FORBIDDEN)
+
+        if str(request.data.get("confirm", "")).lower() not in ("1", "true",
+                                                                 "yes"):
+            return self.get(request)
+
+        limit = request.data.get("limit")
+        assignments, report = allocation.plan(
+            self._officers(request),
+            limit=int(limit) if limit else None,
+            branch=request.data.get("branch") or None)
+        if not assignments:
+            return Response({
+                "allocated": False, "report": report,
+                "detail": "There is nobody waiting to be allocated."})
+
+        written = allocation.save(
+            assignments,
+            who=(getattr(request.user, "get_full_name", lambda: "")()
+                 or getattr(request.user, "username", "")),
+            note=str(request.data.get("note") or ""))
+        return Response({
+            "allocated": True, "written": written, "report": report,
+            "detail": (f"{written} customer(s) allocated. They show on the "
+                       f"officers' own screens straight away."),
         })

@@ -361,7 +361,10 @@ _READERS_BEHIND_A_BASE = {
     "december_loan_book": {"asset_growth"},
     "last_year_active_customers": {"active_customers"},
     "last_year_digital_customers": {"digital_adoption"},
-    "last_year_loan_loss": {"loan_loss"},
+    # NOT "loan_loss": the base is produced by its own reader, registered
+    # under "_last_year_loan_loss". Mapping it to the wrong key removed that
+    # reader from every card and the line reported "no base to work from".
+    "last_year_loan_loss": {"_last_year_loan_loss"},
 }
 
 # ── Property (HFCB Properties) ───────────────────────────────────────────────
@@ -1167,7 +1170,7 @@ def _tat_ytd(sales_code, year, sla_days=7):
 #: seconds is generous for an aggregate over an indexed timestamp and far
 #: inside the worker's own 120s, so a slow feed costs this ONE line its
 #: figure rather than costing the whole card its page.
-ACTIVITY_TIMEOUT_MS = 8000
+ACTIVITY_TIMEOUT_MS = 20000
 
 DIGITAL_CHANNELS = (
     "ESB - ENTERPRISE SERVICE BUS",
@@ -1175,8 +1178,30 @@ DIGITAL_CHANNELS = (
 )
 
 
+def _why_the_activity_read_failed(exc):
+    """Turn a database error into something the card can print.
+
+    "Could not be read" is true of every failure and useful for none of them.
+    A missing table is the ETL's problem; a timeout is this query's; and the
+    person reading the card needs to know which so they tell the right
+    people.
+    """
+    text = str(exc).lower()
+    if "statement timeout" in text or "canceling statement" in text:
+        return ("the activity feed took too long to read - this is a slow "
+                "query rather than a missing figure, and it will fill in "
+                "once the feed is indexed for it")
+    if "does not exist" in text or "undefined" in text:
+        return ("the activity feed (transaction_diary) is not on this "
+                "database, so two months of activity cannot be tested")
+    return "the activity feed could not be read"
+
+
 def _two_month_active(sales_code, year, upto=None, digital=False):
-    """Customers of this RM active in TWO consecutive months → (count, latest).
+    """Customers of this RM active in TWO consecutive months.
+
+    → ``{year: (count, as_at)}`` for THIS year and the one before it, or
+    ``{"error": reason}`` when the feed could not be read.
 
     "Active" on these cards is not "transacted at some point". The measure of
     success says so: "2 month active". So this counts the customers who
@@ -1215,18 +1240,25 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
             WHERE t.tmstamp >= %s AND t.tmstamp < %s
               {channel}
             GROUP BY 1, 2
+        ), pairs AS (
+            SELECT this.month,
+                   COUNT(DISTINCT this.cust_id) AS active_both_months
+            FROM monthly this
+            JOIN monthly prev
+              ON prev.cust_id = this.cust_id
+             AND prev.month = this.month - INTERVAL '1 month'
+            GROUP BY this.month
         )
-        SELECT this.month,
-               COUNT(DISTINCT this.cust_id) AS active_both_months
-        FROM monthly this
-        JOIN monthly prev
-          ON prev.cust_id = this.cust_id
-         AND prev.month = this.month - INTERVAL '1 month'
-        GROUP BY this.month
-        ORDER BY this.month DESC
-        LIMIT 1
+        -- The latest pair WITHIN each year. Both years come back from one
+        -- scan: the figure is this year's and the rate target's base is last
+        -- year's, and reading them separately cost two passes over the whole
+        -- transaction history for one line.
+        SELECT DISTINCT ON (EXTRACT(YEAR FROM month))
+               EXTRACT(YEAR FROM month)::int AS yr, month, active_both_months
+        FROM pairs
+        ORDER BY EXTRACT(YEAR FROM month), month DESC
     """
-    start = datetime.date(year, 1, 1)
+    start = datetime.date(year - 1, 1, 1)
     end = (upto or datetime.date(year + 1, 1, 1))
     params = [sales_code.strip(), start, end]
     if digital:
@@ -1234,7 +1266,7 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
 
     try:
         # transaction_diary is the bank's whole transaction history, and this
-        # is a new read on the path that builds EVERY card. Capped, because a
+        # is a read on the path that builds EVERY card. Capped, because a
         # card that takes two minutes is a card nobody sees: gunicorn kills
         # the worker at 120s and the browser is handed a dead connection,
         # which renders as a blank page rather than as an error.
@@ -1247,20 +1279,23 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
         with transaction.atomic(), connection.cursor() as cur:
             cur.execute(f"SET LOCAL statement_timeout = {ACTIVITY_TIMEOUT_MS}")
             cur.execute(sql, params)
-            row = cur.fetchone()
-    except Exception:  # noqa: BLE001 - an absent or slow feed must not blank
-        # a card. Nothing is reported as nought on the strength of a read
-        # that did not finish: None means "could not be read", and the line
-        # prints that instead of a figure.
-        return None, None
-    if row is None:
-        return 0, None
-    month, count = row
-    # As at the END of the month the pair closes on, because that is the month
-    # the figure is complete for.
-    last_day = (month.replace(day=28) + datetime.timedelta(days=4))
-    last_day = last_day.replace(day=1) - datetime.timedelta(days=1)
-    return int(count or 0), last_day
+            rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 - an absent or slow feed must
+        # not blank a card. Nothing is reported as nought on the strength of
+        # a read that did not finish, and the REASON is carried out so the
+        # line can say whether the feed is missing or merely slow - those go
+        # to different people.
+        return {"error": _why_the_activity_read_failed(exc)}
+    if not rows:
+        return {}
+    out = {}
+    for yr, month, count in rows:
+        # As at the END of the month the pair closes on, because that is the
+        # month the figure is complete for.
+        last_day = (month.replace(day=28) + datetime.timedelta(days=4))
+        last_day = last_day.replace(day=1) - datetime.timedelta(days=1)
+        out[int(yr)] = (int(count or 0), last_day)
+    return out
 
 
 def _par(sales_code):
@@ -1407,14 +1442,22 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     # handled above, and for the same reason: one read answers both halves.
     def two_month(key, base_name, digital):
         def read():
-            count, at = _two_month_active(sales_code, year, digital=digital)
-            if count is None:
-                return _figure(None, problem=(
-                    "the activity feed could not be read, so two months of "
-                    "activity cannot be tested"))
-            prior, _at = _two_month_active(sales_code, year - 1, digital=digital)
-            if prior:
-                bases[base_name] = float(prior)
+            # ONE read covers both years: this year for the figure, last
+            # year for the base a rate target is applied to.
+            found = _two_month_active(sales_code, year, digital=digital)
+            if "error" in found:
+                return _figure(None, problem=found["error"])
+
+            prior = found.get(year - 1)
+            if prior and prior[0]:
+                bases[base_name] = float(prior[0])
+
+            this_year = found.get(year)
+            if this_year is None:
+                return _figure(0, monthly, (
+                    f"no two consecutive months of activity on this book in "
+                    f"{year}"))
+            count, at = this_year
             at = at or monthly
             label = (f"active in {at:%b} and the month before, as at "
                      f"{at.day} {at:%b %Y}")

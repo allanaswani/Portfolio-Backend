@@ -14,6 +14,18 @@ urlpatterns = [
     path("ptp/refresh/", views.PromiseToPayRefreshView.as_view()),
     path("ptp/<int:pk>/", views.PromiseToPayDetailView.as_view()),
 
+    # One customer, whole: bio, contacts, loans, product, collateral, bucket.
+    path("customer/<int:cust_id>/", views.CustomerProfileView.as_view()),
+
+    # What an officer is carrying and what they have brought in. Assignment
+    # is loans.delay_officer - core banking's own field, already a sales code.
+    path("officer/contribution/", views.OfficerContributionView.as_view()),
+    path("officer/leaderboard/", views.OfficerLeaderboardView.as_view()),
+
+    # Allocating the customers core banking left unassigned. Reports first;
+    # writes only with confirm, and never into the warehouse table.
+    path("allocation/", views.CollectionAllocationView.as_view()),
+
     # Dashboard (ported from the old backend)
     path("current_book_collection_summary/", views.CurrentBookCollectionSummaryView.as_view()),
     path("total_book_month_by_month_api/", views.TotalBookMonthByMonthView.as_view()),

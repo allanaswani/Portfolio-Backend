@@ -833,7 +833,13 @@ def customer_collection_data_current_book_data_not_rm(delay_officer):
                 LEFT JOIN
                     retail_allocated_portfolio rap ON c.cust_id = rap.cust_id
                 WHERE 1=1
-                AND NOT lower(trim(l.delay_officer)) = lower(%s)
+                -- The officer's OWN book. This read "AND NOT ... = %s", so
+                -- an officer was shown every delinquent customer EXCEPT the
+                -- ones assigned to them - the exact opposite of the screen's
+                -- purpose. The query predated its caller and had never been
+                -- run, which is how the inversion survived: the tests that
+                -- cover this view all mock the function out.
+                AND lower(trim(l.delay_officer)) = lower(trim(%s))
                 AND overdue_days > 0                   
                 GROUP BY
                     l.cust_id,

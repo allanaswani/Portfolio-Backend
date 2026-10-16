@@ -76,7 +76,7 @@ class TwoMonthsMeansTwoMonthsTests(TestCase):
     def test_a_customer_active_in_two_consecutive_months_counts(self):
         transact(1, YEAR, 7)
         transact(1, YEAR, 8)
-        count, as_at = _two_month_active(CODE, YEAR)
+        count, as_at = _two_month_active(CODE, YEAR)[YEAR]
         self.assertEqual(count, 1)
         # As at the END of the month the pair closes on.
         self.assertEqual(as_at, datetime.date(YEAR, 8, 31))
@@ -85,28 +85,25 @@ class TwoMonthsMeansTwoMonthsTests(TestCase):
         """This is the whole measure. "Active" on these cards is not
         "transacted at some point"."""
         transact(2, YEAR, 8)
-        count, _as_at = _two_month_active(CODE, YEAR)
-        self.assertEqual(count, 0)
+        self.assertNotIn(YEAR, _two_month_active(CODE, YEAR))
 
     def test_two_months_that_are_not_consecutive_do_not_count(self):
         transact(3, YEAR, 5)
         transact(3, YEAR, 8)
-        count, _as_at = _two_month_active(CODE, YEAR)
-        self.assertEqual(count, 0)
+        self.assertNotIn(YEAR, _two_month_active(CODE, YEAR))
 
     def test_it_counts_customers_not_transactions(self):
         for _ in range(6):
             transact(1, YEAR, 7)
             transact(1, YEAR, 8)
-        count, _as_at = _two_month_active(CODE, YEAR)
+        count, _as_at = _two_month_active(CODE, YEAR)[YEAR]
         self.assertEqual(count, 1)
 
     def test_somebody_elses_customer_is_not_counted(self):
         allocate(99, code="OTHER1")
         transact(99, YEAR, 7)
         transact(99, YEAR, 8)
-        count, _as_at = _two_month_active(CODE, YEAR)
-        self.assertEqual(count, 0)
+        self.assertNotIn(YEAR, _two_month_active(CODE, YEAR))
 
     def test_the_latest_pair_with_activity_is_the_one_reported(self):
         """A figure read in the first days of a month must not collapse to
@@ -115,17 +112,34 @@ class TwoMonthsMeansTwoMonthsTests(TestCase):
         transact(1, YEAR, 7)
         transact(2, YEAR, 7)
         transact(2, YEAR, 8)
-        count, as_at = _two_month_active(CODE, YEAR)
+        count, as_at = _two_month_active(CODE, YEAR)[YEAR]
         self.assertEqual(count, 1)
         self.assertEqual(as_at, datetime.date(YEAR, 8, 31))
 
-    def test_an_absent_feed_reports_nothing_rather_than_nought(self):
+    def test_an_absent_feed_says_so_rather_than_reporting_nought(self):
         """A read that failed and a customer who did nothing are different
-        statements, and the card says which."""
+        statements, and the card now says WHICH - a missing table is the
+        ETL's problem and a timeout is this query's, and they go to
+        different people."""
         with connection.cursor() as cur:
             cur.execute("DROP TABLE transaction_diary")
-        count, _as_at = _two_month_active(CODE, YEAR)
-        self.assertIsNone(count)
+        found = _two_month_active(CODE, YEAR)
+        self.assertIn("error", found)
+        self.assertIn("activity feed", found["error"])
+
+    def test_both_years_come_back_from_one_read(self):
+        """The figure is this year's and the rate target's base is last
+        year's. Reading them separately cost two passes over the whole
+        transaction history for one line, which is what put these past the
+        cap on the real table."""
+        transact(1, YEAR, 7)
+        transact(1, YEAR, 8)
+        transact(1, YEAR - 1, 4)
+        transact(1, YEAR - 1, 5)
+        found = _two_month_active(CODE, YEAR)
+        self.assertEqual(found[YEAR][0], 1)
+        self.assertEqual(found[YEAR - 1][0], 1)
+        self.assertEqual(found[YEAR - 1][1], datetime.date(YEAR - 1, 5, 31))
 
 
 class DigitalAdoptionTests(TestCase):
@@ -138,9 +152,10 @@ class DigitalAdoptionTests(TestCase):
         transact(1, YEAR, 8, digital=True)
         transact(2, YEAR, 7)
         transact(2, YEAR, 8)
-        self.assertEqual(_two_month_active(CODE, YEAR, digital=True)[0], 1)
+        self.assertEqual(
+            _two_month_active(CODE, YEAR, digital=True)[YEAR][0], 1)
         # Both are active; only one of them is digital.
-        self.assertEqual(_two_month_active(CODE, YEAR)[0], 2)
+        self.assertEqual(_two_month_active(CODE, YEAR)[YEAR][0], 2)
 
     def test_the_channels_are_the_ones_the_ceo_dashboard_uses(self):
         """So "digital" means one thing on both screens."""
@@ -239,6 +254,39 @@ class ACardOnlyReadsItsOwnFeedsTests(TestCase):
         self.assertLess(len(wanted), len(everything))
         # And an SME RM's card does not carry the teller's till feed.
         self.assertNotIn("tills_volume", wanted)
+
+    def test_every_reader_named_in_the_base_map_is_a_real_reader(self):
+        """The one that bit. ``last_year_loan_loss`` was mapped to
+        "loan_loss", and the reader that produces it is registered as
+        "_last_year_loan_loss" - so the skip removed it from every card and
+        the Loan Loss line reported "no base to work from".
+
+        Checking that the base NAME is in the map was not enough: the name
+        was right and the reader it pointed at did not exist. This checks the
+        other side, against the ``attempt`` calls themselves.
+        """
+        import pathlib as _pathlib
+        import re
+
+        from .live_scorecard import _READERS_BEHIND_A_BASE
+
+        source = _pathlib.Path(
+            __file__).with_name("live_scorecard.py").read_text(
+                encoding="utf-8")
+        registered = set()
+        for call in re.finditer(r"attempt\(\s*(\(|\[)?([^)]*?)(\)|\])?\s*,",
+                                source):
+            registered |= set(
+                re.findall(r'"([a-z_][a-z0-9_]*)"', call.group(2)))
+
+        self.assertTrue(registered, "no attempt() calls were found at all")
+        for base, readers in _READERS_BEHIND_A_BASE.items():
+            for reader in readers:
+                with self.subTest(f"{base} -> {reader}"):
+                    self.assertIn(
+                        reader, registered,
+                        f"{base} names {reader}, which no attempt() "
+                        f"registers - the skip will remove it")
 
     def test_a_base_keeps_its_reader_even_when_its_figure_is_not_read(self):
         """A base is a by-product: ``deposit_growth`` returns the growth AND
