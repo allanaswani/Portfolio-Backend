@@ -1170,15 +1170,36 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
 
     → ``{year: (count, as_at)}``, or ``{"error": reason}``.
 
-    Delegates to ``active_channels``, which reads the lake's own answer to
-    this question through a Postgres mirror. This used to reconstruct the
-    measure from ``transaction_diary``, one self-join over the bank's whole
-    transaction history per line per year - work the lake had already done,
-    and slow enough on the real table that both lines reported "that figure
-    could not be read".
-    """
-    from . import active_channels
+    Two feeds, the better one first.
 
+    1. ``registration_activity`` - the desk's own routine registration data,
+       a 1/0 flag per customer per month. It is the better answer because it
+       reaches back to December 2025, so the PRIOR-YEAR count that a "grow
+       by 20%" target is applied to can actually be read.
+    2. ``active_channels`` - the lake's feed, through a Postgres mirror. It
+       only reaches January 2026, so it can give this year's figure and
+       never last year's.
+
+    The second is tried when the first is not on this database at all. A
+    feed that IS there and answers nothing is left to answer nothing: that
+    is a real figure, and falling through to another feed would quietly
+    report a different measure under the same name.
+
+    Before either, this reconstructed the measure from ``transaction_diary``
+    with a self-join over the bank's whole transaction history, per line per
+    year - work both feeds had already done, and slow enough on the real
+    table that the lines reported "that figure could not be read".
+    """
+    from . import active_channels, registration_activity
+
+    found = registration_activity.two_month_active(
+        sales_code, year, digital=digital)
+    if "error" not in found:
+        return found
+
+    # Only when the registration data is absent, not when it is empty.
+    if "not on this database" not in found["error"]:
+        return found
     return active_channels.two_month_active(sales_code, year, digital=digital)
 
 
