@@ -151,6 +151,16 @@ def loans_for(cust_id):
         ORDER BY l.days_in_arrears DESC NULLS LAST, l.euro_book_balance DESC
         """, [cust_id])
 
+    # What each loan is ACTUALLY secured on. ``product_mapping`` types the
+    # PRODUCT, so every mortgage read "PROPERTY" whether or not a charge
+    # existed; this is the charge itself, off account_collateral. The
+    # product's category is kept behind it for a loan the charge register
+    # has not caught up with.
+    from . import collateral as charges
+
+    by_account = charges.for_accounts(
+        [row.get("loan_account_no") for row in rows])
+
     for row in rows:
         days = row.get("days_in_arrears") or row.get("overdue_days")
         key, label = bucket_for(days)
@@ -161,7 +171,28 @@ def loans_for(cust_id):
         # otherwise - a loan that prints "40046" tells an officer nothing.
         row["product"] = (row.get("product_description")
                           or row.get("loan_product") or "")
-        row["collateral"] = row.get("loan_collateral") or ""
+
+        held = by_account.get(str(row.get("loan_account_no") or "").strip(),
+                              [])
+        row["charges"] = held
+        row["security_value"] = sum(
+            charge["estimated_value"] or 0 for charge in held) or None
+        if held:
+            # The types held, in the order they are worth, so the first one
+            # named is the one that matters.
+            kinds = []
+            for charge in sorted(
+                    held, key=lambda c: -(c["estimated_value"] or 0)):
+                if charge["type"] and charge["type"] not in kinds:
+                    kinds.append(charge["type"])
+            row["collateral"] = ", ".join(kinds)
+            row["collateral_is_the_charge"] = True
+        else:
+            # Nothing on the charge register for this account. The product's
+            # own category is the only thing left to say, and the card says
+            # which of the two it is showing.
+            row["collateral"] = row.get("loan_collateral") or ""
+            row["collateral_is_the_charge"] = False
     return rows
 
 
@@ -259,8 +290,11 @@ def profile(cust_id):
     # one being picked arbitrarily.
     officers = sorted({(row.get("delay_officer") or "").strip()
                        for row in loans} - {""})
-    collaterals = sorted({(row.get("collateral") or "").strip()
-                          for row in loans} - {""})
+    collaterals = sorted({
+        kind.strip()
+        for row in loans
+        for kind in (row.get("collateral") or "").split(",")
+        if kind.strip()})
     products = sorted({(row.get("product") or "").strip()
                        for row in loans} - {""})
 
@@ -275,6 +309,11 @@ def profile(cust_id):
         "dates": key_dates(cust_id, loans),
         "products": products,
         "collateral": collaterals,
+        # What the bank reckons it is holding against this customer, summed
+        # over the charges rather than over the products.
+        "security_value": sum(
+            (row.get("security_value") or 0) for row in loans) or None,
+        "charges": sum(len(row.get("charges") or []) for row in loans),
         "delay_officers": officers,
         "totals": {
             "outstanding": outstanding,

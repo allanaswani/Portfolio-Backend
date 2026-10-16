@@ -192,3 +192,76 @@ class CollectionAllocation(models.Model):
 
     def __str__(self):
         return f"{self.cust_id} -> {self.collection_officer_code}"
+
+
+class LoanCollateral(models.Model):
+    """What a loan is actually secured on.
+
+    A mirror of ``account_collateral`` joined to ``collateral`` in the lake,
+    which is where the real security lives: 17,094 charges over 15,265 loan
+    accounts, typed PROPERTY, VEHICLE, TERM DEPOSIT COLLATERAL, PLOT, BOND,
+    PENSION, INSURANCE or GUARANTEE, each with its own estimated value.
+
+    Not the same thing as what the collections page showed before. That read
+    ``product_mapping``, which types the PRODUCT - so every mortgage read
+    "PROPERTY" whether or not a charge existed, and a vehicle loan secured on
+    a term deposit read whatever its product said. This is the charge itself.
+
+    One row per loan account per charge. A loan can carry several: one
+    customer in the sample has three against a single account, and summing
+    their values is the only honest way to say what the bank is holding.
+
+    Mirrored rather than read live for the same reason as the activity feed:
+    the customer page is built on request, and a lake read on that path is
+    what hands the browser a dead connection.
+    """
+
+    loan_account_no = models.CharField(max_length=40, db_index=True)
+    cust_id = models.BigIntegerField(blank=True, null=True, db_index=True)
+    customer_name = models.CharField(max_length=255, blank=True, default="")
+
+    #: The charge's own identity in core banking. Three columns, because
+    #: ``collateral_sn`` repeats across units - the sample has a dozen
+    #: charges numbered 1.
+    unit_code = models.IntegerField(default=0)
+    collateral_co = models.IntegerField(default=0)
+    collateral_sn = models.IntegerField(default=0)
+
+    collateral_type = models.CharField(max_length=80, blank=True, default="",
+                                       db_index=True)
+    collateral_desc = models.CharField(max_length=255, blank=True, default="")
+    collateral_status = models.CharField(max_length=40, blank=True, default="")
+
+    #: What it is reckoned to be worth. ``estimated_value`` is the figure on
+    #: the account charge; ``collateral_value`` is the one on the charge
+    #: itself, and the two do not always agree - both are kept rather than
+    #: one being chosen for the reader.
+    estimated_value = models.DecimalField(max_digits=20, decimal_places=2,
+                                          null=True, blank=True)
+    collateral_value = models.DecimalField(max_digits=20, decimal_places=2,
+                                           null=True, blank=True)
+    insurance_value = models.DecimalField(max_digits=20, decimal_places=2,
+                                          null=True, blank=True)
+    mortgage_amount = models.DecimalField(max_digits=20, decimal_places=2,
+                                          null=True, blank=True)
+    mortgage_class = models.CharField(max_length=40, blank=True, default="")
+    expires_on = models.DateField(null=True, blank=True)
+
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = True
+        db_table = "hf_loan_collateral"
+        verbose_name = "Loan collateral"
+        verbose_name_plural = "Loan collateral"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["loan_account_no", "unit_code", "collateral_co",
+                        "collateral_sn"],
+                name="hf_one_charge_per_loan"),
+        ]
+        indexes = [models.Index(fields=["loan_account_no",
+                                        "collateral_type"])]
+
+    def __str__(self):
+        return f"{self.loan_account_no} {self.collateral_type}"

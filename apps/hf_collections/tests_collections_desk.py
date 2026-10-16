@@ -578,3 +578,133 @@ class TheKeyDatesPanelTests(TestCase):
         promised = [r for r in rows if r["label"] == "Promised to pay"][0]
         self.assertEqual(promised["when"], "past")
         self.assertIn("that day has passed", promised["note"])
+
+
+class TheRealCollateralTests(TestCase):
+    """What a loan is actually secured on, not what its product implies.
+
+    The page typed collateral from ``product_mapping``, which types the
+    PRODUCT - so every mortgage read "PROPERTY" whether or not a charge
+    existed, and a loan secured on a term deposit read whatever its product
+    said. An officer ringing somebody about arrears wants the charge.
+    """
+
+    def setUp(self):
+        make_the_feeds()
+        a_customer(1)
+        a_product()           # product_mapping says PROPERTY for 40046
+        a_loan(1)
+
+    def charge(self, account=LOAN, kind="VEHICLE", value=750_000,
+               serial=1, **over):
+        from .models import LoanCollateral
+
+        values = dict(
+            loan_account_no=str(account), cust_id=1,
+            customer_name="Simon", unit_code=100, collateral_co=20019,
+            collateral_sn=serial, collateral_type=kind,
+            estimated_value=value)
+        values.update(over)
+        return LoanCollateral.objects.create(**values)
+
+    def test_the_charge_beats_the_products_category(self):
+        """The loan's product says PROPERTY. The charge says VEHICLE, and
+        the charge is what the bank is holding."""
+        self.charge(kind="VEHICLE")
+        loan = customer_profile.profile(1)["loans"][0]
+        self.assertEqual(loan["collateral"], "VEHICLE")
+        self.assertTrue(loan["collateral_is_the_charge"])
+
+    def test_several_charges_are_all_named_worth_first(self):
+        """A loan can carry more than one, and the first named should be
+        the one that matters."""
+        self.charge(kind="VEHICLE", value=750_000, serial=1)
+        self.charge(kind="PROPERTY", value=9_000_000, serial=2)
+        self.charge(kind="TERM DEPOSIT COLLATERAL", value=50_000, serial=3)
+        loan = customer_profile.profile(1)["loans"][0]
+        self.assertEqual(
+            loan["collateral"], "PROPERTY, VEHICLE, TERM DEPOSIT COLLATERAL")
+        self.assertEqual(loan["security_value"], 9_800_000)
+        self.assertEqual(len(loan["charges"]), 3)
+
+    def test_a_loan_with_no_charge_falls_back_and_says_so(self):
+        """The product's category is the only thing left to say, and the
+        page should be able to tell the two apart."""
+        loan = customer_profile.profile(1)["loans"][0]
+        self.assertEqual(loan["collateral"], "PROPERTY")   # from the product
+        self.assertFalse(loan["collateral_is_the_charge"])
+        self.assertIsNone(loan["security_value"])
+        self.assertEqual(loan["charges"], [])
+
+    def test_another_loans_charge_is_not_borrowed(self):
+        self.charge(account="9999999", kind="PLOT")
+        loan = customer_profile.profile(1)["loans"][0]
+        self.assertFalse(loan["collateral_is_the_charge"])
+
+    def test_the_customer_total_sums_the_charges_not_the_products(self):
+        a_loan(1, loan_account_no="0150000297", account_no="0150000297-11")
+        self.charge(kind="PROPERTY", value=9_000_000, serial=1)
+        self.charge(account="0150000297", kind="VEHICLE", value=400_000,
+                    serial=1)
+        data = customer_profile.profile(1)
+        self.assertEqual(data["security_value"], 9_400_000)
+        self.assertEqual(data["charges"], 2)
+        self.assertEqual(data["collateral"], ["PROPERTY", "VEHICLE"])
+
+    def test_a_padded_account_number_still_matches(self):
+        """The lake pads prft_account to a fixed width; the loans feed does
+        not. The mirror stores it trimmed."""
+        from . import collateral as charges
+
+        self.charge(kind="BOND")
+        found = charges.for_accounts([f"  {LOAN}  "])
+        self.assertEqual(len(found.get(LOAN, [])), 1)
+
+
+class ReadingTheLakesCollateralTests(TestCase):
+    """The shape of what comes back, before any of it is written."""
+
+    def test_a_charge_with_no_loan_account_is_left_out_and_counted(self):
+        from . import collateral as charges
+
+        entries, report = charges.plan([
+            {"loan_account_no": "0150000296", "collateral_type": "PROPERTY",
+             "unit_code": 100, "collateral_co": 20019, "collateral_sn": 1},
+            {"loan_account_no": "   ", "collateral_type": "PROPERTY",
+             "unit_code": 100, "collateral_co": 20019, "collateral_sn": 2},
+        ])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(report["no_account"], 1)
+
+    def test_the_same_charge_twice_is_one_charge(self):
+        """164 of the 17,094 in the lake are listed more than once. Writing
+        both would double what the bank looks like it is holding."""
+        from . import collateral as charges
+
+        row = {"loan_account_no": "0150000296", "collateral_type": "PROPERTY",
+               "unit_code": 100, "collateral_co": 20019, "collateral_sn": 1,
+               "estimated_value": 9_000_000}
+        entries, report = charges.plan([row, dict(row)])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(report["duplicates"], 1)
+
+    def test_the_no_expiry_sentinel_is_not_a_date(self):
+        """Core banking writes 0000-12-30 for "no expiry". It is not a date
+        any driver will hand back, and it failed the whole read."""
+        from . import collateral as charges
+
+        entries, _report = charges.plan([{
+            "loan_account_no": "0150000296", "collateral_type": "PROPERTY",
+            "unit_code": 100, "collateral_co": 20019, "collateral_sn": 1,
+            "expires_on": "0000-12-30"}])
+        self.assertIsNone(entries[0]["expires_on"])
+
+    def test_a_real_expiry_is_kept(self):
+        from . import collateral as charges
+
+        entries, _report = charges.plan([{
+            "loan_account_no": "0150000296", "collateral_type": "PROPERTY",
+            "unit_code": 100, "collateral_co": 20019, "collateral_sn": 1,
+            "expires_on": "2031-06-30"}])
+        self.assertEqual(entries[0]["expires_on"],
+                         datetime.date(2031, 6, 30))
