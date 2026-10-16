@@ -192,3 +192,77 @@ class TheyAreNoLongerPendingTests(TestCase):
         test exists to record the discrepancy rather than hide it."""
         self.assertAlmostEqual(197 * 1.50, 295.5)
         self.assertAlmostEqual(round(287.29 / 197, 3), 1.458)
+
+
+class ACardOnlyReadsItsOwnFeedsTests(TestCase):
+    """Every reader used to run for every card.
+
+    About twenty warehouse queries each time, most of them for lines the card
+    in front of you does not carry. That was survivable until two reads over
+    ``transaction_diary`` - the bank's whole transaction history - joined the
+    list, and the slowest cards ran past gunicorn's 120-second limit. A killed
+    worker returns no response at all, so the page renders blank: "computing
+    it..." and then nothing, which reads as the tool losing the card.
+    """
+
+    CODE = "CMM4236"
+
+    def setUp(self):
+        from .models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=4236, staff_name="Charles Muchiri",
+            sales_code=self.CODE, staff_role="SME RM", staff_branch="Rehani",
+            staff_unit="Rehani", active=1)
+
+    def test_a_card_does_not_read_a_feed_no_line_of_it_uses(self):
+        from unittest.mock import patch
+
+        from . import live_scorecard as module
+
+        seen = {}
+        real = module.live_actuals
+
+        def spy(*args, **kwargs):
+            seen["wanted"] = kwargs.get("wanted")
+            return real(*args, **kwargs)
+
+        with patch.object(module, "live_actuals", spy):
+            card = module.build_card(self.CODE)
+
+        self.assertTrue(card["has_card"])
+        wanted = seen["wanted"]
+        self.assertIsNotNone(wanted, "build_card must say what it needs")
+        # Strictly fewer than everything the module can read.
+        everything = {source.actual_key for source in module.SOURCES.values()
+                      if source.actual_key}
+        self.assertLess(len(wanted), len(everything))
+        # And an SME RM's card does not carry the teller's till feed.
+        self.assertNotIn("tills_volume", wanted)
+
+    def test_a_base_keeps_its_reader_even_when_its_figure_is_not_read(self):
+        """A base is a by-product: ``deposit_growth`` returns the growth AND
+        the December book it grew from. A card whose target is "43% of your
+        Dec book" needs that reader to run, so the skip must not remove it."""
+        from .live_scorecard import _READERS_BEHIND_A_BASE
+
+        for base, readers in _READERS_BEHIND_A_BASE.items():
+            with self.subTest(base):
+                self.assertTrue(readers, f"{base} names no reader")
+
+    def test_every_rate_target_base_in_use_has_a_reader_behind_it(self):
+        """Otherwise the skip silently removes the base and the line reports
+        that it has no target."""
+        from .live_scorecard import _READERS_BEHIND_A_BASE
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        in_use = {
+            (row.target_base or "").strip()
+            for row in ScRoleKpiMapping.objects.filter(
+                target_basis="rate_on_base")
+            if (row.target_base or "").strip()
+        }
+        self.assertTrue(in_use, "no card states a rate on a base")
+        for base in in_use:
+            with self.subTest(base):
+                self.assertIn(base, _READERS_BEHIND_A_BASE)

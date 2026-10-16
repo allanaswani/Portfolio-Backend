@@ -348,6 +348,22 @@ _register(
     ["digital_adoption"],
     Source(actual_key="digital_adoption", counted=True))
 
+#: Which reader produces each rate-target BASE.
+#:
+#: A base is a by-product: ``deposit_growth`` returns the growth AND the
+#: December book it grew from, because one read answers both. So a card whose
+#: target is "grow by 43% of the Dec book balance" needs that reader to run
+#: even if nothing on the card reads ``deposit_growth`` itself. Without this
+#: the skip in ``live_actuals`` would quietly remove the base and the line
+#: would report that it has no target.
+_READERS_BEHIND_A_BASE = {
+    "december_deposit_book": {"deposit_growth"},
+    "december_loan_book": {"asset_growth"},
+    "last_year_active_customers": {"active_customers"},
+    "last_year_digital_customers": {"digital_adoption"},
+    "last_year_loan_loss": {"loan_loss"},
+}
+
 # ── Property (HFCB Properties) ───────────────────────────────────────────────
 # The roster carries the unit plan. The CRM's amounts-sold feed has no
 # customer id, phone or e-mail, so a sale cannot be tied back to an RM; that is
@@ -1147,6 +1163,12 @@ def _tat_ytd(sales_code, year, sla_days=7):
 #: dashboard already treats as digital - see
 #: ``gceo_legacy.digital_active_30``, which reads the same pair. Taken from
 #: there rather than invented, so "digital" means one thing on both screens.
+#: How long the activity read may take before it is given up on. Eight
+#: seconds is generous for an aggregate over an indexed timestamp and far
+#: inside the worker's own 120s, so a slow feed costs this ONE line its
+#: figure rather than costing the whole card its page.
+ACTIVITY_TIMEOUT_MS = 8000
+
 DIGITAL_CHANNELS = (
     "ESB - ENTERPRISE SERVICE BUS",
     "KOCELA - SUBSCRIBER AND PAYMENT CHANNEL",
@@ -1174,7 +1196,7 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
     database. ``transaction_diary`` is large and pulling a row per transaction
     to count distinct customers in Python would be the whole year's traffic.
     """
-    from django.db import connection
+    from django.db import connection, transaction
 
     from services import portfolio_service as svc
 
@@ -1211,10 +1233,25 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
         params.append(list(DIGITAL_CHANNELS))
 
     try:
-        with connection.cursor() as cur:
+        # transaction_diary is the bank's whole transaction history, and this
+        # is a new read on the path that builds EVERY card. Capped, because a
+        # card that takes two minutes is a card nobody sees: gunicorn kills
+        # the worker at 120s and the browser is handed a dead connection,
+        # which renders as a blank page rather than as an error.
+        #
+        # SET LOCAL only takes effect inside a transaction - outside one
+        # PostgreSQL ignores it with a warning, leaving the cap silently
+        # absent. The transaction also reverts it, so no statement_timeout
+        # leaks onto a pooled connection. Same pattern as
+        # ``observability.health``.
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute(f"SET LOCAL statement_timeout = {ACTIVITY_TIMEOUT_MS}")
             cur.execute(sql, params)
             row = cur.fetchone()
-    except Exception:  # noqa: BLE001 - an absent feed must not blank a card
+    except Exception:  # noqa: BLE001 - an absent or slow feed must not blank
+        # a card. Nothing is reported as nought on the strength of a read
+        # that did not finish: None means "could not be read", and the line
+        # prints that instead of a figure.
         return None, None
     if row is None:
         return 0, None
@@ -1282,8 +1319,21 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
 
 
 def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
-                 brn_code=""):
+                 brn_code="", wanted=None):
     """Every figure the warehouse can give for this RM.
+
+    ``wanted`` is the set of actual_keys the person's own card reads. A reader
+    whose keys are ALL outside it is skipped, because running it would be a
+    warehouse query for a line that is not on the page.
+
+    This is not a micro-optimisation. Every reader used to run for every card
+    - a teller's card paid for the trade-finance register, a commercial RM's
+    paid for the dormancy feed - and once two reads over the whole
+    transaction history joined the list, the slowest cards ran past the
+    worker's 120-second limit. A killed worker returns no response at all, so
+    the page renders blank rather than reporting anything. Passing ``None``
+    keeps the old behaviour of reading everything, which is what the
+    diagnostic commands want.
 
     ``staff_pf`` is the PF number off the roster row. It is needed because
     HR's training return keys on the PF and not always on the sales code -
@@ -1316,6 +1366,11 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         from django.db import transaction
 
         keys = ([key_or_fn] if isinstance(key_or_fn, str) else list(key_or_fn))
+        # Nothing on this card reads any of these, so there is nothing to go
+        # and fetch. Absent from ``out`` is exactly what an unread key
+        # already was for a card that did not carry it.
+        if wanted is not None and not (set(keys) & wanted):
+            return
         try:
             with transaction.atomic():
                 result = fn()
@@ -2266,8 +2321,24 @@ def build_card(sales_code, profile=None):
                 "sales_code": sales_code,
                 "detail": f"The {role_code} card has no KPI lines configured."}
 
+    # Only the feeds this card has a line for. See ``live_actuals``: reading
+    # all of them for every card is what pushed the slowest ones past the
+    # worker timeout, and a killed worker renders as a blank page.
+    wanted = set()
+    for mapping in mappings:
+        source = SOURCES.get(mapping.kpi_code)
+        if source is not None and source.actual_key:
+            wanted.add(source.actual_key)
+    # The bases a rate target is applied to are produced by the SAME readers
+    # as their figures, so a line whose target is "43% of your Dec book" needs
+    # that reader to run even when its own actual is read elsewhere.
+    for mapping in mappings:
+        base = (getattr(mapping, "target_base", "") or "")
+        wanted |= _READERS_BEHIND_A_BASE.get(base, set())
+
     actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row),
-                           person.branch, brn_code_for(sales_code, row))
+                           person.branch, brn_code_for(sales_code, row),
+                           wanted=wanted)
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
