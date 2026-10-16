@@ -33,6 +33,11 @@ urlpatterns = [
     # yours - see the view for why that is where the line is.
     path("my-card/unsign/", views.ScorecardUnsignView.as_view()),
     path("my-card/download/", views.ScorecardDownloadView.as_view()),
+    # One button. GET says who it would go to and why an address is missing;
+    # POST sends it with the read-only workbook attached. The person's own
+    # address is on the HR roster, NOT in the scorecard workbook - see the
+    # note at the top of scorecard_email.
+    path("my-card/send/", views.ScorecardSendView.as_view()),
 
     # Loading the workbooks. Both read and report first; only a second call
     # with apply=true writes, and the actuals upload then runs the scorecard

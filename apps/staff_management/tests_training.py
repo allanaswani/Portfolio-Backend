@@ -487,8 +487,12 @@ class TheCardIsTheBanksOwnDocumentTests(TestCase):
         """HFC is the old name. It must not go out on a document somebody puts
         their signature to."""
         _, text = self.sheet_text()
-        self.assertIn("HFCB PERFORMANCE SCORECARD", text)
+        # The title line is the bank's own - "<year> <ROLE> OBJECTIVES" - so
+        # the test is that HFCB appears on it and the old name does not.
+        self.assertIn("HFCB", text)
+        self.assertIn("OBJECTIVES", text)
         self.assertNotIn("HFC PERFORMANCE", text)
+        self.assertNotIn("HFC ", text.replace("HFCB ", ""))
 
     def test_the_download_is_read_only(self):
         """A scorecard is a record. Left editable, the first thing that happens

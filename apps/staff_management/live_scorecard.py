@@ -305,16 +305,24 @@ _register(
     ["commercial_vic_premiums"],
     Source(target_field="target_banca_value", actual_key="banca_total"))
 
-# "Renewals and other banca products" — "other" than what is not defined by any
-# column, and on the cards that carry it there is already a life line and a
-# non-life line, so reading it as either would double-count one of them.
+# "Renewals and other banca products" — the RESIDUAL of the book, and that
+# is what makes it safe to count.
+#
+# This line used to be refused, on the grounds that no column records which
+# products are "other" and that the cards carrying it already have a life line
+# and a non-life line, so reading it as either would double-count one of them.
+# That was the wrong way round. What "other" MEANS does not have to be named
+# to be measured: the two lines beside it count the premiums they can
+# classify, and this line is everything they do not. total - life - non_life
+# cannot double-count either of them, whatever "other" turns out to be, and
+# the three together come to the whole book exactly once.
+#
+# In practice the residual is the premiums on products with no
+# ``premium_types_mapping`` row - which the reader was already counting and
+# reporting as "counted in the total only". That count had nowhere to go.
 _register(
     ["bancassurance_premiums", "other_bancassurance_premiums"],
-    Source(target_field="target_banca_value",
-           pending="This line is renewals and \"other\" banca products. Which "
-                   "products are \"other\" is not recorded — the cards beside "
-                   "it already count life and non-life — so counting anything "
-                   "here would double one of those lines."))
+    Source(target_field="target_banca_value", actual_key="banca_other"))
 
 # ── Property (HFCB Properties) ───────────────────────────────────────────────
 # The roster carries the unit plan. The CRM's amounts-sold feed has no
@@ -656,13 +664,19 @@ def _drawdowns_ytd(sales_code, year):
 
 
 def _premiums_ytd(sales_code, year):
-    """Bancassurance premiums for one RM this year, split life / non-life.
+    """Bancassurance premiums for one RM this year → total, life, non-life,
+    and the residual.
 
     ``insurance_policies.product`` is free text, so the life classification
     comes from ``premium_types_mapping`` — the table that decides it once per
     product. A product with no mapping row is counted in the TOTAL but in
     neither half, because guessing which half it belongs in is how a premium
     ends up scored against the wrong line.
+
+    Those unclassified premiums are the "renewals and other banca products"
+    line, which is why the residual is returned rather than only reported:
+    ``total - life - non_life`` is what neither classified line counts, so the
+    three partition the book and none of them can double another.
 
     The sales person is stamped in three different columns across the loads
     (``code``, ``rm``, ``sales_person``), so all three are matched.
@@ -692,8 +706,14 @@ def _premiums_ytd(sales_code, year):
     with connection.cursor() as cur:
         cur.execute(sql, [str(year), code])
         total, life, non_life, unmapped, latest = cur.fetchone()
-    return (float(total or 0), float(life or 0), float(non_life or 0),
-            int(unmapped or 0), latest)
+    total = float(total or 0)
+    life = float(life or 0)
+    non_life = float(non_life or 0)
+    # Clamped at nought: a credit note can in principle push the residual
+    # negative, and a negative "other" would be read as the RM having sold
+    # something back rather than as an artefact of the arithmetic.
+    other = max(total - life - non_life, 0.0)
+    return total, life, non_life, other, int(unmapped or 0), latest
 
 
 def _trade_ytd(sales_code, year):
@@ -1360,7 +1380,7 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     # ── Bancassurance ─────────────────────────────────────────────────────
     def premiums():
-        total, life, non_life, unmapped, latest = _premiums_ytd(
+        total, life, non_life, other, unmapped, latest = _premiums_ytd(
             sales_code, year)
         # The as-at comes off the newest policy on the book rather than the
         # calendar: the premium load is monthly, and dating it to today would
@@ -1375,9 +1395,17 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             "banca_total": _figure(total, at, label),
             "banca_life": _figure(life, at, label),
             "banca_non_life": _figure(non_life, at, label),
+            # The residual, and the label says so: on a card that also
+            # carries a life line and a non-life line, this is the rest of
+            # the book and not a second reading of either.
+            "banca_other": _figure(
+                other, at,
+                f"{label} - the premiums the life and non-life lines "
+                f"beside this one do not count"),
         }
 
-    attempt(("banca_total", "banca_life", "banca_non_life"), premiums)
+    attempt(("banca_total", "banca_life", "banca_non_life", "banca_other"),
+            premiums)
 
     # ── Trade finance ─────────────────────────────────────────────────────
     def trade():
@@ -2355,6 +2383,14 @@ def build_card(sales_code, profile=None):
             # out then shows on the card instead of silently capping the score
             # at 120% and being presented as an achievement.
             "annual_target": fy_target,
+            # The "2025 FY" and "GROWTH" columns on the bank's own card.
+            # Known only where the card states the target as a rate on one of
+            # the person's own prior-year figures - "grow by 21% of the Dec
+            # book" - which is the only place this platform holds a prior
+            # year. Blank elsewhere, exactly as it is blank on most lines of
+            # the printed card, rather than filled with a guess.
+            "prior_year": (bases.get(base_name)
+                           if (rate_basis and base_name) else None),
             "target_field": field,
             "target_source": target_how,
             "full_year_target": full_year,

@@ -496,3 +496,52 @@ class ScorecardSignoff(models.Model):
     @property
     def is_fully_signed(self):
         return bool(self.signed_at and self.manager_signed_at)
+
+
+class ScScorecardDispatch(models.Model):
+    """One row per scorecard e-mailed out.
+
+    A scorecard is somebody's performance record, so where a copy of it went
+    is part of that record: who pressed the button, when, and the exact
+    addresses it reached. Written only after the mail server has accepted the
+    message, because a send that did not happen must not be recorded as one.
+
+    Kept separate from ``ScScorecardSignoff`` rather than added to it. A card
+    can be sent before it is signed, after it is signed, and more than once -
+    a manager asks for it again, an address was wrong the first time - and
+    none of that belongs in a row whose job is to hold one frozen copy and two
+    signatures.
+    """
+
+    sales_code = models.CharField(max_length=255, db_index=True)
+    #: YYYY-MM, the month the card was FOR, matching the sign-off's period.
+    period = models.CharField(max_length=7, db_index=True)
+
+    sent_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    #: Comma separated, exactly as the message was addressed.
+    sent_to = models.TextField(blank=True, default="")
+    sent_cc = models.TextField(blank=True, default="")
+
+    sent_by = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="scorecards_sent")
+    #: Kept beside the FK because people leave and a deactivated account must
+    #: not erase who sent somebody's card out.
+    sent_by_name = models.CharField(max_length=255, blank=True, default="")
+
+    #: Whether the copy that went out was a signed one. An unsigned card says
+    #: so on its own face, and this makes that searchable afterwards.
+    was_signed = models.BooleanField(default=False)
+    #: Any address that could not be found, in the words the sender saw.
+    note = models.TextField(blank=True, default="")
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "sc_scorecard_dispatches"
+        verbose_name = "Scorecard Dispatch"
+        verbose_name_plural = "Scorecard Dispatches"
+        indexes = [models.Index(fields=["period", "sales_code"])]
+        ordering = ["-sent_at"]
+
+    def __str__(self):
+        return f"{self.sales_code} {self.period} -> {self.sent_to}"

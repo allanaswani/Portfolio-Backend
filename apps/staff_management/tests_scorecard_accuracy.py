@@ -286,11 +286,14 @@ class SignoffTests(TestCase):
             for row in sheet.iter_rows())
         # The bank is HFCB; HFC is the old name and must not go out on a
         # document somebody signs.
-        self.assertIn("HFCB PERFORMANCE SCORECARD", text)
+        self.assertIn("HFCB", text)
+        self.assertIn("OBJECTIVES", text)
         self.assertIn("Fridah Jabani", text)
-        self.assertIn(self.CODE, text)
-        self.assertIn("SIGN-OFF", text)
-        self.assertIn("Line manager", text)
+        self.assertIn("Staff Name:", text)
+        # The bank's own signature wording, not ours. A reviewer signs where
+        # they expect to sign.
+        self.assertIn("Reviewee Name:", text)
+        self.assertIn("Reviewer Sign and date", text)
         self.assertIn("TOTAL PERFORMANCE SCORE", text)
         self.assertIn("unsigned", text,
                       "an unsigned download must say so on the sheet")
@@ -313,10 +316,15 @@ class SignoffTests(TestCase):
 
         book = load_workbook(BytesIO(build_card_workbook(card).read()))
         sheet = book.active
+        # The bank's grid: C is the KPI, E its weight, J the ACTUAL. A data
+        # row is one with a KPI and a numeric weight - column A numbers the
+        # PERSPECTIVE and is blank on every line but its first, so it cannot
+        # be what identifies a line.
         printed = {}
-        for row in sheet.iter_rows():
-            if row[0].value and str(row[0].value).isdigit():
-                printed[row[1].value] = row[5].value
+        for row in sheet.iter_rows(min_row=6):
+            kpi, weight, actual = row[2].value, row[4].value, row[9].value
+            if kpi and isinstance(weight, (int, float)):
+                printed[kpi] = actual
 
         for name in pending_names:
             with self.subTest(name):

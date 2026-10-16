@@ -801,6 +801,141 @@ class ScorecardDownloadView(APIView):
         return response
 
 
+class ScorecardSendView(APIView):
+    """E-mail a scorecard - the button the desk asked for.
+
+    GET  reports who it would go to, and why an address is missing, without
+         sending anything. The button can then say "to Mary, cc Floyd" before
+         anybody presses it.
+    POST sends it, with the read-only workbook attached.
+
+    Which card: your OWN by default, resolved from your profile, so there is
+    no parameter to forget to check. An administrator may pass ``sales_code``
+    to send somebody else's - a manager chasing a card that was never sent -
+    and only an administrator, because a scorecard is a performance record and
+    mailing one around is not a read.
+
+    Which COPY: the signed one when there is one, so the file and the
+    signature agree; the live figures otherwise, marked unsigned on the sheet.
+    Exactly as the download does, and deliberately the same code path - a
+    card that was e-mailed and a card that was downloaded must not be two
+    different documents.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _resolve(self, request):
+        """→ ``(sales_code, card, signoff, period, error_response)``."""
+        from apps.staff_management.live_scorecard import build_card
+        from apps.staff_management.scorecard_signoff import period_for
+        from .models import ScorecardSignoff
+
+        asked = str(request.query_params.get("sales_code")
+                    or request.data.get("sales_code") or "").strip()
+        own = _own_sales_code(request)
+
+        if asked and asked.upper() != (own or "").upper():
+            if not _may_set_figures(request.user):
+                return None, None, None, None, Response(
+                    {"detail": "You can only send your own scorecard. "
+                               "Administration can send anybody's."},
+                    status=status.HTTP_403_FORBIDDEN)
+            sales_code = asked
+        else:
+            sales_code = own
+
+        if not sales_code:
+            return None, None, None, None, Response(
+                {"detail": "Your profile has no sales code, so there is no "
+                           "card to send."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        period = str(request.query_params.get("period")
+                     or request.data.get("period") or period_for()).strip()
+        signoff = ScorecardSignoff.objects.filter(
+            sales_code=sales_code, period=period).first()
+
+        if signoff and signoff.signed_at and signoff.card:
+            card = signoff.card
+        else:
+            card = build_card(sales_code)
+            if not card.get("has_card"):
+                return None, None, None, None, Response(
+                    card, status=status.HTTP_400_BAD_REQUEST)
+        return sales_code, card, signoff, period, None
+
+    def get(self, request):
+        from apps.staff_management import scorecard_email
+
+        sales_code, card, signoff, period, error = self._resolve(request)
+        if error is not None:
+            return error
+
+        to, cc, problems = scorecard_email.recipients_for(card)
+        subject, body = scorecard_email.compose(card, signoff)
+        return Response({
+            "sales_code": sales_code, "period": period,
+            "to": to, "cc": cc, "problems": problems,
+            "can_send": bool(to),
+            "is_signed": bool(getattr(signoff, "signed_at", None)),
+            "subject": subject, "preview": body,
+            "last_sent": self._history(sales_code, period),
+        })
+
+    def post(self, request):
+        from apps.staff_management import scorecard_email
+
+        sales_code, card, signoff, period, error = self._resolve(request)
+        if error is not None:
+            return error
+
+        extra = request.data.get("to") or []
+        if isinstance(extra, str):
+            extra = [part for part in extra.replace(";", ",").split(",")]
+
+        try:
+            sent = scorecard_email.send_card(
+                card, signoff, extra_to=extra,
+                who=(getattr(request.user, "get_full_name", lambda: "")()
+                     or getattr(request.user, "username", "")),
+                request_user=request.user)
+        except ValueError as exc:
+            # No address. Not an error in the usual sense - it is a thing
+            # somebody has to go and fix on the roster - so it comes back as
+            # the reason rather than a stack trace.
+            return Response({"detail": str(exc), "can_send": False},
+                            status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return Response(
+                {"detail": f"The mail server would not take it: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY)
+
+        recipients = [a for a in (sent.sent_to or "").split(", ") if a]
+        copied = [a for a in (sent.sent_cc or "").split(", ") if a]
+        return Response({
+            "sent": True, "sales_code": sales_code, "period": period,
+            "to": recipients, "cc": copied,
+            "sent_at": sent.sent_at,
+            "detail": (
+                f"Sent to {', '.join(recipients)}"
+                + (f", copying {', '.join(copied)}" if copied else "")
+                + ("." if getattr(signoff, "signed_at", None)
+                   else ", marked unsigned on the sheet.")),
+            "last_sent": self._history(sales_code, period),
+        })
+
+    @staticmethod
+    def _history(sales_code, period):
+        from .models import ScScorecardDispatch
+
+        return [
+            {"sent_at": row.sent_at, "to": row.sent_to, "cc": row.sent_cc,
+             "by": row.sent_by_name, "was_signed": row.was_signed}
+            for row in ScScorecardDispatch.objects.filter(
+                sales_code=sales_code, period=period)[:10]
+        ]
+
+
 # ── Administration: the figures the system cannot compute ────────────────────
 
 

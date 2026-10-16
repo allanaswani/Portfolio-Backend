@@ -61,8 +61,6 @@ MANUAL_ACTUALS = {
         "Mortgage sales at the market rate",
     "net_mortgage_sales_10_non_commercial_rate_mortgages":
         "Mortgage sales at the non-market rate",
-    "bancassurance_premiums": "Bancassurance — renewals and other products",
-    "other_bancassurance_premiums": "Bancassurance — other products",
 
     # ── the back-office cards ──
     # Operations staff are measured on controls and service rather than on a

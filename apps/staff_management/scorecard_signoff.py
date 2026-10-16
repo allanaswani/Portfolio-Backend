@@ -22,8 +22,11 @@ from __future__ import annotations
 import datetime
 from io import BytesIO
 
-HEADERS = ["#", "KPI", "Measure of success", "Weight", "YTD target",
-           "YTD actual", "As at", "Score", "Weighted"]
+#: The bank's own twelve columns, in the bank's own order and wording. Taken
+#: from the desk's scorecard workbook, which is the document a reviewer knows.
+HEADERS = ["COUNT", "KPI", "KPI Description", "Measure of Success", "Weight",
+           "2025 FY", "GROWTH", "2026 FY", "YTD Target", "ACTUAL", "% SCORE",
+           "Weighted Score"]
 
 
 def _money(value):
@@ -38,8 +41,30 @@ def _money(value):
 def build_card_workbook(card, signoff=None):
     """Render a card as an .xlsx workbook → ``BytesIO``.
 
-    ``card`` is the card dict — live, or the frozen copy off a sign-off.
-    ``signoff`` fills the signature block when the card has been signed.
+    Laid out as the BANK's own scorecard is laid out, cell for cell, because
+    this file is the one that goes to a reviewer and it has to be the document
+    they already know. The grid is taken from the desk's own workbook - the
+    sheets in ``Portfolio Management - Q3 2026_scorecards.xlsb``:
+
+        row 1   <year> <ROLE> OBJECTIVES
+        row 2   Staff Name: | name | Title: | title | Performance Score: | ..
+        row 3   BM Branch:  | brn  | Reports to: | manager | Performance Rating:
+        row 4   Review Period | period | Report to Title: | .. | Comments:
+        row 5   COUNT KPI "KPI Description" "Measure of Success" Weight
+                "2025 FY" GROWTH "2026 FY" "YTD Target" ACTUAL "% SCORE"
+                "Weighted Score"
+        rows    one per line, grouped by perspective, the perspective named
+                once in column B against the first of its lines
+        then    the weight total in E and the score total in L
+        then    the Reviewee and Reviewer signature rows
+
+    Weights and scores are written as FRACTIONS, as they are on the bank's
+    sheet - 0.05, not 5% - and the cells carry a percent number format so
+    Excel shows them the way the original does. The figures stay numbers, so
+    the reviewer can still check the arithmetic.
+
+    ``card`` is the card dict - live, or the frozen copy off a sign-off.
+    ``signoff`` fills the signature rows when the card has been signed.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -51,61 +76,65 @@ def build_card_workbook(card, signoff=None):
     ws = wb.active
     ws.title = "Scorecard"
 
-    thin = Side(style="thin", color="FFD6E4E8")
+    thin = Side(style="thin", color="FFBFD4DA")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     staff = card.get("staff") or {}
+    bold = Font(bold=True)
 
-    row = 1
+    def fraction(value):
+        """A weight or a score, kept as the fraction the bank's sheet holds.
 
-    def put(label, value, bold_label=True):
-        nonlocal row
-        ws.cell(row=row, column=1, value=label).font = Font(bold=bold_label)
-        ws.cell(row=row, column=2, value=value)
-        row += 1
+        NOT ``_money``: that rounds to two decimals, which is right for
+        shillings and turns a weighted score of 0.000945 into nought.
+        """
+        return None if value is None else round(float(value), 6)
 
+    def at(row, column, value, **font):
+        cell = ws.cell(row=row, column=column, value=value)
+        if font:
+            cell.font = Font(**font)
+        return cell
+
+    # ── the header block ──────────────────────────────────────────────────
     # The bank is HFCB. "HFC" is the old name and must not go out on a
     # document somebody puts their signature to.
-    ws.cell(row=row, column=1, value="HFCB PERFORMANCE SCORECARD").font = Font(
-        bold=True, size=14, color=teal)
-    row += 2
+    title = (staff.get("title") or "").upper()
+    at(1, 1, f"{datetime.date.today().year} {title} OBJECTIVES - HFCB",
+       bold=True, size=13, color=teal)
 
-    put("Name", staff.get("name") or "")
-    put("Sales code", staff.get("sales_code") or "")
-    put("Role", staff.get("title") or "")
-    put("Branch", staff.get("branch") or "")
-    put("Line manager", staff.get("team_leader") or "")
-    put("Period", (card.get("period") or {}).get("label") or "")
-    put("Performance score", _money((card.get("performance_score") or 0) * 100))
-    ws.cell(row=row - 1, column=3, value="%")
-    # "Lines scored: 14 of 19" and "Targets from branch_employee_dmc_data"
-    # used to be here. Both are off the sheet on purpose. They are this
-    # tool's own plumbing - how many lines it managed to compute and which
-    # warehouse table it read - and on a document somebody signs they read
-    # as a statement about the person. A table name on a bonus record also
-    # invites the question of what else is in the table.
-    #
-    # Nothing is hidden by this: a line with no figure still prints its own
-    # reason in the ACTUAL column, which is the honest version of the same
-    # information and is attached to the line it belongs to.
-    row += 1
+    at(2, 1, "Staff Name:", bold=True)
+    at(2, 3, staff.get("name") or "")
+    at(2, 4, "Title:", bold=True)
+    at(2, 5, staff.get("title") or "")
+    at(2, 7, "Performance Score:", bold=True)
+    score_cell = at(2, 11, fraction(card.get("performance_score") or 0),
+                    bold=True)
+    score_cell.number_format = "0.0%"
 
+    at(3, 1, "BM Branch:", bold=True)
+    at(3, 3, staff.get("branch") or "")
+    at(3, 4, "Reports to:", bold=True)
+    at(3, 5, staff.get("team_leader") or "")
+    at(3, 7, "Performance Rating:", bold=True)
+
+    at(4, 1, "Review Period", bold=True)
+    at(4, 3, (card.get("period") or {}).get("label") or "")
+    at(4, 4, "Report to Title:", bold=True)
+    at(4, 7, "Comments:", bold=True)
+
+    # ── the column headings ───────────────────────────────────────────────
+    for column, header in enumerate(HEADERS, start=1):
+        cell = at(5, column, header, bold=True, color="FFFFFFFF")
+        cell.fill = PatternFill("solid", fgColor=teal)
+        cell.border = box
+        cell.alignment = Alignment(wrap_text=True, vertical="center",
+                                   horizontal="center")
+
+    row = 6
+    group_number = 0
     for group in card.get("perspectives") or []:
-        cell = ws.cell(row=row, column=1,
-                       value=f"{group.get('perspective', '')}  "
-                             f"({_money((group.get('weight') or 0) * 100)}%)")
-        cell.font = Font(bold=True, color="FFFFFFFF")
-        for column in range(1, len(HEADERS) + 1):
-            ws.cell(row=row, column=column).fill = PatternFill(
-                "solid", fgColor=teal)
-        row += 1
-
-        for index, header in enumerate(HEADERS, start=1):
-            head = ws.cell(row=row, column=index, value=header)
-            head.font = Font(bold=True)
-            head.border = box
-            head.fill = PatternFill("solid", fgColor="FFF3F8F9")
-        row += 1
-
+        group_number += 1
+        first = True
         for line in group.get("lines") or []:
             pending = line.get("pending")
             # A line settled by rule rather than measured has no figure, and
@@ -114,68 +143,97 @@ def build_card_workbook(card, signoff=None):
             # survey measure does not apply to them.
             by_rule = (not pending and line.get("full_marks_rule")
                        and line.get("ytd_actual") is None)
-            values = [
-                line.get("kpi_order"),
-                line.get("kpi_name") or "",
-                line.get("measure_of_success") or "",
-                _money((line.get("weight") or 0) * 100),
-                _money(line.get("ytd_target")),
-                # A pending line prints WHY, not a zero. A zero in this column
-                # reads as "achieved nothing", which is a different statement
-                # from "nobody has this figure".
-                pending if pending else (
-                    "Full marks by rule - this measure does not apply"
-                    if by_rule else _money(line.get("ytd_actual"))),
-                line.get("as_at") or "",
-                None if pending else _money((line.get("score") or 0) * 100),
-                None if pending else _money(
-                    (line.get("weighted_score") or 0) * 100),
-            ]
-            for index, value in enumerate(values, start=1):
-                cell = ws.cell(row=row, column=index, value=value)
-                cell.border = box
-                if index in (2, 3, 6) and (pending or by_rule):
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+            if first:
+                # The perspective is named once, against its first line, and
+                # carries its own weight - "Financials (20.0%)" - which is
+                # how ``mapping_category`` already reads.
+                at(row, 1, group_number).alignment = Alignment(
+                    horizontal="center")
+                at(row, 2, group.get("perspective") or "", bold=True)
+                first = False
+
+            at(row, 3, line.get("kpi_name") or "")
+            at(row, 4, line.get("measure_of_success") or "")
+
+            weight = at(row, 5, fraction(line.get("weight")))
+            weight.number_format = "0.0%"
+
+            prior = _money(line.get("prior_year"))
+            annual = _money(line.get("annual_target"))
+            at(row, 6, prior)
+            # GROWTH is what the year's target adds to the prior year, which
+            # is how the bank's sheet reads it: F + G = H. With no prior year
+            # the whole target is the growth, and the printed card shows it
+            # that way too.
+            at(row, 7, None if annual is None
+               else round(annual - (prior or 0), 2))
+            at(row, 8, annual)
+            at(row, 9, _money(line.get("ytd_target")))
+
+            # A pending line prints WHY, not a zero. A zero in this column
+            # reads as "achieved nothing", which is a different statement
+            # from "nobody has this figure".
+            actual = at(row, 10, pending if pending else (
+                "Full marks by rule - this measure does not apply"
+                if by_rule else _money(line.get("ytd_actual"))))
+            if pending or by_rule:
+                actual.alignment = Alignment(wrap_text=True, vertical="top")
+
+            if not pending:
+                for column, value in ((11, line.get("score")),
+                                      (12, line.get("weighted_score"))):
+                    cell = at(row, column, fraction(value))
+                    cell.number_format = "0.0%"
+
+            for column in range(1, len(HEADERS) + 1):
+                ws.cell(row=row, column=column).border = box
             row += 1
-        row += 1
 
-    total = ws.cell(row=row, column=2, value="TOTAL PERFORMANCE SCORE")
-    total.font = Font(bold=True)
-    score = ws.cell(row=row, column=9,
-                    value=_money((card.get("performance_score") or 0) * 100))
-    score.font = Font(bold=True)
-    row += 3
-
-    # ── Signatures ────────────────────────────────────────────────────────
-    ws.cell(row=row, column=1, value="SIGN-OFF").font = Font(bold=True,
-                                                             color=teal)
+    # ── the totals ────────────────────────────────────────────────────────
     row += 1
+    weights = at(row, 5, fraction(sum(
+        float(line.get("weight") or 0)
+        for group in card.get("perspectives") or []
+        for line in group.get("lines") or [])), bold=True)
+    weights.number_format = "0.0%"
+    at(row, 2, "TOTAL PERFORMANCE SCORE", bold=True)
+    total = at(row, 12, fraction(card.get("performance_score") or 0),
+               bold=True)
+    total.number_format = "0.0%"
+
+    # ── the signature rows ────────────────────────────────────────────────
+    # Same two rows, same wording and same column positions as the printed
+    # card, so a reviewer signs where they expect to sign.
+    row += 2
     for who, name, when, comment in (
-        ("Staff member", getattr(signoff, "signed_by_name", "") or "",
+        ("Reviewee", getattr(signoff, "signed_by_name", "") or "",
          getattr(signoff, "signed_at", None),
          getattr(signoff, "owner_comment", "") or ""),
-        ("Line manager", getattr(signoff, "manager_signed_by_name", "") or "",
+        ("Reviewer", getattr(signoff, "manager_signed_by_name", "") or "",
          getattr(signoff, "manager_signed_at", None),
          getattr(signoff, "manager_comment", "") or ""),
     ):
-        ws.cell(row=row, column=1, value=who).font = Font(bold=True)
-        ws.cell(row=row, column=2, value=name or "………………………………")
-        ws.cell(row=row, column=3, value=(
-            when.strftime("%d %b %Y %H:%M") if when else "Date: ……………………"))
-        ws.cell(row=row, column=4, value=comment)
+        at(row, 1, f"{who} Name:", bold=True)
+        at(row, 3, name or "_" * 33)
+        at(row, 4, f"{who} Sign and date", bold=True)
+        at(row, 6, when.strftime("%d %b %Y %H:%M") if when else "_" * 21)
+        at(row, 8, "Comments:", bold=True)
+        at(row, 10, comment or "_" * 31)
         row += 2
 
     if not signoff or not getattr(signoff, "signed_at", None):
-        note = ws.cell(row=row, column=1, value=(
-            "This copy is unsigned and was taken from the live figures on "
-            f"{datetime.date.today():%d %b %Y}. The figures move; sign the "
-            "card in the portal to fix them."))
-        note.font = Font(italic=True, color="FF8A6A2A")
+        at(row, 1,
+           "This copy is unsigned and was taken from the live figures on "
+           f"{datetime.date.today():%d %b %Y}. The figures move; sign the "
+           "card in the portal to fix them.",
+           italic=True, color="FF8A6A2A")
 
-    widths = (5, 44, 40, 9, 16, 30, 20, 9, 10)
+    #: A, B … L, to the bank's own proportions.
+    widths = (7, 26, 34, 34, 8, 16, 16, 16, 16, 30, 10, 12)
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(index)].width = width
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "A6"
 
     # ── read-only ─────────────────────────────────────────────────────────
     # A scorecard is a record, and a signed one is a record somebody has put
