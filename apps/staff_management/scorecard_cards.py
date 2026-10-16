@@ -242,3 +242,248 @@ def save(entries, who="", month=None):
     from .scorecard_workbook import save as write
 
     return write(entries, who=who, month=month)
+
+
+# -- The back-office layout --------------------------------------------------
+# TELLER_SCORECARD and CSO_SCORECARD are a different sheet from the sales card
+# above, and the differences matter:
+#
+#   * the header block is a two-column form, not the sales card's four rows;
+#   * there is no "2025 FY" and no annual target. There is F, the assigned
+#     level, and G, the YEAR-TO-DATE target, and the card has already
+#     pro-rated one into the other;
+#   * column L, "column_name", names the FEED - CASA, KYC, Branch_Audit,
+#     Trx_Productivity - which is the same vocabulary the back-office actuals
+#     template uses. A line is mapped by its feed, not by matching its
+#     wording, because "Branch Audit" names three different lines.
+#
+# Only the ACTUAL is loaded from these. See :func:`plan_back_office`.
+
+BO_ROW_NAME = 1            # Staff Name / Emp. Name: | <name>
+BO_ROW_JOB = 2             # Job Title:              | <title>
+BO_ROW_BRANCH = 3          # Branch | <branch> | Performance Period | <period>
+BO_ROW_HEADER = 7          # Perspective | Measure | ... | column_name
+
+BO_COL_VALUE = 2           # the value beside a label in the header block
+BO_COL_SECOND = 5          # the value beside the second label
+BO_COL_MEASURE = 2
+BO_COL_INITIATIVE = 3
+BO_COL_WEIGHT = 4
+BO_COL_YTD_TARGET = 6
+BO_COL_ACTUAL = 7
+BO_COL_FEED = 11           # "column_name"
+
+
+def looks_like_a_back_office_card(rows):
+    """Is this the TELLER / CSO layout? -> bool."""
+    if len(rows) <= BO_ROW_HEADER:
+        return False
+    header = " ".join(_text(rows[BO_ROW_HEADER], i) for i in range(0, 14))
+    header = header.lower()
+    return "column_name" in header and "perspective" in header
+
+
+def read_back_office_card(path_or_stream):
+    """A teller's or CSO's own scorecard -> a card dict.
+
+    The same shape :func:`read_card` returns, so the rest of the loader does
+    not care which layout a card arrived in - except that every line carries
+    ``feed`` instead of ``slug``, and ``annual_target`` is always None.
+    """
+    from openpyxl import load_workbook
+
+    book = load_workbook(path_or_stream, data_only=True, read_only=True)
+    sheet = book[book.sheetnames[0]]
+    rows = [list(r) for r in sheet.iter_rows(values_only=True)]
+    if not looks_like_a_back_office_card(rows):
+        raise ValueError(
+            "that sheet is not a back-office scorecard - row 8 should carry "
+            "Perspective and column_name")
+
+    card = {
+        "layout": "back_office",
+        "title_line": _text(rows[0], 1),
+        "staff_name": _text(rows[BO_ROW_NAME], BO_COL_VALUE),
+        "staff_title": _text(rows[BO_ROW_JOB], BO_COL_VALUE),
+        "branch": _text(rows[BO_ROW_BRANCH], BO_COL_VALUE),
+        "manager": _text(rows[BO_ROW_NAME], BO_COL_SECOND),
+        "period": _text(rows[BO_ROW_BRANCH], BO_COL_SECOND),
+        "lines": [],
+    }
+    if not card["staff_name"]:
+        raise ValueError("that card has no staff name on it")
+
+    for row in rows[BO_ROW_HEADER + 1:]:
+        weight = _number(row[BO_COL_WEIGHT]
+                         if BO_COL_WEIGHT < len(row) else None)
+        if weight is None:
+            continue
+        feed = _text(row, BO_COL_FEED)
+        measure = _text(row, BO_COL_MEASURE)
+        initiative = _text(row, BO_COL_INITIATIVE)
+        if not (feed or measure or initiative):
+            # The weight TOTAL at the foot of the card: a lone 1.0 in the
+            # weight column with nothing beside it. It is not a line.
+            continue
+        card["lines"].append({
+            "description": measure or initiative or feed,
+            "feed": feed,
+            "measure": initiative,
+            "weight": weight,
+            "prev_fy": None,
+            # Deliberately None - see plan_back_office.
+            "annual_target": None,
+            "ytd_target": _number(
+                row[BO_COL_YTD_TARGET]
+                if BO_COL_YTD_TARGET < len(row) else None),
+            "actual": _number(
+                row[BO_COL_ACTUAL] if BO_COL_ACTUAL < len(row) else None),
+            "slug": "",
+        })
+    return card
+
+
+def read_any(path_or_stream):
+    """Read a card of either layout -> a card dict.
+
+    The sales layout first, because it is the common one; the back-office
+    layout when that refuses.
+    """
+    try:
+        return read_card(path_or_stream)
+    except ValueError:
+        if hasattr(path_or_stream, "seek"):
+            path_or_stream.seek(0)
+        return read_back_office_card(path_or_stream)
+
+
+def plan_back_office(cards):
+    """What a teller's or CSO's own card would write.
+
+    -> ``(entries, report)``. **Actuals only. The targets are deliberately
+    left alone.**
+
+    These cards carry no annual target. They carry an assigned level
+    (column F) and a YEAR-TO-DATE target (column G), and the card has already
+    pro-rated the one into the other. ``ScEmployeeKpiTarget`` holds a YEAR's
+    target which the platform pro-rates to the date the actual is as at - so
+    loading column G would pro-rate a second time, and loading column F would
+    be wrong the other way, because F is a MONTHLY level on some lines
+    (Jane Karathe: CRM "100 complaints logged MOM", 100 -> 900 by September)
+    and an annual one on others (Training, 48 -> 36 by September).
+
+    Nor is the fraction the same for everybody: Jane Karathe's card is
+    pro-rated to nine months and Eunice Maina's to three, because it follows
+    the person rather than the calendar. There is no rule that could be
+    applied safely to both, so the targets stay as migration 0031 seeded them
+    - from these very cards - and only the measured figures are taken.
+    """
+    from .bo_actuals import sheet_to_kpi
+    from .scorecard_automation.models import ScRoleKpiMapping
+
+    feeds = sheet_to_kpi()
+    entries, report = [], {
+        "cards": [], "targets": 0, "actuals": 0,
+        "unmapped": [], "no_person": [], "mismatched_title": [],
+        "targets_left_alone": 0,
+    }
+
+    for card in cards:
+        person, why = resolve(card)
+        summary = {
+            "staff_name": card["staff_name"],
+            "staff_title": card["staff_title"],
+            "branch": card["branch"], "period": card["period"],
+            "sales_code": person.sales_code if person else "",
+            "role_code": person.role_code if person else "",
+            "matched": bool(person), "targets": 0, "actuals": 0,
+            "unmapped": 0,
+        }
+        if person is None:
+            report["no_person"].append(
+                {"staff_name": card["staff_name"], "why": why})
+            report["cards"].append(summary)
+            continue
+
+        mappings = list(ScRoleKpiMapping.objects
+                        .filter(role_code=person.role_code))
+        on_card = {m.kpi_code for m in mappings}
+
+        # Some lines name no feed. A teller's card carries "Customer
+        # feedback" twice - "Nil client complaints" and "Achieve 5 client
+        # compliments" - and only the measure above them names a column, so
+        # the feed cannot tell the two apart and neither could be placed.
+        #
+        # Their KEY INITIATIVE can: the seeded card holds that same wording
+        # as its own description, which is how migration 0031 told them
+        # apart in the first place. Exact on the normalised text, so this is
+        # a match rather than a guess, and only consulted when the feed has
+        # not already answered.
+        by_initiative = {}
+        for mapping in mappings:
+            text = slug(getattr(mapping, "kpi_description", "") or "")
+            if text:
+                by_initiative.setdefault(text, []).append(mapping.kpi_code)
+
+        for line in card["lines"]:
+            if line["actual"] is None:
+                continue
+            codes = [c for c in feeds.get(line["feed"], []) if c in on_card]
+            if not codes:
+                # The card's own wording for this line, where the feed did
+                # not place it. Only when exactly one line on their card
+                # carries that wording.
+                candidates = by_initiative.get(slug(line["measure"]), [])
+                if len(candidates) == 1:
+                    codes = candidates
+            if not codes:
+                summary["unmapped"] += 1
+                report["unmapped"].append({
+                    "staff_name": card["staff_name"],
+                    "line": line["description"],
+                    "feed": line["feed"],
+                    "why": ("the card names no feed for this line"
+                            if not line["feed"] else
+                            f"no line on the {person.role_code} card reads "
+                            f"{line['feed']}")})
+                continue
+            for code in codes:
+                entries.append({
+                    "kind": "actual", "sales_code": person.sales_code,
+                    "kpi_code": code, "value": line["actual"],
+                    "line": line["description"]})
+                summary["actuals"] += 1
+                report["actuals"] += 1
+            if line["ytd_target"] is not None:
+                report["targets_left_alone"] += 1
+
+        report["cards"].append(summary)
+    return entries, report
+
+
+def plan_any(cards):
+    """Plan a mixed pile of cards -> ``(entries, report)``.
+
+    Each layout is planned by its own rules and the reports are added
+    together, so somebody uploading everything at once gets one answer rather
+    than having to sort the files first.
+    """
+    sales = [c for c in cards if c.get("layout") != "back_office"]
+    back_office = [c for c in cards if c.get("layout") == "back_office"]
+
+    if sales:
+        entries, report = plan(sales)
+    else:
+        entries, report = [], {
+            "cards": [], "targets": 0, "actuals": 0, "unmapped": [],
+            "no_person": [], "mismatched_title": []}
+    report.setdefault("targets_left_alone", 0)
+
+    if back_office:
+        more, other = plan_back_office(back_office)
+        entries = entries + more
+        for key in ("targets", "actuals", "targets_left_alone"):
+            report[key] = report.get(key, 0) + other.get(key, 0)
+        for key in ("cards", "unmapped", "no_person", "mismatched_title"):
+            report[key] = list(report.get(key, [])) + list(other.get(key, []))
+    return entries, report

@@ -262,3 +262,199 @@ class TheRealCardsTests(TestCase):
         self.assertEqual(report["unmapped"], [],
                          "every line on a real card should map")
         self.assertGreaterEqual(report["targets"], 15)
+
+
+# -- The teller / CSO layout -------------------------------------------------
+
+def a_back_office_file(name="Eunice Maina", title="Teller",
+                       branch="Hurlingham", lines=()):
+    """Build a teller/CSO scorecard in its own layout -> BytesIO."""
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "TELLER_SCORECARD"
+    sheet["B1"] = "2026 TELLER SCORECARD"
+    sheet["B2"], sheet["C2"] = "Staff Name", name
+    sheet["E2"], sheet["F2"] = "Immediate Line Manager", "Mwihaki Muiruri"
+    sheet["B3"], sheet["C3"] = "Job Title:", title
+    sheet["B4"], sheet["C4"] = "Branch", branch
+    sheet["E4"], sheet["F4"] = "Performance Period", "Q3_Sep_2026"
+    for column, header in enumerate(
+            ["Perspective", "Measure ", "Key Initiatives", "Weight on Target",
+             "PM", "YTD Target", "Actual Achievement", "% Achievement",
+             "Weighted Average", "Comments", "column_name", "prorate_new"],
+            start=2):
+        sheet.cell(row=8, column=column, value=header)
+
+    row = 10
+    for measure, initiative, weight, assigned, ytd, actual, feed in lines:
+        sheet.cell(row=row, column=3, value=measure)
+        sheet.cell(row=row, column=4, value=initiative)
+        sheet.cell(row=row, column=5, value=weight)
+        sheet.cell(row=row, column=6, value=assigned)
+        sheet.cell(row=row, column=7, value=ytd)
+        sheet.cell(row=row, column=8, value=actual)
+        sheet.cell(row=row, column=12, value=feed)
+        row += 1
+
+    # The weight total, which is not a line.
+    sheet.cell(row=row + 1, column=5, value=1)
+    sheet.cell(row=row + 3, column=2, value="TOTAL SCORE:")
+
+    buffer = BytesIO()
+    book.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+EUNICE = [
+    ("Account Opening", "Open 4 funded accounts - Focus",
+     0.075, 4, 12, 0, "CASA"),
+    ("KYC", "KYC Update(Drive data clenup through KYC)",
+     0.05, 30, 90, 184, "KYC"),
+    ("Customer feedback", "Nil client complaints", 0.075, 0, 0, 0, ""),
+    ("", "Achieve 5 client compliments", 0.075, 5, 15, 15, ""),
+    ("Training hours", "Achieve training hours as per assigned target",
+     0.05, 48, 12, 12, "Training_hours"),
+]
+
+
+class ReadingABackOfficeCardTests(TestCase):
+    def test_the_layout_is_recognised_without_being_told(self):
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        self.assertEqual(card["layout"], "back_office")
+        self.assertEqual(card["staff_name"], "Eunice Maina")
+        self.assertEqual(card["staff_title"], "Teller")
+        self.assertEqual(card["branch"], "Hurlingham")
+        self.assertEqual(card["period"], "Q3_Sep_2026")
+
+    def test_the_feed_column_is_read(self):
+        """column_name names the FEED, which is how a line is placed -
+        "Branch Audit" names three different lines and its wording cannot."""
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        feeds = [ln["feed"] for ln in card["lines"]]
+        self.assertIn("CASA", feeds)
+        self.assertIn("Training_hours", feeds)
+
+    def test_the_weight_total_is_not_read_as_a_line(self):
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        self.assertEqual(len(card["lines"]), len(EUNICE))
+
+    def test_no_annual_target_is_taken_from_these(self):
+        """They carry an assigned level and a YEAR-TO-DATE target, and the
+        card has already pro-rated."""
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        self.assertTrue(all(ln["annual_target"] is None
+                            for ln in card["lines"]))
+
+
+class WhatABackOfficeCardWritesTests(TestCase):
+    CODE = "EM4396"
+
+    def setUp(self):
+        from .models import EmployeeRoleHistory, StaffEmployeeData
+
+        day = datetime.date(2020, 1, 1)
+        StaffEmployeeData.objects.create(
+            staff_pf_number="4396", staff_name="Eunice Maina",
+            sales_code=self.CODE, job_title="Teller",
+            employment_date=day, is_active=True)
+        EmployeeRoleHistory.objects.get_or_create(
+            sales_code=self.CODE, role_code="bo_teller", start_date=day,
+            defaults={"role_status": "active"})
+
+    def test_the_actuals_reach_her_card(self):
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        entries, report = scorecard_cards.plan_any([card])
+        self.assertEqual(report["unmapped"], [])
+        self.assertEqual(report["actuals"], len(EUNICE))
+        written = {e["kpi_code"]: e["value"] for e in entries}
+        self.assertEqual(written["bo_kyc"], 184)
+        self.assertEqual(written["bo_training_hours"], 12)
+
+    def test_no_target_is_written_from_a_back_office_card(self):
+        """Loading the year-to-date target would have the platform pro-rate
+        an already pro-rated figure."""
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        entries, report = scorecard_cards.plan_any([card])
+        self.assertEqual(report["targets"], 0)
+        self.assertEqual([e for e in entries if e["kind"] == "target"], [])
+        self.assertGreater(report["targets_left_alone"], 0)
+
+    def test_a_line_with_no_feed_is_placed_by_its_own_wording(self):
+        """A teller's card carries "Customer feedback" twice and only the
+        measure above them names a column. Their KEY INITIATIVE tells them
+        apart, and the seeded card holds that same wording."""
+        card = scorecard_cards.read_any(a_back_office_file(lines=EUNICE))
+        entries, _report = scorecard_cards.plan_any([card])
+        codes = {e["kpi_code"] for e in entries}
+        self.assertIn("bo_customer_feedback_nil_client_complaints", codes)
+        self.assertIn(
+            "bo_customer_feedback_achieve_5_client_compliments", codes)
+
+    def test_a_feed_that_is_not_on_their_card_is_reported(self):
+        card = scorecard_cards.read_any(a_back_office_file(lines=[
+            ("Something", "Not on a teller card", 0.1, 1, 1, 5,
+             "Diaspora_Audit")]))
+        entries, report = scorecard_cards.plan_any([card])
+        self.assertEqual(entries, [])
+        self.assertEqual(len(report["unmapped"]), 1)
+        self.assertIn("bo_teller", report["unmapped"][0]["why"])
+
+    def test_a_mixed_pile_is_planned_in_one_go(self):
+        """An administrator uploads everything at once rather than sorting
+        the files first."""
+        from .models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=3807, staff_name="Lydia Apanja",
+            sales_code="LAA3807", staff_role="PB ARM",
+            staff_branch="Naivasha", staff_unit="Naivasha", active=1)
+
+        cards = [scorecard_cards.read_any(a_card_file(lines=LYDIA)),
+                 scorecard_cards.read_any(a_back_office_file(lines=EUNICE))]
+        _entries, report = scorecard_cards.plan_any(cards)
+        self.assertEqual(len(report["cards"]), 2)
+        self.assertTrue(all(c["matched"] for c in report["cards"]))
+        # The sales card contributes targets; the back-office card does not.
+        self.assertEqual(report["targets"], 3)
+        self.assertEqual(report["actuals"], 3 + len(EUNICE))
+
+
+class TheRealBackOfficeCardsTests(TestCase):
+    """Against the actual files, where they are on this machine."""
+
+    PATHS = (
+        (r"C:\Users\washingtone.amolo\Downloads"
+         r"\Eunice Maina_Q3_Sep_2026_Scorecard.xlsx", "Eunice Maina",
+         "EM4396", "bo_teller", "Teller"),
+        (r"C:\Users\washingtone.amolo\Downloads"
+         r"\Jane Karathe_Q3_Sep_2026_Scorecard.xlsx", "Jane Karathe",
+         "JK4500", "bo_cso", "Customer Service"),
+    )
+
+    def test_every_line_on_the_real_cards_is_placed(self):
+        import pathlib as _pathlib
+
+        from .models import EmployeeRoleHistory, StaffEmployeeData
+
+        day = datetime.date(2020, 1, 1)
+        cards = []
+        for index, item in enumerate(self.PATHS):
+            path, name, code, role, title = item
+            if not _pathlib.Path(path).exists():
+                self.skipTest("the real cards are not on this machine")
+            StaffEmployeeData.objects.create(
+                staff_pf_number=f"900{index}", staff_name=name,
+                sales_code=code, job_title=title,
+                employment_date=day, is_active=True)
+            EmployeeRoleHistory.objects.get_or_create(
+                sales_code=code, role_code=role, start_date=day,
+                defaults={"role_status": "active"})
+            cards.append(scorecard_cards.read_any(path))
+
+        _entries, report = scorecard_cards.plan_any(cards)
+        self.assertEqual(report["unmapped"], [],
+                         "every line on a real card should be placed")
+        self.assertEqual(report["actuals"], 25)

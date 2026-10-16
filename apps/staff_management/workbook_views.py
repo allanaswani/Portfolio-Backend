@@ -228,7 +228,7 @@ class ScorecardCardsUploadView(APIView):
                                 "why": "not an Excel workbook"})
                 continue
             try:
-                cards.append(scorecard_cards.read_card(upload))
+                cards.append(scorecard_cards.read_any(upload))
             except Exception as exc:  # noqa: BLE001 - the reason is useful
                 skipped.append({"file": upload.name, "why": str(exc)})
 
@@ -239,7 +239,7 @@ class ScorecardCardsUploadView(APIView):
                            "scorecard."),
             }, status=400)
 
-        entries, report = scorecard_cards.plan(cards)
+        entries, report = scorecard_cards.plan_any(cards)
         report["skipped"] = skipped
         report["read"] = len(cards)
 

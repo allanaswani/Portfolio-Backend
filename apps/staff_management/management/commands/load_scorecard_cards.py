@@ -1,4 +1,4 @@
-"""Load people's own signed scorecards.
+"""Load people's own signed scorecards - sales and back office.
 
     manage.py load_scorecard_cards "C:/cards/*.xlsx" --dry-run
     manage.py load_scorecard_cards /data/cards/
@@ -54,7 +54,7 @@ class Command(BaseCommand):
         cards, skipped = [], []
         for path in paths:
             try:
-                cards.append(scorecard_cards.read_card(path))
+                cards.append(scorecard_cards.read_any(path))
             except Exception as exc:  # noqa: BLE001 - the reason is useful
                 skipped.append((pathlib.Path(path).name, str(exc)))
 
@@ -67,11 +67,16 @@ class Command(BaseCommand):
         if not cards:
             raise CommandError("None of those files is a scorecard.")
 
-        entries, report = scorecard_cards.plan(cards)
+        entries, report = scorecard_cards.plan_any(cards)
         matched = sum(1 for c in report["cards"] if c["matched"])
         write(f"  matched a person  {matched} of {len(cards)}")
         write(f"  to write          {report['targets']} target(s), "
               f"{report['actuals']} actual(s)")
+        if report.get("targets_left_alone"):
+            write(f"  targets kept      {report['targets_left_alone']} on the "
+                  f"teller / CSO cards. Those carry a YEAR-TO-DATE target, "
+                  f"already pro-rated, and the platform pro-rates a year's "
+                  f"target itself - loading them would do it twice.")
 
         if report["no_person"]:
             write("")
