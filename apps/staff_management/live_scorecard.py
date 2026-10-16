@@ -452,18 +452,31 @@ _register(["bo_vic_life"], Source(actual_key="banca_life"))
 _register(["bo_vic_non_life"], Source(actual_key="banca_non_life"))
 
 # ── measured, but not for a person ───────────────────────────────────────
-# Account-opening turnaround is a BRANCH service measure. iApply's TAT is loan
-# turnaround and is not the same thing, so pointing these at it would put a
-# loan figure against an account-opening target.
-for _code, _what in (
-    ("bo_account_opening_pb", "personal banking"),
-    ("bo_account_opening_bb", "business banking"),
-    ("bo_account_opening_ub", "ultimate banking"),
-):
-    SOURCES[_code] = Source(pending=(
-        f"Account-opening turnaround for {_what}. The warehouse carries LOAN "
-        f"turnaround, in iApply, which is a different measure - so this comes "
-        f"off the account-opening return rather than being inferred from it."))
+# Account-opening turnaround, from iApply's ACCOUNTS trail.
+#
+# These were refused on the grounds that iApply carries LOAN turnaround and
+# pointing an account-opening line at it would put a loan figure against an
+# account-opening target. That is true of
+# ``iapply_loan_approvals_data_dump``, which is where tat_days reads. It is
+# NOT true of ``iapply_accounts_tat``, the account application trail, which
+# is what the desk's own accounts-TAT report reads - see
+# ``apps.staff_management.account_opening``.
+#
+# A number of DAYS, and lower is better: the cards say "PB AO TAT OF 1 Day".
+# The turnaround is per APPLICATION, so a branch's figure is not dragged by
+# an application that went round the houses.
+_register(["bo_account_opening_pb"],
+          Source(actual_key="ao_tat_pb", higher_is_better=False))
+_register(["bo_account_opening_bb"],
+          Source(actual_key="ao_tat_bb", higher_is_better=False))
+_register(["bo_account_opening_ub"],
+          Source(actual_key="ao_tat_ub", higher_is_better=False))
+# SME and business banking are the same population - ``core.segments`` reads
+# BUSINESS BANKING, SME, SMALL ENTERPRISES and MEDIUM ENTERPRISES as one
+# segment - so this line differs from the BB one only in its target, five
+# days against one, which is already on the card.
+_register(["bo_account_opening_sme"],
+          Source(actual_key="ao_tat_sme", higher_is_better=False))
 
 # ── the control and service measures ─────────────────────────────────────
 # Each names the return it comes from, because "measured elsewhere" without
@@ -505,9 +518,6 @@ for _code, _why in (
      "the card names a sheet called Account_Errors, which the actuals "
      "template does not have. Trx_Errors and RBO_Account_Errors both exist "
      "and either could be meant, so neither is assumed."),
-    ("bo_account_opening_sme",
-     "the card names Account_Opening_sme. The template has PB, BB and UB "
-     "account-opening sheets and no SME one."),
     ("bo_bbm_financials",
      "the card names BBM_Financials, which is not one of the template's 37 "
      "feeds."),
@@ -1668,6 +1678,37 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 "tat_within_sla": _figure(within, at, label)}
 
     attempt(("tat_days", "tat_within_sla"), turnaround)
+
+    # ── Account-opening turnaround, by segment ────────────────────────────
+    # A different feed from the loan turnaround above, and a different
+    # measure: iapply_accounts_tat is the ACCOUNT application trail.
+    def account_opening():
+        from . import account_opening as ao
+
+        out_ = {}
+        try:
+            for segment in ("pb", "bb", "ub", "sme"):
+                days, applications, latest = ao.turnaround(
+                    sales_code, year, segment)
+                key = f"ao_tat_{segment}"
+                if not applications:
+                    out_[key] = _figure(None, problem=(
+                        f"no account-opening applications under this sales "
+                        f"code in {year} for that segment"))
+                    continue
+                at = latest or monthly
+                out_[key] = _figure(
+                    days, at,
+                    f"{applications} account"
+                    f"{'' if applications == 1 else 's'} opened, average "
+                    f"turnaround to {at.day} {at:%b %Y}")
+        except ao.AccountOpeningUnavailable as exc:
+            return {f"ao_tat_{seg}": _figure(None, problem=str(exc))
+                    for seg in ("pb", "bb", "ub", "sme")}
+        return out_
+
+    attempt(("ao_tat_pb", "ao_tat_bb", "ao_tat_ub", "ao_tat_sme"),
+            account_opening)
 
     # ── Portfolio at risk ─────────────────────────────────────────────────
     def par():
