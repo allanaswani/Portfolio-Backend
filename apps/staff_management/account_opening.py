@@ -68,68 +68,86 @@ NAMED_ELSEWHERE = (
 )
 
 
-def turnaround(sales_code, year, segment):
-    """Account-opening turnaround for one person in one segment.
+def turnarounds(sales_code, year):
+    """Account-opening turnaround for one person, every segment at once.
 
-    → ``(average_days, applications, latest)``, or ``(None, 0, None)`` when
-    there is nothing to measure. Raises nothing: a feed that cannot be read
-    is reported by the caller as a reason, not as a nought.
+    → ``{segment: (average_days, applications, latest)}``.
 
-    The average is over APPLICATIONS, not over status changes - an
-    application that went round the houses would otherwise count six times
-    and drag the branch's figure with it.
+    ONE pass. ``iapply_accounts_tat`` is 611,218 rows and nothing indexes
+    ``SellerCode``, so a query per segment meant four scans of it for every
+    card built. The segments are separated with FILTER instead, which costs
+    one scan however many of them a card carries.
+
+    The average is over APPLICATIONS, not over status changes - the table is
+    a row per status change, and an application that went round the houses
+    would otherwise count six times and drag the branch's figure with it.
     """
     from django.db import connection, transaction
 
-    buckets = SEGMENTS.get(segment)
-    if buckets is None:
-        return None, 0, None
+    # ``CreationDate`` is a varchar and ``ActionDate`` is a timestamp, so one
+    # of these guards is load-bearing and the other is insurance against a
+    # host where the types differ. Both go through ::text::timestamp:
+    # casting a timestamp to text gives the ISO form, which parses back
+    # exactly, and ::timestamp rather than ::timestamptz keeps the session's
+    # time zone out of a figure measured in days.
+    started = ('MIN(CASE WHEN "CreationDate"::text '
+               "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
+               'THEN "CreationDate"::text::timestamp END)')
+    finished = ('MAX(CASE WHEN "ActionDate"::text '
+                "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
+                'THEN "ActionDate"::text::timestamp END)')
 
-    if segment == "pb":
-        # The ETL's ELSE: personal banking is everything not claimed by
-        # another segment, so a segment nobody has mapped still lands
-        # somewhere rather than vanishing from every card.
-        where_segment = (
-            "(UPPER(TRIM(COALESCE(c.segment, ''))) = ANY(%s) "
-            " OR UPPER(TRIM(COALESCE(c.segment, ''))) <> ALL(%s))")
-        params_segment = [list(buckets), list(NAMED_ELSEWHERE)]
-    else:
-        where_segment = "UPPER(TRIM(COALESCE(c.segment, ''))) = ANY(%s)"
-        params_segment = [list(buckets)]
+    pieces, params = [], [sales_code.strip(), year]
+    order = []
+    for segment in ("pb", "bb", "ub", "sme"):
+        if segment == "pb":
+            # The ETL's ELSE: personal banking is everything not claimed by
+            # another segment, so a segment nobody has mapped still lands
+            # somewhere rather than vanishing from every card.
+            where = "(s.segment = ANY(%s) OR s.segment <> ALL(%s))"
+            params_for = [list(SEGMENTS[segment]), list(NAMED_ELSEWHERE)]
+        else:
+            where = "s.segment = ANY(%s)"
+            params_for = [list(SEGMENTS[segment])]
+
+        pieces.append(
+            f"AVG(EXTRACT(EPOCH FROM (s.finished - s.started)) / 86400.0) "
+            f"FILTER (WHERE {where}) AS days_{segment}")
+        pieces.append(
+            f"COUNT(*) FILTER (WHERE {where}) AS seen_{segment}")
+        pieces.append(
+            f"MAX(s.finished) FILTER (WHERE {where}) AS latest_{segment}")
+        # Each FILTER repeats the predicate, so the parameters go in three
+        # times - in the order the placeholders appear.
+        params.extend(params_for * 3)
+        order.append(segment)
 
     sql = f"""
         WITH trail AS (
-            SELECT iat."ApplicationId" AS application,
-                   MIN(NULLIF(regexp_replace(iat."Customerid"::text,
+            SELECT "ApplicationId" AS application,
+                   MIN(NULLIF(regexp_replace("Customerid"::text,
                                              '\\D', '', 'g'), ''))::bigint
                        AS cust_id,
-                   MIN(CASE WHEN iat."CreationDate"::text
-                                 ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-                            THEN iat."CreationDate"::text::timestamptz END)
-                       AS started,
-                   MAX(CASE WHEN iat."ActionDate"::text
-                                 ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-                            THEN iat."ActionDate"::text::timestamptz END)
-                       AS finished
-            FROM iapply_accounts_tat iat
-            WHERE UPPER(TRIM(COALESCE(iat."SellerCode", '')))
-                  = UPPER(TRIM(%s))
-            GROUP BY iat."ApplicationId"
+                   {started} AS started,
+                   {finished} AS finished
+            FROM iapply_accounts_tat
+            WHERE UPPER(TRIM(COALESCE("SellerCode", ''))) = UPPER(TRIM(%s))
+            GROUP BY "ApplicationId"
+        ), scoped AS (
+            SELECT t.started, t.finished,
+                   UPPER(TRIM(COALESCE(c.segment, ''))) AS segment
+            FROM trail t
+            LEFT JOIN customers c ON c.cust_id = t.cust_id
+            WHERE t.started IS NOT NULL
+              AND t.finished IS NOT NULL
+              -- A trail that runs backwards is a correction, not a
+              -- turnaround.
+              AND t.finished >= t.started
+              AND EXTRACT(YEAR FROM t.started) = %s
         )
-        SELECT AVG(EXTRACT(EPOCH FROM (t.finished - t.started)) / 86400.0),
-               COUNT(*),
-               MAX(t.finished)
-        FROM trail t
-        LEFT JOIN customers c ON c.cust_id = t.cust_id
-        WHERE t.started IS NOT NULL
-          AND t.finished IS NOT NULL
-          -- A trail that runs backwards is a correction, not a turnaround.
-          AND t.finished >= t.started
-          AND EXTRACT(YEAR FROM t.started) = %s
-          AND {where_segment}
+        SELECT {', '.join(pieces)}
+        FROM scoped s
     """
-
-    params = [sales_code.strip(), year] + params_segment
 
     try:
         with transaction.atomic(), connection.cursor() as cur:
@@ -138,16 +156,34 @@ def turnaround(sales_code, year, segment):
             # absent. Same pattern as observability.health.
             cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
             cur.execute(sql, params)
-            average, applications, latest = cur.fetchone()
+            row = cur.fetchone()
     except Exception as exc:  # noqa: BLE001 - the caller turns this into a
         # reason on the line. Nothing is reported as nought on the strength
         # of a read that did not finish.
         raise AccountOpeningUnavailable(_why(exc)) from exc
 
-    if not applications:
-        return None, 0, None
-    return (float(average), int(applications),
+    out = {}
+    for index, segment in enumerate(order):
+        average, applications, latest = row[index * 3:index * 3 + 3]
+        if not applications:
+            out[segment] = (None, 0, None)
+            continue
+        out[segment] = (
+            float(average), int(applications),
             latest.date() if hasattr(latest, "date") else latest)
+    return out
+
+
+def turnaround(sales_code, year, segment):
+    """One segment → ``(average_days, applications, latest)``.
+
+    A thin wrapper over :func:`turnarounds`, which reads them all in one
+    pass. Kept because asking about one segment is the readable thing to do
+    from a test.
+    """
+    if segment not in SEGMENTS:
+        return None, 0, None
+    return turnarounds(sales_code, year)[segment]
 
 
 class AccountOpeningUnavailable(Exception):

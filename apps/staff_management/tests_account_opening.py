@@ -24,9 +24,11 @@ YEAR = 2026
 def make_the_feeds():
     """Create the trail and the customer master it joins to.
 
-    Both are warehouse tables, so Django does not create them. The dates are
-    TEXT and ``Customerid`` is text, exactly as iApply wrote them - which is
-    the whole reason the reader guards every cast.
+    Both are warehouse tables, so Django does not create them. The types are
+    the LIVE ones, read off the real table: ``CreationDate`` is a varchar,
+    ``ActionDate`` is a timestamp, and ``Customerid`` is a varchar. That
+    mixture is the whole reason the reader guards both date casts and strips
+    non-digits before joining.
     """
     with connection.cursor() as cur:
         cur.execute('''
@@ -35,8 +37,8 @@ def make_the_feeds():
                 "ApplicationId" varchar(40),
                 "Customerid" varchar(40),
                 "SellerCode" varchar(40),
-                "CreationDate" text,
-                "ActionDate" text,
+                "CreationDate" varchar(40),
+                "ActionDate" timestamp without time zone,
                 "StatusTo" varchar(80)
             )
         ''')
@@ -89,14 +91,43 @@ class TurnaroundTests(TestCase):
         # (4 + 1) / 2, not (4 x 6 + 1) / 7.
         self.assertAlmostEqual(days, 2.5, places=4)
 
-    def test_a_malformed_date_does_not_fail_the_whole_read(self):
-        """The dates are TEXT. One bad value used to be enough to take the
-        statement down, and with it the card."""
+    def test_a_malformed_creation_date_does_not_fail_the_whole_read(self):
+        """``CreationDate`` is a VARCHAR on the live table. One bad value in
+        600,000 rows would otherwise take the statement down, and with it the
+        whole card - not just this line."""
         a_step("BA1", 1, "2026-03-01 00:00:00", "2026-03-02 00:00:00")
-        a_step("BA2", 1, "not a date", "also not a date")
+        a_step("BA2", 1, "not a date", "2026-03-02 00:00:00")
         days, applications, _latest = ao.turnaround(CODE, YEAR, "pb")
         self.assertEqual(applications, 1)
         self.assertAlmostEqual(days, 1.0, places=4)
+
+    def test_the_timestamp_column_is_read_without_a_timezone_shift(self):
+        """``ActionDate`` is a real timestamp. It goes through
+        ::text::timestamp rather than ::timestamptz so the session's time
+        zone cannot move a figure measured in days."""
+        a_step("BA1", 1, "2026-03-01 00:00:00", "2026-03-02 00:00:00")
+        days, _applications, latest = ao.turnaround(CODE, YEAR, "pb")
+        self.assertAlmostEqual(days, 1.0, places=6)
+        self.assertEqual(latest, datetime.date(2026, 3, 2))
+
+    def test_all_four_segments_come_from_one_read(self):
+        """611,218 rows and nothing indexes SellerCode, so a query per
+        segment meant four scans for every card built."""
+        a_customer(2, "SMALL ENTERPRISES")
+        a_step("BA1", 1, "2026-03-01 00:00:00", "2026-03-02 00:00:00")
+        a_step("BA2", 2, "2026-03-01 00:00:00", "2026-03-03 00:00:00")
+
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection as conn
+
+        with CaptureQueriesContext(conn) as captured:
+            found = ao.turnarounds(CODE, YEAR)
+        reads = [q for q in captured.captured_queries
+                 if "iapply_accounts_tat" in q["sql"]]
+        self.assertEqual(len(reads), 1, "one scan, not one per segment")
+        self.assertEqual(found["pb"][1], 1)
+        self.assertEqual(found["bb"][1], 1)
+        self.assertAlmostEqual(found["bb"][0], 2.0, places=4)
 
     def test_a_customer_id_that_is_not_digits_is_handled(self):
         a_step("BA1", "CU-001", "2026-03-01 00:00:00", "2026-03-02 00:00:00")

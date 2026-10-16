@@ -1687,9 +1687,11 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
         out_ = {}
         try:
-            for segment in ("pb", "bb", "ub", "sme"):
-                days, applications, latest = ao.turnaround(
-                    sales_code, year, segment)
+            # One pass over the trail for all four segments: the table is
+            # 611k rows and nothing indexes SellerCode, so a query per
+            # segment meant four scans for every card built.
+            found = ao.turnarounds(sales_code, year)
+            for segment, (days, applications, latest) in found.items():
                 key = f"ao_tat_{segment}"
                 if not applications:
                     out_[key] = _figure(None, problem=(
