@@ -31,6 +31,82 @@ def may_load(user):
                  name__in=("staff_mgt", "Management", "hr")).exists()))
 
 
+def _allocation_year(request):
+    """Which performance year the allocation is for.
+
+    The workbook's own ``Constants`` sheet says, and the request may override
+    it. Falling back to the current year rather than refusing: a target
+    written against the wrong year is correctable, and refusing the whole
+    upload over a year nobody typed is not.
+    """
+    import datetime
+
+    raw = str(request.data.get("year", "")).strip()
+    if raw.isdigit():
+        return int(raw)
+    return datetime.date.today().year
+
+
+def _read_allocation(request, upload):
+    """What "Summary Allocation" would give → ``(summary, year)``.
+
+    Never raises. The role cards are worth loading on their own, so a sheet
+    this cannot read costs its own section and says why.
+    """
+    from apps.staff_management.scorecard_automation.models import ScKpi
+    from apps.staff_management.scorecard_ingest import read_allocation
+
+    year = _allocation_year(request)
+    blank = {"targets": 0, "people": 0, "by_kpi": {}, "warnings": [],
+             "why": ""}
+
+    definitions = list(ScKpi.objects.filter(is_active=True)
+                       .exclude(allocation_column=""))
+    if not definitions:
+        blank["why"] = ("no KPI names a column on that sheet, so there is "
+                        "nothing to read it for.")
+        return blank, year
+
+    try:
+        upload.seek(0)
+        rows, warnings = read_allocation(upload, definitions)
+    except Exception as exc:  # noqa: BLE001 - the cards still load
+        blank["why"] = f"that sheet could not be read: {exc}"
+        return blank, year
+
+    by_kpi = {}
+    for row in rows:
+        by_kpi[row["kpi_code"]] = by_kpi.get(row["kpi_code"], 0) + 1
+
+    return {
+        "targets": len(rows),
+        "people": len({r["sales_code"] for r in rows}),
+        "by_kpi": by_kpi,
+        "warnings": warnings[:20],
+        "why": "" if rows else "that sheet carried no rows this run.",
+    }, year
+
+
+def _write_allocation(request, upload, year, who=""):
+    """Write the per-person targets. Never raises."""
+    from apps.staff_management.scorecard_automation.models import ScKpi
+    from apps.staff_management.scorecard_ingest import (
+        apply_allocation, read_allocation)
+
+    definitions = list(ScKpi.objects.filter(is_active=True)
+                       .exclude(allocation_column=""))
+    if not definitions:
+        return {"created": 0, "updated": 0, "unchanged": 0}
+    try:
+        upload.seek(0)
+        rows, _warnings = read_allocation(upload, definitions)
+        return apply_allocation(
+            rows, year, source_label="scorecard workbook", changed_by=who)
+    except Exception as exc:  # noqa: BLE001 - the cards are already saved
+        return {"created": 0, "updated": 0, "unchanged": 0,
+                "error": str(exc)}
+
+
 @extend_schema(tags=[_TAG])
 class ScorecardWorkbookUploadView(APIView):
     permission_classes = [IsAuthenticated]
@@ -75,6 +151,15 @@ class ScorecardWorkbookUploadView(APIView):
         report.update(planned)
         report["to_write"] = len(entries)
 
+        # ── and the rest of the workbook ──────────────────────────────────
+        # The role sheets are ten worked examples. "Summary Allocation" is
+        # the actual plan: a row per person, with their own target for every
+        # measure that takes one - 99 people where the cards cover ten.
+        # Reading only the cards is why Direct Portfolio Contribution said
+        # "no target is set" for a figure sitting in the same file.
+        allocation, allocation_year = _read_allocation(request, upload)
+        report["allocation"] = allocation
+
         if str(request.data.get("apply", "")).lower() not in ("1", "true",
                                                               "yes"):
             return Response({
@@ -86,18 +171,36 @@ class ScorecardWorkbookUploadView(APIView):
                     f"{planned['behind_a_live_source']} sit behind a figure "
                     f"the platform measures itself and will only fill a "
                     f"blank. "
-                    f"Nothing has been saved yet - send it again with apply "
-                    f"to save."),
+                    + (f"Summary Allocation carries {allocation['targets']} "
+                       f"target(s) for {allocation['people']} people, which "
+                       f"would be written for {allocation_year}. "
+                       if allocation["targets"] else
+                       f"Summary Allocation gave nothing: "
+                       f"{allocation['why']} ")
+                    + f"Nothing has been saved yet - send it again with "
+                      f"apply to save."),
             })
 
         written = workbook.save(
             entries, who=getattr(request.user, "username", ""))
+
+        allocated = _write_allocation(
+            request, upload, allocation_year,
+            who=getattr(request.user, "username", ""))
+        report["allocation_written"] = allocated
+
         return Response({
             "applied": True, "report": report, "written": written,
-            "detail": (f"Saved {written['actuals']} actual(s) and "
-                       f"{written['targets']} target(s). They show on the "
-                       f"cards straight away - a card is computed when it is "
-                       f"opened - marked as entered rather than measured."),
+            "detail": (
+                f"Saved {written['actuals']} actual(s) and "
+                f"{written['targets']} target(s) from the role cards"
+                + (f", and {allocated['created'] + allocated['updated']} "
+                   f"per-person target(s) for {allocation['people']} people "
+                   f"from Summary Allocation"
+                   if allocated.get("created") or allocated.get("updated")
+                   else "")
+                + ". They show on the cards straight away - a card is "
+                  "computed when it is opened."),
         })
 
 
