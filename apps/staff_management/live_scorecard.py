@@ -324,6 +324,30 @@ _register(
     ["bancassurance_premiums", "other_bancassurance_premiums"],
     Source(target_field="target_banca_value", actual_key="banca_other"))
 
+# ── Active customers, and digital adoption ───────────────────────────────────
+# Both are a COUNT over the RM's own book, and both state their target as a
+# rate on the person's own prior-year count - "Increase by active customers
+# 20%", "Increase portfolio by 50%". The signed cards carry the prior year in
+# the 2025 FY column (42 -> 50.4 at 20%; 197 -> 287.29 at 50%), which is the
+# same shape as "grow by 43% of the Dec book balance" and goes through the
+# same rate_on_base rung. Migration 0044 sets those rates.
+#
+# These were reported as having no feed. They have one: transaction_diary.
+# NOT bo_active_customers: that is the BRANCH's active-customer count, and a
+# branch manager has no allocated book for this reader to count over. It stays
+# on the back-office template, which carries a figure per branch.
+# No ``target_field``. ``target_active_new_customers`` is on the BRANCH table
+# only, so naming it here would send somebody looking for a column that was
+# never going to carry an RM's own figure. The target is the rate the card
+# states on the person's own prior-year count - migration 0044 - and the
+# ladder reaches it directly.
+_register(
+    ["active_customers"],
+    Source(actual_key="active_customers", counted=True))
+_register(
+    ["digital_adoption"],
+    Source(actual_key="digital_adoption", counted=True))
+
 # ── Property (HFCB Properties) ───────────────────────────────────────────────
 # The roster carries the unit plan. The CRM's amounts-sold feed has no
 # customer id, phone or e-mail, so a sale cannot be tied back to an RM; that is
@@ -1119,6 +1143,89 @@ def _tat_ytd(sales_code, year, sla_days=7):
             latest.date() if hasattr(latest, "date") else latest)
 
 
+#: What counts as DIGITAL activity. The two channel descriptions the CEO
+#: dashboard already treats as digital - see
+#: ``gceo_legacy.digital_active_30``, which reads the same pair. Taken from
+#: there rather than invented, so "digital" means one thing on both screens.
+DIGITAL_CHANNELS = (
+    "ESB - ENTERPRISE SERVICE BUS",
+    "KOCELA - SUBSCRIBER AND PAYMENT CHANNEL",
+)
+
+
+def _two_month_active(sales_code, year, upto=None, digital=False):
+    """Customers of this RM active in TWO consecutive months → (count, latest).
+
+    "Active" on these cards is not "transacted at some point". The measure of
+    success says so: "2 month active". So this counts the customers who
+    transacted in a month AND in the month before it - the strictest reading,
+    and the one the card states.
+
+    The pair taken is the latest pair inside the year that has any activity at
+    all, which is how a figure read in the first days of a month does not
+    collapse to nought because the current month has barely started.
+
+    ``digital=True`` narrows it to the digital channels, which is the Digital
+    Adoption line. The channel filter is the only difference between the two
+    measures: the bank's definition of an adopted customer is one who is
+    actually using a digital channel, not one who has been enrolled on it.
+
+    One row per customer per month is all this needs, so it aggregates in the
+    database. ``transaction_diary`` is large and pulling a row per transaction
+    to count distinct customers in Python would be the whole year's traffic.
+    """
+    from django.db import connection
+
+    from services import portfolio_service as svc
+
+    channel = ""
+    if digital:
+        channel = ("AND t.chanel_description IS NOT NULL "
+                   "AND TRIM(t.justific_name) = ANY(%s) ")
+
+    sql = f"""
+        WITH book AS ({svc.RM_BOOK}
+        ), monthly AS (
+            SELECT DATE_TRUNC('month', t.tmstamp)::date AS month,
+                   t.fk_customercust_id                 AS cust_id
+            FROM transaction_diary t
+            JOIN book b ON b.cust_id = t.fk_customercust_id
+            WHERE t.tmstamp >= %s AND t.tmstamp < %s
+              {channel}
+            GROUP BY 1, 2
+        )
+        SELECT this.month,
+               COUNT(DISTINCT this.cust_id) AS active_both_months
+        FROM monthly this
+        JOIN monthly prev
+          ON prev.cust_id = this.cust_id
+         AND prev.month = this.month - INTERVAL '1 month'
+        GROUP BY this.month
+        ORDER BY this.month DESC
+        LIMIT 1
+    """
+    start = datetime.date(year, 1, 1)
+    end = (upto or datetime.date(year + 1, 1, 1))
+    params = [sales_code.strip(), start, end]
+    if digital:
+        params.append(list(DIGITAL_CHANNELS))
+
+    try:
+        with connection.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+    except Exception:  # noqa: BLE001 - an absent feed must not blank a card
+        return None, None
+    if row is None:
+        return 0, None
+    month, count = row
+    # As at the END of the month the pair closes on, because that is the month
+    # the figure is complete for.
+    last_day = (month.replace(day=28) + datetime.timedelta(days=4))
+    last_day = last_day.replace(day=1) - datetime.timedelta(days=1)
+    return int(count or 0), last_day
+
+
 def _par(sales_code):
     """Portfolio at risk for this person → (ratio, book, latest).
 
@@ -1238,6 +1345,35 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     attempt("asset_growth",
             lambda: growth("loan_daily_balance_movement",
                            "december_loan_book"))
+
+    # ── Active customers, and digital adoption ────────────────────────────
+    # The prior-year count is kept as a BASE as well as the figure, because
+    # the target is a rate on it - exactly as the deposit and asset books are
+    # handled above, and for the same reason: one read answers both halves.
+    def two_month(key, base_name, digital):
+        def read():
+            count, at = _two_month_active(sales_code, year, digital=digital)
+            if count is None:
+                return _figure(None, problem=(
+                    "the activity feed could not be read, so two months of "
+                    "activity cannot be tested"))
+            prior, _at = _two_month_active(sales_code, year - 1, digital=digital)
+            if prior:
+                bases[base_name] = float(prior)
+            at = at or monthly
+            label = (f"active in {at:%b} and the month before, as at "
+                     f"{at.day} {at:%b %Y}")
+            if digital:
+                label = f"on a digital channel, {label}"
+            return _figure(count, at, label)
+        return read
+
+    attempt("active_customers",
+            two_month("active_customers", "last_year_active_customers",
+                      digital=False))
+    attempt("digital_adoption",
+            two_month("digital_adoption", "last_year_digital_customers",
+                      digital=True))
 
     # ── Dormancy reactivations, by BRANCH ─────────────────────────────────
     def dormancy():
@@ -1656,6 +1792,22 @@ def roster_target_row(sales_code):
     branch row. It is never used to fill a gap in somebody's individual plan:
     handing an RM their branch's revenue target would read as a few percent and
     paint a fully performing RM red.
+
+    **Not even for a column the per-person table does not carry.** This was
+    tried and reverted. ``target_pbt_revenue``, ``target_asset_growth_value``,
+    ``target_loan_provisions`` and ``target_active_new_customers`` exist only
+    on the branch table, and reading them across for anybody whose sales code
+    appears there looked like it was rescuing 33 stranded lines. It was not:
+    the branch row carries the BRANCH's figures - 900m of revenue where the
+    RM's own disbursement plan is 270m - so every RM in that branch would have
+    been scored against their whole branch. An absent column is not a gap to
+    fill from a different grain; it means this platform does not hold that
+    person's target, and the card says so. See
+    ``test_a_branch_only_target_is_not_lent_to_an_rm``.
+
+    Where those targets DO come from is the scorecard workbook, per person,
+    and they are not a shared rate either: the three signed Q3 cards grow
+    revenue by 8.33 %, 18.33 % and 20 % respectively.
     """
     from django.db import connection
 

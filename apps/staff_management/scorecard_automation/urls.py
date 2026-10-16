@@ -38,6 +38,10 @@ urlpatterns = [
     # address is on the HR roster, NOT in the scorecard workbook - see the
     # note at the top of scorecard_email.
     path("my-card/send/", views.ScorecardSendView.as_view()),
+    # Every individual on one card, in one action, from Scorecards -> Cards.
+    # Reports who would receive it until the call carries confirm=true: this
+    # is mail to real people about their own performance and cannot be undone.
+    path("my-card/send-many/", views.ScorecardSendManyView.as_view()),
 
     # Loading the workbooks. Both read and report first; only a second call
     # with apply=true writes, and the actuals upload then runs the scorecard

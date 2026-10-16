@@ -133,7 +133,7 @@ def _apply_filters(qs, params):
         qs = qs.filter(is_active=True)      # dropped deals are out by default
 
     for field in ("broad_stage", "stage", "deposit_product", "insurance_type",
-                  "sales_code"):
+                  "insurance_product", "sales_code"):
         value = params.get(field)
         if value:
             qs = qs.filter(**{field: value})
@@ -266,7 +266,8 @@ class PipelineExportView(APIView):
     COLUMNS = [
         "kind", "branch", "rm_name", "sales_code", "customer_name",
         "amount", "amount_to_disburse", "revenue",
-        "product", "deposit_product", "insurance_type", "account_no",
+        "product", "deposit_product", "insurance_type", "insurance_product",
+        "account_no",
         "broad_stage", "stage", "expected_date", "comments",
         "is_active", "updated_by", "updated_at",
     ]
@@ -296,6 +297,7 @@ class PipelineExportView(APIView):
                 e.product,
                 e.get_deposit_product_display() if e.deposit_product else "",
                 e.get_insurance_type_display() if e.insurance_type else "",
+                e.insurance_product or "",
                 e.account_no,
                 e.get_broad_stage_display() if e.broad_stage else "",
                 e.get_stage_display() if e.stage else "",
@@ -349,6 +351,10 @@ class PipelineOptionsView(APIView):
                                  for v, l in P.DEPOSIT_PRODUCT],
             "insurance_types": [{"value": v, "label": l}
                                 for v, l in P.INSURANCE_TYPE],
+            # The 39 covers. Served from the model so the form never carries
+            # its own copy of the list.
+            "insurance_products": [{"value": v, "label": l}
+                                   for v, l in P.INSURANCE_PRODUCT],
             "fields_by_kind": P.FIELDS_BY_KIND,
             "min_comment_words": P.MIN_COMMENT_WORDS,
             "product_suggestions": sorted(set(products)),

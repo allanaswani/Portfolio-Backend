@@ -116,7 +116,8 @@ class PipelineTests(APITestCase):
         res = self.as_(self.rm).post(f"{BASE}entries/", {
             "kind": "liability", "customer_name": "Sameer Group ltd",
             "amount": "50000000", "account_no": "New to bank",
-            "insurance_type": P.INSURANCE_VIC, "comments": STORY,
+            "insurance_type": P.INSURANCE_VIC,
+            "insurance_product": "Credit Life", "comments": STORY,
         }, format="json")
         self.assertEqual(res.status_code, 201, res.data)
 
@@ -407,9 +408,58 @@ class RequirementsSheetTests(APITestCase):
     def test_non_vic_is_accepted_and_reads_back_with_its_label(self):
         res = self.post(kind="liability", customer_name="Almasi Financial",
                         amount="1000000", account_no="0123456789",
-                        insurance_type=P.INSURANCE_NON_VIC, comments=STORY)
+                        insurance_type=P.INSURANCE_NON_VIC,
+                        insurance_product="Marine", comments=STORY)
         self.assertEqual(res.status_code, 201, res.data)
         self.assertIn("Non-VIC", res.data["insurance_type_display"])
+
+    # ── which cover ──
+    # VIC / non-VIC is who underwrites it; this is what the cover IS. Both are
+    # kept, because Britam write covers on both sides of the product list, so
+    # neither can be derived from the other.
+    def test_an_insurance_line_must_say_which_cover(self):
+        res = self.post(kind="liability", customer_name="Sameer Group ltd",
+                        amount="50000000", account_no="New to bank",
+                        insurance_type=P.INSURANCE_VIC, comments=STORY)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("insurance_product", res.data)
+
+    def test_a_cover_that_is_not_on_the_desks_list_is_refused(self):
+        res = self.post(kind="liability", customer_name="Sameer Group ltd",
+                        amount="50000000", account_no="New to bank",
+                        insurance_type=P.INSURANCE_VIC,
+                        insurance_product="Spaceship Cover", comments=STORY)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("insurance_product", res.data)
+
+    def test_all_thirty_nine_covers_are_offered_and_accepted(self):
+        """The list the desk handed over, in full. A product quietly dropped
+        from it is a line an RM can no longer record."""
+        self.assertEqual(len(P.INSURANCE_PRODUCTS), 39)
+        res = self.as_(self.rm).get(f"{BASE}options/")
+        offered = [i["value"] for i in res.data["insurance_products"]]
+        self.assertEqual(offered, list(P.INSURANCE_PRODUCTS))
+        for cover in ("Motor", "WIBA GPA", "Machinery Breakdown Con Loss",
+                      "Political Violence & Terrorism"):
+            with self.subTest(cover):
+                self.assertIn(cover, offered)
+
+    def test_the_cover_cannot_be_blanked_once_set(self):
+        row = P.objects.create(kind=P.KIND_LIABILITY, customer_name="Set line",
+                               sales_code="CM201", segment="COMMERCIAL",
+                               amount=10, account_no="tba",
+                               insurance_type=P.INSURANCE_VIC,
+                               insurance_product="Fire")
+        res = self.as_(self.rm).patch(f"{BASE}entries/{row.id}/",
+                                      {"insurance_product": ""},
+                                      format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("insurance_product", res.data)
+
+    def test_the_cover_is_on_the_insurance_form_and_in_the_export(self):
+        res = self.as_(self.rm).get(f"{BASE}options/")
+        self.assertIn("insurance_product",
+                      res.data["fields_by_kind"]["liability"])
 
     def test_an_existing_insurance_line_keeps_working_while_it_is_blank(self):
         """Rows that predate the field. Requiring it retrospectively would

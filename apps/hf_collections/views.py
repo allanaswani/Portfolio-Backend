@@ -11,8 +11,8 @@ from django.shortcuts import get_object_or_404
 from core.pagination import StandardPagination
 from core.permissions import TlCollectionPermissions, ExcoPermissions
 from apps.portfolio.models import Profile
-from .models import Collection
-from .serializers import CollectionSerializer
+from .models import Collection, PromiseToPay
+from .serializers import CollectionSerializer, PromiseToPaySerializer
 from . import collections_core as cc
 import django_filters.rest_framework
 
@@ -247,3 +247,122 @@ class CollectionsOfficerFeedbackContactabilityView(APIView):
             cols = [c[0] for c in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         return Response(rows)
+
+
+# ── PTP: Promise To Pay ──────────────────────────────────────────────────────
+# The unit of work on a collections desk, and the one number that matters
+# about it is not the promise but whether the money came. See
+# ``apps.hf_collections.ptp``.
+
+@extend_schema(tags=["Collections"])
+class PromiseToPayListCreateView(generics.ListCreateAPIView):
+    """Promises, newest due date first.
+
+    ``status`` is not writable here. It is settled against
+    ``loan_repayments`` - a collector cannot mark their own promise kept,
+    because the kept rate is what the desk is measured on.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = PromiseToPaySerializer
+    pagination_class = StandardPagination
+    filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
+    filterset_fields = ["cust_id", "loan_account_no", "status",
+                        "collection_officer_code", "promised_date", "source"]
+    queryset = PromiseToPay.objects.all()
+
+
+@extend_schema(tags=["Collections"])
+class PromiseToPayDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = PromiseToPaySerializer
+    queryset = PromiseToPay.objects.all()
+
+
+@extend_schema(tags=["Collections"])
+class PromiseToPaySummaryView(APIView):
+    """The kept rate, and the counts behind it.
+
+    Over DECIDED promises only. A promise that is not yet due is reported
+    beside the rate and excluded from it: a desk whose score dropped every
+    time a collector booked a promise would learn to stop booking them.
+
+    Part-kept is not rolled into kept. A borrower who promised 50,000 and
+    paid 5,000 did not keep their promise, and both numbers are given so the
+    desk can see the difference rather than have it averaged away.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from . import ptp
+
+        rows = PromiseToPay.objects.all()
+        officer = request.query_params.get("collection_officer_code")
+        if officer:
+            rows = rows.filter(collection_officer_code=officer)
+        since = request.query_params.get("promised_date_after")
+        if since:
+            rows = rows.filter(promised_date__gte=since)
+        until = request.query_params.get("promised_date_before")
+        if until:
+            rows = rows.filter(promised_date__lte=until)
+
+        summary = ptp.kept_rate(rows)
+
+        # Per officer, which is what a team leader opens this for.
+        by_officer = {}
+        for row in rows.values("collection_officer_code",
+                               "collection_officer_name", "status"):
+            key = row["collection_officer_code"] or "(unassigned)"
+            bucket = by_officer.setdefault(key, {
+                "collection_officer_code": key,
+                "collection_officer_name": row["collection_officer_name"] or "",
+                "kept": 0, "part_kept": 0, "broken": 0, "open": 0})
+            bucket[row["status"]] = bucket.get(row["status"], 0) + 1
+        for bucket in by_officer.values():
+            decided = bucket["kept"] + bucket["part_kept"] + bucket["broken"]
+            bucket["decided"] = decided
+            bucket["kept_rate"] = (round(bucket["kept"] / decided, 4)
+                                   if decided else None)
+
+        summary["by_officer"] = sorted(
+            by_officer.values(),
+            key=lambda b: (b["kept_rate"] is None, -(b["kept_rate"] or 0)))
+        return Response(summary)
+
+
+@extend_schema(tags=["Collections"])
+class PromiseToPayRefreshView(APIView):
+    """Re-settle the promises against the repayments feed.
+
+    Two things, both idempotent: build promises out of the diary entries that
+    already carry a PTP amount and a date, then re-settle everything that
+    could still change. Safe to run as often as the feed lands - a kept
+    promise is never revisited, because money that arrived cannot un-arrive.
+
+    Also available as ``manage.py settle_ptp`` for the nightly run. This
+    endpoint exists so the desk is not waiting on a cron to see today's
+    payments reflected.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from . import ptp
+
+        made, read = 0, 0
+        if str(request.data.get("from_feedback", "true")).lower() not in (
+                "0", "false", "no"):
+            made, read = ptp.from_feedback()
+        moved = ptp.settle_all()
+        return Response({
+            "promises_made_from_diary": made,
+            "diary_rows_with_a_promise": read,
+            "promises_resettled": moved,
+            "detail": (
+                f"{made} new promise(s) taken from {read} diary entr(ies); "
+                f"{moved} promise(s) changed status against the repayments "
+                f"feed."),
+            **ptp.kept_rate(),
+        })

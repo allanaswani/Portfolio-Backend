@@ -936,6 +936,192 @@ class ScorecardSendView(APIView):
         ]
 
 
+@extend_schema(tags=[_TAG])
+class ScorecardSendManyView(APIView):
+    """Send a whole card's worth of people their own scorecard.
+
+    This is the screen the desk asked for: one action, from
+    Scorecards -> Cards -> Who holds them, that gets every individual their
+    own card rather than somebody opening 91 pages.
+
+    Two steps, and the second one has to say so
+    ------------------------------------------
+    A GET - or a POST without ``confirm`` - reports who WOULD receive it and
+    who could not be addressed, and sends nothing. Only a POST carrying
+    ``confirm: true`` sends. This is mail to real people about their own
+    performance: it cannot be undone, and a mis-aimed bulk send is not a
+    thing an apology fixes.
+
+    Each person gets their OWN card, addressed to them and copying their own
+    line manager, exactly as the single send does - the same code path, so a
+    card sent in bulk is the same document as one sent on its own.
+
+    Administration only. ``_may_set_figures`` rather than ``_may_load``,
+    because ``is_staff`` is legacy noise in this estate and this mails
+    everybody.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    #: A ceiling, so a mistyped filter cannot mail the whole bank. The desk's
+    #: largest card holds 41 people; 150 leaves room and still stops a runaway.
+    MAX_AT_ONCE = 150
+
+    def _people(self, request):
+        """Who this request is about → ``[(sales_code, name), ...]``."""
+        from apps.staff_management.live_scorecard import resolve_person
+        from .models import ScRoleKpiMapping
+
+        codes = request.data.get("sales_codes") or request.query_params.get(
+            "sales_codes") or []
+        if isinstance(codes, str):
+            codes = [c.strip() for c in codes.split(",") if c.strip()]
+
+        role = str(request.data.get("role_code")
+                   or request.query_params.get("role_code") or "").strip()
+
+        if not codes and role:
+            # Everybody the rosters put on that card. Read through
+            # resolve_person rather than off one roster, because three
+            # different rosters answer for different people and the card
+            # screen shows all three.
+            from apps.staff_management.models import (
+                BranchEmployeeDmcData, BranchFinalEmployeeDmcData,
+                EmployeeRoleHistory)
+
+            seen = set()
+            for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData):
+                for row in model.objects.exclude(sales_code="").only(
+                        "sales_code"):
+                    seen.add((row.sales_code or "").strip())
+            for row in EmployeeRoleHistory.objects.filter(
+                    role_code=role).only("sales_code"):
+                seen.add((row.sales_code or "").strip())
+            codes = sorted(c for c in seen if c)
+
+        out, unknown = [], []
+        for code in dict.fromkeys(c.strip() for c in codes if c and c.strip()):
+            person = resolve_person(code)
+            if person is None or not person.role_code:
+                unknown.append({"sales_code": code,
+                                "why": "that sales code holds no card here"})
+                continue
+            if role and person.role_code != role:
+                continue
+            out.append((code, person.name))
+        if role and not ScRoleKpiMapping.objects.filter(
+                role_code=role).exists():
+            return [], [{"sales_code": "", "why": f"no card called {role}"}]
+        return out, unknown
+
+    def _preview(self, request, people, unknown):
+        from apps.staff_management import scorecard_email
+        from apps.staff_management.live_scorecard import build_card
+
+        ready, blocked = [], []
+        for code, name in people:
+            card = build_card(code)
+            if not card.get("has_card"):
+                blocked.append({"sales_code": code, "staff_name": name,
+                                "why": card.get("reason")
+                                or "no card could be built"})
+                continue
+            to, cc, problems = scorecard_email.recipients_for(card)
+            if to:
+                ready.append({"sales_code": code, "staff_name": name,
+                              "to": to, "cc": cc})
+            else:
+                blocked.append({"sales_code": code, "staff_name": name,
+                                "why": " ".join(problems)
+                                or "no address on file"})
+        return ready, blocked + list(unknown)
+
+    def get(self, request):
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only Administration can send scorecards out."},
+                status=status.HTTP_403_FORBIDDEN)
+        people, unknown = self._people(request)
+        if len(people) > self.MAX_AT_ONCE:
+            return Response(
+                {"detail": f"That is {len(people)} people. The most this will "
+                           f"send at once is {self.MAX_AT_ONCE} - narrow it to "
+                           f"one card."},
+                status=status.HTTP_400_BAD_REQUEST)
+        ready, blocked = self._preview(request, people, unknown)
+        return Response({
+            "sent": False, "would_send": len(ready), "ready": ready,
+            "blocked": blocked,
+            "detail": (
+                f"{len(ready)} person/people would be e-mailed their own "
+                f"card"
+                + (f"; {len(blocked)} cannot be addressed yet."
+                   if blocked else ".")
+                + " Nothing has been sent - send it again with confirm."),
+        })
+
+    def post(self, request):
+        from apps.staff_management import scorecard_email
+        from apps.staff_management.live_scorecard import build_card
+        from .models import ScorecardSignoff
+        from apps.staff_management.scorecard_signoff import period_for
+
+        if not _may_set_figures(request.user):
+            return Response(
+                {"detail": "Only Administration can send scorecards out."},
+                status=status.HTTP_403_FORBIDDEN)
+
+        if str(request.data.get("confirm", "")).lower() not in ("1", "true",
+                                                                 "yes"):
+            return self.get(request)
+
+        people, unknown = self._people(request)
+        if not people:
+            return Response(
+                {"detail": "Nobody was named, and no card was chosen."},
+                status=status.HTTP_400_BAD_REQUEST)
+        if len(people) > self.MAX_AT_ONCE:
+            return Response(
+                {"detail": f"That is {len(people)} people. The most this will "
+                           f"send at once is {self.MAX_AT_ONCE}."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        who = (getattr(request.user, "get_full_name", lambda: "")()
+               or getattr(request.user, "username", ""))
+        period = period_for()
+        sent, failed = [], list(unknown)
+
+        for code, name in people:
+            try:
+                signoff = ScorecardSignoff.objects.filter(
+                    sales_code=code, period=period).first()
+                card = (signoff.card
+                        if signoff and signoff.signed_at and signoff.card
+                        else build_card(code))
+                if not card.get("has_card"):
+                    failed.append({"sales_code": code, "staff_name": name,
+                                   "why": card.get("reason")
+                                   or "no card could be built"})
+                    continue
+                record = scorecard_email.send_card(
+                    card, signoff, who=who, request_user=request.user)
+                sent.append({"sales_code": code, "staff_name": name,
+                             "to": record.sent_to, "cc": record.sent_cc})
+            except Exception as exc:  # noqa: BLE001 - one failure must not
+                # stop the other ninety. Each is a separate message to a
+                # separate person, and the ones that went are recorded.
+                failed.append({"sales_code": code, "staff_name": name,
+                               "why": str(exc)})
+
+        return Response({
+            "sent": True, "count": len(sent), "sent_to": sent,
+            "failed": failed,
+            "detail": (f"Sent {len(sent)} scorecard(s)."
+                       + (f" {len(failed)} could not be sent."
+                          if failed else "")),
+        })
+
+
 # ── Administration: the figures the system cannot compute ────────────────────
 
 

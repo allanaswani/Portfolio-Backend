@@ -210,6 +210,65 @@ class PipelineEntry(models.Model):
         (INSURANCE_NON_VIC, "Non-VIC — all other insurance covers"),
     )
 
+    #: The 39 covers the desk sells, from ``INSURANCE PRODUCTS.xlsx``.
+    #:
+    #: A plain tuple, like DEPOSIT_PRODUCT beside it, rather than a table:
+    #: this is a list the desk hands over once a year, and the API serves it
+    #: from here so the form never hard-codes it. One constant to edit.
+    #:
+    #: Stored as the product's own words, not a code. These are the names the
+    #: desk and the underwriter both use; there is no code for them anywhere
+    #: in this estate, and inventing one would mean keeping a second
+    #: vocabulary in step with this one for ever.
+    #:
+    #: This is a DIFFERENT axis from ``insurance_type``, and both are kept.
+    #: VIC / non-VIC is who underwrites it, which is the split the reports
+    #: run on; this is what the cover actually is. Deriving one from the
+    #: other is not possible - Britam write covers on both sides of this
+    #: list - so the line carries both.
+    INSURANCE_PRODUCTS = (
+        "Advance Payment Bond",
+        "All Risks",
+        "Bankers Blanket Bond",
+        "Bid Bond",
+        "Burglary",
+        "Business Guard/ SME package",
+        "Contractors All Risk",
+        "Contractors Plant & Machinery",
+        "Credit Life",
+        "Cyber Security",
+        "Domestic Package",
+        "Employers Liability",
+        "Erection All Risks",
+        "Fidelity Guarantee",
+        "Fire",
+        "Fire Con Loss",
+        "Funeral Expense",
+        "Goods In Transit",
+        "Golfers",
+        "Group Personal Accident",
+        "Group Life",
+        "Industrial All Risk",
+        "Keyman",
+        "Livestock",
+        "Machinery Breakdown",
+        "Machinery Breakdown Con Loss",
+        "Marine",
+        "Medical",
+        "Money",
+        "Motor",
+        "Personal Accident",
+        "Performance Bond",
+        "Pet Insurance",
+        "Professional Indemnity",
+        "Public Liability",
+        "Political Violence & Terrorism",
+        "Travel Insurance",
+        "WIBA",
+        "WIBA GPA",
+    )
+    INSURANCE_PRODUCT = tuple((p, p) for p in INSURANCE_PRODUCTS)
+
     #: The fewest words a comment may carry. From the requirements sheet: "the
     #: system should enforce a minimum word requirement for comments at each
     #: workflow stage ... to enable management and other users to understand
@@ -231,8 +290,8 @@ class PipelineEntry(models.Model):
         KIND_TRADE: ["amount", "revenue", "product", "broad_stage", "stage",
                      "comments"],
         KIND_DEPOSIT: ["amount", "deposit_product", "expected_date", "comments"],
-        KIND_LIABILITY: ["amount", "insurance_type", "account_no",
-                         "expected_date", "comments"],
+        KIND_LIABILITY: ["amount", "insurance_type", "insurance_product",
+                         "account_no", "expected_date", "comments"],
     }
 
     kind = models.CharField(max_length=12, choices=KIND, db_index=True)
@@ -278,6 +337,14 @@ class PipelineEntry(models.Model):
     #: than the sequential scan it would replace.
     insurance_type = models.CharField(max_length=8, choices=INSURANCE_TYPE,
                                       blank=True, verbose_name="VIC / Non-VIC")
+    #: WHICH cover. Blank on every row that predates it and on anything the
+    #: workbook importer loads - the Liabilities sheet has no such column - so
+    #: the RM sets it when they next touch the line. 40 characters would cut
+    #: "Machinery Breakdown Con Loss"; 60 leaves room for the next one the
+    #: desk adds.
+    insurance_product = models.CharField(
+        max_length=60, choices=INSURANCE_PRODUCT, blank=True,
+        verbose_name="Cover")
     account_no = models.CharField(max_length=40, blank=True)
 
     broad_stage = models.CharField(max_length=20, choices=BROAD_STAGE, blank=True)

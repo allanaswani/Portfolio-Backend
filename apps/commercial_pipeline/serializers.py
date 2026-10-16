@@ -35,6 +35,8 @@ class PipelineEntrySerializer(serializers.ModelSerializer):
     stage_display = serializers.CharField(source="get_stage_display", read_only=True)
     insurance_type_display = serializers.CharField(
         source="get_insurance_type_display", read_only=True)
+    insurance_product_display = serializers.CharField(
+        source="get_insurance_product_display", read_only=True)
     deposit_product_display = serializers.CharField(
         source="get_deposit_product_display", read_only=True)
     owner_name = serializers.SerializerMethodField()
@@ -48,7 +50,8 @@ class PipelineEntrySerializer(serializers.ModelSerializer):
             "customer_name",
             "amount", "amount_to_disburse", "revenue",
             "product", "deposit_product", "deposit_product_display",
-            "insurance_type", "insurance_type_display", "account_no",
+            "insurance_type", "insurance_type_display",
+            "insurance_product", "insurance_product_display", "account_no",
             "broad_stage", "broad_stage_display", "stage", "stage_display",
             "expected_date", "comments", "is_active",
             "updated_by_name", "created_at", "updated_at",
@@ -126,6 +129,19 @@ class PipelineEntrySerializer(serializers.ModelSerializer):
             elif "insurance_type" in data and not data.get("insurance_type"):
                 errors["insurance_type"] = (
                     "Leave this set — the report splits VIC from non-VIC.")
+
+            # WHICH cover. Same rule as the VIC split, for the same reason:
+            # demanded of a new line so it actually gets filled, and on an
+            # existing one only that it is not blanked - the rows that
+            # predate this field stay editable until somebody sets it.
+            if self.instance is None and not get("insurance_product"):
+                errors["insurance_product"] = (
+                    "Which cover is it? Pick one from the list - a line that "
+                    "says only 'non-VIC' cannot tell Marine from Medical.")
+            elif ("insurance_product" in data
+                  and not data.get("insurance_product")):
+                errors["insurance_product"] = (
+                    "Leave this set — it is what the cover actually is.")
 
         # The two stage columns must agree. In the spreadsheet they routinely
         # do not: 'Credit Risk' appears in the broad column, where it is not a
