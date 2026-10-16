@@ -332,7 +332,10 @@ _register(
 # same shape as "grow by 43% of the Dec book balance" and goes through the
 # same rate_on_base rung. Migration 0044 sets those rates.
 #
-# These were reported as having no feed. They have one: transaction_diary.
+# These were reported as having no feed. They have one, and it is the
+# lake's own: delta.gold_db.active_channels, mirrored into Postgres by
+# ``active_channels``. See that module for why it is a mirror and not a
+# read on the card path.
 # NOT bo_active_customers: that is the BRANCH's active-customer count, and a
 # branch manager has no allocated book for this reader to count over. It stays
 # on the back-office template, which carries a figure per branch.
@@ -1162,140 +1165,21 @@ def _tat_ytd(sales_code, year, sla_days=7):
             latest.date() if hasattr(latest, "date") else latest)
 
 
-#: What counts as DIGITAL activity. The two channel descriptions the CEO
-#: dashboard already treats as digital - see
-#: ``gceo_legacy.digital_active_30``, which reads the same pair. Taken from
-#: there rather than invented, so "digital" means one thing on both screens.
-#: How long the activity read may take before it is given up on. Eight
-#: seconds is generous for an aggregate over an indexed timestamp and far
-#: inside the worker's own 120s, so a slow feed costs this ONE line its
-#: figure rather than costing the whole card its page.
-ACTIVITY_TIMEOUT_MS = 20000
-
-DIGITAL_CHANNELS = (
-    "ESB - ENTERPRISE SERVICE BUS",
-    "KOCELA - SUBSCRIBER AND PAYMENT CHANNEL",
-)
-
-
-def _why_the_activity_read_failed(exc):
-    """Turn a database error into something the card can print.
-
-    "Could not be read" is true of every failure and useful for none of them.
-    A missing table is the ETL's problem; a timeout is this query's; and the
-    person reading the card needs to know which so they tell the right
-    people.
-    """
-    text = str(exc).lower()
-    if "statement timeout" in text or "canceling statement" in text:
-        return ("the activity feed took too long to read - this is a slow "
-                "query rather than a missing figure, and it will fill in "
-                "once the feed is indexed for it")
-    if "does not exist" in text or "undefined" in text:
-        return ("the activity feed (transaction_diary) is not on this "
-                "database, so two months of activity cannot be tested")
-    return "the activity feed could not be read"
-
-
 def _two_month_active(sales_code, year, upto=None, digital=False):
     """Customers of this RM active in TWO consecutive months.
 
-    → ``{year: (count, as_at)}`` for THIS year and the one before it, or
-    ``{"error": reason}`` when the feed could not be read.
+    → ``{year: (count, as_at)}``, or ``{"error": reason}``.
 
-    "Active" on these cards is not "transacted at some point". The measure of
-    success says so: "2 month active". So this counts the customers who
-    transacted in a month AND in the month before it - the strictest reading,
-    and the one the card states.
-
-    The pair taken is the latest pair inside the year that has any activity at
-    all, which is how a figure read in the first days of a month does not
-    collapse to nought because the current month has barely started.
-
-    ``digital=True`` narrows it to the digital channels, which is the Digital
-    Adoption line. The channel filter is the only difference between the two
-    measures: the bank's definition of an adopted customer is one who is
-    actually using a digital channel, not one who has been enrolled on it.
-
-    One row per customer per month is all this needs, so it aggregates in the
-    database. ``transaction_diary`` is large and pulling a row per transaction
-    to count distinct customers in Python would be the whole year's traffic.
+    Delegates to ``active_channels``, which reads the lake's own answer to
+    this question through a Postgres mirror. This used to reconstruct the
+    measure from ``transaction_diary``, one self-join over the bank's whole
+    transaction history per line per year - work the lake had already done,
+    and slow enough on the real table that both lines reported "that figure
+    could not be read".
     """
-    from django.db import connection, transaction
+    from . import active_channels
 
-    from services import portfolio_service as svc
-
-    channel = ""
-    if digital:
-        channel = ("AND t.chanel_description IS NOT NULL "
-                   "AND TRIM(t.justific_name) = ANY(%s) ")
-
-    sql = f"""
-        WITH book AS ({svc.RM_BOOK}
-        ), monthly AS (
-            SELECT DATE_TRUNC('month', t.tmstamp)::date AS month,
-                   t.fk_customercust_id                 AS cust_id
-            FROM transaction_diary t
-            JOIN book b ON b.cust_id = t.fk_customercust_id
-            WHERE t.tmstamp >= %s AND t.tmstamp < %s
-              {channel}
-            GROUP BY 1, 2
-        ), pairs AS (
-            SELECT this.month,
-                   COUNT(DISTINCT this.cust_id) AS active_both_months
-            FROM monthly this
-            JOIN monthly prev
-              ON prev.cust_id = this.cust_id
-             AND prev.month = this.month - INTERVAL '1 month'
-            GROUP BY this.month
-        )
-        -- The latest pair WITHIN each year. Both years come back from one
-        -- scan: the figure is this year's and the rate target's base is last
-        -- year's, and reading them separately cost two passes over the whole
-        -- transaction history for one line.
-        SELECT DISTINCT ON (EXTRACT(YEAR FROM month))
-               EXTRACT(YEAR FROM month)::int AS yr, month, active_both_months
-        FROM pairs
-        ORDER BY EXTRACT(YEAR FROM month), month DESC
-    """
-    start = datetime.date(year - 1, 1, 1)
-    end = (upto or datetime.date(year + 1, 1, 1))
-    params = [sales_code.strip(), start, end]
-    if digital:
-        params.append(list(DIGITAL_CHANNELS))
-
-    try:
-        # transaction_diary is the bank's whole transaction history, and this
-        # is a read on the path that builds EVERY card. Capped, because a
-        # card that takes two minutes is a card nobody sees: gunicorn kills
-        # the worker at 120s and the browser is handed a dead connection,
-        # which renders as a blank page rather than as an error.
-        #
-        # SET LOCAL only takes effect inside a transaction - outside one
-        # PostgreSQL ignores it with a warning, leaving the cap silently
-        # absent. The transaction also reverts it, so no statement_timeout
-        # leaks onto a pooled connection. Same pattern as
-        # ``observability.health``.
-        with transaction.atomic(), connection.cursor() as cur:
-            cur.execute(f"SET LOCAL statement_timeout = {ACTIVITY_TIMEOUT_MS}")
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-    except Exception as exc:  # noqa: BLE001 - an absent or slow feed must
-        # not blank a card. Nothing is reported as nought on the strength of
-        # a read that did not finish, and the REASON is carried out so the
-        # line can say whether the feed is missing or merely slow - those go
-        # to different people.
-        return {"error": _why_the_activity_read_failed(exc)}
-    if not rows:
-        return {}
-    out = {}
-    for yr, month, count in rows:
-        # As at the END of the month the pair closes on, because that is the
-        # month the figure is complete for.
-        last_day = (month.replace(day=28) + datetime.timedelta(days=4))
-        last_day = last_day.replace(day=1) - datetime.timedelta(days=1)
-        out[int(yr)] = (int(count or 0), last_day)
-    return out
+    return active_channels.two_month_active(sales_code, year, digital=digital)
 
 
 def _par(sales_code):

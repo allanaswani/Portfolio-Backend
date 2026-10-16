@@ -1767,3 +1767,62 @@ class ScAuditReturn(models.Model):
 
     def __str__(self):
         return f"{self.period} · {self.branch}"
+
+
+class CustomerMonthlyActivity(models.Model):
+    """Whether a customer transacted in a month, and whether digitally.
+
+    A mirror of ``delta.gold_db.active_channels``, which lives in the lake
+    and not in this database. One row per customer per month, which the lake
+    table is NOT: there it is a row per customer per product per transaction
+    type, and ``digital_cust_status`` is set on the row rather than on the
+    customer - an MPESA credit is digital, the interest posting beside it is
+    not. The aggregation happens in Trino, so 350,000 lake rows arrive as
+    134,000 and the card reads one row per customer-month.
+
+    Why a mirror at all
+    ───────────────────
+    The scorecard is built on every page view and has to stay fast. Reading
+    the lake on that path is exactly the mistake that produced a blank card
+    earlier: a heavy read on the card path runs past the worker timeout and
+    the browser is handed a dead connection. So this is loaded on a schedule
+    and the card reads Postgres.
+
+    "Active" is presence
+    ────────────────────
+    A customer appears in this feed for a month when they transacted in it,
+    and 349,500 of the lake's 350,323 rows carry "Active Customer". So the
+    flag is not really a status - it is attendance - and the card's measure,
+    "two months active", is attendance in a month AND the month before it.
+    """
+
+    cust_id = models.BigIntegerField(db_index=True)
+    #: The first of the month. The lake holds "Apr-26" as text; it is parsed
+    #: on the way in so this column can be compared and ordered.
+    month = models.DateField(db_index=True)
+
+    active = models.BooleanField(default=True)
+    #: Any digital channel at all that month - mobile, Whizz, cards or
+    #: internet. Which one is not what the card asks.
+    digital_active = models.BooleanField(default=False)
+
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "sc_customer_monthly_activity"
+        verbose_name = "Customer monthly activity"
+        verbose_name_plural = "Customer monthly activity"
+        constraints = [
+            models.UniqueConstraint(fields=["cust_id", "month"],
+                                    name="sc_one_activity_per_cust_month"),
+        ]
+        indexes = [
+            # The card's own query: a month's customers, and the month
+            # before it, for the customers on one RM's book.
+            models.Index(fields=["month", "cust_id"]),
+            models.Index(fields=["month", "digital_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.cust_id} {self.month:%b %Y}"
