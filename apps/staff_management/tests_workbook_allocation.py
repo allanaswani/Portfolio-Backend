@@ -156,11 +156,50 @@ class TheTargetIsTheYearNotTheGrowthTests(TestCase):
         rows, _warnings = read_allocation(str(WORKBOOK), definitions)
         return {(r["sales_code"].upper(), r["kpi_code"]): r for r in rows}
 
-    def test_abeds_contribution_is_the_year_not_the_increment(self):
+    def test_abeds_contribution_grows_last_years_target(self):
+        """Not last year's ACTUAL. The sheet holds both, and the card grows
+        the target - "Operating Profit ... Growth on Growth"."""
         row = self.read()[("AKL3116", "direct_portfolio_contribution")]
-        self.assertAlmostEqual(row["base_value"], 167_574_340.56, places=1)
-        # base + growth, which is the sheet's own third column.
-        self.assertAlmostEqual(row["kpi_target"], 201_089_208.68, places=1)
+        # "2024.0" - last year's target, not the 167,574,340.56 beside it,
+        # which is what he actually earned.
+        self.assertAlmostEqual(row["base_value"], 309_613_470.41, places=1)
+        self.assertAlmostEqual(row["kpi_target"], 371_536_164.49, places=1)
+
+    def test_the_sheets_own_revenue_target_column_agrees(self):
+        """The decisive check, and it needs no printed card: the sheet
+        computes a "Revenue Target" of its own for eight people, and every
+        one of them is last year's target grown by the same 20%. If the base
+        were last year's actual, none of them would come out right."""
+        from pyxlsb import open_workbook
+
+        with open_workbook(str(WORKBOOK)) as book:
+            with book.get_sheet("Summary Allocation") as sheet:
+                grid = [{c.c: c.v for c in row if c.v not in (None, "")}
+                        for row in sheet.rows()]
+
+        allocation = self.read()
+        checked = 0
+        for raw in grid[3:]:
+            stated = raw.get(77)
+            code = str(raw.get(1) or "").strip().upper()
+            if not isinstance(stated, (int, float)) or not code:
+                continue
+            row = allocation.get((code, "direct_portfolio_contribution"))
+            if row is None:
+                continue
+            checked += 1
+            self.assertAlmostEqual(
+                row["kpi_target"], stated, places=1,
+                msg=f"{code}: we read {row['kpi_target']:,.2f} where the "
+                    f"sheet's own Revenue Target says {stated:,.2f}")
+        self.assertGreaterEqual(checked, 5, "nothing was checked")
+
+    def test_juspher_matches_his_printed_card_to_the_cent(self):
+        """2025 FY 231,547,094.69 + 20% = 277,856,513.63, which is the
+        2026 FY printed on his card."""
+        row = self.read()[("JM4191", "direct_portfolio_contribution")]
+        self.assertAlmostEqual(row["base_value"], 231_547_094.69, places=1)
+        self.assertAlmostEqual(row["kpi_target"], 277_856_513.63, places=1)
 
     def test_loan_loss_comes_out_negative_as_the_card_prints_it(self):
         """It is held positive on that sheet. ``negate`` was only ever

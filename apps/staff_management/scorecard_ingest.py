@@ -311,6 +311,30 @@ def _grid(source, sheet_name):
     return [list(r) for r in wb[match].iter_rows(values_only=True)]
 
 
+#: Measures whose GROWTH column is worked out from a DIFFERENT column than
+#: the one the card actually grows.
+#:
+#: "Operating Profit ... Growth on Growth" and the income-contribution lines
+#: beside it grow LAST YEAR'S TARGET. The sheet holds both: "2024.0" is that
+#: target and "2024 (Income+(FTP-LoanLoss))" beside it is what was actually
+#: earned. The sheet's own Growth column is a flat 20% of the ACTUAL - so
+#: adding that growth to the target produces neither figure.
+#:
+#: Juspher Muriithi settles it. His printed card reads 2025 FY
+#: 231,547,094.69, GROWTH 46,309,418.94, 2026 FY 277,856,513.63. The sheet
+#: holds 231,547,094.69 in "2024.0", 88,324,015.96 in the actual column and
+#: 17,664,803.19 of growth - which is 20% of the actual. 20% of the TARGET
+#: is 46,309,418.94, and the card's total follows to the cent.
+#:
+#: So the RATE is read off the sheet rather than written here - it is a
+#: uniform 20% across all 88 rows today, and a year when it changes should
+#: follow by itself - and applied to the base the card grows.
+GROWTH_RATE_OVER = {
+    # group -> the column its Growth is a percentage OF
+    "TOTAL INCOME CONTRIBUTION": "2024 (Income+(FTP-LoanLoss))",
+}
+
+
 def _split_column(spec):
     """'DEPOSITS/Deposit Growth' -> ('DEPOSITS', 'Deposit Growth').
 
@@ -367,14 +391,26 @@ def read_allocation(source, definitions, sheet_name="Summary Allocation"):
             warnings.append(
                 f"{kpi.kpi_code}: no base column "
                 f"{kpi.allocation_base_column!r} on {sheet_name}.")
-        resolved[kpi.kpi_code] = (column, base, bool(kpi.negate))
+        # Where the sheet works its growth out over another column, find
+        # that column, so the RATE can be read from the sheet and applied to
+        # the base the card actually grows.
+        rate_over = None
+        group = (spec[0] or "").strip()
+        if group in GROWTH_RATE_OVER and base is not None:
+            rate_over = _find_column(labels, group, GROWTH_RATE_OVER[group])
+            if rate_over is None:
+                warnings.append(
+                    f"{kpi.kpi_code}: {group} has no "
+                    f"{GROWTH_RATE_OVER[group]!r} column, so the growth rate "
+                    f"cannot be read and the growth is added as it stands.")
+        resolved[kpi.kpi_code] = (column, base, bool(kpi.negate), rate_over)
 
     rows = []
     for raw in grid[_ALLOC_HEADER_ROW:]:
         code = _text(raw[_ALLOC_CODE_COLUMN]) if len(raw) > _ALLOC_CODE_COLUMN else ""
         if not code:
             continue
-        for kpi_code, (column, base, negate) in resolved.items():
+        for kpi_code, (column, base, negate, rate_over) in resolved.items():
             target = _number(raw[column]) if column < len(raw) else None
             if target is None:
                 continue
@@ -395,7 +431,16 @@ def read_allocation(source, definitions, sheet_name="Summary Allocation"):
             # figure - Disbursment/Total, New_Cust, banca_total - and those
             # reproduced the printed cards exactly as they stood.
             if base_value is not None:
-                target = target + base_value
+                over = (_number(raw[rate_over])
+                        if rate_over is not None and rate_over < len(raw)
+                        else None)
+                if over:
+                    # The growth is a RATE, worked out over another column.
+                    # Read the rate off the sheet and apply it to the base
+                    # the card grows - last year's target.
+                    target = base_value * (1 + (target / over))
+                else:
+                    target = target + base_value
 
             # Loan loss is held positive on this sheet and printed negative
             # on the card. The flag was only ever consulted by the actuals
