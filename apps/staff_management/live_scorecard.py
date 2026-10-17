@@ -157,6 +157,15 @@ _NOT_IN_WAREHOUSE = (
     "enters it under Scorecards → Figures to load, and it then shows here "
     "marked as entered rather than measured.")
 
+#: Weighted Sales has a source - it is a score off the Weighted Sales
+#: Dashboard, not a tally anybody keeps - so it gets its own wording rather
+#: than the "no system here holds this one" line, which is untrue of it and
+#: sends whoever reads it to a screen that cannot fix it.
+_WEIGHTED_SALES_PENDING = (
+    "This is your productivity on the Weighted Sales Dashboard, which scores "
+    "eleven sales lines together. The dashboard is not yet read into this "
+    "card, so the figure is not shown rather than estimated.")
+
 #: Seeded kpi_code -> Source. The codes are slugs of the cards' own wording, so
 #: several codes mean the same measure on different cards and share a source.
 SOURCES = {}
@@ -656,10 +665,39 @@ for _code in (
     "leave_management", "audit", "errors",
     "banking_covenant_tracking_should_be_in_iapply",
     "tooling_and_account_planning_all_customers", "digital_adoption",
-    "weighted_sales", "weighted_sales_dashboard",
     "portfolio_management_aum_dec_previous_year",
 ):
     SOURCES.setdefault(_code, Source(pending=_NOT_IN_WAREHOUSE))
+
+#: Weighted Sales is NOT "a count somebody keeps", which is what it used to
+#: say here, and the generic message sent people to the wrong screen.
+#:
+#: It is a productivity SCORE off the Weighted Sales Dashboard, and the
+#: workbook spells out both halves of it:
+#:
+#: * the "Weighted Sales Dashboard" sheet defines it - eleven component lines
+#:   (New Customers, Focus Accounts Vol, Other Accounts Vol, New Account Value,
+#:   Funding rate, Short/Long term Approval and Disbursement, Dormancy,
+#:   Merchants sign ups, Tills sign up, Nyumba Yangu Account Val, Banca
+#:   Premiums), each weighted and each with its own PER-MONTH target, and the
+#:   weights differ by role: Branch, DSR, BBC and RM each have a column. The
+#:   weights sum to 1.0;
+#: * the per-person figure is on the role summary sheets. On
+#:   ``SME_BBC_RM_Summary`` column 8 is this person's weighted, capped Weighted
+#:   Sales contribution and the perspective is worth 30%, so column 8 / 0.30 is
+#:   their productivity. Francis Miriti's five perspective scores
+#:   (0.0763 + 0.3049 + 0.05 + 0.1346 + 0.0679) sum to his printed total of
+#:   0.6336, which is what confirms column 8 is that and not something else.
+#:
+#: Most of the eleven components already have a reader in this module - new
+#: accounts and their value and funding off ``daily_sales_accounts_with_cto``,
+#: dormancy off ``daily_dormancy_converted_accounts``, premiums off the
+#: insurance feed - so computing it here is a real option rather than a
+#: rewrite. It is not done yet, and until it is the card should say which of
+#: the two it is waiting for rather than naming a screen that will not fix it.
+SOURCES.setdefault("weighted_sales", Source(pending=_WEIGHTED_SALES_PENDING))
+SOURCES.setdefault("weighted_sales_dashboard",
+                   Source(pending=_WEIGHTED_SALES_PENDING))
 
 #: PAR is a ratio against a threshold, not an amount against a plan. The roster
 #: carries an NPL amount (``target_npl``), which is a different measure, so
