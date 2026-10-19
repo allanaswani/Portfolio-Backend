@@ -718,6 +718,7 @@ class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
     # to reassign assisted_by for a specific application_id on the next upload.
     ASSISTED_BY_OVERRIDES = {
         "AH-6JNXXXV6": "Stephen Mwenda Mitabari",
+        "AH-YJ3Z7DXQ": "Juspher Muriithi",
     }
 
     def amend_row(self, row):
