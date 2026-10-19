@@ -2455,6 +2455,16 @@ def build_card(sales_code, profile=None):
     perspectives, seen = [], {}
     total = 0.0
     live_lines = pending_lines = 0
+    # The WEIGHT behind those counts, not just how many lines. A line nobody
+    # can measure contributes nothing to the total, so a card carrying three
+    # of them is quietly scored out of less than it appears to be - Abed
+    # Lelgo's Commercial RM card sums its lines to 102.5% of weight while
+    # 12.5% of it has no source, and his 65.66% reads as though he failed
+    # those lines rather than as though they could not be put to him. The
+    # workbook does not leave them blank: on the Commercial sheet the same
+    # three carry hand-entered figures. Until somebody enters his, the card
+    # should at least say what it was able to score.
+    scored_weight = unscored_weight = 0.0
 
     for mapping in mappings:
         source = SOURCES.get(mapping.kpi_code, Source(pending=_NOT_IN_WAREHOUSE))
@@ -2626,8 +2636,10 @@ def build_card(sales_code, profile=None):
         if weighted is not None:
             total += weighted
             live_lines += 1
+            scored_weight += weight
         else:
             pending_lines += 1
+            unscored_weight += weight
 
         name = mapping.mapping_category or "Other"
         if name not in seen:
@@ -2706,5 +2718,12 @@ def build_card(sales_code, profile=None):
         "performance_score": round(total, 4),
         "scored_lines": live_lines,
         "pending_lines": pending_lines,
+        # What the score is actually out of. ``performance_score`` is left
+        # exactly as it was - a raw sum over the lines that scored, which is
+        # what the workbook totals too - and these say what that sum could
+        # have reached, so nobody reads a 65.66% as a 65.66% out of 100 when
+        # an eighth of the weight was never on offer.
+        "scored_weight": round(scored_weight, 4),
+        "unscored_weight": round(unscored_weight, 4),
         "perspectives": perspectives,
     }

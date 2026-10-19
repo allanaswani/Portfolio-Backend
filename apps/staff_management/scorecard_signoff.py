@@ -202,6 +202,29 @@ def build_card_workbook(card, signoff=None):
                bold=True)
     total.number_format = "0.0%"
 
+    # What the total was out of. A line with no source scores nothing and is
+    # summed as nothing, so a card carrying three of them totals against a
+    # weight that was never fully on offer: Abed Lelgo's Commercial RM card
+    # shows 102.5% of weight while 12.5% of it - banking covenant tracking,
+    # tooling and account planning, leave management - has nowhere to read an
+    # actual from. Printed as 65.66% with nothing beside it, that reads as
+    # though he failed those three.
+    #
+    # The score itself is NOT rescaled. Rescaling would hand him the average
+    # of the lines that did score, which is a figure nobody measured and
+    # worse than the problem. This states the shortfall instead, on the row
+    # below the total, and only when there is one.
+    unscored = float(card.get("unscored_weight") or 0)
+    if unscored:
+        row += 1
+        scored = float(card.get("scored_weight") or 0)
+        note = at(row, 2,
+                  f"Scored on {fraction(scored):.1%} of weight; "
+                  f"{fraction(unscored):.1%} has no source and is not "
+                  f"included. Administration enters those under "
+                  f"Scorecards → Figures to load.")
+        note.alignment = Alignment(wrap_text=True, vertical="top")
+
     # ── the signature rows ────────────────────────────────────────────────
     # Same two rows, same wording and same column positions as the printed
     # card, so a reviewer signs where they expect to sign.
