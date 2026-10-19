@@ -2001,6 +2001,59 @@ FULL_YEAR_TARGETS |= {
     "bo_weighted_tat",
 }
 
+#: Lines whose YTD target is a slice of the GROWTH, not of the year-end level.
+#:
+#: The warehouse gives these lines a MOVEMENT as the actual - Abed Lelgo's
+#: asset growth is -3,192,001.99 and Faith Muthinja's is -39,217,958.87, each
+#: a change over the year, not a balance. Scoring a movement against a balance
+#: is arithmetically meaningless: Abed's -3.2m was being put against
+#: 1,736,021,628.99 and Faith's -39m against 465,452,137.67, and both can only
+#: ever come out at 0%. The target has to be a movement too.
+#:
+#: The workbook agrees, to the cent. On the Commercial sheet (Juspher
+#: Muriithi, Q3_Aug_26, so eight months of twelve elapsed):
+#:
+#:     Asset Growth   growth 160,510,204.00 x 8/12 = 107,006,802.67
+#:     Grow Deposits  growth 417,600,000.00 x 8/12 = 278,400,000.00
+#:
+#: and those are exactly the YTD targets it prints. Prorating the LEVEL would
+#: have given 1,168,467,340.30 and 342,361,375.98.
+#:
+#: Deliberately NOT here: Direct Portfolio Contribution, the income lines and
+#: Loan Loss. Their actual is a cumulative flow, not a movement, and the same
+#: sheet prorates them off the LEVEL - Juspher's DPC is 277,856,513.63 x 8/12
+#: = 185,237,675.75, which is what it prints. Putting them in this set would
+#: break the lines that currently work.
+#:
+#: The sheets are not perfectly consistent with each other: Commercial_trade
+#: prorates its "Deposits(Portfolio)" off the level while Commercial prorates
+#: "Grow Deposits" off the growth. The rule followed here is the one that
+#: holds regardless - match the target to what the ACTUAL actually measures.
+GROWTH_PRORATED = {
+    "asset_growth",
+    "deposit_growth",
+    "deposit_growth_liab_growth_ntb_liab",
+    "deposits_portfolio",
+    "deposits_portfolio_ntb",
+    "grow_deposits",
+}
+
+#: The only lines a NEGATIVE target makes sense on. Loan loss and provisions
+#: are held positive on the sheets and printed negative, so a target below
+#: nought is correct for them and nothing else.
+#:
+#: Faith Muthinja's card showed an Income Contribution target of
+#: -39,917,032.92. A target to earn less than nothing cannot be met or missed,
+#: and it came from adding a growth to a base that was itself negative. Her
+#: signed card sets 4,168,000.50. A negative here is a broken input, not a
+#: target, and the card says so rather than scoring against it.
+MAY_BE_NEGATIVE = {
+    "loan_loss",
+    "reduce_p_l_provisions_nil_provisions_loan_loss",
+    "reduce_p_l_provisions_nill_provisions_loan_loss",
+    "reduce_p_l_provisions_nill_provisions_loan_los",
+}
+
 #: What a ``target_base`` names, in terms of what the warehouse can give.
 #: Each is one of this person's OWN figures - the point of a rate target is
 #: that the number is theirs, not the role's.
@@ -2279,9 +2332,27 @@ def pf_for(sales_code, dmc_row=None):
 def prorate_to(annual, as_at=None, counted=False):
     """An annual target sliced to the date the ACTUAL is as at.
 
-    Elapsed days of the year, which is the same arithmetic ``targets.prorate``
-    uses and — measured at a month end, which is when the desk builds the card
-    — the same answer as the card's own months/12.
+    ELAPSED MONTHS, which is what the bank's own sheets use.
+
+    This used to be elapsed days of the year, on the stated grounds that at a
+    month end - when the desk builds the card - it came to the same answer as
+    months/12. It does not. At 31 August, days give 243/365 = 0.665753 and
+    months give 8/12 = 0.666667: a seventh of a percent, which on a
+    1.75-billion asset-growth target is 146,585 shillings.
+
+    The sheets settle it. Juspher Muriithi's Commercial card is Q3_Aug_26 and
+    prints, to the cent:
+
+        Trade Income    9,600,000.00 x 8/12 =   6,400,000.00
+        DPC           277,856,513.63 x 8/12 = 185,237,675.75
+        Asset Growth  160,510,204.00 x 8/12 = 107,006,802.67  (of the GROWTH)
+        Grow Deposits 417,600,000.00 x 8/12 = 278,400,000.00  (of the GROWTH)
+
+    Every one is months/12. None is days/365.
+
+    Mid-month, the current month counts by the fraction of itself elapsed, so
+    the slice still moves daily and lands exactly on months/12 at each month
+    end - which is the only date the desk actually reads.
 
     Counts are rounded to whole units. Money is not.
     """
@@ -2290,9 +2361,10 @@ def prorate_to(annual, as_at=None, counted=False):
     as_at = as_at or datetime.date.today()
     if isinstance(as_at, datetime.datetime):
         as_at = as_at.date()
-    day_of_year = (as_at - datetime.date(as_at.year, 1, 1)).days + 1
-    leap = as_at.year % 4 == 0 and (as_at.year % 100 != 0 or as_at.year % 400 == 0)
-    sliced = float(annual) * (day_of_year / (366 if leap else 365))
+    import calendar
+    in_month = calendar.monthrange(as_at.year, as_at.month)[1]
+    months = (as_at.month - 1) + (as_at.day / in_month)
+    sliced = float(annual) * (months / 12)
     return float(round(sliced)) if counted else sliced
 
 
@@ -2410,17 +2482,22 @@ def build_card(sales_code, profile=None):
     # role's and below their own DMC column.
     from .scorecard_automation.models import ScEmployeeKpiTarget
 
-    allocations = {}
+    allocations, allocation_bases = {}, {}
     try:
         with transaction.atomic():
-            allocations = {
-                row.kpi_code: float(row.kpi_target)
-                for row in ScEmployeeKpiTarget.objects.filter(
+            allocations, allocation_bases = {}, {}
+            for row in ScEmployeeKpiTarget.objects.filter(
                     sales_code__iexact=sales_code.strip(),
-                    year=datetime.date.today().year)
-            }
+                    year=datetime.date.today().year):
+                allocations[row.kpi_code] = float(row.kpi_target)
+                # The sheet's "2025 FY" column. Needed to recover the GROWTH -
+                # the allocation stores the year's LEVEL, and a growth-measured
+                # line has to be scored against the growth.
+                base = getattr(row, "base_value", None)
+                if base not in (None, ""):
+                    allocation_bases[row.kpi_code] = float(base)
     except Exception:  # noqa: BLE001 - an absent table must not blank the card
-        allocations = {}
+        allocations, allocation_bases = {}, {}
 
     # Figures an administrator loaded for the lines the system cannot measure.
     # Read for the last CLOSED month, which is the month a manual return is
@@ -2543,11 +2620,34 @@ def build_card(sales_code, profile=None):
             failed = False
             unwired = False
 
+        # A target to earn less than nothing cannot be met or missed. It
+        # comes of adding a growth to a base that was itself negative, and it
+        # is a broken input rather than a target - so it is dropped here and
+        # the line reports no target, instead of scoring against it.
+        if (fy_target is not None and fy_target < 0
+                and mapping.kpi_code not in MAY_BE_NEGATIVE):
+            fy_target, target_how = None, ""
+
+        # The GROWTH, where this line is measured as one. The allocation
+        # stores the year's LEVEL and the base it grew from, so the growth is
+        # the difference; the roster's own column is already a level too.
+        growth_target = None
+        if mapping.kpi_code in GROWTH_PRORATED and fy_target is not None:
+            base_level = allocation_bases.get(mapping.kpi_code)
+            if base_level is not None:
+                growth_target = fy_target - base_level
+
         # A threshold holds all year; everything else is sliced to the date
         # its own actual is as at.
+        #
+        # A growth-measured line slices its GROWTH. The warehouse hands these
+        # lines a movement as the actual, and a movement scored against a
+        # balance can only come out at nought - see GROWTH_PRORATED, which
+        # carries the workbook arithmetic this matches to the cent.
         full_year = mapping.kpi_code in FULL_YEAR_TARGETS
-        ytd_target = (fy_target if full_year
-                      else prorate_to(fy_target, as_at,
+        to_slice = fy_target if growth_target is None else growth_target
+        ytd_target = (to_slice if full_year
+                      else prorate_to(to_slice, as_at,
                                       counted=source.counted))
 
         # The missing TARGET is reported ahead of a failed read, because a line
@@ -2674,7 +2774,11 @@ def build_card(sales_code, profile=None):
             # year. Blank elsewhere, exactly as it is blank on most lines of
             # the printed card, rather than filled with a guess.
             "prior_year": (bases.get(base_name)
-                           if (rate_basis and base_name) else None),
+                           if (rate_basis and base_name)
+                           else allocation_bases.get(mapping.kpi_code)),
+            # The sheet's "GROWTH" column, where the line is measured as a
+            # growth and the target therefore IS the growth.
+            "growth_target": growth_target,
             "target_field": field,
             "target_source": target_how,
             "full_year_target": full_year,

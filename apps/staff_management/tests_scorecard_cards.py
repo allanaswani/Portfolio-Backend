@@ -10,7 +10,7 @@ Ogare's, not hers.
 import datetime
 from io import BytesIO
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from . import scorecard_cards
 from .models import BranchEmployeeDmcData
@@ -458,3 +458,63 @@ class TheRealBackOfficeCardsTests(TestCase):
         self.assertEqual(report["unmapped"], [],
                          "every line on a real card should be placed")
         self.assertEqual(report["actuals"], 25)
+
+
+class GrowthProrationTests(SimpleTestCase):
+    """A growth-measured line slices its GROWTH, not the year-end level.
+
+    Pinned to the workbook's own arithmetic. Juspher Muriithi's Commercial
+    sheet is reviewed at Q3_Aug_26 - eight months of twelve - and prints:
+
+        Asset Growth   2025 FY 1,592,190,806.45  GROWTH 160,510,204.00
+                       2026 FY 1,752,701,010.45  YTD    107,006,802.67
+        Grow Deposits  2025 FY    95,942,063.97  GROWTH 417,600,000.00
+                       2026 FY   513,542,063.97  YTD    278,400,000.00
+
+    Prorating the LEVEL gives 1,168,467,340.30 and 342,361,375.98 instead,
+    which is what the card was doing - and why a movement of -3,192,001.99
+    scored nought against it.
+    """
+
+    def test_a_growth_line_slices_the_growth(self):
+        from apps.staff_management.live_scorecard import (
+            GROWTH_PRORATED, prorate_to)
+
+        for code, base, level, expected in (
+                ("asset_growth", 1592190806.45, 1752701010.45, 107006802.67),
+                ("grow_deposits", 95942063.97, 513542063.97, 278400000.00)):
+            self.assertIn(code, GROWTH_PRORATED)
+            growth = level - base
+            as_at = datetime.date(2026, 8, 31)
+            self.assertAlmostEqual(
+                prorate_to(growth, as_at), expected, delta=1.0,
+                msg=f"{code}: the YTD target must be a slice of the growth")
+
+    def test_the_income_lines_still_slice_the_level(self):
+        """Direct Portfolio Contribution is a cumulative flow, not a movement.
+
+        The same sheet prorates it off the LEVEL - 277,856,513.63 x 8/12 =
+        185,237,675.75 - so putting it in the growth set would break it.
+        """
+        from apps.staff_management.live_scorecard import (
+            GROWTH_PRORATED, prorate_to)
+
+        for code in ("direct_portfolio_contribution", "income_contribution",
+                     "operating_profit", "loan_loss"):
+            self.assertNotIn(code, GROWTH_PRORATED)
+        self.assertAlmostEqual(
+            prorate_to(277856513.628, datetime.date(2026, 8, 31)),
+            185237675.75, delta=1.0)
+
+    def test_only_loan_loss_may_carry_a_negative_target(self):
+        """Faith Muthinja's card showed Income Contribution at -39,917,032.92.
+
+        A target to earn less than nothing cannot be met or missed. Her signed
+        card sets 4,168,000.50.
+        """
+        from apps.staff_management.live_scorecard import MAY_BE_NEGATIVE
+
+        self.assertIn("loan_loss", MAY_BE_NEGATIVE)
+        for code in ("income_contribution", "direct_portfolio_contribution",
+                     "operating_profit", "asset_growth", "grow_deposits"):
+            self.assertNotIn(code, MAY_BE_NEGATIVE)
