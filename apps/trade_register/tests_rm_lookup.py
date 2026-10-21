@@ -252,3 +252,46 @@ class RegisterQueryCountTests(APITestCase):
         self.assertEqual(float(row["amount_fcy"]), 1_000_000)
         self.assertEqual(float(row["current_amount"]), 1_100_000)
         self.assertEqual(row["amendment_count"], 1)
+
+
+class DmcRegisterIsARosterTests(RMLookupSourceTests):
+    """Somebody whose ONLY record is the DMC register must still be offered.
+
+    Stephen Mwenda is the case that found it. ``rm_lookup`` reported:
+
+        employee_table (HR roster): 0 match(es)
+        dsr_sales_codes:            0 match(es)
+        staff_employee_data:        0 match(es)
+        branch_employee_dmc_data:   3 match(es)
+          Stephen Mwenda  code=SM4224  PF=4224   (x3)
+
+    The register was read only to merge a sales CODE onto somebody the other
+    lists had already found, keyed on PF - so his code was there the whole
+    time and the desk still got "No one on the roster matches that".
+
+    Three rows, one person: the table carries duplicates from an upload that
+    keyed on sales_code, so he must appear exactly once.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for _ in range(3):
+            BranchEmployeeDmcData.objects.create(
+                staff_name="STEPHEN MWENDA", sales_code="SM4224",
+                staff_pf_number=4224, staff_role="RM",
+                staff_branch="MERU BRANCH", active=1,
+            )
+
+    def test_someone_only_on_the_dmc_register_is_not_lost(self):
+        self.assertIn("STEPHEN MWENDA", self._names("mwenda"))
+
+    def test_he_is_offered_once_not_three_times(self):
+        names = self._names("mwenda")
+        self.assertEqual(names.count("STEPHEN MWENDA"), 1, names)
+
+    def test_his_code_comes_with_him(self):
+        res = self.client.get("/trade_register/rm-lookup/?search=mwenda")
+        row = next(r for r in res.data["results"]
+                   if r["name"] == "STEPHEN MWENDA")
+        self.assertEqual(row["code"], "SM4224")
+        self.assertEqual(row["pf_number"], "4224")

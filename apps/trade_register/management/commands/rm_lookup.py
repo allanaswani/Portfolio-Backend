@@ -115,22 +115,37 @@ class Command(BaseCommand):
             w(f"  {n}  code={code}  PF={pf}  active={active}"
               + ("" if active else "   (inactive - not merged in)"))
 
+        dmc_hits = []
         for model, label in ((BranchEmployeeDmcData, "branch_employee_dmc_data"),
                              (BranchFinalEmployeeDmcData, "branch_final_employee_dmc_data")):
             hits = list(model.objects.filter(staff_name__icontains=name)
                         .values_list("staff_name", "sales_code", "staff_pf_number")[:20])
+            if model is BranchEmployeeDmcData:
+                dmc_hits = hits
             w("")
             w(f"{label}: {len(hits)} match(es)")
             for n, code, pf in hits:
                 w(f"  {n}  code={code}  PF={pf}")
 
-        if not roster and not dsr and not staff:
+        # The verdict used to ignore the two tables it had just printed, so a
+        # person with three rows in branch_employee_dmc_data was told they were
+        # "NOT IN ANY OF THE THREE TABLES" on the line below their own rows.
+        # That is how Stephen Mwenda was read as missing when his code was
+        # sitting in the register all along.
+        if not roster and not dsr and not staff and not dmc_hits:
             w("")
-            w("NOT IN ANY OF THE THREE TABLES.")
+            w("ON NO LIST AT ALL.")
             w("The picker can only offer people one of these lists carries, so")
             w("this person has to be added to the HR roster upload or the sales")
             w("tables before the desk can pick them. Check the spelling first -")
             w("the search above is a substring match, so try a shorter fragment.")
+        elif not roster and not dsr and not staff:
+            w("")
+            w("ON THE DMC REGISTER ONLY - and that is enough.")
+            w("The picker reads the DMC register as a roster in its own right,")
+            w("so this person is offered and their code fills in. If the desk")
+            w("still cannot find them, the backend is running a build from")
+            w("before that was true.")
         w("")
 
     def _code_for(self, pf):

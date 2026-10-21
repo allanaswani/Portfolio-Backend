@@ -412,6 +412,48 @@ class RMLookupView(APIView):
                         "job_title": (title or "").strip(), "department": "",
                         "unit": "", "exited": False, "source": "sales_staff",
                     })
+            # ── and the DMC register, which is its own roster ──────────
+            # This table was already being read, but only to merge a sales
+            # CODE onto somebody the lists above had already found, keyed on
+            # PF number. Anybody whose ONLY record is here was therefore
+            # invisible to the picker.
+            #
+            # Stephen Mwenda is the case that found it: three rows here with
+            # code SM4224 and PF 4224, and nothing in employee_table,
+            # dsr_sales_codes or staff_employee_data. The desk typed his name
+            # and got "No one on the roster matches that" while his code sat
+            # in the register the whole time.
+            #
+            # Three rows, one person - the table carries duplicates from an
+            # earlier upload that keyed on sales_code - so ``seen`` does the
+            # collapsing, exactly as it does for the other sources.
+            dmc = BranchEmployeeDmcData.objects.all()
+            if not include_exited:
+                # Either marker can carry the exit, and NULL means neither was
+                # ever set, which is the normal state for a serving member of
+                # staff. Excluding NULL here would empty the list.
+                dmc = dmc.exclude(staff_exit=1).exclude(active=0)
+            if search:
+                dmc = dmc.filter(
+                    Q(staff_name__icontains=search)
+                    | Q(sales_code__icontains=search)
+                    | Q(staff_role__icontains=search)
+                )
+            for name, code, role, pf, branch in dmc.values_list(
+                "staff_name", "sales_code", "staff_role", "staff_pf_number",
+                "staff_branch",
+            )[: remaining * 3]:
+                name = (name or "").strip()
+                if name and name.upper() not in seen:
+                    seen.add(name.upper())
+                    extra.append({
+                        "name": name, "code": (code or "").strip(),
+                        "pf_number": str(pf) if pf is not None else "",
+                        "job_title": (role or "").strip(),
+                        "department": (branch or "").strip(),
+                        "unit": "", "exited": False, "source": "dmc_register",
+                    })
+
             extra.sort(key=lambda r: r["name"])
             out.extend(extra[:remaining])
 
