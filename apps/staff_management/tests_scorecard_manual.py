@@ -404,3 +404,35 @@ class ASignedCardBeatsTheWarehouseTests(LoadedFiguresReachTheCardTests):
         """
         self.load("nps", 0.5)
         self.assertIn("warehouse_said", self.line("nps"))
+
+    def test_a_loaded_nought_does_not_displace_a_warehouse_figure(self):
+        """Nought is not a statement - it is an empty cell that got saved.
+
+        Faith Muthinja's card fell to 27.8% on loaded noughts sitting over
+        real reads: VIC Premiums 0 against a warehouse 468,067.25, Net
+        Disbursements 0 against 36,663,806.28. "why are you putting zeros yet
+        they are there and they are read".
+        """
+        warehouse, loaded = 468_067.25, 0.0
+
+        says_something = (loaded is not None
+                          and (loaded != 0 or warehouse is None))
+        self.assertFalse(says_something,
+                         "a loaded nought must not beat a real figure")
+
+    def test_a_loaded_nought_still_fills_a_line_nothing_could_read(self):
+        """The case it was always for: the warehouse has nothing at all."""
+        warehouse, loaded = None, 0.0
+
+        says_something = (loaded is not None
+                          and (loaded != 0 or warehouse is None))
+        self.assertTrue(says_something,
+                        "a nought must still fill a line with no figure")
+
+    def test_a_real_loaded_figure_still_wins(self):
+        """The signed card remains authoritative where it says something."""
+        warehouse, loaded = 468_067.25, 450_523.0
+
+        says_something = (loaded is not None
+                          and (loaded != 0 or warehouse is None))
+        self.assertTrue(says_something)

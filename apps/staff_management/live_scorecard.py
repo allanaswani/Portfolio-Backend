@@ -2696,10 +2696,30 @@ def build_card(sales_code, profile=None):
         # disagreement can be seen instead of silently resolved.
         owner_answered = (actual is not None
                           and source.actual_key in OWNER_MAINTAINED_KEYS)
-        if mapping.kpi_code in loaded_actuals and not owner_answered:
-            if actual is not None and actual != loaded_actuals[mapping.kpi_code]:
+
+        # A loaded ZERO does not override a figure the warehouse found.
+        #
+        # Nought is not a statement. It is what an empty cell becomes when a
+        # template is saved, and these templates ship pre-filled with zeros -
+        # so a loaded nought almost always means "nobody typed anything here",
+        # not "this person sold nothing". Letting it win blanked lines the
+        # warehouse had read perfectly well: Faith Muthinja's VIC Premiums
+        # showed 0 against a warehouse figure of 468,067.25, her Net
+        # Disbursements 0 against 36,663,806.28, and her card fell to 27.8%
+        # on figures that were sitting right there. "why are you putting zeros
+        # yet they are there and they are read".
+        #
+        # A loaded nought still fills a line the warehouse could NOT read,
+        # which is the case it was always for. It simply cannot displace a
+        # real figure.
+        loaded = loaded_actuals.get(mapping.kpi_code)
+        loaded_says_something = (loaded is not None
+                                 and (loaded != 0 or actual is None))
+
+        if loaded_says_something and not owner_answered:
+            if actual is not None and actual != loaded:
                 warehouse_said = actual
-            actual = loaded_actuals[mapping.kpi_code]
+            actual = loaded
             as_at = loaded_as_at
             as_at_label = f"loaded by Administration for {loaded_as_at:%b %Y}"
             problem = None
