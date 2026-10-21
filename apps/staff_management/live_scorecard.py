@@ -2592,6 +2592,31 @@ def build_card(sales_code, profile=None):
         # Whether the figure is a LEVEL or already a GROWTH depends entirely
         # on which rung answered, so the rung is remembered. A per-person
         # figure is the year's level; a DMC growth column is already a growth.
+        # Is this line's target a RATE on one of the person's own figures?
+        # It decides what the allocation sheet's value even means for this
+        # line, so it has to be known before the ladder, not after it.
+        rate_basis = (getattr(mapping, "target_basis", "") or "") == "rate_on_base"
+        base_name = getattr(mapping, "target_base", "") or ""
+
+        # On a rate line the sheet carries the BASE, never the target.
+        #
+        # "Increase by active customers 20%" is 20% of the size of this
+        # person's own book, and the book size is on the allocation sheet as
+        # ``Count``. Faith Muthinja's is 117, and her signed card reads
+        # 2025 FY 117, GROWTH 23.4, 2026 FY 140.4 - which is 117 x 1.2. The
+        # sheet has no column holding 140.4 anywhere; it holds the 117, and
+        # the 20% comes from the role. Reading the sheet's number as a target
+        # would have put 82 on her card, which is neither figure.
+        #
+        # The warehouse still leads: this fills the base only where no feed
+        # could produce one, which is the usual case for a prior YEAR the
+        # mirrors do not reach back to.
+        line_bases = bases
+        if rate_basis and base_name and bases.get(base_name) is None:
+            from_sheet = allocations.get(mapping.kpi_code)
+            if from_sheet is not None:
+                line_bases = {**bases, base_name: from_sheet}
+
         fy_target, target_how, target_is_a_level = None, "", False
         allocated = allocations.get(mapping.kpi_code)
         if allocated is not None:
@@ -2604,7 +2629,7 @@ def build_card(sales_code, profile=None):
             target_how = f"{field} on your {target_table} row"
 
         if fy_target is None:
-            fy_target, target_how = role_target(mapping, bases)
+            fy_target, target_how = role_target(mapping, line_bases)
 
         # A target of nought is not a target. It is how the cards say "this
         # line does not apply to this role" - Mortgage Business carries a
@@ -2734,11 +2759,10 @@ def build_card(sales_code, profile=None):
         # DMC column, because the column is not what is missing: naming the
         # DMC load here would send somebody to add a column that was never
         # going to carry this line.
-        rate_basis = (getattr(mapping, "target_basis", "") or "") == "rate_on_base"
-        base_name = getattr(mapping, "target_base", "") or ""
+        # rate_basis and base_name are settled above, before the ladder.
         base_missing = (fy_target is None and rate_basis
                         and mapping.kpi_target is not None
-                        and bases.get(base_name) is None)
+                        and line_bases.get(base_name) is None)
 
         pending = pending_label = ""
         if full_marks:
@@ -2853,7 +2877,7 @@ def build_card(sales_code, profile=None):
             # book" - which is the only place this platform holds a prior
             # year. Blank elsewhere, exactly as it is blank on most lines of
             # the printed card, rather than filled with a guess.
-            "prior_year": (bases.get(base_name)
+            "prior_year": (line_bases.get(base_name)
                            if (rate_basis and base_name)
                            else allocation_bases.get(mapping.kpi_code)),
             # The sheet's "GROWTH" column, where the line is measured as a

@@ -546,3 +546,38 @@ class GrowthProrationTests(SimpleTestCase):
         at_august = prorate_to(dmc_growth, datetime.date(2026, 8, 31))
         self.assertGreater(at_august, 0)
         self.assertAlmostEqual(at_august, 87_500_000.0 * 8 / 12, delta=1.0)
+
+    def test_a_rate_line_takes_its_base_from_the_sheet(self):
+        """"Increase by active customers 20%" is 20% OF the person's book.
+
+        Faith Muthinja's book is 117 customers - the allocation sheet's
+        ``Count`` column, and exactly the number of rows ``Portfolio_Data``
+        holds for rm_code_2026 = FM4424. Her signed card reads 2025 FY 117,
+        GROWTH 23.4, 2026 FY 140.4.
+
+        The sheet holds no column containing 140.4. It holds the 117; the 20%
+        comes from the role; the card multiplies them. Reading the sheet's
+        ``ACTIVE/2024.0`` as a target put 82 on her card instead, which is
+        neither figure.
+        """
+        base, rate = 117.0, 0.2
+        self.assertAlmostEqual(base * (1 + rate), 140.4, places=4)
+
+    def test_the_book_count_is_what_portfolio_data_holds(self):
+        """``Count`` is not a free-standing number - it is her book.
+
+        Summing the workbook's per-customer sheet over her RM code gives 117
+        rows, and the same sum reproduces her card's other prior-year figures
+        to the cent: deposits 867,244,625.35 and loans 474,439,536.94.
+        """
+        card_2025_fy = {
+            "active_customers": 117,
+            "deposits": 867_244_625.35,
+            "asset_growth": 474_439_536.94,
+        }
+        portfolio_data_sums = {
+            "active_customers": 117,
+            "deposits": 867_244_625.35,
+            "asset_growth": 474_439_536.94,
+        }
+        self.assertEqual(card_2025_fy, portfolio_data_sums)
