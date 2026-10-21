@@ -241,12 +241,15 @@ _register(
 _register(
     ["new_customer_min_turnover_of_50m"],
     Source(actual_key="new_customers_50m", counted=True))
+# "> 2 Active Products". This was refused for want of a product count per new
+# customer. The count is on the feed after all - ``daily_sales_accounts_with_cto``
+# carries ``prod_id`` beside the account - so a customer's product count is the
+# number of DISTINCT prod_id on their rows, and this line is the customers whose
+# count clears two.
 _register(
     ["ultimate_rm_new_customers"],
     Source(target_field="target_new_customers", counted=True,
-           pending="This line counts new customers holding more than two "
-                   "active products. Product count per new customer is not on "
-                   "the new-customer feed."))
+           actual_key="new_customers_multi_product"))
 
 _register(
     ["active_customers"],
@@ -1112,7 +1115,8 @@ def _afh_property_ytd(sales_code, staff_name, year):
     return int(units or 0), float(value or 0), bool(mapped)
 
 
-def _new_accounts_ytd(sales_code, year, turnover_floor=None):
+def _new_accounts_ytd(sales_code, year, turnover_floor=None,
+                      product_floor=None):
     """New customers this person opened this year → (count, latest open date).
 
     ``daily_sales_accounts_with_cto`` is the new-account return, one row per
@@ -1130,13 +1134,39 @@ def _new_accounts_ytd(sales_code, year, turnover_floor=None):
     params = [year, sales_code.strip()]
     if turnover_floor:
         params.append(turnover_floor)
-    sql = f"""
-        SELECT COUNT(DISTINCT cust_cif), MAX(cust_open_date)
-        FROM daily_sales_accounts_with_cto
-        WHERE EXTRACT(YEAR FROM cust_open_date) = %s
-          AND UPPER(TRIM(COALESCE(sale_code, ''))) = UPPER(TRIM(%s))
-          {floor_clause}
-    """
+
+    if product_floor is None:
+        sql = f"""
+            SELECT COUNT(DISTINCT cust_cif), MAX(cust_open_date)
+            FROM daily_sales_accounts_with_cto
+            WHERE EXTRACT(YEAR FROM cust_open_date) = %s
+              AND UPPER(TRIM(COALESCE(sale_code, ''))) = UPPER(TRIM(%s))
+              {floor_clause}
+        """
+    else:
+        # "> 2 Active Products" on the Ultimate RM card. This used to be
+        # refused on the grounds that product count per new customer was not
+        # on the feed. It is: the same row carries ``prod_id``, so the number
+        # of products a customer holds is the count of DISTINCT prod_id on
+        # their rows, and the qualifying customers are the ones where that
+        # count clears the floor.
+        #
+        # Grouped first and counted after, because COUNT(DISTINCT cust_cif)
+        # with a HAVING on a different column would filter groups of the
+        # wrong grain. DISTINCT prod_id, not COUNT(*): a customer opening two
+        # accounts of the same product holds one product, not two.
+        sql = f"""
+            SELECT COUNT(*), MAX(opened) FROM (
+                SELECT cust_cif, MAX(cust_open_date) AS opened
+                FROM daily_sales_accounts_with_cto
+                WHERE EXTRACT(YEAR FROM cust_open_date) = %s
+                  AND UPPER(TRIM(COALESCE(sale_code, ''))) = UPPER(TRIM(%s))
+                  {floor_clause}
+                GROUP BY cust_cif
+                HAVING COUNT(DISTINCT prod_id) > %s
+            ) qualifying
+        """
+        params.append(product_floor)
     with connection.cursor() as cur:
         cur.execute(sql, params)
         count, latest = cur.fetchone()
@@ -1695,10 +1725,18 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             count, latest = _new_accounts_ytd(sales_code, year, floor)
             at = latest or monthly
             out_[key] = _figure(count, at, f"as at {at.day} {at:%b %Y}")
+
+        # New customers holding MORE THAN TWO products - the Ultimate RM
+        # line. Counted off the same feed, qualified on DISTINCT prod_id.
+        count, latest = _new_accounts_ytd(sales_code, year,
+                                          product_floor=2)
+        at = latest or monthly
+        out_["new_customers_multi_product"] = _figure(
+            count, at, f"as at {at.day} {at:%b %Y}")
         return out_
 
-    attempt(("new_accounts", "new_customers_10m", "new_customers_50m"),
-            new_accounts)
+    attempt(("new_accounts", "new_customers_10m", "new_customers_50m",
+             "new_customers_multi_product"), new_accounts)
 
     # ── Loan turnaround, from iApply ──────────────────────────────────────
     def turnaround():
@@ -2000,6 +2038,24 @@ FULL_YEAR_TARGETS |= {
     "bo_trx_productivity",
     "bo_weighted_tat",
 }
+
+def _no_target_reason(from_the_sheet):
+    """What to tell somebody whose line has no target - by WHERE it lives.
+
+    Two different screens fix two different problems, and naming the wrong
+    one wastes the reader's time. A line whose target comes off the Summary
+    Allocation sheet is not fixed on Figures-to-load, however many times
+    somebody types into it.
+    """
+    if from_the_sheet:
+        return ("No target is set for this line yet. It comes from the "
+                "workbook's Summary Allocation sheet - Administration loads "
+                "it under Scorecards \u2192 Allocation sheet. If the sheet "
+                "has been loaded already it needs loading again, because "
+                "this line's target is worked out when the file is read.")
+    return ("No target is set for this line yet. Administration sets it "
+            "under Scorecards \u2192 Figures to load.")
+
 
 #: Feeds that are NOT warehouse reads, and so are not overridden by a figure
 #: somebody loaded.
@@ -2750,6 +2806,16 @@ def build_card(sales_code, profile=None):
             failed = False
             unwired = False
 
+        # Where this line's target is SUPPOSED to come from, which decides
+        # what to tell somebody when it is missing. A line fed by the
+        # allocation sheet is not fixed on the Figures-to-load screen, and
+        # saying so sends people to the wrong place - Faith Muthinja's Income
+        # Contribution said "Administration sets it under Figures to load"
+        # when what it needs is the Summary Allocation sheet loading again.
+        from_the_sheet = bool(
+            (getattr(named.get(mapping.kpi_code), "allocation_column", "")
+             or "").strip())
+
         # A target to earn less than nothing cannot be met or missed. It
         # comes of adding a growth to a base that was itself negative, and it
         # is a broken input rather than a target - so it is dropped here and
@@ -2838,13 +2904,11 @@ def build_card(sales_code, profile=None):
             # added. True, and the wrong audience: it is on a document the
             # person signs, where a table name reads as a statement about them
             # and gives them nothing they can act on.
-            pending = ("No target is set for this line yet. Administration "
-                       "sets it under Scorecards \u2192 Figures to load.")
+            pending = _no_target_reason(from_the_sheet)
             pending_label = "No target set"
         elif fy_target is None:
-            pending = source.no_target_reason or (
-                "No target is set for this line yet. Administration sets it "
-                "under Scorecards \u2192 Figures to load.")
+            pending = (source.no_target_reason
+                       or _no_target_reason(from_the_sheet))
             pending_label = "No target set"
         elif unwired:
             pending = ("There is no live source wired for this line yet. The "

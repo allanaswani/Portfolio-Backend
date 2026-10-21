@@ -581,3 +581,37 @@ class GrowthProrationTests(SimpleTestCase):
             "asset_growth": 474_439_536.94,
         }
         self.assertEqual(card_2025_fy, portfolio_data_sums)
+
+    def test_the_no_target_message_names_the_right_screen(self):
+        """Two screens fix two different problems.
+
+        Faith Muthinja's Income Contribution said "Administration sets it
+        under Figures to load". It does not: that line's target comes off the
+        workbook's Summary Allocation sheet, and no amount of typing into
+        Figures-to-load would ever have set it.
+        """
+        from apps.staff_management.live_scorecard import _no_target_reason
+
+        sheet = _no_target_reason(True)
+        self.assertIn("Allocation sheet", sheet)
+        self.assertIn("loading again", sheet)
+        self.assertNotIn("Figures to load", sheet)
+
+        typed = _no_target_reason(False)
+        self.assertIn("Figures to load", typed)
+        self.assertNotIn("Allocation sheet", typed)
+
+    def test_more_than_two_products_is_measurable(self):
+        """"> 2 Active Products" was refused for want of a product count.
+
+        The count is on the feed: daily_sales_accounts_with_cto carries
+        prod_id beside the account, so a customer's product count is the
+        number of DISTINCT prod_id on their rows. Counted distinct, because
+        two accounts of the same product are one product.
+        """
+        from apps.staff_management.live_scorecard import SOURCES
+
+        source = SOURCES["ultimate_rm_new_customers"]
+        self.assertEqual(source.actual_key, "new_customers_multi_product")
+        self.assertFalse(source.pending,
+                         "the line is measured now, not refused")
