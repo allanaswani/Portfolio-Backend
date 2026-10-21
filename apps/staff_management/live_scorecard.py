@@ -514,7 +514,6 @@ for _code, _where in (
     ("bo_branch_rtgs", "the RTGS channel return"),
     ("bo_digital_activation", "the digital activation return"),
     ("bo_digital_customers", "the digital onboarding return"),
-    ("bo_re_activation", "the dormancy reactivation return"),
     ("bo_active_customers", "the active-customer count"),
 ):
     SOURCES[_code] = Source(pending=(
@@ -586,16 +585,19 @@ for _code, _why in (
 # So the count is shown with its own as-at and the line says what is missing.
 # Scoring a count of reactivations against a target of 0.384 would read as
 # 31,000%, and inventing the denominator would be worse than either.
+# The dormant base IS held - the accounts still dormant in ``accounts``, plus
+# the ones already brought back this year, which are no longer dormant and so
+# invisible to the first half. Added together they are what the reactivations
+# are a rate OF. See ``_dormant_base``.
 _register(
     ["bo_re_activation"],
-    Source(actual_key="dormancy_reactivations", counted=True,
+    Source(actual_key="dormancy_rate",
            no_target_reason=(
-               "This line is a RATE on your card - accounts reactivated "
-               "against accounts that were dormant. The reactivations are "
-               "counted here, but the dormant base they are measured against "
-               "is not held anywhere this platform reads, so the rate cannot "
-               "be worked out. Administration can enter the score under "
-               "Scorecards \u2192 Figures to load.")))
+               "The rate is measured here now. The TARGET is not a shared "
+               "one - the cards carry 38.4%, 22.3%, 13.8% and 100% on "
+               "different people - so it comes from that person's own signed "
+               "scorecard. Administration loads it under Scorecards "
+               "→ Figures to load.")))
 
 # ── Internal Audit ───────────────────────────────────────────────────────────
 # Nine lines across eight roles, and not one of them could be scored: the
@@ -1209,6 +1211,80 @@ def _dormancy_ytd(brn_code, year):
     return int(count or 0), latest
 
 
+def _dormant_base(branch, brn_code, year):
+    """Accounts this branch could have reactivated this year -> ``(n, how)``.
+
+    The card's line is a RATE - reactivations over accounts that WERE dormant
+    - and the denominator was said to be held nowhere. It is held, in two
+    halves that have to be added:
+
+    * the accounts still dormant now, from ``accounts.account_status``;
+    * the accounts that were dormant and have since been brought back, which
+      are exactly the rows in ``daily_dormancy_converted_accounts``. They are
+      no longer dormant, so the first half cannot see them - and they are the
+      numerator, so leaving them out would score a branch against a
+      denominator that excludes everything it achieved.
+
+    Branch matching is the awkward part and is deliberately loose. ``accounts``
+    carries a branch NAME (``current_branch``, falling back to
+    ``opening_branch``) while the reactivation feed carries a numeric
+    ``brn_code``, and the roster writes the name as "REHANI BRANCH" where the
+    account may say "Rehani". The word BRANCH is stripped from both sides and
+    the comparison folded, which is what makes those two meet.
+
+    Returns ``(None, reason)`` rather than a number whenever the branch cannot
+    be identified or nothing matched: a rate over a denominator that silently
+    came back as nought is worse than no rate at all.
+    """
+    from django.db import connection
+
+    name = str(branch or "").strip()
+    code = str(brn_code or "").strip()
+    if not name and not code:
+        return None, ("the roster records no branch against your sales code, "
+                      "and this is a branch measure")
+
+    still_dormant = 0
+    if name:
+        try:
+            with connection.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*)
+                    FROM accounts a
+                    WHERE UPPER(REPLACE(TRIM(COALESCE(NULLIF(TRIM(
+                              a.current_branch), ''), a.opening_branch)),
+                              ' BRANCH', ''))
+                          = UPPER(REPLACE(TRIM(%s), ' BRANCH', ''))
+                      AND UPPER(COALESCE(a.account_status, ''))
+                          LIKE '%%DORMANT%%'
+                """, [name])
+                still_dormant = int(cur.fetchone()[0] or 0)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            return None, f"the dormant account base could not be read: {exc}"
+
+    brought_back = 0
+    if code:
+        try:
+            with connection.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*)
+                    FROM daily_dormancy_converted_accounts
+                    WHERE TRIM(brn_code::text) = TRIM(%s)
+                      AND EXTRACT(YEAR FROM reactivation_date) = %s
+                """, [code, year])
+                brought_back = int(cur.fetchone()[0] or 0)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"the reactivation feed could not be read: {exc}"
+
+    base = still_dormant + brought_back
+    if not base:
+        return None, (f"no dormant accounts are recorded against "
+                      f"{name or code}, so there is nothing for the "
+                      f"reactivations to be a rate OF")
+    return base, (f"{brought_back} of {base} ({still_dormant} still dormant, "
+                  f"{brought_back} brought back)")
+
+
 def _tat_ytd(sales_code, year, sla_days=7):
     """Loan turnaround for this person's applications this year.
 
@@ -1480,14 +1556,25 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     def dormancy():
         count, latest = _dormancy_ytd(brn_code, year)
         if count is None:
-            return _figure(None, problem=(
+            blank = _figure(None, problem=(
                 "the roster records no branch code against your sales code, "
                 "and this is a branch measure"))
+            return {"dormancy_reactivations": blank, "dormancy_rate": blank}
+
         label = (f"reactivations to {latest:%d %b %Y}" if latest
                  else f"reactivations in {year}")
-        return _figure(float(count), latest, label)
+        counted = _figure(float(count), latest, label)
 
-    attempt("dormancy_reactivations", dormancy)
+        # The RATE, which is what the card actually scores: reactivations
+        # over the accounts that were dormant to begin with.
+        base, how = _dormant_base(branch, brn_code, year)
+        if base is None:
+            rate = _figure(None, problem=how)
+        else:
+            rate = _figure(count / base, latest, how)
+        return {"dormancy_reactivations": counted, "dormancy_rate": rate}
+
+    attempt(("dormancy_reactivations", "dormancy_rate"), dormancy)
 
     # ── Internal Audit, by BRANCH ─────────────────────────────────────────
     # The only measure here that is not personal. One row serves every person

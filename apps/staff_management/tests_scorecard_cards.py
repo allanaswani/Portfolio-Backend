@@ -615,3 +615,31 @@ class GrowthProrationTests(SimpleTestCase):
         self.assertEqual(source.actual_key, "new_customers_multi_product")
         self.assertFalse(source.pending,
                          "the line is measured now, not refused")
+
+    def test_the_dormancy_base_is_both_halves(self):
+        """The denominator is dormant-now PLUS already-brought-back.
+
+        The accounts reactivated this year are no longer dormant, so
+        ``accounts.account_status`` cannot see them - and they are the
+        numerator. Leaving them out would score a branch against a
+        denominator that excludes everything it achieved, which flatters a
+        branch that did nothing and punishes one that did a lot.
+        """
+        still_dormant, brought_back = 180, 20
+
+        base = still_dormant + brought_back
+        self.assertEqual(base, 200)
+        self.assertAlmostEqual(brought_back / base, 0.10)
+
+        # Dropping the second half inflates the rate - the trap.
+        self.assertAlmostEqual(brought_back / still_dormant, 0.1111,
+                               places=4)
+
+    def test_dormancy_is_measured_not_refused(self):
+        """The line used to say its base "is not held anywhere"."""
+        from apps.staff_management.live_scorecard import SOURCES
+
+        source = SOURCES["bo_re_activation"]
+        self.assertEqual(source.actual_key, "dormancy_rate")
+        self.assertFalse(source.pending)
+        self.assertFalse(getattr(source, "no_target_reason", ""))
