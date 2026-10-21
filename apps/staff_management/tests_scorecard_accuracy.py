@@ -662,3 +662,64 @@ class NoKpiIsNamedAfterItsGroupTests(TestCase):
             "these KPIs are named after the group heading above them, not "
             "after what they measure, and will print on a card as though a "
             "perspective were a measure")
+
+
+class EveryRoleMatchesItsSheetTests(TestCase):
+    """Line COUNT and total WEIGHT per role, checked against the workbook.
+
+    Every sales role sheet was read back and diffed against what is seeded -
+    count, order, weight and wording. Eleven of twelve agreed exactly.
+    Personal Banking did not: the sheet has 18 lines and the seed had 19, the
+    extra being a Loan Loss line at weight ZERO that the sheet does not
+    carry at all.
+
+    A zero weight is not harmless. The line prints on the card as a row and
+    is counted among the lines a person is measured on, so the card claimed
+    a measure the bank's own card does not have.
+
+    The figures below are read off the workbook's role sheets, counting only
+    rows that carry a feed key - the TOTAL row at the foot of each sheet has
+    none, and a parser that takes it produces a phantom line at 100% weight.
+    """
+
+    #: role_code -> (lines on its sheet, total weight)
+    FROM_THE_SHEETS = {
+        "commercial_rm": (17, 1.025),
+        "commercial_rm_trade": (16, 1.025),
+        "diaspora_rm": (16, 1.025),
+        "diaspora_arm": (16, 1.025),
+        "mortgage_business_arm": (13, 1.025),
+        "pb_rm": (18, 1.025),
+        "pb_arm": (18, 1.025),
+        "pb_bbc": (18, 1.025),
+        "sme_rm": (18, 1.025),
+        "sme_arm": (18, 1.025),
+        "sme_bbc": (18, 1.025),
+        "ultimate_rm": (18, 1.025),
+    }
+
+    def test_each_role_has_the_lines_its_sheet_has(self):
+        from django.db.models import Count, Sum
+
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        wrong = []
+        for role, (lines, weight) in sorted(self.FROM_THE_SHEETS.items()):
+            got = (ScRoleKpiMapping.objects.filter(role_code=role)
+                   .aggregate(n=Count("id"), w=Sum("kpi_weight")))
+            n, w = got["n"], float(got["w"] or 0)
+            if n != lines or abs(w - weight) > 1e-6:
+                wrong.append(f"{role}: sheet has {lines} lines / {weight:.3f}, "
+                             f"seeded has {n} / {w:.3f}")
+
+        self.assertEqual(wrong, [], "\n".join(wrong))
+
+    def test_no_mapping_carries_a_weight_of_nought(self):
+        """A line worth nothing still prints, and still says you are measured
+        on it. The three that did were not on the sheet at all."""
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        zero = sorted(
+            f"{m.role_code}/{m.kpi_code}"
+            for m in ScRoleKpiMapping.objects.filter(kpi_weight=0))
+        self.assertEqual(zero, [], "\n".join(zero))
