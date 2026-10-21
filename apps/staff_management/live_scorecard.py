@@ -2001,6 +2001,27 @@ FULL_YEAR_TARGETS |= {
     "bo_weighted_tat",
 }
 
+#: Feeds that are NOT warehouse reads, and so are not overridden by a figure
+#: somebody loaded.
+#:
+#: A loaded figure beats the warehouse, because a warehouse read can be
+#: wrong and there was otherwise no way to correct it. These four are a
+#: different thing entirely: each is another team's own return, maintained on
+#: their own screen - CX keep the survey, HR the training hours, Internal
+#: Audit the audit score. They are already somebody's considered figure, and
+#: a second hand-typed one must not quietly replace them.
+#:
+#: The rule this preserves is in
+#: ``tests_scorecard_manual.test_cx_beats_a_figure_somebody_typed_in``: a
+#: typed figure is used where CX have none, which keeps a card completable in
+#: a quarter CX have not loaded, and CX's own figure wins once it is there.
+OWNER_MAINTAINED_KEYS = {
+    "cx_csat",            # Customer experience screen
+    "cx_contactability",  # Customer experience screen
+    "training_hours",     # Training returns screen
+    "audit_score",        # Audit returns screen
+}
+
 #: Lines whose YTD target is a slice of the GROWTH, not of the year-end level.
 #:
 #: The warehouse gives these lines a MOVEMENT as the actual - Abed Lelgo's
@@ -2549,25 +2570,38 @@ def build_card(sales_code, profile=None):
         field = source.target_field
 
         # ── the target ladder ─────────────────────────────────────────
-        # 1. the person's own column on the per-person DMC row
-        # 2. a per-person allocation somebody loaded for them
+        # 1. a per-person figure: the allocation sheet, or this person's own
+        #    SIGNED CARD, whichever was loaded for them
+        # 2. their column on the per-person DMC row
         # 3. the role's own target - a shared threshold, or a rate on one of
         #    this person's own figures
-        # An explicit figure for this person always beats a derived one.
+        #
+        # The per-person figure LEADS, and that is a deliberate reversal. The
+        # DMC column used to win, which meant a card could disagree with the
+        # document its owner had signed and there was no way to correct it:
+        # Faith Muthinja's deposits target read -682,993,663.92 where her
+        # signed card says 35,000,000, and her Income Contribution read "no
+        # target" where her card sets 4,168,000.50. The allocation sheet and
+        # the signed cards are what the business agreed; the DMC load is an
+        # ETL feed. Asked for directly on 2026-10-21.
+        #
+        # Nothing is hidden by this: ``target_source`` on every line says
+        # which rung answered, so a figure that came from a card says so.
         raw_target = targets.get(field) if field else None
-        fy_target = (float(raw_target)
-                     if raw_target not in (None, "") else None)
-        target_how = (f"{field} on your {target_table} row"
-                      if fy_target is not None else "")
 
         # Whether the figure is a LEVEL or already a GROWTH depends entirely
-        # on which rung of the ladder answered, so the rung is remembered.
-        target_is_a_level = False
-        if fy_target is None:
-            allocated = allocations.get(mapping.kpi_code)
-            if allocated is not None:
-                fy_target, target_how = allocated, "your own allocated target"
-                target_is_a_level = True
+        # on which rung answered, so the rung is remembered. A per-person
+        # figure is the year's level; a DMC growth column is already a growth.
+        fy_target, target_how, target_is_a_level = None, "", False
+        allocated = allocations.get(mapping.kpi_code)
+        if allocated is not None:
+            fy_target = allocated
+            target_how = "your own allocated target"
+            target_is_a_level = True
+
+        if fy_target is None and raw_target not in (None, ""):
+            fy_target = float(raw_target)
+            target_how = f"{field} on your {target_table} row"
 
         if fy_target is None:
             fy_target, target_how = role_target(mapping, bases)
@@ -2616,7 +2650,30 @@ def build_card(sales_code, profile=None):
         # not have - produced nothing AND refused the figure somebody had
         # loaded for it. Since the warehouse still wins wherever it answers,
         # opening the rung costs nothing and only ever fills a blank.
-        if actual is None and mapping.kpi_code in loaded_actuals:
+        warehouse_said = None
+
+        # A loaded figure WINS, where there is one.
+        #
+        # This used to fill only a blank line, on the reasoning that a live
+        # warehouse read beats a typed number. That reasoning fails on the
+        # lines where the warehouse read is simply wrong: Faith Muthinja's
+        # card showed Portfolio NPS at 100% where her signed card records
+        # 42.9%, and her Reduce P&L provisions at nought where it records
+        # -4,114,068.64. There was no way to correct either, because the
+        # warehouse always won.
+        #
+        # A loaded figure is somebody's deliberate statement for a CLOSED
+        # month - the query above reads only ``last_closed_month_end`` - so it
+        # is the more considered of the two, not the staler. Where no figure
+        # was loaded the warehouse is used exactly as before.
+        #
+        # What the warehouse said is kept rather than thrown away, so a
+        # disagreement can be seen instead of silently resolved.
+        owner_answered = (actual is not None
+                          and source.actual_key in OWNER_MAINTAINED_KEYS)
+        if mapping.kpi_code in loaded_actuals and not owner_answered:
+            if actual is not None and actual != loaded_actuals[mapping.kpi_code]:
+                warehouse_said = actual
             actual = loaded_actuals[mapping.kpi_code]
             as_at = loaded_as_at
             as_at_label = f"loaded by Administration for {loaded_as_at:%b %Y}"
@@ -2806,6 +2863,11 @@ def build_card(sales_code, profile=None):
             "target_source": target_how,
             "full_year_target": full_year,
             "ytd_actual": actual,
+            # What the warehouse read, where a loaded figure overrode it and
+            # the two disagreed. Kept so a disagreement can be seen and
+            # chased rather than silently resolved; blank whenever they
+            # agree, or when only one of them had a figure at all.
+            "warehouse_said": warehouse_said,
             "score": score,
             "weighted_score": weighted,
             "as_at": as_at_label,

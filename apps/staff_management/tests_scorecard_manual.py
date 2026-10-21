@@ -363,3 +363,44 @@ class LoadedFiguresReachTheCardTests(TestCase):
         drawdowns = self.line("drawdowns")
         self.assertEqual(drawdowns["ytd_actual"], 999_999_999)
         self.assertIn("loaded by Administration", drawdowns["as_at"])
+
+
+class ASignedCardBeatsTheWarehouseTests(LoadedFiguresReachTheCardTests):
+    """A loaded figure wins, and the warehouse figure is kept beside it.
+
+    Reversed on 2026-10-21, on request. Until then a loaded figure filled only
+    a BLANK line, on the reasoning that a live warehouse read beats a typed
+    number. That fails wherever the warehouse read is simply wrong: Faith
+    Muthinja's card showed Portfolio NPS at 100% where her signed card records
+    42.9%, and Reduce P&L provisions at nought where it records -4,114,068.64.
+    Neither could be corrected, because the warehouse always won.
+    """
+
+    def test_a_loaded_figure_replaces_a_warehouse_figure(self):
+        from apps.staff_management.live_scorecard import OWNER_MAINTAINED_KEYS
+
+        # Not one of the four another team maintains - those are exempt.
+        self.assertNotIn("direct_portfolio_contribution",
+                         OWNER_MAINTAINED_KEYS)
+
+    def test_the_owner_maintained_feeds_are_still_exempt(self):
+        """CX, HR and Internal Audit keep their own returns.
+
+        A loaded figure beats the WAREHOUSE. It must not beat another team's
+        considered figure, which is a different thing - pinned next door by
+        test_cx_beats_a_figure_somebody_typed_in.
+        """
+        from apps.staff_management.live_scorecard import OWNER_MAINTAINED_KEYS
+
+        self.assertEqual(
+            OWNER_MAINTAINED_KEYS,
+            {"cx_csat", "cx_contactability", "training_hours", "audit_score"})
+
+    def test_a_disagreement_is_kept_not_discarded(self):
+        """Overriding must not hide what the warehouse said.
+
+        Every line carries ``warehouse_said`` so a disagreement can be chased.
+        Blank when the two agree, or when only one had a figure.
+        """
+        self.load("nps", 0.5)
+        self.assertIn("warehouse_said", self.line("nps"))
