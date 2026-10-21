@@ -625,3 +625,40 @@ class ThresholdScoringTests(TestCase):
     def test_a_higher_is_better_threshold_works_the_other_way(self):
         self.assertAlmostEqual(score_for(0.65, 0.6, True, threshold=True), 1.2)
         self.assertAlmostEqual(score_for(0.55, 0.6, True, threshold=True), 0.0)
+
+
+class NoKpiIsNamedAfterItsGroupTests(TestCase):
+    """A perspective heading is not a measure, and must never be seeded as one.
+
+    A scorecard row carries its GROUP only on the first line of that group,
+    and its KPI name only on the first line of that KPI. A row stating a
+    SECOND MEASURE of the same KPI - "life", then "non-life" - leaves the KPI
+    column blank, and a parser that reads it alone falls back to the column
+    beside it, which holds the group.
+
+    That is how the non-life half of VIC Premiums came to be called "Group
+    Synergies (23.0%)" and to print on eleven roles' cards, under its own
+    weight, as though a perspective heading were something a person is
+    measured on.
+
+    A group heading always states its own weight, which is what makes this
+    testable rather than a matter of judgement: no measure on any card is
+    written "Something (23.0%)".
+    """
+
+    def test_no_kpi_name_carries_a_perspective_weight(self):
+        import re
+
+        from .scorecard_automation.models import ScKpi
+
+        looks_like_a_group = re.compile(r"\(\s*\d+(\.\d+)?\s*%\s*\)")
+        named_after_a_group = sorted(
+            f"{k.kpi_code} -> {k.kpi_name!r}"
+            for k in ScKpi.objects.all()
+            if looks_like_a_group.search(k.kpi_name or ""))
+
+        self.assertEqual(
+            named_after_a_group, [],
+            "these KPIs are named after the group heading above them, not "
+            "after what they measure, and will print on a card as though a "
+            "perspective were a measure")

@@ -641,5 +641,14 @@ class GrowthProrationTests(SimpleTestCase):
 
         source = SOURCES["bo_re_activation"]
         self.assertEqual(source.actual_key, "dormancy_rate")
-        self.assertFalse(source.pending)
-        self.assertFalse(getattr(source, "no_target_reason", ""))
+        self.assertFalse(source.pending,
+                         "the ACTUAL is measured, so nothing is pending")
+
+        # It still carries a no_target_reason, and should: the rate is
+        # measured but the TARGET is per person, and a line that is scored
+        # with no route to a target is exactly what
+        # tests_scorecard_accuracy.test_a_scored_line_has_an_actual_and_a_
+        # route_to_a_target refuses. The reason names that route.
+        reason = getattr(source, "no_target_reason", "")
+        self.assertIn("signed scorecard", reason)
+        self.assertNotIn("cannot be worked out", reason)
