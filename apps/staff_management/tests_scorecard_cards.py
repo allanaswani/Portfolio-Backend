@@ -652,3 +652,32 @@ class GrowthProrationTests(SimpleTestCase):
         reason = getattr(source, "no_target_reason", "")
         self.assertIn("signed scorecard", reason)
         self.assertNotIn("cannot be worked out", reason)
+
+    def test_a_past_month_is_the_months_own_figures(self):
+        """"Download September" must mean September, not today relabelled.
+
+        A past month is not a snapshot anybody stored. It is the same
+        computation anchored on that month - the warehouse asked for that
+        closing, the targets pro-rated to that date, the loaded figures read
+        for that month - which is what makes the file worth keeping.
+        """
+        import datetime
+
+        from apps.staff_management.live_scorecard import prorate_to
+
+        september = datetime.date(2026, 9, 30)
+
+        # The target is sliced to the month asked for, not to today.
+        self.assertAlmostEqual(prorate_to(120_000.0, september),
+                               120_000.0 * 9 / 12, delta=0.01)
+        self.assertNotAlmostEqual(
+            prorate_to(120_000.0, september),
+            prorate_to(120_000.0, datetime.date(2026, 12, 31)), delta=1.0)
+
+    def test_build_card_accepts_a_month(self):
+        import inspect
+
+        from apps.staff_management.live_scorecard import build_card, live_actuals
+
+        self.assertIn("as_at", inspect.signature(build_card).parameters)
+        self.assertIn("as_at", inspect.signature(live_actuals).parameters)

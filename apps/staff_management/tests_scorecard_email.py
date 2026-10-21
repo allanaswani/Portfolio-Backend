@@ -237,3 +237,49 @@ class SendingTests(TestCase):
         self.assertNotIn("unsigned", subject)
         self.assertIn("05 Sep 2026", body)
         self.assertIn("counter-sign", body)
+
+
+class TheMonthAskedForTests(TestCase):
+    """``?month=YYYY-MM`` on the download, and what it refuses.
+
+    A month that has not finished is refused rather than served half-done: a
+    card for the month you are standing in shows a handful of days of
+    actuals against a target pro-rated to the same handful - arithmetically
+    consistent and completely misleading, because the warehouse feeds land
+    in arrears.
+    """
+
+    def _ask(self, value):
+        from unittest.mock import Mock
+
+        from apps.staff_management.scorecard_automation.views import (
+            _month_asked_for)
+
+        return _month_asked_for(Mock(query_params={"month": value}))
+
+    def test_no_month_means_the_live_card(self):
+        month, bad = self._ask("")
+        self.assertIsNone(month)
+        self.assertIsNone(bad)
+
+    def test_a_closed_month_resolves_to_its_last_day(self):
+        import datetime
+
+        month, bad = self._ask("2026-09")
+        self.assertIsNone(bad)
+        self.assertEqual(month, datetime.date(2026, 9, 30))
+
+    def test_a_month_that_has_not_closed_is_refused(self):
+        import datetime
+
+        this_month = datetime.date.today().strftime("%Y-%m")
+        month, bad = self._ask(this_month)
+        self.assertIsNone(month)
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("has not closed", str(bad.data))
+
+    def test_nonsense_is_refused_by_name(self):
+        month, bad = self._ask("September")
+        self.assertIsNone(month)
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("YYYY-MM", str(bad.data))

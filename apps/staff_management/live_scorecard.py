@@ -1462,7 +1462,7 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
 
 
 def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
-                 brn_code="", wanted=None):
+                 brn_code="", wanted=None, as_at=None):
     """Every figure the warehouse can give for this RM.
 
     ``wanted`` is the set of actual_keys the person's own card reads. A reader
@@ -1497,9 +1497,17 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     """
     from services import portfolio_service as svc
 
-    today = datetime.date.today()
+    # ``as_at`` is the month this card is FOR. Everything downstream hangs
+    # off it - the year a target is read for, the closing the warehouse is
+    # asked about, the date a target is pro-rated to - so a September card
+    # reads September and not whatever has happened since.
+    #
+    # Defaulting to the last CLOSED month, not to today: a card built on the
+    # 3rd would otherwise show two days of a month against a target
+    # pro-rated to two days, which is noise rather than performance.
+    today = as_at or datetime.date.today()
     year = today.year
-    monthly = last_closed_month_end(today)
+    monthly = (today if as_at else last_closed_month_end(today))
     # %-d is a glibc extension and raises on Windows, so the day is formatted
     # by hand - this module is imported by the test suite on both.
     monthly_label = f"as at {monthly.day} {monthly:%b %Y}"
@@ -2635,8 +2643,19 @@ def score_for(actual, target, higher_is_better, threshold=False,
     return max(0.0, min(cap, raw))
 
 
-def build_card(sales_code, profile=None):
-    """The whole card for one RM, computed now."""
+def build_card(sales_code, profile=None, as_at=None):
+    """The whole card for one RM.
+
+    ``as_at`` is the month END the card is for - 30 September for a
+    September card. Omitted, the card is the live one and reads the last
+    closed month.
+
+    A past month is not a snapshot anybody stored. It is the same
+    computation anchored on that month: the warehouse asked for that
+    closing, the targets pro-rated to that date, the loaded figures read for
+    that month. That is what makes "download September" mean September
+    rather than "today, labelled September".
+    """
     from .scorecard_automation.models import ScKpi, ScRole, ScRoleKpiMapping
 
     person = resolve_person(sales_code)
@@ -2682,7 +2701,7 @@ def build_card(sales_code, profile=None):
 
     actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row),
                            person.branch, brn_code_for(sales_code, row),
-                           wanted=wanted)
+                           wanted=wanted, as_at=as_at)
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
@@ -2711,7 +2730,7 @@ def build_card(sales_code, profile=None):
             allocations, allocation_bases = {}, {}
             for row in ScEmployeeKpiTarget.objects.filter(
                     sales_code__iexact=sales_code.strip(),
-                    year=datetime.date.today().year):
+                    year=(as_at or datetime.date.today()).year):
                 allocations[row.kpi_code] = float(row.kpi_target)
                 # The sheet's "2025 FY" column. Needed to recover the GROWTH -
                 # the allocation stores the year's LEVEL, and a growth-measured
@@ -2730,7 +2749,11 @@ def build_card(sales_code, profile=None):
 
     # The row is keyed on the first of the month; the figure is AS AT its last
     # day, and that is the date the target is sliced to.
-    loaded_as_at = last_closed_month_end(datetime.date.today())
+    # For a past month, the figures loaded FOR THAT MONTH - not the newest
+    # ones. A September card that showed October's loaded figures would be
+    # neither month.
+    loaded_as_at = (as_at if as_at
+                    else last_closed_month_end(datetime.date.today()))
     loaded_month = loaded_as_at.replace(day=1)
     loaded_actuals = {}
     from .scorecard_cards import SIGNED_CARD
@@ -3180,7 +3203,10 @@ def build_card(sales_code, profile=None):
             # the list it came off.
             "roster": person.roster,
         },
-        "period": {"label": datetime.date.today().strftime("%B %Y")},
+        # The month the card is FOR, which for a past month is not today.
+        "period": {"label": (as_at or datetime.date.today())
+                   .strftime("%B %Y"),
+                   "as_at": (as_at.isoformat() if as_at else None)},
         "target_source": target_table,
         "performance_score": round(total, 4),
         "scored_lines": live_lines,

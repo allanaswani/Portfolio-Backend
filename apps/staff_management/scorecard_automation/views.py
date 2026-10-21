@@ -188,6 +188,43 @@ def _may_set_figures(user):
                  name__in=("staff_mgt", "Management", "hr")).exists()))
 
 
+def _month_asked_for(request):
+    """``?month=YYYY-MM`` -> that month's LAST day, or ``(None, None)``.
+
+    Returns ``(None, Response)`` when the month cannot be used, so the caller
+    reports it rather than quietly serving the wrong period.
+
+    A month that has not finished is refused. A card for the month you are
+    standing in shows a handful of days of actuals against a target
+    pro-rated to the same handful - arithmetically consistent and completely
+    misleading, because the warehouse feeds land in arrears.
+    """
+    import calendar
+    import datetime
+
+    raw = str(request.query_params.get("month") or "").strip()
+    if not raw:
+        return None, None
+
+    try:
+        year, month = raw.split("-")
+        first = datetime.date(int(year), int(month), 1)
+    except (ValueError, TypeError):
+        return None, Response(
+            {"month": f"{raw!r} is not a month. Use YYYY-MM, e.g. 2026-09."},
+            status=status.HTTP_400_BAD_REQUEST)
+
+    last = first.replace(
+        day=calendar.monthrange(first.year, first.month)[1])
+    if last >= datetime.date.today():
+        return None, Response(
+            {"month": f"{first:%B %Y} has not closed yet. A card can only be "
+                      f"built for a month that has finished, because the "
+                      f"figures arrive in arrears."},
+            status=status.HTTP_400_BAD_REQUEST)
+    return last, None
+
+
 class _WorkbookUploadView(APIView):
     """Shared shape: read and report first, write only when asked.
 
@@ -782,10 +819,22 @@ class ScorecardDownloadView(APIView):
         signoff = ScorecardSignoff.objects.filter(
             sales_code=sales_code, period=period).first()
 
-        if signoff and signoff.signed_at and signoff.card:
+        # ``month=YYYY-MM`` downloads THAT month's card.
+        #
+        # Not a stored snapshot - the same computation anchored on that
+        # month, so the warehouse is asked for that closing and the targets
+        # are pro-rated to it. A month that has not closed is refused rather
+        # than served half-done: a card for the month you are standing in
+        # shows a few days of actuals against a few days of target, which
+        # reads as a collapse in performance.
+        month, bad = _month_asked_for(request)
+        if bad is not None:
+            return bad
+
+        if signoff and signoff.signed_at and signoff.card and month is None:
             card = signoff.card
         else:
-            card = build_card(sales_code)
+            card = build_card(sales_code, as_at=month)
             if not card.get("has_card"):
                 return Response(card, status=status.HTTP_400_BAD_REQUEST)
 
@@ -796,8 +845,12 @@ class ScorecardDownloadView(APIView):
             buffer.read(),
             content_type="application/vnd.openxmlformats-officedocument"
                          ".spreadsheetml.sheet")
+        # The month the card is FOR goes in the filename, so downloading
+        # September and October does not produce two files with the same
+        # name, one of which silently replaces the other in Downloads.
+        stamp = f"{month:%Y-%m}" if month else period
         response["Content-Disposition"] = (
-            f'attachment; filename="Scorecard_{name}_{period}.xlsx"')
+            f'attachment; filename="Scorecard_{name}_{stamp}.xlsx"')
         return response
 
 
@@ -1458,7 +1511,12 @@ class ScorecardForPersonView(APIView):
         if not code:
             return Response({"detail": "sales_code is required."}, status=400)
         try:
-            return Response(build_card(code))
+            # Administration can look at a past month too, the same way
+            # the person can download it.
+            month, bad = _month_asked_for(request)
+            if bad is not None:
+                return bad
+            return Response(build_card(code, as_at=month))
         except Exception as exc:  # noqa: BLE001 - reported, not a 500
             return Response(
                 {"has_card": False, "reason": "live_failed",
