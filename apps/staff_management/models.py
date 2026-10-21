@@ -220,6 +220,26 @@ class BranchEmployeeDmcData(models.Model):
     target_banca_non_motor = models.BigIntegerField(blank=True, null=True)
     target_banca_life = models.BigIntegerField(default=0, blank=True, null=True)
     target_banca_non_life = models.BigIntegerField(default=0, blank=True, null=True)
+    # The banca split the business now plans against. Migration 0043 put these
+    # on the TABLE; without them on the model the serializer never saw them, so
+    # they were missing from the sales-staff template and there was no way to
+    # upload one - "the sales staff template haina the new insurance targets".
+    #
+    # Nullable with NO default, deliberately. A column full of noughts reads as
+    # "the plan is nought", which is a target; NULL reads as "no plan set",
+    # which is what an unfilled column means, and the card tells those apart.
+    # That is why they are not BigIntegerField(default=0) like the two above.
+    target_life_excl_ni = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True)
+    target_life_ni = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True)
+    target_life_elimu_gi = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True)
+    target_non_life_gi = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True)
+    target_non_life_medical = models.DecimalField(
+        max_digits=18, decimal_places=2, blank=True, null=True)
+    target_life_volume = models.IntegerField(blank=True, null=True)
     target_mortgage_mrkt_rate = models.BigIntegerField(default=0, blank=True, null=True)
     target_mortgage_non_mrkt_rate = models.BigIntegerField(default=0, blank=True, null=True)
     target_bank_tills_volume = models.BigIntegerField(blank=True, null=True)
