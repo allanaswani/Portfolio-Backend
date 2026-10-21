@@ -188,6 +188,24 @@ class ScRoleKpiMapping(models.Model):
         help_text="How kpi_target is to be read. Blank means it is the target "
                   "itself; rate_on_base means multiply it by the base named "
                   "in target_base.")
+    #: How far above target THIS role's card lets a line count, where that
+    #: differs from the usual 120%.
+    #:
+    #: The cap is per ROLE, not per KPI, which only the cards show. Faith
+    #: Muthinja's Ultimate RM card scores VIC Premiums at exactly 200.0% -
+    #: 450,523 against a 206,219.30 target is 218.5%, and it prints 200.0%
+    #: with a weighted score of 10.0% on a 5.0% weight. Abed Lelgo's
+    #: Commercial RM card caps the same measure at 120%. One KPI, two caps,
+    #: decided by whose card it is on.
+    #:
+    #: NULL means the usual cap applies, so nothing has to be restated for
+    #: the lines that behave normally.
+    score_cap = models.FloatField(
+        null=True, blank=True,
+        help_text="How far above target this line may count on this role's "
+                  "card, as a fraction - 2.0 for 200%. Blank uses the usual "
+                  "120%.")
+
     #: What this line says on THIS role's card.
     #:
     #: The wording is per role, not per KPI. One feed is read by several roles

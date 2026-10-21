@@ -2729,9 +2729,14 @@ def build_card(sales_code, profile=None):
             # which is the target met - not the target beaten.
             score = 1.0
         else:
+            # This role's own cap wins where it has one. The cap is per role,
+            # not per KPI: Faith Muthinja's Ultimate RM card scores VIC
+            # Premiums at 200.0% where Abed Lelgo's Commercial RM card caps
+            # the same measure at 120%.
+            cap = getattr(mapping, "score_cap", None) or source.cap
             score = None if pending else score_for(
                 actual, ytd_target, source.higher_is_better,
-                threshold=source.threshold, cap=source.cap)
+                threshold=source.threshold, cap=cap)
         weighted = None if score is None else weight * score
         if weighted is not None:
             total += weighted
@@ -2791,7 +2796,7 @@ def build_card(sales_code, profile=None):
             # So the card can say why a line is at exactly 100% with no
             # figure beside it, instead of looking like a bug.
             "full_marks_rule": full_marks,
-            "score_cap": source.cap,
+            "score_cap": getattr(mapping, "score_cap", None) or source.cap,
             "pending": pending,
             "pending_label": pending_label,
             # What actually went wrong, for whoever has to fix it. Separate
