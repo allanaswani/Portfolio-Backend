@@ -34,6 +34,11 @@ figure of its own.
 
 from __future__ import annotations
 
+#: What ``ScEmployeePerformanceActual.source`` carries for a figure read off
+#: somebody's own signed scorecard. The card trusts these over the warehouse;
+#: everything else only fills a blank.
+SIGNED_CARD = "signed-card"
+
 from .scorecard_workbook import (
     COL_ACTUAL, COL_ANNUAL_TARGET, COL_DESCRIPTION, COL_MEASURE,
     COL_PREV_FY, COL_WEIGHT, COL_YTD_TARGET, DESCRIPTION_ALIASES, FIRST_LINE,
@@ -241,7 +246,8 @@ def save(entries, who="", month=None):
     """
     from .scorecard_workbook import save as write
 
-    return write(entries, who=who, month=month)
+    # These came off somebody's own signed card, which is the agreed record.
+    return write(entries, who=who, month=month, source=SIGNED_CARD)
 
 
 # -- The back-office layout --------------------------------------------------

@@ -287,6 +287,26 @@ class ScEmployeePerformanceActual(models.Model):
     kpi_code = models.CharField(max_length=100)
     eom_date = models.DateField()
     kpi_value = models.FloatField()
+
+    #: WHERE this figure came from, which decides how far it is trusted.
+    #:
+    #: A figure off somebody's own SIGNED CARD is the agreed record and beats
+    #: the warehouse. A figure typed into Figures-to-load, or carried in on a
+    #: bulk template, is a convenience for lines nothing can measure and only
+    #: fills a blank.
+    #:
+    #: Without this the two were indistinguishable, and stray uploads were
+    #: burying good live reads: Faith Muthinja's card showed Asset Growth at
+    #: -46,208,895.05 over a warehouse read of -39,095,632.82, Deposits at
+    #: 1,875,794.36 over -14,450,155.80, TAT at 1 over 0.2 and PAR at 0.07
+    #: over 0.29 - and not one of those matched her signed card either.
+    #:
+    #: Blank means unknown, which is every row written before this existed,
+    #: and unknown is treated as the weaker kind. That is the safe way round:
+    #: it hands the line back to the warehouse rather than to a figure nobody
+    #: can account for.
+    source = models.CharField(max_length=60, blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now_add=True)
     history = HistoricalRecords()

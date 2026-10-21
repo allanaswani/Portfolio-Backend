@@ -2531,14 +2531,21 @@ def build_card(sales_code, profile=None):
     loaded_as_at = last_closed_month_end(datetime.date.today())
     loaded_month = loaded_as_at.replace(day=1)
     loaded_actuals = {}
+    from .scorecard_cards import SIGNED_CARD
+
+    from_a_signed_card = set()
     try:
         with transaction.atomic():
-            loaded_actuals = {
-                row.kpi_code: float(row.kpi_value)
-                for row in ScEmployeePerformanceActual.objects.filter(
+            for row in ScEmployeePerformanceActual.objects.filter(
                     sales_code__iexact=sales_code.strip(),
-                    eom_date=loaded_month)
-            }
+                    eom_date=loaded_month):
+                loaded_actuals[row.kpi_code] = float(row.kpi_value)
+                # Only a figure off this person's own SIGNED CARD outranks
+                # the warehouse. Anything else - typed into Figures-to-load,
+                # or carried in on a bulk template - is a convenience for
+                # lines nothing can measure, and only fills a blank.
+                if (getattr(row, "source", "") or "") == SIGNED_CARD:
+                    from_a_signed_card.add(row.kpi_code)
     except Exception:  # noqa: BLE001 - an absent table must not blank the card
         loaded_actuals = {}
 
@@ -2713,8 +2720,25 @@ def build_card(sales_code, profile=None):
         # which is the case it was always for. It simply cannot displace a
         # real figure.
         loaded = loaded_actuals.get(mapping.kpi_code)
-        loaded_says_something = (loaded is not None
-                                 and (loaded != 0 or actual is None))
+
+        # Two different strengths of loaded figure, and telling them apart is
+        # the whole point of recording where one came from.
+        #
+        # A SIGNED CARD is the agreed record and outranks the warehouse. A
+        # figure from anywhere else only fills a line the warehouse could not
+        # read - which is the rule that held before any of this, and the one
+        # that stops a stray upload burying a good live read. Faith Muthinja
+        # had Asset Growth at -46,208,895.05 over a warehouse -39,095,632.82,
+        # Deposits at 1,875,794.36 over -14,450,155.80, TAT at 1 over 0.2 and
+        # PAR at 0.07 over 0.29 - and not one matched her signed card either.
+        #
+        # A nought never outranks anything, whatever it came from: it is what
+        # an empty cell becomes when a template is saved.
+        signed = mapping.kpi_code in from_a_signed_card
+        loaded_says_something = (
+            loaded is not None
+            and (loaded != 0 or actual is None)
+            and (signed or actual is None))
 
         if loaded_says_something and not owner_answered:
             if actual is not None and actual != loaded:

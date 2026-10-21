@@ -357,8 +357,14 @@ def plan(cards):
     return entries, report
 
 
-def save(entries, who="", month=None):
-    """Write the planned figures. Upserts, so a reload corrects."""
+def save(entries, who="", month=None, source=""):
+    """Write the planned figures. Upserts, so a reload corrects.
+
+    ``source`` records WHERE the figure came from, and that decides how far
+    the card trusts it: a figure off somebody's own signed card beats the
+    warehouse, anything else only fills a blank. See
+    ``ScEmployeePerformanceActual.source``.
+    """
     from django.db import transaction
 
     from .scorecard_automation.models import (
@@ -378,9 +384,11 @@ def save(entries, who="", month=None):
                 row, created = ScEmployeePerformanceActual.objects.get_or_create(
                     sales_code=entry["sales_code"],
                     kpi_code=entry["kpi_code"], eom_date=month,
-                    defaults={"kpi_value": entry["value"]})
+                    defaults={"kpi_value": entry["value"],
+                              "source": source})
                 if not created:
                     row.kpi_value = entry["value"]
+                    row.source = source
                     reason = (f"Scorecard workbook load by "
                               f"{who or 'an administrator'}")
                     row._change_reason = reason[:100]

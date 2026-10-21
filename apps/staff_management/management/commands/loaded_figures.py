@@ -104,10 +104,13 @@ class Command(BaseCommand):
         write(f"  {code}   {mine.count()} loaded figure(s)")
         write("")
         for row in mine:
+            origin = (getattr(row, "source", "") or "").strip() or "unknown"
             flag = "  <- a nought" if row.kpi_value == 0 else ""
-            write(f"      {row.kpi_code:<48} {row.kpi_value:>18,.2f}{flag}")
+            write(f"      {row.kpi_code:<44} {row.kpi_value:>16,.2f}  "
+                  f"{origin}{flag}")
         write("")
-        write("  A loaded figure beats the warehouse, EXCEPT a nought, which "
-              "now only fills a line")
-        write("  the warehouse could not read at all.")
+        write("  signed-card  beats the warehouse - the agreed record.")
+        write("  anything else, including 'unknown', only fills a line the "
+              "warehouse could not read.")
+        write("  a nought outranks nothing at all, whatever it came from.")
         write("")

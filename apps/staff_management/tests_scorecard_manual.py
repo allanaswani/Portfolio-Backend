@@ -436,3 +436,33 @@ class ASignedCardBeatsTheWarehouseTests(LoadedFiguresReachTheCardTests):
         says_something = (loaded is not None
                           and (loaded != 0 or warehouse is None))
         self.assertTrue(says_something)
+
+    def test_only_a_signed_card_outranks_the_warehouse(self):
+        """Three strengths of figure, and the card must tell them apart.
+
+        A figure off somebody's own SIGNED CARD is the agreed record and
+        beats the warehouse. A figure typed into Figures-to-load, or carried
+        in on a bulk template, only fills a line the warehouse could not
+        read. A nought outranks nothing at all.
+
+        Without that distinction stray uploads buried good live reads: Faith
+        Muthinja showed Asset Growth -46,208,895.05 over a warehouse
+        -39,095,632.82, Deposits 1,875,794.36 over -14,450,155.80, TAT 1 over
+        0.2 and PAR 0.07 over 0.29 - and not one matched her signed card.
+        """
+        def wins(loaded, warehouse, signed):
+            return (loaded is not None
+                    and (loaded != 0 or warehouse is None)
+                    and (signed or warehouse is None))
+
+        # a signed card beats a real warehouse figure
+        self.assertTrue(wins(450_523.0, 468_067.25, True))
+        # a stray upload does not
+        self.assertFalse(wins(-46_208_895.05, -39_095_632.82, False))
+        # but it still fills a line nothing could read
+        self.assertTrue(wins(-46_208_895.05, None, False))
+        # and a nought never outranks a real figure, signed or not
+        self.assertFalse(wins(0.0, 468_067.25, True))
+        self.assertFalse(wins(0.0, 468_067.25, False))
+        # while a nought still fills a blank
+        self.assertTrue(wins(0.0, None, False))
