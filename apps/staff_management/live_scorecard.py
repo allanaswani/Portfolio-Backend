@@ -280,8 +280,8 @@ _register(
 _register(
     ["loan_loss", "reduce_p_l_provisions_nil_provisions_loan_loss",
      "reduce_p_l_provisions_nill_provisions_loan_loss"],
-    Source(target_field="target_loan_provisions", actual_key="loan_loss",
-           higher_is_better=False))
+    Source(target_field="target_loan_provisions",
+           actual_key="loan_loss_charge", higher_is_better=False))
 
 # ── Trade finance ────────────────────────────────────────────────────────────
 # Income and VOLUME are different columns on both sides. They were previously
@@ -1357,47 +1357,96 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
     return active_channels.two_month_active(sales_code, year, digital=digital)
 
 
-def _par(sales_code):
-    """Portfolio at risk for this person → (ratio, book, latest).
+#: The grades that count as AT RISK. Confirmed by the business on
+#: 2026-10-21: "SUBSTD, DOUBTFUL and LOSS only".
+#:
+#: The IFRS book carries seven grades - NORMAL, WATCH, SUBSTD, DOUBTFUL,
+#: LOSS, AUCTION SHORTFALLS and N_A - and the choice moves the number a long
+#: way. Counting everything that is not NORMAL gives a bank-wide PAR of
+#: 30.62% for September 2026; these three give the figure the cards carry.
+AT_RISK_GRADES = ("SUBSTD", "DOUBTFUL", "LOSS")
 
-    Arrears balance over total balance, both taken from ``loans`` over the
-    customers allocated to this RM in ``retail_allocated_portfolio``. ONE
-    table, ONE key, deliberately: the RM's live balance comes from
-    ``loan_daily_balance_movement`` on ``rm_code``, which is a different book
-    from the allocation, and a ratio whose numerator and denominator came from
-    two different books would not be a ratio of anything.
 
-    ``retail_allocated_portfolio`` has no unique customer, so the allocation is
-    de-duplicated before it is joined - without that, a customer allocated
-    twice counts twice and the ratio moves.
+def _ifrs_position(sales_code, as_at=None):
+    """PAR and the provisions charge for this person's book.
 
-    ``euro_book_balance`` is the outstanding value, despite the name. It is the
-    column collections calls ``loan_outstanding_value`` and the one the branch
-    NPL figure is summed from, so PAR here cannot disagree with the NPL on the
-    branch screens.
+    -> ``(par_ratio, pl_charge, gross, month)``, or ``(None, None, None,
+    reason)`` when the book cannot be read.
+
+    Both come off ``loans_mom_ifrs_movement``, which is the IFRS movement
+    workbook the finance desk maintains: one row per loan per month, carrying
+    the grade, the gross balance and the P&L charge. It is the only place
+    either figure exists at the right grain - PAR used to be computed as
+    arrears over book out of ``loans``, which is a different measure wearing
+    the same name, and the provisions charge was being derived from the
+    income components rather than read.
+
+    THREE joins, in this order, and each one matters:
+
+    * the allocation, DE-DUPLICATED. ``retail_allocated_portfolio`` has no
+      unique customer, and a customer allocated twice would count twice in
+      both halves of a ratio;
+    * ``loans``, to get from a customer to their loan accounts, because the
+      IFRS book is keyed on the loan account and carries no sales code;
+    * the IFRS book itself, for ONE month - the latest closing on or before
+      the date asked for, so a September card reads September and not
+      whatever has since been loaded.
+
+    Returns the reason rather than a number whenever the book is empty for
+    that month. A ratio over a denominator that silently came back as nought
+    is worse than no ratio.
     """
     from django.db import connection
 
+    code = (sales_code or "").strip()
+    if not code:
+        return None, None, None, "no sales code"
+
+    asked = as_at or datetime.date.today()
+    grades = list(AT_RISK_GRADES)
     sql = """
         WITH mine AS (
             SELECT DISTINCT cust_id
             FROM retail_allocated_portfolio
             WHERE cust_id IS NOT NULL
               AND UPPER(TRIM(COALESCE(sales_code, ''))) = UPPER(TRIM(%s))
+        ),
+        my_loans AS (
+            SELECT DISTINCT TRIM(l.loan_account_no) AS account
+            FROM loans l
+            JOIN mine ON mine.cust_id = l.cust_id
+            WHERE l.loan_account_no IS NOT NULL
+              AND TRIM(l.loan_account_no) <> ''
+        ),
+        closing AS (
+            SELECT MAX(eom_date) AS eom
+            FROM loans_mom_ifrs_movement
+            WHERE eom_date <= %s
         )
-        SELECT COALESCE(SUM(l.euro_book_balance), 0),
-               COALESCE(SUM(l.euro_book_balance)
-                        FILTER (WHERE l.days_in_arrears > 0), 0)
-        FROM loans l
-        JOIN mine ON mine.cust_id = l.cust_id
+        SELECT COALESCE(SUM(m.current_gross), 0),
+               COALESCE(SUM(m.current_gross)
+                        FILTER (WHERE UPPER(TRIM(COALESCE(m.current_grade,
+                                     ''))) = ANY(%s)), 0),
+               COALESCE(SUM(m.pl_charge), 0),
+               (SELECT eom FROM closing)
+        FROM loans_mom_ifrs_movement m
+        JOIN my_loans ON my_loans.account = TRIM(m.lns_account)
+        WHERE m.eom_date = (SELECT eom FROM closing)
     """
-    with connection.cursor() as cur:
-        cur.execute(sql, [sales_code.strip()])
-        book, arrears = cur.fetchone()
-    book = float(book or 0)
-    if not book:
-        return None, None
-    return float(arrears or 0) / book, book
+    try:
+        with connection.cursor() as cur:
+            cur.execute(sql, [code, asked, grades])
+            gross, at_risk, charge, month = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        return None, None, None, f"the IFRS loan book could not be read: {exc}"
+
+    gross = float(gross or 0)
+    if not gross:
+        return None, None, None, (
+            "none of your allocated customers' loans are on the IFRS book "
+            f"for {month:%b %Y}" if month else
+            "the IFRS loan book holds nothing for this period")
+    return (float(at_risk or 0) / gross, float(charge or 0), gross, month)
 
 
 def _figure(value, as_at=None, label=None, problem=None, failed=False):
@@ -1875,16 +1924,26 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     attempt(("ao_tat_pb", "ao_tat_bb", "ao_tat_ub", "ao_tat_sme"),
             account_opening)
 
-    # ── Portfolio at risk ─────────────────────────────────────────────────
-    def par():
-        ratio, book = _par(sales_code)
+    # ── Portfolio at risk, and the provisions charge ──────────────────────
+    # Both off the IFRS movement book, which is where the business keeps
+    # them. One read, two figures, so a card never shows a PAR from one
+    # month beside a charge from another.
+    def ifrs():
+        ratio, charge, gross, month = _ifrs_position(sales_code, monthly)
         if ratio is None:
-            return _figure(None, problem="no loans in your allocated book to "
-                                         "measure arrears against")
-        return _figure(ratio, today,
-                       f"arrears over a book of {book:,.0f}")
+            why = month if isinstance(month, str) else "the book is empty"
+            blank = _figure(None, problem=why)
+            return {"par": blank, "loan_loss_charge": blank}
 
-    attempt("par", par)
+        label = (f"{'/'.join(AT_RISK_GRADES).lower()} over a book of "
+                 f"{gross:,.0f}, as at {month:%b %Y}")
+        return {
+            "par": _figure(ratio, month, label),
+            "loan_loss_charge": _figure(
+                charge, month, f"provisions charged to {month:%b %Y}"),
+        }
+
+    attempt(("par", "loan_loss_charge"), ifrs)
 
     # ── Customer experience, from what CX maintain ────────────────────────
     # Contactability and CSAT for one RM, for the newest period CX have

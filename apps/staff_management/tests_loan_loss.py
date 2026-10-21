@@ -91,7 +91,12 @@ class TheCardScoresItTheRightWayRoundTests(SimpleTestCase):
             with self.subTest(code):
                 self.assertIn(code, SOURCES)
                 self.assertFalse(SOURCES[code].higher_is_better)
-                self.assertEqual(SOURCES[code].actual_key, "loan_loss")
+                # It is READ now, not derived. The charge used to be inferred
+                # from the income components as max(0, -loss); it is a column
+                # on the IFRS movement book - pl_charge - and that is the
+                # figure finance recognise. The income calculation keeps its
+                # own internal "loan_loss", which is why the key differs.
+                self.assertEqual(SOURCES[code].actual_key, "loan_loss_charge")
 
     def test_half_the_allowed_provision_scores_full_marks(self):
         self.assertAlmostEqual(score_for(50, 100, False), 1.2)
@@ -213,3 +218,33 @@ class TheTargetComesFromThePersonsOwnPriorYearTests(SimpleTestCase):
         per_branch = {f.column for f in BranchFinalEmployeeDmcData._meta.fields}
         self.assertNotIn("target_loan_provisions", per_person)
         self.assertIn("target_loan_provisions", per_branch)
+
+
+class ParIsTheGradedBookTests(SimpleTestCase):
+    """PAR is non-performing gross over total gross, on the IFRS book.
+
+    It used to be arrears over book out of ``loans`` - a different measure
+    wearing the same name. The IFRS movement book carries the grade per loan
+    per month, which is what the business means by portfolio at risk.
+
+    Which grades count was confirmed on 2026-10-21: "SUBSTD, DOUBTFUL and
+    LOSS only". The choice is not cosmetic. The book carries seven grades,
+    and counting everything that is not NORMAL gives a bank-wide PAR of
+    30.62% for September 2026 against a card threshold of 2.5%.
+    """
+
+    def test_only_three_grades_are_at_risk(self):
+        from .live_scorecard import AT_RISK_GRADES
+
+        self.assertEqual(tuple(AT_RISK_GRADES),
+                         ("SUBSTD", "DOUBTFUL", "LOSS"))
+        for not_at_risk in ("NORMAL", "WATCH", "AUCTION SHORTFALLS", "N_A"):
+            self.assertNotIn(not_at_risk, AT_RISK_GRADES)
+
+    def test_par_is_smaller_is_better_against_a_threshold(self):
+        from .live_scorecard import SOURCES
+
+        par = SOURCES["par"]
+        self.assertEqual(par.actual_key, "par")
+        self.assertFalse(par.higher_is_better)
+        self.assertTrue(par.threshold)
