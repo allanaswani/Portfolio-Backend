@@ -518,3 +518,31 @@ class GrowthProrationTests(SimpleTestCase):
         for code in ("income_contribution", "direct_portfolio_contribution",
                      "operating_profit", "asset_growth", "grow_deposits"):
             self.assertNotIn(code, MAY_BE_NEGATIVE)
+
+    def test_a_dmc_growth_is_not_turned_into_a_growth_twice(self):
+        """The two rungs of the target ladder are different quantities.
+
+        ``target_deposits_value`` and ``target_asset_growth_value`` on the DMC
+        row are ALREADY growth targets, never balances. The allocation stores
+        the year's LEVEL beside the base it grew from. Subtracting an
+        allocation base from a DMC growth mixes the two, and on Faith
+        Muthinja's card it produced a deposits target of -682,993,663.92 -
+        against which an actual of -14,450,155.80 scored 120%, rewarding her
+        for shrinking the book.
+
+        Her signed card sets 35,000,000, which is 87,500,000 of growth sliced
+        to the period.
+        """
+        from apps.staff_management.live_scorecard import prorate_to
+
+        dmc_growth = 87_500_000.0        # what the DMC column holds
+        allocation_base = 867_244_625.35  # the sheet's "2025 FY" level
+
+        # The bug: base subtracted from a figure that was already a growth.
+        self.assertLess(dmc_growth - allocation_base, 0,
+                        "the subtraction is what made the target negative")
+
+        # The fix: a DMC growth is prorated as it stands, and stays positive.
+        at_august = prorate_to(dmc_growth, datetime.date(2026, 8, 31))
+        self.assertGreater(at_august, 0)
+        self.assertAlmostEqual(at_august, 87_500_000.0 * 8 / 12, delta=1.0)

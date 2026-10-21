@@ -2560,10 +2560,14 @@ def build_card(sales_code, profile=None):
         target_how = (f"{field} on your {target_table} row"
                       if fy_target is not None else "")
 
+        # Whether the figure is a LEVEL or already a GROWTH depends entirely
+        # on which rung of the ladder answered, so the rung is remembered.
+        target_is_a_level = False
         if fy_target is None:
             allocated = allocations.get(mapping.kpi_code)
             if allocated is not None:
                 fy_target, target_how = allocated, "your own allocated target"
+                target_is_a_level = True
 
         if fy_target is None:
             fy_target, target_how = role_target(mapping, bases)
@@ -2628,11 +2632,25 @@ def build_card(sales_code, profile=None):
                 and mapping.kpi_code not in MAY_BE_NEGATIVE):
             fy_target, target_how = None, ""
 
-        # The GROWTH, where this line is measured as one. The allocation
-        # stores the year's LEVEL and the base it grew from, so the growth is
-        # the difference; the roster's own column is already a level too.
+        # The GROWTH, where this line is measured as one - but ONLY where the
+        # target that won is a LEVEL that has to be turned into one.
+        #
+        # The two rungs of the ladder mean different things, and this is the
+        # whole of the bug it replaces. The ALLOCATION stores the year's level
+        # beside the base it grew from, so its growth is the difference. The
+        # DMC column does not: `target_deposits_value` and
+        # `target_asset_growth_value` are ALREADY growth targets, never
+        # balances. Subtracting an allocation base from a DMC growth mixes two
+        # sources that were never the same quantity, and on Faith Muthinja's
+        # card it produced a deposits target of -682,993,663.92 - against
+        # which an actual of -14,450,155.80 scored 120%, rewarding her for
+        # shrinking the book.
+        #
+        # So the subtraction is gated on the target being a level. A DMC
+        # growth is prorated exactly as it stands.
         growth_target = None
-        if mapping.kpi_code in GROWTH_PRORATED and fy_target is not None:
+        if (mapping.kpi_code in GROWTH_PRORATED and fy_target is not None
+                and target_is_a_level):
             base_level = allocation_bases.get(mapping.kpi_code)
             if base_level is not None:
                 growth_target = fy_target - base_level
