@@ -384,6 +384,16 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
         for row in rows:
             by_kpi[row["kpi_code"]] = by_kpi.get(row["kpi_code"], 0) + 1
 
+        # The KPI's real name, so the screen stops inventing one from the
+        # code. Title-casing `reduce_p_l_provisions_nill_provisions_loan_loss`
+        # gives "Reduce P L Provisions Nill Provisions Loan Loss", and
+        # `commercial_trade_group_synergies_23_0` gives "Commercial Trade
+        # Group Synergies 23 0" - which is the group heading migration 0053
+        # renamed away from, reappearing on a different screen because this
+        # one never asked for the name.
+        named = {k.kpi_code: (k.kpi_name or "").strip()
+                 for k in ScKpi.objects.filter(kpi_code__in=by_kpi)}
+
         # The same workbook carries the roster, and the engine cannot score
         # anybody whose role it does not know - so both are loaded together
         # rather than leaving a second upload to be remembered.
@@ -397,7 +407,8 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
             "year": year,
             "targets": len(rows),
             "people": people,
-            "by_kpi": [{"kpi_code": k, "people": n}
+            "by_kpi": [{"kpi_code": k, "kpi_name": named.get(k) or k,
+                        "people": n}
                        for k, n in sorted(by_kpi.items())],
             "roster": len(roster),
             "roles": sorted({r["role"] for r in roster}),
