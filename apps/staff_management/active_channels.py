@@ -239,21 +239,36 @@ def two_month_active(sales_code, year, digital=False):
 
     from services import portfolio_service as svc
 
-    flag = "AND a.digital_active AND b.digital_active" if digital else ""
+    flag = "AND a.digital_active" if digital else ""
 
+    # EITHER of the two months, not both.
+    #
+    # This was an inner self-join requiring a.active AND b.active, which
+    # counts only customers who turned up in two consecutive months. The
+    # business states the measure as "the last customer transaction in the
+    # last 2 months", so a customer who transacted in one of them is active.
+    # The old rule dropped them, and on Lydia Apanja's book it would report a
+    # fraction of the 358 her signed card shows.
     sql = f"""
         WITH book AS ({svc.RM_BOOK}
+        ),
+        months AS (
+            SELECT DISTINCT month FROM sc_customer_monthly_activity
+        ),
+        within_two AS (
+            SELECT m.month, a.cust_id
+            FROM months m
+            JOIN sc_customer_monthly_activity a
+              ON a.month IN (m.month,
+                             (m.month - INTERVAL '1 month')::date)
+            WHERE a.active
+              {flag}
         )
-        SELECT EXTRACT(YEAR FROM a.month)::int AS yr,
-               a.month,
-               COUNT(DISTINCT a.cust_id)       AS active_both_months
-        FROM sc_customer_monthly_activity a
-        JOIN sc_customer_monthly_activity b
-          ON b.cust_id = a.cust_id
-         AND b.month = (a.month - INTERVAL '1 month')::date
-        JOIN book k ON k.cust_id = a.cust_id
-        WHERE a.active AND b.active
-          {flag}
+        SELECT EXTRACT(YEAR FROM w.month)::int AS yr,
+               w.month,
+               COUNT(DISTINCT w.cust_id)       AS active_in_two_months
+        FROM within_two w
+        JOIN book k ON k.cust_id = w.cust_id
         GROUP BY 1, 2
         ORDER BY 1, 2 DESC
     """

@@ -122,7 +122,20 @@ class FindingTheTableTests(TestCase):
         self.assertEqual(ra.find_table(), "")
 
 
-class TwoMonthsMeansTwoMonthsTests(TestCase):
+class ActiveMeansTransactedInTheLastTwoMonthsTests(TestCase):
+    """EITHER of the two months, not both.
+
+    The rule, as the business states it, is "the last customer transaction
+    in the last 2 months" - so a customer who transacted in one of them is
+    active. This file used to assert the opposite: an inner join requiring
+    the flag in a month AND the month before it, which counts only customers
+    who turned up twice and silently drops everyone else.
+
+    Lydia Apanja's signed Q3_Sep_26 card is the check on it: 358 active
+    against a YTD target of 116. A both-months rule over her book cannot
+    produce a figure that far above target.
+    """
+
     def setUp(self):
         make_the_feeds()
         allocate(1, 2, 3)
@@ -133,13 +146,29 @@ class TwoMonthsMeansTwoMonthsTests(TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(as_at, datetime.date(2026, 2, 28))
 
-    def test_one_month_alone_does_not(self):
+    def test_one_month_alone_counts_too(self):
+        """The change. Their last transaction is inside the window."""
         customer(2, active=[(2026, 2)])
-        self.assertNotIn(YEAR, _two_month_active(CODE, YEAR))
+        count, as_at = _two_month_active(CODE, YEAR)[YEAR]
+        self.assertEqual(count, 1)
+        self.assertEqual(as_at, datetime.date(2026, 2, 28))
 
-    def test_months_that_are_not_consecutive_do_not(self):
-        customer(3, active=[(2026, 1), (2026, 3)])
-        self.assertNotIn(YEAR, _two_month_active(CODE, YEAR))
+    def test_a_customer_counts_in_the_month_after_they_transacted(self):
+        """January activity still counts as at February - the window is the
+        month and the one before it."""
+        customer(3, active=[(2026, 1)])
+        self.assertEqual(_two_month_active(CODE, YEAR)[YEAR][0], 1)
+
+    def test_a_month_with_no_activity_at_all_is_not_reported(self):
+        """The guard that goes with the OR. Under a two-month window a month
+        with no rows inherits the month before it, so the feed would appear
+        to reach a month that has not happened. Reach is measured on the
+        month itself."""
+        customer(1, active=[(2026, 1), (2026, 2)])
+        _, as_at = _two_month_active(CODE, YEAR)[YEAR]
+        self.assertEqual(
+            as_at, datetime.date(2026, 2, 28),
+            "March has no activity, so the figure must not be dated to it")
 
     def test_the_prior_year_is_readable_which_is_the_whole_point(self):
         """A pair closing in December 2025 is last year's count - the base a
@@ -162,11 +191,14 @@ class TwoMonthsMeansTwoMonthsTests(TestCase):
         self.assertEqual(count, 0)
         self.assertEqual(as_at, datetime.date(2026, 2, 28))
 
-    def test_the_latest_qualifying_pair_is_the_one_reported(self):
+    def test_the_latest_month_with_activity_is_the_one_reported(self):
+        """Customer 1 last transacted in February and customer 2 in March.
+        As at March both are inside the two-month window, so both count -
+        under the old AND rule only customer 2 did."""
         customer(1, active=[(2026, 1), (2026, 2)])
         customer(2, active=[(2026, 2), (2026, 3)])
         count, as_at = _two_month_active(CODE, YEAR)[YEAR]
-        self.assertEqual(count, 1)
+        self.assertEqual(count, 2)
         self.assertEqual(as_at, datetime.date(2026, 3, 31))
 
 
@@ -184,9 +216,12 @@ class DigitalAdoptionTests(TestCase):
         # Both are active; only one of them is digital.
         self.assertEqual(_two_month_active(CODE, YEAR)[YEAR][0], 2)
 
-    def test_digital_in_one_month_only_is_not_two_months_digital(self):
+    def test_digital_in_one_month_is_digitally_active(self):
+        """Digital follows the same window as active: the last digital
+        transaction inside the two months."""
         customer(1, active=[(2026, 1), (2026, 2)], digital=[(2026, 2)])
-        self.assertNotIn(YEAR, _two_month_active(CODE, YEAR, digital=True))
+        self.assertEqual(
+            _two_month_active(CODE, YEAR, digital=True)[YEAR][0], 1)
         self.assertEqual(_two_month_active(CODE, YEAR)[YEAR][0], 1)
 
 

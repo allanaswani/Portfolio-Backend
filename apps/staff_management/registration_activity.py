@@ -42,6 +42,15 @@ TABLE_NAMES = ("registation_data", "registration_data",
 PREFIX_ACTIVE = "total_trx_active"
 PREFIX_DIGITAL = "mobile_active"
 
+#: What this report calls the customer, in the order they are tried.
+#:
+#: The month columns were always discovered; the customer key was assumed to
+#: be ``cust_id``. If the report spells it anything else the join raised, and
+#: the card reported "This figure could not be read just now" - which names
+#: neither the column nor the table, so it survived weeks of looking.
+CUSTOMER_KEYS = ("cust_id", "cust_cif", "customer_id", "customer_no",
+                 "cif", "cif_no")
+
 _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun",
      "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
@@ -79,6 +88,18 @@ def _columns_of(table):
             return [row[0] for row in cur.fetchall()]
     except Exception:  # noqa: BLE001 - absence is an answer, not a crash
         return []
+
+
+def customer_key(table):
+    """What this table calls the customer → column name, or "".
+
+    Discovered, like the month columns, rather than assumed.
+    """
+    columns = {c.lower() for c in _columns_of(table)}
+    for name in CUSTOMER_KEYS:
+        if name in columns:
+            return name
+    return ""
 
 
 def find_table():
@@ -182,12 +203,35 @@ def two_month_active(sales_code, year, digital=False):
     # The column names come from information_schema, so they are real
     # identifiers rather than anything a caller supplied - quoted all the
     # same, because several of them would otherwise fold.
+    key = customer_key(table)
+    if not key:
+        return {"error": (
+            f"{table} has none of the customer columns this reads - "
+            f"{', '.join(CUSTOMER_KEYS)} - so its rows cannot be matched to "
+            f"an RM's book")}
+
+    # ACTIVE = the customer's last transaction falls in EITHER of the two
+    # months, not in both.
+    #
+    # This was AND, which is a stricter measure than the bank's: it counted
+    # only customers who turned up in two consecutive months and dropped
+    # anyone who transacted in one of them. The business states it as "the
+    # last customer transaction in the last 2 months", and Lydia Apanja's
+    # signed card bears that out - 358 active against a target of 116, far
+    # more than a both-months rule over her book could produce.
+    # ``bank_`` counts THIS month alone, deliberately, while ``mine_`` counts
+    # the two-month window. The bank figure is only used to decide how far
+    # the feed actually REACHES, and under an OR window a month with no rows
+    # at all still inherits the month before it - so measuring reach on the
+    # window would report a figure for a month that has not happened, which
+    # is the fault this file already guards against for the columns the
+    # report creates a year in advance.
     counts = ",\n               ".join(
         f'COUNT(*) FILTER (WHERE k.cust_id IS NOT NULL '
-        f'AND COALESCE(r."{this}", 0) > 0 '
-        f'AND COALESCE(r."{prev}", 0) > 0) AS "mine_{month:%Y_%m}", '
-        f'COUNT(*) FILTER (WHERE COALESCE(r."{this}", 0) > 0 '
-        f'AND COALESCE(r."{prev}", 0) > 0) AS "bank_{month:%Y_%m}"'
+        f'AND (COALESCE(r."{this}", 0) > 0 '
+        f'OR COALESCE(r."{prev}", 0) > 0)) AS "mine_{month:%Y_%m}", '
+        f'COUNT(*) FILTER (WHERE COALESCE(r."{this}", 0) > 0) '
+        f'AS "bank_{month:%Y_%m}"'
         for month, this, prev in pairs)
 
     sql = f"""
@@ -195,7 +239,9 @@ def two_month_active(sales_code, year, digital=False):
         )
         SELECT {counts}
         FROM {table} r
-        LEFT JOIN book k ON k.cust_id = r.cust_id
+        LEFT JOIN book k
+               ON k.cust_id = NULLIF(
+                      regexp_replace(r."{key}"::text, '\\D', '', 'g'), '')::bigint
     """
 
     try:
