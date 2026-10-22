@@ -203,10 +203,18 @@ def two_month_active(sales_code, year, digital=False):
             cur.execute(sql, [sales_code.strip()])
             row = cur.fetchone()
             names = [c[0] for c in cur.description]
-    except Exception:  # noqa: BLE001 - a feed that cannot be read must not
-        # blank the card, and nothing is reported as nought on the strength
-        # of a read that did not finish.
-        return {"error": "the registration data could not be read"}
+    except Exception as exc:  # noqa: BLE001 - a feed that cannot be read
+        # must not blank the card, and nothing is reported as nought on the
+        # strength of a read that did not finish.
+        #
+        # The REASON is carried. This used to return a bare "could not be
+        # read", which reaches the card as "This figure could not be read
+        # just now" and reaches whoever has to fix it as nothing at all -
+        # a missing column, a renamed table and a dead connection all look
+        # identical. The person's own card still shows the gentle wording;
+        # the Administration screens and scorecard_coverage print this.
+        return {"error": f"the registration data could not be read: "
+                         f"{type(exc).__name__}: {exc}".strip()}
 
     if row is None:
         return {}

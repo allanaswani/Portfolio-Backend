@@ -102,6 +102,25 @@ class ScKpi(models.Model):
         max_length=120, blank=True, default="",
         help_text='Column holding the card\'s "2025 FY" base, if it has one.')
 
+    # The growth to apply where the sheet gives a BASE and no target beside
+    # it. Most groups carry three columns - base, growth, target - and the
+    # loader rebuilds the target from them. ACTIVE and DIGITAL_ADOPTION carry
+    # ONE column each, and it is last year's count, not this year's target:
+    # Lydia Apanja's card reads "2025 FY 102, GROWTH 19, 2026 FY 121" against
+    # an allocation ACTIVE of 102, and Charles Muchiri's reads 60 -> 72.
+    #
+    # Without this the single column was stored as the year's target, so the
+    # card showed "2026 FY 102" - last year's count presented as this year's
+    # plan, with no growth in it at all.
+    #
+    # The rate is the one each line's own measure of success states: "2 month
+    # active (increase by 20%)", "Increase portfolio by 50%".
+    allocation_growth_rate = models.FloatField(
+        blank=True, null=True,
+        help_text="Growth to apply to allocation_column when that column is "
+                  "a base and the sheet has no target column beside it, "
+                  "e.g. 0.2 for 'increase by 20%'.")
+
     #: Why a KPI is not yet scoreable, in words. A KPI whose block could not be
     #: established reads as unconfigured on the card rather than showing a
     #: figure that might be 860x out.

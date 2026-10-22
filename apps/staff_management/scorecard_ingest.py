@@ -403,20 +403,39 @@ def read_allocation(source, definitions, sheet_name="Summary Allocation"):
                     f"{kpi.kpi_code}: {group} has no "
                     f"{GROWTH_RATE_OVER[group]!r} column, so the growth rate "
                     f"cannot be read and the growth is added as it stands.")
-        resolved[kpi.kpi_code] = (column, base, bool(kpi.negate), rate_over)
+        resolved[kpi.kpi_code] = (column, base, bool(kpi.negate), rate_over,
+                                  getattr(kpi, "allocation_growth_rate", None))
 
     rows = []
     for raw in grid[_ALLOC_HEADER_ROW:]:
         code = _text(raw[_ALLOC_CODE_COLUMN]) if len(raw) > _ALLOC_CODE_COLUMN else ""
         if not code:
             continue
-        for kpi_code, (column, base, negate, rate_over) in resolved.items():
+        for kpi_code, (column, base, negate, rate_over,
+                       growth_rate) in resolved.items():
             target = _number(raw[column]) if column < len(raw) else None
             if target is None:
                 continue
             base_value = None
             if base is not None and base < len(raw):
                 base_value = _number(raw[base])
+
+            # ONE column, and it is a base.
+            #
+            # ACTIVE and DIGITAL_ADOPTION have no growth column and no target
+            # column - just last year's count. Stored as it stands it became
+            # the year's target, so a card showed "2025 FY 102 / 2026 FY 102"
+            # and the person was asked to grow by nothing. Lydia Apanja's
+            # card reads 102 -> 121 and Charles Muchiri's 60 -> 72.
+            #
+            # Applied here rather than on the card so the stored row carries
+            # both numbers: base_value is the "2025 FY" the card prints, and
+            # kpi_target is the year's plan.
+            grown_from_one_column = False
+            if growth_rate is not None and base_value is None:
+                base_value = target
+                target = base_value * (1 + growth_rate)
+                grown_from_one_column = True
 
             # A target is a LEVEL, not an increment.
             #
@@ -430,7 +449,11 @@ def read_allocation(source, definitions, sheet_name="Summary Allocation"):
             # Where no base is declared the column is already the year's
             # figure - Disbursment/Total, New_Cust, banca_total - and those
             # reproduced the printed cards exactly as they stood.
-            if base_value is not None:
+            # ...unless the target was JUST grown from that single column,
+            # in which case base_value is the column itself and adding it
+            # again gives base x (2 + rate): the first run of this turned an
+            # ACTIVE of 71 into 156.2 instead of 85.2.
+            if base_value is not None and not grown_from_one_column:
                 over = (_number(raw[rate_over])
                         if rate_over is not None and rate_over < len(raw)
                         else None)
