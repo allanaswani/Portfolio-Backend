@@ -55,18 +55,52 @@ CATEGORY = "NPL (5%)"
 DESCRIPTION = "By Assigned Amount"
 
 
+#: Copied from a sibling line on the SAME role rather than hard-coded.
+#:
+#: ``effective_from``, ``effective_to``, the two bonus dates,
+#: ``plan_category`` and ``target_category`` are all NOT NULL on this table,
+#: and a create that leaves them out fails on a real database with
+#:
+#:     IntegrityError: null value in column "effective_from"
+#:                     violates not-null constraint
+#:
+#: which is exactly what the first version of this migration did. Hard-coding
+#: 2026-01-01 would work this year and be wrong the moment the plan year
+#: moves, so the restored line takes its period from the lines it sits
+#: beside - which is also the only way it is guaranteed to be in scope on the
+#: same cards they are.
+INHERITED = ("effective_from", "effective_to", "bonus_effective_from",
+             "bonus_effective_to", "plan_category", "target_category",
+             "prorate", "is_bonus")
+
+
 def put_the_line_back(apps, schema_editor):
     Mapping = apps.get_model("staff_management", "ScRoleKpiMapping")
 
-    restored = []
+    restored, skipped = [], []
     for role in ROLES:
         if Mapping.objects.filter(kpi_code=CODE, role_code=role).exists():
             continue
+
+        sibling = (Mapping.objects.filter(role_code=role)
+                   .order_by("kpi_order").first())
+        if sibling is None:
+            # No card to put it on. Nothing to restore, and inventing a
+            # period for a role that has no other line would be a guess.
+            skipped.append(role)
+            continue
+
         Mapping.objects.create(
             role_code=role, kpi_order=ORDER, kpi_code=CODE,
             mapping_category=CATEGORY, kpi_description=DESCRIPTION,
-            kpi_weight=0)
+            kpi_weight=0,
+            **{field: getattr(sibling, field) for field in INHERITED})
         restored.append(role)
+
+    if skipped:
+        print(f"  Personal Banking: {', '.join(skipped)} has no other line "
+              f"to take a plan period from, so the Loan Loss line was not "
+              f"restored there.")
 
     if restored:
         print(f"  Personal Banking: restored the Loan Loss line on "
