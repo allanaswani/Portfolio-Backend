@@ -54,6 +54,49 @@ def decode_csv_bytes(raw_data):
     return raw_data.decode(detected, errors="replace")
 
 
+def open_csv_text(upload_file, probe_bytes=1 << 16):
+    """A CSV upload as a TEXT stream, whatever Excel saved it as.
+
+    The streaming sibling of ``decode_csv_bytes``, for uploads too large to
+    hold in memory - Django spools those to disk and the reader iterates
+    them, so the bytes are never all in hand at once.
+
+    This exists because three uploaders wrapped the file as strict
+    ``utf-8-sig`` and told the user
+
+        File must be UTF-8 encoded CSV.
+
+    Excel on Windows saves CSV as **cp1252**, so one accented name, one en
+    dash or one non-breaking space rejects the whole file - 793 KB of
+    drawdowns refused for a byte nobody can see, with no way to find it and
+    no way to fix it from the dialog. "Save as UTF-8 CSV" is not a step
+    anybody should have to know.
+
+    So the encoding is decided from the first chunk rather than assumed, and
+    the stream decodes with ``errors="replace"``: a single bad byte becomes
+    one replacement character in one field instead of failing the import.
+
+    The probe is trimmed by four bytes before testing, because a multi-byte
+    character straddling the chunk boundary would otherwise look like a
+    decode failure and send a perfectly good UTF-8 file down the cp1252
+    path, mojibaking every accent in it.
+    """
+    upload_file.seek(0)
+    head = upload_file.read(probe_bytes)
+    upload_file.seek(0)
+
+    encoding = "utf-8-sig"
+    try:
+        # -4 so a character split across the boundary is not mistaken for a
+        # bad file. Four is the longest a UTF-8 character gets.
+        (head[:-4] if len(head) >= probe_bytes else head).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        encoding = "cp1252"
+
+    return io.TextIOWrapper(
+        upload_file, encoding=encoding, newline="", errors="replace")
+
+
 def _xlsx_cell(value):
     """Render one worksheet cell the way the CSV reader would have.
 

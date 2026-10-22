@@ -909,10 +909,11 @@ class EmployeeOverlayUploadView(APIView):
         if not upload:
             return Response({"detail": "No file uploaded (field 'file')."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            text = upload.read().decode("utf-8-sig")
-        except UnicodeDecodeError:
-            return Response({"detail": "File must be UTF-8 CSV."}, status=status.HTTP_400_BAD_REQUEST)
+        # Detected, not assumed - Excel on Windows writes cp1252, and this
+        # used to refuse the whole file for one accented name.
+        from core.csv_upload import decode_csv_bytes
+
+        text = decode_csv_bytes(upload.read())
 
         reader = csv.DictReader(io.StringIO(text))
         created = updated = skipped = 0

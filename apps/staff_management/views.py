@@ -374,11 +374,20 @@ class BaseCsvUploadView(APIView):
         # Stream the upload instead of reading it all into memory. Django keeps
         # large uploads (> FILE_UPLOAD_MAX_MEMORY_SIZE) on disk, so TextIOWrapper
         # reads them incrementally rather than materialising the whole file.
+        #
+        # The encoding is DETECTED, not assumed. This used to wrap the file
+        # as strict utf-8-sig and reject anything else with "File must be
+        # UTF-8 encoded CSV" - and Excel on Windows saves CSV as cp1252, so
+        # one accented name or one en dash refused an 800 KB drawdown file
+        # for a byte nobody could see.
+        from core.csv_upload import open_csv_text
+
         try:
-            upload.file.seek(0)
+            stream = open_csv_text(upload.file)
         except Exception:  # some backends don't support seek — ignore
-            pass
-        stream = io.TextIOWrapper(upload.file, encoding="utf-8-sig", newline="")
+            stream = io.TextIOWrapper(
+                upload.file, encoding="utf-8-sig", newline="",
+                errors="replace")
 
         created = 0
         error_count = 0
