@@ -802,7 +802,20 @@ class RetailAllocatedPortfolioListView(generics.ListCreateAPIView):
 
 
 @extend_schema(tags=TAG)
-class RetailAllocatedPortfolioDetailView(generics.RetrieveAPIView):
+class RetailAllocatedPortfolioDetailView(generics.RetrieveUpdateAPIView):
+    """Read one allocation row, and reallocate it.
+
+    This was ``RetrieveAPIView``, so the Update Allocation dialog on
+    /management/portfolio-allocations sent its PUT and got **405 Method Not
+    Allowed** every time. The dialog has always been able to open, fill and
+    submit; the endpoint behind it simply had no write half.
+
+    DELETE is deliberately still absent. A customer whose allocation row is
+    removed does not become unallocated, they vanish from the allocation base
+    altogether - out of every RM's book and off every scorecard that reads it.
+    Reallocation is the operation this screen is for.
+    """
+
     permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
@@ -813,12 +826,59 @@ class RetailAllocatedPortfolioDetailView(generics.RetrieveAPIView):
             class Meta:
                 model = RetailAllocatedPortfolio
                 fields = "__all__"
+                # The warehouse stamps this; a client must not set it, and
+                # ``perform_update`` below writes it on every reallocation so
+                # there is a record of when a book changed hands.
+                read_only_fields = ("updated_at",)
 
         return _Serializer
 
     def get_queryset(self):
         from apps.portfolio.models import RetailAllocatedPortfolio
         return RetailAllocatedPortfolio.objects.all()
+
+    def perform_update(self, serializer):
+        """Move EVERY row this customer has, not just the one that was opened.
+
+        ``retail_allocated_portfolio`` has no unique key on ``cust_id`` - the
+        ETL can leave a customer with several rows, which is the fan-out this
+        codebase has already been bitten by twice. Updating only the row whose
+        ``id`` the dialog happened to load would leave the customer's other
+        rows pointing at the previous RM, so the book would read as split:
+        some queries would find the new owner, the DISTINCT ones would find
+        whichever row sorted first, and the scorecards either side would
+        disagree about whose customer this is.
+
+        So the reallocation is applied to the whole customer. The row that was
+        opened is saved through the serializer as usual, and the siblings are
+        brought with it.
+        """
+        from django.utils import timezone
+
+        from apps.portfolio.models import RetailAllocatedPortfolio
+
+        row = serializer.save(updated_at=timezone.now())
+
+        moved = 0
+        if row.cust_id is not None:
+            siblings = (RetailAllocatedPortfolio.objects
+                        .filter(cust_id=row.cust_id)
+                        .exclude(pk=row.pk))
+            moved = siblings.update(
+                sales_code=row.sales_code, rm_name=row.rm_name,
+                email=row.email, branch=row.branch,
+                main_segment=row.main_segment, updated_at=row.updated_at)
+
+        # Surfaced on the response so the screen can say "this customer had
+        # four rows and all four moved" rather than appearing to half-work.
+        self._siblings_moved = moved
+
+    def update(self, request, *args, **kwargs):
+        response = super().update(request, *args, **kwargs)
+        moved = getattr(self, "_siblings_moved", 0)
+        if isinstance(response.data, dict):
+            response.data["rows_also_updated"] = moved
+        return response
 
 
 # ══════════════════════════════════════════════════════════════════════════════
