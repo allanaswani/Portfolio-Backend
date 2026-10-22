@@ -409,7 +409,22 @@ class ScorecardAllocationUploadView(_WorkbookUploadView):
         who = (request.user.get_full_name() or request.user.username).strip()
         body["saved"] = apply_allocation(
             rows, year, source_label=upload.name, changed_by=who)
-        body["roster_saved"] = apply_roster(roster, year, changed_by=who)
+
+        # The roster is loaded alongside, and must not be able to lose the
+        # targets. It could: an unwritable roster row raised out of this view
+        # as a bare 500, and the 2,822 targets that had just read perfectly
+        # went with it - the page said "Server Error (500)" and nobody could
+        # tell that half the work had succeeded.
+        #
+        # The targets are already committed by the line above, so a roster
+        # failure is reported beside them rather than thrown.
+        try:
+            body["roster_saved"] = apply_roster(roster, year, changed_by=who)
+        except Exception as exc:  # noqa: BLE001
+            body["roster_saved"] = {"error": str(exc)}
+            body["warnings"] = body.get("warnings", []) + [
+                f"The targets were saved. The roster was not: {exc}"]
+
         body["applied"] = True
         return Response(body, status=201)
 

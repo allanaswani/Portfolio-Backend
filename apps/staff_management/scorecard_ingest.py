@@ -607,20 +607,67 @@ def apply_roster(rows, year, changed_by=""):
 
     from .models import EmployeeRoleHistory, StaffEmployeeData
 
+    from .models import BranchEmployeeDmcData
+
     added_people = added_roles = updated_roles = unchanged = 0
+    no_pf = []
     year_end = datetime.date(year, 12, 31)
 
     for row in rows:
         staff = StaffEmployeeData.objects.filter(sales_code=row["sales_code"]).first()
         if staff is None:
-            # Only what the scorecard needs. HR owns the rest, and a row
-            # invented here must not pretend to be an HR record.
-            StaffEmployeeData.objects.create(
-                staff_name=row["name"] or row["sales_code"],
-                sales_code=row["sales_code"],
-                staff_unit=row["branch"], staff_org_unit=row["branch"],
-                job_title=row["role"], is_active=True)
-            added_people += 1
+            # ``staff_pf_number`` is NOT NULL, and the workbook's List sheet
+            # does not carry one - its columns are sales_code, name, role,
+            # branch, BBM, two e-mails, Zone and prorate_new. Creating the
+            # row without it raised
+            #
+            #   IntegrityError: null value in column "staff_pf_number"
+            #   of relation "staff_employee_data"
+            #
+            # which 500'd the whole upload, so the per-person targets were
+            # lost along with the roster even though they had read perfectly.
+            #
+            # The DMC roster does hold the PF against the same sales code, so
+            # that is asked first. Where it has no answer the person is NOT
+            # invented here: a staff record with no PF is not identifiable,
+            # and HR owns that number. The role history below is still
+            # written, which is the half the scorecard actually reads.
+            # NINE columns on this table are NOT NULL with no default:
+            # staff_pf_number, staff_name, staff_email, department,
+            # staff_unit, staff_org_unit, job_title, employment_date and
+            # employee_category. They were found one failed insert at a time
+            # - first the PF, then employment_date - so they are listed here
+            # and taken together.
+            #
+            # The two that cannot be invented are the PF NUMBER and the
+            # EMPLOYMENT DATE, and the DMC roster holds both against the same
+            # sales code. Where it does not, the person is skipped and named:
+            # a staff record with a made-up employment date is worse than an
+            # absent one, and this table is read as an HR record elsewhere.
+            # The text columns the workbook has no answer for are left empty
+            # rather than filled with a guess.
+            dmc = (BranchEmployeeDmcData.objects
+                   .filter(sales_code__iexact=row["sales_code"])
+                   .exclude(staff_pf_number__isnull=True)
+                   .exclude(employment_date__isnull=True)
+                   .values("staff_pf_number", "employment_date",
+                           "staff_email").first())
+            if dmc is None:
+                no_pf.append(row["sales_code"])
+            else:
+                # Only what the scorecard needs. HR owns the rest, and a row
+                # invented here must not pretend to be an HR record.
+                StaffEmployeeData.objects.create(
+                    staff_pf_number=dmc["staff_pf_number"],
+                    employment_date=dmc["employment_date"],
+                    staff_email=dmc["staff_email"] or "",
+                    staff_name=row["name"] or row["sales_code"],
+                    sales_code=row["sales_code"],
+                    staff_unit=row["branch"], staff_org_unit=row["branch"],
+                    job_title=row["role"],
+                    department="", employee_category="",
+                    is_active=True)
+                added_people += 1
 
         start = datetime.date(year, 13 - row["active_months"], 1)
         history = EmployeeRoleHistory.objects.filter(
@@ -643,4 +690,8 @@ def apply_roster(rows, year, changed_by=""):
             unchanged += 1
 
     return {"people_added": added_people, "roles_added": added_roles,
-            "roles_updated": updated_roles, "roles_unchanged": unchanged}
+            "roles_updated": updated_roles, "roles_unchanged": unchanged,
+            # Named, not just counted: these are people the scorecard knows
+            # by sales code and HR does not know by PF, which is a roster
+            # gap somebody has to close rather than a load that failed.
+            "no_pf_number": sorted(no_pf)}
