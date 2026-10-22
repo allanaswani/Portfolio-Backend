@@ -63,11 +63,21 @@ class MonthEndFeedsTests(SimpleTestCase):
 
     def test_holding_the_last_closed_month_is_not_stale(self):
         """30 September, read on 15 October, is 14 days old and exactly
-        right. This was two of the five false alarms."""
-        self.assertEqual(
-            _classify(True, 144, 14, "monthly"), "ok",
-            "a monthly feed holding the last closed month is not stale")
-        self.assertEqual(_classify(True, 38237, 14, "monthly"), "ok")
+        right. This was two of the five false alarms.
+
+        Pinned to its own date for the reason given below, on the test that
+        missed a month: unpinned, this one passes for most of the month and
+        fails on the 1st and the 2nd, when 14 days has not yet been absorbed
+        by the days since the month closed.
+        """
+        from unittest import mock
+
+        with mock.patch("apps.observability.health.timezone") as clock:
+            clock.localdate.return_value = datetime.date(2026, 10, 15)
+            self.assertEqual(
+                _classify(True, 144, 14, "monthly"), "ok",
+                "a monthly feed holding the last closed month is not stale")
+            self.assertEqual(_classify(True, 38237, 14, "monthly"), "ok")
 
     def test_the_same_age_on_a_daily_feed_is_stale(self):
         """The point of the cadence: 14 days is fine for one kind of table and
@@ -76,8 +86,22 @@ class MonthEndFeedsTests(SimpleTestCase):
 
     def test_a_monthly_feed_that_missed_a_month_is_stale(self):
         """31 August read on 5 October - 35 days - is a month behind, which is
-        the thing this is supposed to catch."""
-        self.assertEqual(_classify(True, 144, 35, "monthly"), "stale")
+        the thing this is supposed to catch.
+
+        The date has to be pinned. A monthly verdict is measured from the
+        month that last CLOSED, so ``_classify`` reads the clock, and the
+        same 35 days means different things depending on where in the month
+        it is read: on 5 October it is a month behind, on 22 October it is
+        13 days past a month end and merely a warning. Left unpinned this
+        passed for the first week of every month and failed for the rest of
+        it - which is worse than failing outright, because it looks like a
+        regression in whatever happened to be committed that day.
+        """
+        from unittest import mock
+
+        with mock.patch("apps.observability.health.timezone") as clock:
+            clock.localdate.return_value = datetime.date(2026, 10, 5)
+            self.assertEqual(_classify(True, 144, 35, "monthly"), "stale")
 
     def test_it_holds_late_in_the_month_too(self):
         """30 September read on 28 October is 28 days old and still the last

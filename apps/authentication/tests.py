@@ -259,15 +259,23 @@ class AdminUserManagementAPITests(TestCase):
         self.assertEqual(resp.status_code, 200)
         rows = resp.data["results"] if isinstance(resp.data, dict) else resp.data
         names = {r["name"] for r in rows}
-        # 14 baseline + 4 mortgage + 3 registry + 1 business-performance
-        # + 2 telesales + 2 Customer 360 + 2 service desk + 2 Marketing
-        # design-board roles.
+        # Checked against the registry itself, not against a tally.
         #
-        # A running tally, so it has to be extended whenever core.roles grows.
-        # The count is the point: a role missing from the registry cannot be
-        # granted from the Users screen, which is how a module ships with
-        # nobody able to be put on it.
-        self.assertEqual(len(names), 30, sorted(names))
+        # This used to assert a hand-maintained count - "14 baseline + 4
+        # mortgage + 3 registry + ..." - which had to be edited every time
+        # core.roles grew and was simply forgotten, so the suite went red on
+        # 32 roles while asserting 30. A count that nobody updates stops
+        # testing the contract and starts reporting its own staleness.
+        #
+        # The contract is that the screen offers EVERY registered role: one
+        # missing from this list cannot be granted, which is how a module
+        # ships with nobody able to be put on it. Set equality says exactly
+        # that, and names whichever side is short when it fails.
+        from core.roles import ALL_ROLES
+
+        self.assertEqual(
+            names, set(ALL_ROLES),
+            "the Users screen does not offer every registered role")
         self.assertIn("ceo", names)
         self.assertIn("staff_mgt", names)
         self.assertIn("mortgage_officer", names)
