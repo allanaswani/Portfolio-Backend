@@ -689,9 +689,15 @@ class EveryRoleMatchesItsSheetTests(TestCase):
         "diaspora_rm": (16, 1.025),
         "diaspora_arm": (16, 1.025),
         "mortgage_business_arm": (13, 1.025),
-        "pb_rm": (18, 1.025),
-        "pb_arm": (18, 1.025),
-        "pb_bbc": (18, 1.025),
+        # NINETEEN. The Personal_Banking sheet is the only one carrying a
+        # zero-weight line - Reduce P&L provisions, at 0.0% - and the count
+        # that produced the 18 here dropped it, because it skipped any row
+        # whose weight was falsy. Migration 0054 then deleted the line as a
+        # phantom; 0056 put it back. Lydia Apanja's signed Q3_Sep_26 PB ARM
+        # card prints it, so it is on the document people sign.
+        "pb_rm": (19, 1.025),
+        "pb_arm": (19, 1.025),
+        "pb_bbc": (19, 1.025),
         "sme_rm": (18, 1.025),
         "sme_arm": (18, 1.025),
         "sme_bbc": (18, 1.025),
@@ -714,12 +720,34 @@ class EveryRoleMatchesItsSheetTests(TestCase):
 
         self.assertEqual(wrong, [], "\n".join(wrong))
 
-    def test_no_mapping_carries_a_weight_of_nought(self):
-        """A line worth nothing still prints, and still says you are measured
-        on it. The three that did were not on the sheet at all."""
+    #: The zero-weight lines the bank's own sheets carry. A weight of nought
+    #: is NOT proof of a phantom line - this one is on the Personal_Banking
+    #: sheet at row 20 and on Lydia Apanja's signed Q3_Sep_26 card, printed
+    #: under "NPL ( 5% )" with a real actual beside it. The person is shown
+    #: their provisions position and is not scored on it.
+    ZERO_WEIGHT_ON_THE_SHEET = {
+        "pb_rm/reduce_p_l_provisions_nill_provisions_loan_loss",
+        "pb_arm/reduce_p_l_provisions_nill_provisions_loan_loss",
+        "pb_bbc/reduce_p_l_provisions_nill_provisions_loan_loss",
+    }
+
+    def test_only_the_sheets_own_zero_weight_lines_carry_nought(self):
+        """A line worth nothing still prints and still says you are measured
+        on it, so an unexplained one is a fault - but the earlier version of
+        this test said NO line may weigh nought, and that is what led to
+        0054 deleting a line the sheet does carry. The rule is that every
+        zero-weight line must be one the workbook accounts for."""
         from .scorecard_automation.models import ScRoleKpiMapping
 
-        zero = sorted(
+        zero = {
             f"{m.role_code}/{m.kpi_code}"
-            for m in ScRoleKpiMapping.objects.filter(kpi_weight=0))
-        self.assertEqual(zero, [], "\n".join(zero))
+            for m in ScRoleKpiMapping.objects.filter(kpi_weight=0)}
+
+        unexplained = sorted(zero - self.ZERO_WEIGHT_ON_THE_SHEET)
+        self.assertEqual(unexplained, [], "\n".join(unexplained))
+
+        missing = sorted(self.ZERO_WEIGHT_ON_THE_SHEET - zero)
+        self.assertEqual(
+            missing, [],
+            "the sheet carries these at nought and they are not seeded:\n"
+            + "\n".join(missing))
