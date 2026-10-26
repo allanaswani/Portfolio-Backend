@@ -30,7 +30,10 @@ from django.db import connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
+from unittest import mock
+
 from apps.branch_portfolio import drawdown_queries as dq
+from apps.branch_portfolio import legacy_queries as lq
 from apps.branch_portfolio import staff_queries as sq
 from apps.portfolio.models import Profile
 from apps.staff_management.models import (
@@ -453,3 +456,278 @@ class DrawdownSqlAgainstRealSchemaTests(TransactionTestCase):
         self.assertEqual(len(last.data["results"]), 1)
         self.assertIsNone(last.data["next"])
         self.assertIsNotNone(last.data["previous"])
+
+
+# ── Customer activity ────────────────────────────────────────────────────────
+#
+# Two things these have to pin, and they are the same two as everywhere else in
+# this file.
+#
+# **One branch, never the bank.** These read ``transaction_diary``, the whole
+# bank's transaction history. Every other branch endpoint lets a privileged
+# caller fall through to an all-branch roll-up; this one must refuse, both
+# because it was asked for per-branch and because the unscoped query is a table
+# scan that would take the database with it.
+#
+# **The windows nest and the buckets do not.** 7/30/60/90 are the same question
+# asked four ways - a customer active in the last 7 days is in all four counts.
+# The dormancy buckets underneath them are exclusive and sum to the inactive
+# count. A screen that added the four windows up would report more customers
+# than the branch has.
+
+
+class ActivityArgumentTests(SimpleTestCase):
+    """The two numbers that go into an interval, before any database."""
+
+    def test_only_the_offered_windows_are_accepted(self):
+        for days in lq.ACTIVITY_WINDOWS:
+            self.assertEqual(lq._clean_window(days), days)
+
+    def test_anything_else_falls_back_to_thirty(self):
+        for junk in ("45", 45, "", None, "; DROP TABLE", -1, 10_000):
+            self.assertEqual(lq._clean_window(junk), 30)
+
+    def test_the_lookback_never_undercuts_the_widest_window(self):
+        """"Inactive" means "outside the 90 day window". A lookback shorter
+        than 90 would make the inactive list disagree with the summary."""
+        self.assertEqual(lq._clean_lookback(10), 90)
+        self.assertEqual(lq._clean_lookback(None), lq.DEFAULT_LOOKBACK_DAYS)
+
+    def test_the_lookback_is_capped(self):
+        """One page view must not be able to ask for five years of the bank's
+        transaction history."""
+        self.assertEqual(lq._clean_lookback(99_999), 1825)
+
+
+class BranchCustomerActivitySqlTests(TransactionTestCase):
+    """The activity SQL, against real tables with real rows.
+
+    ``hf_customer``, ``transaction_diary`` and ``retail_allocated_portfolio``
+    are all ``managed = False`` warehouse mirrors, so a test database has none
+    of them and a typo in a column name would only ever surface in production.
+    Two are built from the models Django already carries; ``hf_customer`` is
+    built by hand because its ``cust_id`` is introspected as
+    ``numeric(65535, 65535)``, which Postgres will not create.
+    """
+
+    HERE = "BURUBURU BRANCH"
+    AWAY = "MOMBASA BRANCH"
+
+    def setUp(self):
+        from apps.gceo_dashboard.models import TransactionDiary
+        from apps.portfolio.models import RetailAllocatedPortfolio
+
+        with connection.schema_editor() as editor:
+            editor.create_model(TransactionDiary)
+            editor.create_model(RetailAllocatedPortfolio)
+        self.addCleanup(self._drop_models, (RetailAllocatedPortfolio,
+                                            TransactionDiary))
+        with connection.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE hf_customer (
+                    cust_id numeric PRIMARY KEY,
+                    latin_surname text, segment text, banking_segment text,
+                    branch text, branch_code text, active boolean,
+                    total_depost_balance numeric, total_loans numeric,
+                    total_revenue numeric
+                )
+            """)
+        self.addCleanup(self._drop_hf_customer)
+        self._seed()
+
+    @staticmethod
+    def _drop_models(models):
+        with connection.schema_editor() as editor:
+            for model in models:
+                editor.delete_model(model)
+
+    @staticmethod
+    def _drop_hf_customer():
+        with connection.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS hf_customer")
+
+    def _seed(self):
+        # (cust_id, name, branch, days since last transaction or None)
+        people = [
+            (1, "Ann Yesterday",   self.HERE,   1),
+            (2, "Ben Lastweek",    self.HERE,   5),
+            (3, "Cate Fortnight",  self.HERE,  14),
+            (4, "Dan Twomonths",   self.HERE,  45),
+            (5, "Eve Quarter",     self.HERE,  75),
+            (6, "Fred Halfyear",   self.HERE, 150),
+            (7, "Gina Lastyear",   self.HERE, 300),
+            (8, "Hank Never",      self.HERE, None),
+            (9, "Ivy Elsewhere",   self.AWAY,   1),
+        ]
+        with connection.cursor() as cur:
+            for cust_id, name, branch, days in people:
+                cur.execute(
+                    "INSERT INTO hf_customer (cust_id, latin_surname, branch,"
+                    " segment, total_depost_balance, total_loans, total_revenue)"
+                    " VALUES (%s, %s, %s, 'MASS', %s, 0, 0)",
+                    [cust_id, name, branch, cust_id * 1000])
+                if days is None:
+                    continue
+                cur.execute(
+                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp)"
+                    " VALUES (%s, now() - (%s * INTERVAL '1 day'))",
+                    [cust_id, days])
+                # A second, OLDER transaction. The figure is the MOST RECENT
+                # one, so this must not change any answer.
+                cur.execute(
+                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp)"
+                    " VALUES (%s, now() - (%s * INTERVAL '1 day'))",
+                    [cust_id, days + 200])
+
+    # ── the summary ──────────────────────────────────────────────────────────
+
+    def test_the_windows_nest(self):
+        """7 ⊆ 30 ⊆ 60 ⊆ 90. Ann (1d) is in all four; Eve (75d) only in 90."""
+        summary = lq.branch_customer_activity(self.HERE)
+        counts = {w["days"]: w["customers"] for w in summary["windows"]}
+        self.assertEqual(counts, {7: 2, 30: 3, 60: 4, 90: 5})
+        self.assertTrue(summary["windows_are_cumulative"])
+
+    def test_another_branch_is_not_counted(self):
+        """Ivy transacted yesterday and belongs to Mombasa."""
+        summary = lq.branch_customer_activity(self.HERE)
+        self.assertEqual(summary["customers"], 8)
+        self.assertEqual(
+            lq.branch_customer_activity(self.AWAY)["customers"], 1)
+
+    def test_inactive_is_the_book_less_the_ninety_day_window(self):
+        summary = lq.branch_customer_activity(self.HERE)
+        active_90 = next(w["customers"] for w in summary["windows"]
+                         if w["days"] == 90)
+        self.assertEqual(summary["inactive"],
+                         summary["customers"] - active_90)
+        self.assertEqual(summary["inactive"], 3)  # Fred, Gina, Hank
+
+    def test_the_dormancy_buckets_are_exclusive_and_sum_to_inactive(self):
+        """Unlike the windows above them. The payload says which is which and
+        a screen that got it the wrong way round would double-count."""
+        summary = lq.branch_customer_activity(self.HERE)
+        self.assertEqual(sum(b["customers"] for b in summary["dormancy"]),
+                         summary["inactive"])
+        by_label = {b["label"]: b["customers"] for b in summary["dormancy"]}
+        self.assertEqual(by_label["91-180 days"], 1)    # Fred at 150
+        self.assertEqual(by_label["181-365 days"], 1)   # Gina at 300
+        self.assertEqual(by_label["Over 365 days"], 0)
+
+    def test_a_customer_who_never_transacted_is_counted_as_inactive(self):
+        """Hank has no row in transaction_diary at all. He is the most
+        inactive customer the branch has, not an absent one."""
+        summary = lq.branch_customer_activity(self.HERE)
+        labels = {b["label"]: b["customers"] for b in summary["dormancy"]}
+        self.assertEqual(labels[f"No transaction in "
+                                f"{lq.DEFAULT_LOOKBACK_DAYS} days"], 1)
+
+    def test_only_the_most_recent_transaction_counts(self):
+        """Every seeded customer also has a transaction 200 days older. If the
+        query took the earliest, or counted rows, every answer would move."""
+        summary = lq.branch_customer_activity(self.HERE)
+        self.assertEqual(summary["customers"], 8)
+
+    # ── the lists ────────────────────────────────────────────────────────────
+
+    def test_the_active_list_respects_its_window(self):
+        rows, total = lq.branch_customer_activity_page(
+            self.HERE, state="active", days=30)
+        self.assertEqual(total, 3)
+        self.assertEqual([r["customer_name"] for r in rows],
+                         ["Ann Yesterday", "Ben Lastweek", "Cate Fortnight"])
+        self.assertTrue(all(r["days_since"] <= 30 for r in rows))
+
+    def test_the_inactive_list_puts_the_longest_silent_first(self):
+        """Including the customer who has never appeared - which is who the
+        branch is actually trying to find."""
+        rows, total = lq.branch_customer_activity_page(
+            self.HERE, state="inactive", days=90)
+        self.assertEqual(total, 3)
+        self.assertEqual(rows[0]["customer_name"], "Hank Never")
+        self.assertIsNone(rows[0]["last_txn"])
+        self.assertIsNone(rows[0]["days_since"])
+        self.assertEqual([r["customer_name"] for r in rows[1:]],
+                         ["Gina Lastyear", "Fred Halfyear"])
+
+    def test_the_list_is_paginated_without_running_the_scan_twice(self):
+        rows, total = lq.branch_customer_activity_page(
+            self.HERE, state="active", days=90, limit=2, offset=0)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(total, 5)       # the full count, from one query
+        self.assertNotIn("total_rows", rows[0])
+
+    def test_search_matches_a_name_and_is_parameterised(self):
+        rows, total = lq.branch_customer_activity_page(
+            self.HERE, state="active", days=90, search="lastweek")
+        self.assertEqual(total, 1)
+        self.assertEqual(rows[0]["customer_name"], "Ben Lastweek")
+
+    def test_a_customer_allocated_twice_is_listed_once(self):
+        """retail_allocated_portfolio has no unique cust_id. Joined raw it
+        multiplies the customer - the fan-out this codebase shipped once on
+        the RM list and must not ship again here."""
+        from apps.portfolio.models import RetailAllocatedPortfolio
+
+        for rm in ("Older RM", "Newer RM"):
+            RetailAllocatedPortfolio.objects.create(
+                cust_id=1, customer_name="Ann Yesterday", rm_name=rm,
+                sales_code="SC1")
+        rows, total = lq.branch_customer_activity_page(
+            self.HERE, state="active", days=7)
+        self.assertEqual(total, 2)
+        self.assertEqual(sum(1 for r in rows if r["cust_id"] == 1), 1)
+
+    def test_an_unknown_branch_matches_nothing_rather_than_everything(self):
+        summary = lq.branch_customer_activity("NO SUCH BRANCH")
+        self.assertEqual(summary["customers"], 0)
+        rows, total = lq.branch_customer_activity_page("NO SUCH BRANCH")
+        self.assertEqual((rows, total), ([], 0))
+
+
+class BranchCustomerActivityScopeTests(TestCase):
+    """Who may ask, and for which branch."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.bm = User.objects.create_user("bm_activity", password="x")
+        Profile.objects.update_or_create(
+            user=self.bm, defaults={"branch": "BURUBURU BRANCH"})
+        self.client = APIClient()
+        self.client.force_authenticate(self.bm)
+
+        self.boss = User.objects.create_user("ceo_activity", password="x",
+                                             is_superuser=True)
+        Profile.objects.update_or_create(user=self.boss, defaults={"branch": ""})
+        self.boss_client = APIClient()
+        self.boss_client.force_authenticate(self.boss)
+
+    def test_a_privileged_caller_naming_no_branch_is_refused(self):
+        """Every other branch endpoint falls through to an all-branch roll-up.
+        This one must not: unscoped, it is a scan of the bank's entire
+        transaction history for an answer nobody asked for."""
+        response = self.boss_client.get(
+            BM + "customers/activity/summary/")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("branch", response.data)
+
+    def test_a_branch_manager_cannot_drill_into_another_branch(self):
+        """The URL branch is ignored for anyone who is not EXCO/CEO - the same
+        rule as the customer routes, and for the same reason."""
+        with mock.patch.object(lq, "branch_customer_activity",
+                               return_value={}) as query:
+            self.client.get(BM + "customers/activity/summary/MOMBASA BRANCH")
+        query.assert_called_once()
+        self.assertEqual(query.call_args[0][0], "BURUBURU BRANCH")
+
+    def test_a_privileged_caller_may_name_one(self):
+        with mock.patch.object(lq, "branch_customer_activity",
+                               return_value={}) as query:
+            response = self.boss_client.get(
+                BM + "customers/activity/summary/MOMBASA BRANCH")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(query.call_args[0][0], "MOMBASA BRANCH")
+
+    def test_signing_in_is_required(self):
+        response = APIClient().get(BM + "customers/activity/summary/")
+        self.assertIn(response.status_code, (401, 403))

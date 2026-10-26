@@ -16,6 +16,15 @@ urlpatterns = [
     path("customer_per_segment/<str:branch>", views.BranchCustomerPerSegmentView.as_view()),
     path("new_customers/",                views.BranchNewCustomersView.as_view()),
 
+    # Customer activity — who is still transacting and who has stopped, off
+    # transaction_diary. One branch at a time, always: these read the bank's
+    # whole transaction history and the unscoped form is a table scan. The
+    # /<branch> forms are the EXCO/CEO drill-down, same rule as above.
+    path("customers/activity/summary/",   views.BranchCustomerActivitySummaryView.as_view()),
+    path("customers/activity/summary/<str:branch>", views.BranchCustomerActivitySummaryView.as_view()),
+    path("customers/activity/list/",      views.BranchCustomerActivityListView.as_view()),
+    path("customers/activity/list/<str:branch>", views.BranchCustomerActivityListView.as_view()),
+
     # RM
     path("rmlist/",                       views.BranchRMListView.as_view()),
 

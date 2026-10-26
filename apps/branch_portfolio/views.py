@@ -4,6 +4,7 @@ from decimal import Decimal
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.exceptions import ValidationError
 from rest_framework import generics
 from drf_spectacular.utils import extend_schema
 from django.db.models import Sum, Count, Q
@@ -1155,6 +1156,98 @@ class BranchDrawdownsListView(APIView):
         # crawling the moment it is null, so hard-coding None here would cap
         # every Export at the first page — the bug this codebase has already
         # shipped once (see docs / the export-limit note).
+        has_next = page_number * page_size < total
+        return Response({
+            "count": total,
+            "next": _page_link(request, page_number + 1) if has_next else None,
+            "previous": _page_link(request, page_number - 1) if page_number > 1 else None,
+            "results": rows,
+        })
+
+
+# ── Customer activity ────────────────────────────────────────────────────────
+
+def _require_one_branch(request, branch=None):
+    """The branch these screens run against, or 400 - never the whole bank.
+
+    Every other branch endpoint lets a CEO/EXCO caller with no branch of their
+    own fall through to an all-branch roll-up. These must not. They read
+    ``transaction_diary``, the bank's entire transaction history, and the
+    unscoped form of that query is a table scan that would take the database
+    down with it for an answer nobody asked for - the ask was explicitly "for
+    a specific branch, not the whole bank".
+
+    So a privileged caller names the branch in the URL and gets it; a caller
+    with a branch of their own gets theirs and cannot reach another's;
+    and a privileged caller who names nothing is told to name one.
+    """
+    name = _branch_filter(_get_profile(request.user), branch)
+    if not name:
+        raise ValidationError({
+            "branch": "Name a branch. These tables read the whole bank's "
+                      "transaction history and are only ever computed for one "
+                      "branch at a time - add the branch to the URL, for "
+                      "example .../activity/summary/BURUBURU BRANCH."})
+    return name
+
+
+@extend_schema(tags=["Branch Portfolio — Customer activity"])
+class BranchCustomerActivitySummaryView(APIView):
+    """customers/activity/summary/ — how much of the branch is still trading.
+
+    The four windows (7/30/60/90 days) are the SAME question asked four ways
+    and they nest: a customer active in the last 7 days is counted in all four.
+    The dormancy buckets below them are exclusive and sum to the inactive
+    count. ``windows_are_cumulative`` says which is which on the payload, so
+    the screen cannot present a nested set as a breakdown.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        name = _require_one_branch(request, branch)
+        return Response(lq.branch_customer_activity(
+            name, request.query_params.get("lookback")))
+
+
+@extend_schema(tags=["Branch Portfolio — Customer activity"])
+class BranchCustomerActivityListView(APIView):
+    """customers/activity/list/ — the customers behind those counts.
+
+    ``?state=active|inactive`` and ``?window=7|30|60|90``. Active lists most
+    recent first; inactive lists longest silent first, which puts the
+    customers who have not appeared at all inside the lookback at the top -
+    the ones the branch actually needs to call.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, branch=None):
+        name = _require_one_branch(request, branch)
+
+        paginator = StandardPagination()
+        try:
+            page_number = max(1, int(request.query_params.get("page") or 1))
+        except (TypeError, ValueError):
+            page_number = 1
+        try:
+            page_size = int(request.query_params.get("page_size")
+                            or paginator.page_size)
+        except (TypeError, ValueError):
+            page_size = paginator.page_size
+        page_size = max(1, min(page_size, paginator.max_page_size))
+
+        rows, total = lq.branch_customer_activity_page(
+            name,
+            state=request.query_params.get("state") or "active",
+            days=request.query_params.get("window") or 30,
+            lookback=request.query_params.get("lookback"),
+            search=request.query_params.get("search") or "",
+            limit=page_size,
+            offset=(page_number - 1) * page_size,
+        )
+        # `next` must be a real link or Export stops at the first page - the
+        # same trap the drawdown list documents above.
         has_next = page_number * page_size < total
         return Response({
             "count": total,

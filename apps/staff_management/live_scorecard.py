@@ -2466,6 +2466,147 @@ def resolve_person(sales_code):
     return None
 
 
+#: The identifiers this estate actually holds for a person, and the order they
+#: are trusted in. Each is an EXACT match on something that identifies one
+#: human; nothing here matches on a fragment, and the one route that could be
+#: ambiguous - a person's name - has to resolve to exactly one row or it is not
+#: used at all. See :func:`resolve_sales_code_for_user`.
+_SELF_LOOKUPS = (
+    "your profile",
+    "the back-office roster",
+    "your work e-mail on the HR roster",
+    "your sign-in name against the HR roster's e-mail",
+    "your sign-in name as a sales code",
+    "your sign-in name as a PF number",
+    "your name on the HR roster",
+)
+
+
+def resolve_sales_code_for_user(user, profile=None):
+    """Which card belongs to the person signed in - ``(sales_code, how)``.
+
+    ``("", "")`` when nothing identifies them.
+
+    **``Profile.sales_code`` was the only route, and it is the one identifier
+    nobody fills in for a person who does not carry a sales book.** Migration
+    0032 seeded 101 back-office people onto cards - 25 BOMs, 41 tellers, 25
+    CSOs, the RBO team leaders - and every one of them opened their scorecard
+    to "your profile has no sales code", on a card that exists, is configured,
+    and has their name on it. The card was never the problem; being recognised
+    was.
+
+    So the profile is tried first, because an explicitly set sales code is a
+    deliberate statement about who somebody is, and then the identifiers that
+    are actually populated for everybody else. Order matters: the earlier an
+    identifier appears, the more specific it is to one person.
+
+    Nothing here guesses. Every lookup is an exact match, and any lookup that
+    finds more than one person is discarded rather than resolved arbitrarily -
+    showing somebody else's scorecard is far worse than showing none.
+    """
+    from .models import EmployeeRoleHistory, StaffEmployeeData
+
+    def one(queryset):
+        """The single row, or None if there is none or more than one."""
+        rows = list(queryset[:2])
+        return rows[0] if len(rows) == 1 else None
+
+    code = ""
+    if profile is not None:
+        code = (getattr(profile, "sales_code", "") or "").strip()
+    if code:
+        return code, _SELF_LOOKUPS[0]
+
+    username = (getattr(user, "username", "") or "").strip()
+    email = (getattr(user, "email", "") or "").strip()
+
+    # The back-office roster is keyed on a code shaped like EKN1329, which is
+    # what a branch operations person has instead of a sales code. If the
+    # sign-in name IS that code, there is nothing further to look up.
+    if username:
+        held = one(EmployeeRoleHistory.objects.filter(sales_code__iexact=username))
+        if held is not None and (held.sales_code or "").strip():
+            return held.sales_code.strip(), _SELF_LOOKUPS[1]
+
+    # The HR roster is the bridge for everybody else: it carries the e-mail,
+    # the PF number, the name and the sales code on one row.
+    attempts = []
+    if email:
+        attempts.append((StaffEmployeeData.objects.filter(staff_email__iexact=email),
+                         _SELF_LOOKUPS[2]))
+    if username:
+        # AD names are firstname.lastname and the address is the same thing at
+        # the bank's domain, so this catches a person whose User row was
+        # created without an e-mail on it.
+        attempts.append(
+            (StaffEmployeeData.objects.filter(
+                staff_email__istartswith=f"{username}@"), _SELF_LOOKUPS[3]))
+        attempts.append(
+            (StaffEmployeeData.objects.filter(sales_code__iexact=username),
+             _SELF_LOOKUPS[4]))
+        if username.isdigit():
+            attempts.append(
+                (StaffEmployeeData.objects.filter(staff_pf_number=int(username)),
+                 _SELF_LOOKUPS[5]))
+
+    full_name = " ".join(part for part in (
+        (getattr(user, "first_name", "") or "").strip(),
+        (getattr(user, "last_name", "") or "").strip()) if part).strip()
+    if full_name:
+        # Last, and only when it names exactly one serving employee. Two people
+        # share a name often enough that this cannot be allowed to pick one.
+        attempts.append(
+            (StaffEmployeeData.objects.filter(
+                staff_name__iexact=full_name, is_active=True), _SELF_LOOKUPS[6]))
+
+    for queryset, how in attempts:
+        staff = one(queryset)
+        if staff is None:
+            continue
+        found = (staff.sales_code or "").strip()
+        if found:
+            return found, how
+        # Recognised, but the HR row carries no sales code. The back-office
+        # roster may still know them by their own code, so that is tried
+        # before giving up on a person we have positively identified.
+        by_name = one(EmployeeRoleHistory.objects.filter(
+            notes__istartswith=f"{(staff.staff_name or '').strip()} |"))
+        if by_name is not None and (by_name.sales_code or "").strip():
+            return by_name.sales_code.strip(), self_how(how)
+
+    return "", ""
+
+
+def self_how(how):
+    """The phrasing for a person found through the HR roster but keyed on the
+    back-office roster's own code. Kept separate so the card can say which
+    of the two answered, rather than implying the HR row carried the code."""
+    return f"{how}, then the back-office roster"
+
+
+def no_card_for_user(user, profile=None):
+    """What to tell somebody nothing identifies - a payload, not an exception.
+
+    Named in full rather than "no sales code", because the person reading it
+    has to be able to hand it to whoever can fix it, and "your profile has no
+    sales code" sent every Team Leader to the wrong place.
+    """
+    return {
+        "has_card": False,
+        "reason": "not_identified",
+        "detail": (
+            "We could not work out which scorecard is yours. Your account is "
+            "not linked to anybody on the sales roster, the back-office "
+            "roster or the HR roster. Administration can fix this on the "
+            "Users screen by putting your sales code on your profile, or by "
+            "making sure your work e-mail on the HR roster matches the one on "
+            "your account."),
+        "tried": list(_SELF_LOOKUPS),
+        "username": (getattr(user, "username", "") or ""),
+        "email": (getattr(user, "email", "") or ""),
+    }
+
+
 def brn_code_for(sales_code, dmc_row=None):
     """This person's branch CODE, or ``""``.
 

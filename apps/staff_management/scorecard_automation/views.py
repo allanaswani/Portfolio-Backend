@@ -449,10 +449,16 @@ class ScorecardCardView(APIView):
     browser deciding how a scorecard is laid out, and the layout is not the
     browser's to decide.
 
-    Scoped to the caller by ``portfolio_profile.sales_code``. A Team Leader
-    looking at somebody else is a different screen with a different gate; this
-    one is only ever your own card, so there is no ``sales_code`` parameter to
-    forget to check.
+    Scoped to the caller, and to the caller only: there is no ``sales_code``
+    parameter to forget to check. A manager looking at somebody else is a
+    different screen with a different gate.
+
+    **Who the caller is** is resolved by
+    ``live_scorecard.resolve_sales_code_for_user`` rather than by
+    ``Profile.sales_code`` alone. That field is set for people who carry a
+    sales book and for nobody else, so the 101 back-office people seeded onto
+    cards by migration 0032 - the BOMs, the CSOs, the tellers, the RBO team
+    leaders - all had a configured card and no way to open it.
     """
 
     permission_classes = [IsAuthenticated]
@@ -464,16 +470,17 @@ class ScorecardCardView(APIView):
         from apps.staff_management.models import (
             EmployeeRoleHistory, StaffEmployeeData)
 
+        from apps.staff_management.live_scorecard import (
+            no_card_for_user, resolve_sales_code_for_user)
+
         profile = Profile.objects.filter(user_id=request.user.id).first()
-        sales_code = (profile.sales_code or "").strip() if profile else ""
+        sales_code, how = resolve_sales_code_for_user(request.user, profile)
         if not sales_code:
-            return Response({
-                "has_card": False,
-                "reason": "no_sales_code",
-                "detail": "Your profile has no sales code, so there is no book "
-                          "to score. Administration can add one on the Users "
-                          "screen.",
-            })
+            # Everything that was tried is named. "Your profile has no sales
+            # code" sent every back-office card holder to the wrong place -
+            # their card was fine, and so was their profile; what was missing
+            # was any link at all between the account and a roster row.
+            return Response(no_card_for_user(request.user, profile))
 
         # Built from what the system already holds - the DMC roster for the
         # role and the targets, the warehouse for the actuals - so the card
@@ -509,7 +516,9 @@ class ScorecardCardView(APIView):
                 signed["live"] = False
                 signed["signoff"] = live["signoff"]
                 signed["signoff_period"] = period
+                signed["matched_by"] = how
                 return Response(signed)
+            live["matched_by"] = how
             return Response(live)
 
         rows = list(ScEmployeeMonthlyPerformance.objects
@@ -612,11 +621,31 @@ class ScorecardCardView(APIView):
 
 def _own_sales_code(request):
     """The caller's own sales code, or "". Never taken from the request body:
-    a card belongs to one person and there is no parameter to forget to check."""
+    a card belongs to one person and there is no parameter to forget to check.
+
+    ``Profile.sales_code`` first, then the identifiers the estate holds for
+    somebody who carries no sales book - see
+    ``live_scorecard.resolve_sales_code_for_user``. Every Team Leader, BOM,
+    CSO and teller seeded onto a card by migration 0032 had a card and no way
+    to reach it, because the profile field nobody fills in for them was the
+    only thing that was ever consulted.
+    """
+    code, _how = _own_sales_code_and_how(request)
+    return code
+
+
+def _own_sales_code_and_how(request):
+    """``(sales_code, how)`` - the code and the identifier that found it.
+
+    The card says which one answered, because "we matched you on your work
+    e-mail" is the difference between somebody trusting the card in front of
+    them and wondering whose it is.
+    """
     from apps.portfolio.models import Profile
+    from apps.staff_management.live_scorecard import resolve_sales_code_for_user
 
     profile = Profile.objects.filter(user_id=request.user.id).first()
-    return (profile.sales_code or "").strip() if profile else ""
+    return resolve_sales_code_for_user(request.user, profile)
 
 
 def _signoff_payload(signoff):

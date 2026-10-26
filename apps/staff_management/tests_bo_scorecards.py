@@ -23,6 +23,7 @@ import datetime
 import pathlib
 
 from django.test import TestCase
+from rest_framework.test import APIClient
 
 from .live_scorecard import FULL_YEAR_TARGETS, SOURCES
 from .scorecard_automation.models import ScKpi, ScRole, ScRoleKpiMapping
@@ -289,3 +290,192 @@ class BoActualsIdentityTests(TestCase):
         self.assertNotIn(("EKN1329", "bo_account_opening_pb"), wrote)
         self.assertNotIn(("EKN9999", "bo_account_opening_pb"), wrote)
         self.assertEqual(report["by_name_in_workbook"], 0)
+
+
+# ── Reaching your own card ───────────────────────────────────────────────────
+#
+# The cards above were seeded, the holders were seeded with them by 0032, and
+# not one of those 101 people could open theirs. ``my-card/`` resolved the
+# caller by ``Profile.sales_code`` alone - the one identifier that is set for
+# people who carry a sales book and for nobody else. Every Team Leader, BOM,
+# CSO and teller got "your profile has no sales code" on a card that existed,
+# was configured, and had their name on it.
+#
+# So these pin the two halves of the fix: a person is found by any identifier
+# the estate actually holds for them, and - far more important - a person is
+# NEVER found by an identifier that could belong to somebody else. Showing
+# somebody the wrong scorecard is worse than showing them none.
+
+class ReachingYourOwnCardTests(TestCase):
+    """``resolve_sales_code_for_user`` - who the person signed in is."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from .models import EmployeeRoleHistory, StaffEmployeeData
+
+        self.User = User
+        self.StaffEmployeeData = StaffEmployeeData
+        self.EmployeeRoleHistory = EmployeeRoleHistory
+
+        # A real back-office team leader, shaped like migration 0032 seeds one.
+        EmployeeRoleHistory.objects.create(
+            sales_code="PKM1180", role_code="bo_tl_rbo",
+            start_date=datetime.date(2026, 1, 1),
+            notes="Peter Kimani | Head Office | Zone A | Jane Boss")
+        StaffEmployeeData.objects.create(
+            staff_pf_number=1180, staff_name="Peter Kimani",
+            staff_email="peter.kimani@hfgroup.co.ke", sales_code="PKM1180",
+            department="Retail", staff_unit="Head Office",
+            staff_org_unit="Head Office", job_title="TL RBO",
+            employment_date=datetime.date(2020, 1, 1),
+            employee_category="back_office")
+
+    def user(self, **kwargs):
+        kwargs.setdefault("username", "someone")
+        kwargs.setdefault("password", "x")
+        return self.User.objects.create_user(**kwargs)
+
+    def resolve(self, user, profile=None):
+        from .live_scorecard import resolve_sales_code_for_user
+        return resolve_sales_code_for_user(user, profile)
+
+    # ── the identifiers that should work ─────────────────────────────────────
+
+    def test_the_profile_still_wins(self):
+        """An explicitly set sales code is a deliberate statement about who
+        somebody is and must not be second-guessed."""
+        from apps.portfolio.models import Profile
+
+        user = self.user(username="unrelated.name")
+        profile = Profile.objects.filter(user=user).first()
+        profile.sales_code = "SC999"
+        profile.save()
+        self.assertEqual(self.resolve(user, profile), ("SC999", "your profile"))
+
+    def test_a_team_leader_is_found_by_their_work_email(self):
+        """The case the whole change exists for: no sales code on the profile,
+        a card seeded under a back-office code, and an e-mail that matches."""
+        user = self.user(username="peter.kimani",
+                         email="peter.kimani@hfgroup.co.ke")
+        code, how = self.resolve(user, None)
+        self.assertEqual(code, "PKM1180")
+        self.assertIn("e-mail", how)
+
+    def test_a_sign_in_name_matching_the_roster_code_is_enough(self):
+        user = self.user(username="PKM1180")
+        self.assertEqual(self.resolve(user, None),
+                         ("PKM1180", "the back-office roster"))
+
+    def test_a_sign_in_name_is_tried_against_the_roster_email(self):
+        """An account created without an e-mail on it. AD names are
+        firstname.lastname and the address is the same at the bank's domain."""
+        user = self.user(username="peter.kimani", email="")
+        code, _how = self.resolve(user, None)
+        self.assertEqual(code, "PKM1180")
+
+    def test_a_numeric_sign_in_name_is_read_as_a_pf_number(self):
+        user = self.user(username="1180")
+        code, how = self.resolve(user, None)
+        self.assertEqual(code, "PKM1180")
+        self.assertIn("PF number", how)
+
+    def test_a_name_match_is_the_last_resort(self):
+        user = self.user(username="pk.temp", first_name="Peter",
+                         last_name="Kimani")
+        code, how = self.resolve(user, None)
+        self.assertEqual(code, "PKM1180")
+        self.assertIn("name", how)
+
+    # ── and the ones that must NOT ───────────────────────────────────────────
+
+    def test_a_shared_name_resolves_to_nobody(self):
+        """Two people called Peter Kimani. Picking one would show a real
+        person somebody else's performance."""
+        self.StaffEmployeeData.objects.create(
+            staff_pf_number=2244, staff_name="Peter Kimani",
+            staff_email="peter.kimani2@hfgroup.co.ke", sales_code="PKM2244",
+            department="Retail", staff_unit="Thika", staff_org_unit="Thika",
+            job_title="Teller", employment_date=datetime.date(2021, 1, 1),
+            employee_category="back_office")
+        user = self.user(username="pk.temp", first_name="Peter",
+                         last_name="Kimani")
+        self.assertEqual(self.resolve(user, None), ("", ""))
+
+    def test_a_stranger_resolves_to_nobody(self):
+        user = self.user(username="nobody.here", email="nobody@hfgroup.co.ke",
+                         first_name="No", last_name="Body")
+        self.assertEqual(self.resolve(user, None), ("", ""))
+
+    def test_a_blank_profile_code_does_not_short_circuit_the_rest(self):
+        from apps.portfolio.models import Profile
+
+        user = self.user(username="peter.kimani",
+                         email="peter.kimani@hfgroup.co.ke")
+        profile = Profile.objects.filter(user=user).first()
+        profile.sales_code = "   "
+        profile.save()
+        code, _how = self.resolve(user, profile)
+        self.assertEqual(code, "PKM1180")
+
+    def test_a_partial_name_is_not_a_match(self):
+        """Nothing here matches on a fragment."""
+        user = self.user(username="pk.temp", first_name="Peter",
+                         last_name="Kim")
+        self.assertEqual(self.resolve(user, None), ("", ""))
+
+
+class MyCardEndpointTests(TestCase):
+    """``my-card/`` end to end for somebody with no sales code on file."""
+
+    URL = "/staff_management/scorecard-automation/my-card/"
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from .models import EmployeeRoleHistory, StaffEmployeeData
+
+        EmployeeRoleHistory.objects.create(
+            sales_code="PKM1180", role_code="bo_tl_rbo",
+            start_date=datetime.date(2026, 1, 1),
+            notes="Peter Kimani | Head Office | Zone A | Jane Boss")
+        StaffEmployeeData.objects.create(
+            staff_pf_number=1180, staff_name="Peter Kimani",
+            staff_email="peter.kimani@hfgroup.co.ke", sales_code="PKM1180",
+            department="Retail", staff_unit="Head Office",
+            staff_org_unit="Head Office", job_title="TL RBO",
+            employment_date=datetime.date(2020, 1, 1),
+            employee_category="back_office")
+        self.tl = User.objects.create_user(
+            "peter.kimani", password="x", email="peter.kimani@hfgroup.co.ke")
+        self.client = APIClient()
+        self.client.force_authenticate(self.tl)
+
+    def test_a_team_leader_gets_a_card_rather_than_no_sales_code(self):
+        response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, 200, response.content)
+        # The card itself may or may not compute in a test database, but the
+        # one answer that must never come back is the one that sent every
+        # back-office card holder to the wrong place.
+        self.assertNotEqual(response.data.get("reason"), "no_sales_code")
+        self.assertEqual(response.data.get("sales_code", "PKM1180"), "PKM1180")
+
+    def test_somebody_nothing_identifies_is_told_what_was_tried(self):
+        from django.contrib.auth.models import User
+
+        stranger = User.objects.create_user("nobody.here", password="x")
+        client = APIClient()
+        client.force_authenticate(stranger)
+        response = client.get(self.URL)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(response.data["has_card"])
+        self.assertEqual(response.data["reason"], "not_identified")
+        self.assertIn("tried", response.data)
+        self.assertIn("your profile", response.data["tried"])
+
+    def test_the_card_is_never_taken_from_the_request(self):
+        """There is no sales_code parameter, so there is none to forget to
+        check. Passing one must change nothing."""
+        mine = self.client.get(self.URL).data
+        theirs = self.client.get(self.URL + "?sales_code=SOMEONEELSE").data
+        self.assertEqual(mine.get("sales_code"), theirs.get("sales_code"))

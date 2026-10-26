@@ -150,7 +150,18 @@ class CardFromTheSystemTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertTrue(response.data["has_card"], response.data)
 
-    def test_somebody_with_no_sales_code_is_told_which_problem_it_is(self):
+    def test_somebody_nothing_identifies_is_told_which_problem_it_is(self):
+        """An empty profile is no longer the end of the search.
+
+        This used to assert ``no_sales_code``, and that reason was the bug:
+        it named the ONE identifier that is set for people who carry a sales
+        book and for nobody else, so every back-office card holder was sent to
+        fix a profile field that was never going to be filled in for them. The
+        card now looks for the person on the back-office roster and the HR
+        roster as well, and only when none of those knows them does it say so -
+        naming everything it tried, so the answer can be handed to whoever can
+        act on it. See ``live_scorecard.resolve_sales_code_for_user``.
+        """
         other = User.objects.create_user("nocode", password="x")
         Profile.objects.update_or_create(user=other, defaults={"sales_code": ""})
         client = APIClient()
@@ -158,4 +169,6 @@ class CardFromTheSystemTests(TestCase):
         response = client.get("/staff_management/scorecard-automation/my-card/")
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.data["has_card"])
-        self.assertEqual(response.data["reason"], "no_sales_code")
+        self.assertEqual(response.data["reason"], "not_identified")
+        self.assertIn("your profile", response.data["tried"])
+        self.assertIn("the back-office roster", response.data["tried"])
