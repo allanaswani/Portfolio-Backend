@@ -2,6 +2,7 @@
 number — so it can be checked against the card the desk emailed them.
 
     manage.py scorecard_card CMM4236
+    manage.py scorecard_card CMM4236 --month 2026-09   # September's card
     manage.py scorecard_card CMM4236 --targets   # just the plan row
 
 For each line it prints the target column, which DMC table that column was read
@@ -15,6 +16,8 @@ settled with a row rather than an opinion.
 
 It writes nothing.
 """
+import calendar
+
 from django.core.management.base import BaseCommand, CommandError
 
 
@@ -30,11 +33,31 @@ class Command(BaseCommand):
         parser.add_argument(
             "--targets", action="store_true",
             help="Only the DMC plan row: every target column and its value.")
+        parser.add_argument(
+            "--month", default="",
+            help="YYYY-MM. The card built FOR that month end - the warehouse "
+                 "asked for that closing, the targets pro-rated to that date. "
+                 "Default: the live card, which reads the last closed month.")
 
     def handle(self, sales_code, **options):
+        import datetime
+
         from apps.staff_management.live_scorecard import (
             STAFF_TABLE, build_card, roster_row, roster_target_row,
         )
+
+        as_at = None
+        raw = str(options.get("month") or "").strip()
+        if raw:
+            try:
+                year, month = raw.split("-")
+                first = datetime.date(int(year), int(month), 1)
+            except (ValueError, TypeError) as exc:
+                raise CommandError(
+                    f"{raw!r} is not a month. Use YYYY-MM, e.g. 2026-09."
+                ) from exc
+            as_at = first.replace(
+                day=calendar.monthrange(first.year, first.month)[1])
 
         code = sales_code.strip()
         write = self.stdout.write
@@ -71,7 +94,7 @@ class Command(BaseCommand):
                       f"on this row.")
             return
 
-        card = build_card(code)
+        card = build_card(code, as_at=as_at)
         if not card.get("has_card"):
             raise CommandError(f"{card.get('reason')}: {card.get('detail')}")
 

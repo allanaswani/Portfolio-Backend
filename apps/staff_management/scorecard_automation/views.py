@@ -482,6 +482,19 @@ class ScorecardCardView(APIView):
             # was any link at all between the account and a roster row.
             return Response(no_card_for_user(request.user, profile))
 
+        # ``?month=YYYY-MM`` builds the card FOR that month: the warehouse
+        # asked for that closing, the targets pro-rated to that date, the
+        # loaded figures read for that month.
+        #
+        # This view ignored the parameter entirely and always built the live
+        # card, while download/ and card-for/ honoured it. So the month picker
+        # on the page moved the downloaded workbook and left the card on
+        # screen untouched - "I go to other months and nothing changes", which
+        # is exactly what it did.
+        month, bad = _month_asked_for(request)
+        if bad is not None:
+            return bad
+
         # Built from what the system already holds - the DMC roster for the
         # role and the targets, the warehouse for the actuals - so the card
         # exists without anybody uploading or running anything, and moves when
@@ -490,7 +503,7 @@ class ScorecardCardView(APIView):
         from apps.staff_management.live_scorecard import build_card
 
         try:
-            live = build_card(sales_code, profile)
+            live = build_card(sales_code, profile, as_at=month)
         except Exception as exc:  # noqa: BLE001 - a broken read must not blank the page
             live = {"has_card": False, "reason": "live_failed",
                     "sales_code": sales_code,
@@ -503,7 +516,12 @@ class ScorecardCardView(APIView):
             from apps.staff_management.scorecard_signoff import period_for
             from .models import ScorecardSignoff
 
-            period = period_for()
+            # The signature belongs to the month being LOOKED AT, not to the
+            # month that happens to have closed today. Reading the current
+            # period against a card built for July would show July's figures
+            # under September's signature.
+            period = (f"{month.year:04d}-{month.month:02d}" if month
+                      else period_for())
             signoff = ScorecardSignoff.objects.filter(
                 sales_code=sales_code, period=period).first()
             live["signoff"] = _signoff_payload(signoff)
@@ -517,8 +535,10 @@ class ScorecardCardView(APIView):
                 signed["signoff"] = live["signoff"]
                 signed["signoff_period"] = period
                 signed["matched_by"] = how
+                signed["month"] = month.isoformat() if month else None
                 return Response(signed)
             live["matched_by"] = how
+            live["month"] = month.isoformat() if month else None
             return Response(live)
 
         rows = list(ScEmployeeMonthlyPerformance.objects

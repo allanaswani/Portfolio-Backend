@@ -6,6 +6,7 @@ read from the warehouse when the page asks for them.
 """
 
 import datetime
+from unittest import mock
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -149,6 +150,55 @@ class CardFromTheSystemTests(TestCase):
             "/staff_management/scorecard-automation/my-card/")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertTrue(response.data["has_card"], response.data)
+
+    # ── the month picker ─────────────────────────────────────────────────
+    #
+    # download/ and card-for/ honoured ?month=; this view did not, and always
+    # built the live card. So the picker on the page moved the downloaded
+    # workbook and left every figure on screen exactly as it was - "I go to
+    # other months and nothing changes", which is precisely what it did.
+
+    URL = "/staff_management/scorecard-automation/my-card/"
+
+    def test_a_month_is_passed_through_to_the_card(self):
+        self.roster()
+        with mock.patch(
+                "apps.staff_management.live_scorecard.build_card",
+                return_value={"has_card": False, "reason": "x"}) as built:
+            self.client.get(self.URL + "?month=2026-07")
+        self.assertEqual(built.call_args.kwargs.get("as_at"),
+                         datetime.date(2026, 7, 31),
+                         "the card must be built for the month END asked for")
+
+    def test_no_month_still_builds_the_live_card(self):
+        self.roster()
+        with mock.patch(
+                "apps.staff_management.live_scorecard.build_card",
+                return_value={"has_card": False, "reason": "x"}) as built:
+            self.client.get(self.URL)
+        self.assertIsNone(built.call_args.kwargs.get("as_at"))
+
+    def test_a_month_that_has_not_closed_is_refused(self):
+        """A card for the month you are standing in shows a few days of
+        actuals against a target pro-rated to the same few days, which reads
+        as a collapse in performance rather than an incomplete month."""
+        self.roster()
+        today = datetime.date.today()
+        response = self.client.get(self.URL + f"?month={today:%Y-%m}")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("month", response.data)
+
+    def test_a_bad_month_is_refused_rather_than_ignored(self):
+        self.roster()
+        response = self.client.get(self.URL + "?month=bogus")
+        self.assertEqual(response.status_code, 400, response.content)
+
+    def test_the_card_says_which_month_it_is(self):
+        """So the page cannot show one month and label it another."""
+        self.roster()
+        response = self.client.get(self.URL + "?month=2026-07")
+        if response.data.get("has_card"):
+            self.assertEqual(response.data["month"], "2026-07-31")
 
     def test_somebody_nothing_identifies_is_told_which_problem_it_is(self):
         """An empty profile is no longer the end of the search.
