@@ -10,6 +10,7 @@ from django.db import connection
 
 from apps.portfolio.models import HfCustomer, RetailAllocatedPortfolio
 from apps.gceo_dashboard.models import Revenue
+from core.branch_codes import normalize_branch
 
 
 def branch_new_customers_ytd(branch):
@@ -186,7 +187,24 @@ DEFAULT_LOOKBACK_DAYS = 365
 #: That table has no unique cust_id, and joining it raw multiplies a customer
 #: by however many rows it holds for them - the fan-out this codebase has
 #: already shipped once on the RM list.
-_BOOK_SQL = """
+#: ``hf_customer.branch`` normalised to a comparison key, in SQL.
+#:
+#: This MUST stay the same rule as :func:`core.branch_codes.normalize_branch`,
+#: which is the estate's documented one: upper-cased, whitespace-collapsed, a
+#: trailing "BRANCH" dropped. ``Profile.branch`` is "HEAD OFFICE BRANCH" and
+#: the warehouse writes "HEAD OFFICE"; comparing them raw matches nothing and
+#: the screen then reports a real branch as having no customers, which is a
+#: far worse answer than an error.
+#:
+#: The parameter side is normalised in Python by that very function rather
+#: than by a copy of this expression, so the two cannot drift.
+_BRANCH_KEY = """
+    regexp_replace(
+        btrim(regexp_replace(upper(btrim(hc.branch)), '\\s+', ' ', 'g')),
+        ' BRANCH$', '')
+"""
+
+_BOOK_SQL = f"""
     SELECT hc.cust_id::bigint AS cust_id,
            COALESCE(NULLIF(TRIM(rap.customer_name), ''),
                     NULLIF(TRIM(hc.latin_surname), ''), '') AS customer_name,
@@ -204,7 +222,7 @@ _BOOK_SQL = """
         WHERE cust_id IS NOT NULL
         ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
     ) rap ON rap.cust_id = hc.cust_id
-    WHERE lower(trim(hc.branch)) = lower(trim(%(branch)s))
+    WHERE {_BRANCH_KEY} = %(branch)s
       AND hc.cust_id IS NOT NULL
 """
 
@@ -253,6 +271,24 @@ def _clean_lookback(days):
     return max(max(ACTIVITY_WINDOWS), min(days, 1825))
 
 
+def _empty_activity(branch, lookback):
+    """The same shape a real answer has, with nothing in it.
+
+    Shaped identically on purpose: a screen that has to tell an empty payload
+    apart from a real one by which keys are present is a screen that will get
+    it wrong.
+    """
+    return {
+        "branch": branch, "lookback_days": lookback, "customers": 0,
+        "windows": [{"days": days, "label": f"Last {days} days",
+                     "customers": 0, "share": 0.0}
+                    for days in ACTIVITY_WINDOWS],
+        "windows_are_cumulative": True,
+        "inactive": 0, "inactive_share": 0.0,
+        "dormancy": [], "most_recent_transaction": None,
+    }
+
+
 def branch_customer_activity(branch, lookback=None):
     """The summary table: how many of the branch's customers are still active.
 
@@ -264,6 +300,12 @@ def branch_customer_activity(branch, lookback=None):
     this says which is which rather than leaving the screen to guess.
     """
     lookback = _clean_lookback(lookback)
+    key = normalize_branch(branch)
+    if not key:
+        # An empty key would compare equal to a customer whose branch is blank,
+        # and "no branch" must never be read as "every branch". The views
+        # refuse this case before it gets here; this is the second lock.
+        return _empty_activity(branch, lookback)
     sql = f"""
         WITH book AS ({_BOOK_SQL}),
         last_txn AS ({_LAST_TXN_SQL}),
@@ -290,7 +332,7 @@ def branch_customer_activity(branch, lookback=None):
                MAX(last_txn) AS most_recent_transaction
         FROM scored
     """
-    rows = _rows(sql, {"branch": branch, "lookback": lookback})
+    rows = _rows(sql, {"branch": key, "lookback": lookback})
     row = rows[0] if rows else {}
 
     customers = row.get("customers") or 0
@@ -352,7 +394,10 @@ def branch_customer_activity_page(branch, state="active", days=30, lookback=None
                  "(s.days_since IS NULL OR s.days_since > %(days)s)")
     order = "s.last_txn DESC" if active else "s.last_txn ASC NULLS FIRST"
 
-    params = {"branch": branch, "lookback": lookback, "days": days,
+    key = normalize_branch(branch)
+    if not key:
+        return [], 0
+    params = {"branch": key, "lookback": lookback, "days": days,
               "limit": max(1, int(limit)), "offset": max(0, int(offset))}
 
     term = (search or "").strip()

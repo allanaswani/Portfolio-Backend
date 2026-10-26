@@ -510,8 +510,14 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
     ``numeric(65535, 65535)``, which Postgres will not create.
     """
 
+    # Profile.branch says "BURUBURU BRANCH"; the warehouse writes "Buruburu".
+    # Seeded deliberately mismatched, because that mismatch is what made this
+    # report a real branch as having no customers at all. normalize_branch is
+    # the estate's rule for reconciling the two and both sides must use it.
     HERE = "BURUBURU BRANCH"
+    HERE_IN_WAREHOUSE = "Buruburu"
     AWAY = "MOMBASA BRANCH"
+    AWAY_IN_WAREHOUSE = "MOMBASA  BRANCH"
 
     def setUp(self):
         from apps.gceo_dashboard.models import TransactionDiary
@@ -547,17 +553,17 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
             cur.execute("DROP TABLE IF EXISTS hf_customer")
 
     def _seed(self):
-        # (cust_id, name, branch, days since last transaction or None)
+        # (cust_id, name, branch AS THE WAREHOUSE SPELLS IT, days since)
         people = [
-            (1, "Ann Yesterday",   self.HERE,   1),
-            (2, "Ben Lastweek",    self.HERE,   5),
-            (3, "Cate Fortnight",  self.HERE,  14),
-            (4, "Dan Twomonths",   self.HERE,  45),
-            (5, "Eve Quarter",     self.HERE,  75),
-            (6, "Fred Halfyear",   self.HERE, 150),
-            (7, "Gina Lastyear",   self.HERE, 300),
-            (8, "Hank Never",      self.HERE, None),
-            (9, "Ivy Elsewhere",   self.AWAY,   1),
+            (1, "Ann Yesterday",   self.HERE_IN_WAREHOUSE,   1),
+            (2, "Ben Lastweek",    self.HERE_IN_WAREHOUSE,   5),
+            (3, "Cate Fortnight",  self.HERE_IN_WAREHOUSE,  14),
+            (4, "Dan Twomonths",   self.HERE_IN_WAREHOUSE,  45),
+            (5, "Eve Quarter",     self.HERE_IN_WAREHOUSE,  75),
+            (6, "Fred Halfyear",   self.HERE_IN_WAREHOUSE, 150),
+            (7, "Gina Lastyear",   self.HERE_IN_WAREHOUSE, 300),
+            (8, "Hank Never",      self.HERE_IN_WAREHOUSE, None),
+            (9, "Ivy Elsewhere",   self.AWAY_IN_WAREHOUSE,   1),
         ]
         with connection.cursor() as cur:
             for cust_id, name, branch, days in people:
@@ -677,6 +683,58 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
             self.HERE, state="active", days=7)
         self.assertEqual(total, 2)
         self.assertEqual(sum(1 for r in rows if r["cust_id"] == 1), 1)
+
+    def test_the_warehouse_spelling_is_reconciled_with_the_profile_one(self):
+        """The bug behind a branch reporting zero customers.
+
+        ``Profile.branch`` is "BURUBURU BRANCH" and the warehouse writes
+        "Buruburu". Compared raw these match nothing, and the screen then says
+        a real branch has no customers - which reads as a fact and is not one.
+        """
+        self.assertEqual(
+            lq.branch_customer_activity(self.HERE)["customers"], 8)
+        self.assertEqual(
+            lq.branch_customer_activity("buruburu")["customers"], 8)
+        self.assertEqual(
+            lq.branch_customer_activity("  Buruburu Branch ")["customers"], 8)
+
+    def test_extra_whitespace_in_the_warehouse_is_reconciled_too(self):
+        """Mombasa is seeded as "MOMBASA  BRANCH", two spaces."""
+        self.assertEqual(
+            lq.branch_customer_activity(self.AWAY)["customers"], 1)
+
+    def test_the_sql_key_agrees_with_normalize_branch(self):
+        """The two sides of the comparison are computed in different
+        languages. If they ever disagree the join silently returns nothing,
+        so they are checked against each other rather than assumed."""
+        from core.branch_codes import normalize_branch
+
+        spellings = ["BURUBURU BRANCH", "Buruburu", "  head office branch ",
+                     "HEAD OFFICE", "MOMBASA  BRANCH", "Kisumu Branch",
+                     "HF WHIZZ", "hf whizz branch"]
+        with connection.cursor() as cur:
+            for name in spellings:
+                cur.execute(
+                    f"SELECT {lq._BRANCH_KEY} FROM (SELECT %s AS branch) hc",
+                    [name])
+                self.assertEqual(cur.fetchone()[0], normalize_branch(name),
+                                 f"SQL and Python disagree on {name!r}")
+
+    def test_a_blank_branch_matches_nothing_not_everything(self):
+        """"No branch" must never be read as "every branch" - an empty key
+        would otherwise compare equal to a customer whose branch is blank."""
+        self.assertEqual(lq.branch_customer_activity("")["customers"], 0)
+        self.assertEqual(lq.branch_customer_activity("   ")["customers"], 0)
+        self.assertEqual(lq.branch_customer_activity_page(""), ([], 0))
+
+    def test_the_empty_payload_has_the_same_shape_as_a_real_one(self):
+        """A screen that tells them apart by which keys are present is a
+        screen that will get it wrong."""
+        real = lq.branch_customer_activity(self.HERE)
+        empty = lq.branch_customer_activity("")
+        self.assertEqual(set(real), set(empty))
+        self.assertEqual([w["days"] for w in empty["windows"]],
+                         list(lq.ACTIVITY_WINDOWS))
 
     def test_an_unknown_branch_matches_nothing_rather_than_everything(self):
         summary = lq.branch_customer_activity("NO SUCH BRANCH")
