@@ -69,11 +69,68 @@ Taken from the notebook, not invented. Each changes the answer.
    query ends `WHERE d.dt = m.max_dt`, why a load *replaces* its snapshot, and
    why a file carrying two extract dates is refused rather than half-deleted.
 
+## It reads the lake by itself
+
+**This was the real gap, and it is what "SAP extract of 2026-10-08" on the CEO
+deck was telling anyone who looked.** Nothing was broken: the figures were
+real, the endpoint was live, the frontend was reading it. What was missing was
+anything at all that moved the mirror on. `load_sap_costs` was documented right
+here as "the one that should run on a schedule" and was never added to cron, so
+the newest extract the deck could ever show was the last one a person
+remembered to load by hand. It sat eighteen days.
+
+`staff_management/costs/summary/` now checks the lake on its own read path:
+
+1. one scalar - `SELECT MAX(dt) FROM delta.gold_db.sap_cost_data`, dated by the
+   **same expression** the load uses, so the two cannot chase different dates;
+2. if that is ahead of the mirror, the full Finance query runs and the snapshot
+   is written - the same `rows_to_postings` / `save_postings` path as the
+   command, so a figure still cannot depend on how it arrived;
+3. otherwise nothing happens, which is every day but one.
+
+The answer is cached for `COST_LAKE_PROBE_SECONDS` across all viewers, so
+twenty people opening the deck at 09:00 produce **one** probe, and a pull in
+progress holds a lock so the second viewer serves the mirror rather than
+starting a second pull of the same extract.
+
+Everything that can go wrong leaves the figures alone and says so in the
+payload's `lake` block - unreachable lake, unconfigured lake, a pull that dies
+halfway, an extract that comes back empty. A stale figure that admits it is
+stale beats a 500 on the CEO's screen, and an empty pull must never be allowed
+to wipe a snapshot that has figures in it.
+
+The slide now reads **"SAP extract of 2026-10-26 · newest the lake holds"**, or
+names the date it could not reach.
+
+| Setting | Default | What it is for |
+|---|---|---|
+| `COST_LAKE_AUTOREFRESH` | `True` | Off returns the old behaviour, for a host that cannot reach the lake |
+| `COST_LAKE_PROBE_SECONDS` | `600` | How long one answer from the lake is reused across viewers |
+| `COST_SNAPSHOT_KEEP` | `12` | Extracts to keep once this refreshes daily (~45,000 rows each). `0` keeps every one |
+
+> **`COST_SNAPSHOT_KEEP` deletes.** The Finance query returns only `max_dt`, so
+> an extract that is pruned **cannot be pulled back from the lake**. Pruning
+> runs on an automatic refresh only - a hand load leaves history alone, because
+> somebody loading an extract by hand usually wants to compare it with the one
+> before. Set it to `0` to keep everything and accept the growth.
+
+### Why the mirror is still there
+
+Reading the lake on every page view was not the alternative. Every rule that
+turns a posting into a department figure - the credit sign, the date off the
+assignment number, the three GL exclusions, the cost-centre mapping - lives in
+Postgres beside the postings, and `costs/postings/` has to be able to show the
+documents behind any figure on the screen. What changed is that **no human step
+stands between the lake and the deck any more.**
+
 ## Getting the data in
 
 ```bash
 # From the lake — the one that should run on a schedule
 manage.py load_sap_costs
+
+# Cron's form: one scalar, and a pull only if the lake has moved on
+manage.py load_sap_costs --if-newer
 
 # From a file, for a correction or when the lake is unreachable
 manage.py load_sap_costs --file extract.xlsx

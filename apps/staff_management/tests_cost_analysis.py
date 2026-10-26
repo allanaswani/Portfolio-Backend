@@ -19,7 +19,7 @@ from io import BytesIO
 
 from django.contrib.auth.models import Group, User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from openpyxl import Workbook
 from rest_framework.test import APIClient
 
@@ -362,6 +362,12 @@ class LoadTests(TestCase):
         self.assertEqual(SapCostPosting.objects.count(), 0)
 
 
+# The summary endpoint now checks the lake on its own read path. These
+# tests are about permissions and payload shape, not freshness, so the
+# check is turned off here rather than left to depend on whether the host
+# running the suite happens to have TRINO_HOST set. Freshness has its own
+# tests in tests_cost_live.py.
+@override_settings(COST_LAKE_AUTOREFRESH=False)
 class EndpointTests(TestCase):
     def setUp(self):
         SapCostCentre.objects.update_or_create(

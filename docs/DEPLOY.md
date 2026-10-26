@@ -281,7 +281,22 @@ former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):
 0  */6 * * *  docker exec hf-backend python manage.py run_insights_pipeline
 0  7  7 * *  docker exec hf-backend python manage.py run_scorecard
 0  7  * * *  docker exec hf-backend python manage.py run_scorecard --current
+*/30 * * * *  docker exec hf-backend python manage.py load_sap_costs --if-newer
 ```
+**The cost line is new, and it is a belt to the deck's own braces.** The CEO
+deck reported operating costs frozen at `SAP extract of 2026-10-08` for
+eighteen days, because `load_sap_costs` was documented as "the job that should
+run on a schedule" and never actually put on one. The summary endpoint now
+checks the lake itself on every read, so the figures no longer depend on this
+line - but this line means they are current the moment a new extract lands,
+rather than the moment somebody next opens the deck.
+
+`--if-newer` asks the lake for one scalar and pulls only when it is ahead of
+what is mirrored, so running it every half hour costs almost nothing. It shares
+its code path with the deck's own read, so the two cannot disagree about what
+the newest extract is. Needs `TRINO_HOST`, `TRINO_PORT`, `TRINO_USER` and
+`TRINO_PASSWORD` in the environment file - and remember `docker --env-file`
+does **not** strip quotes.
 **The two scorecard lines are new.** Before them nothing generated a scorecard at
 all: the engine was reachable only by POSTing to
 `staff_management/employee-monthly-performance/run-scorecard/`, no scheduled job

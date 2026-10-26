@@ -222,6 +222,30 @@ else:
 # Scheduled jobs (formerly Celery beat) now run from host cron:
 #   */5 * * * *  manage.py precompute_slides
 #   0 */6 * * *  manage.py run_insights_pipeline
+#   */30 * * * *  manage.py load_sap_costs --if-newer
+
+# ── Operating costs: how live the CEO deck's figures are ─────────────────────
+#
+# The deck reported costs frozen at whatever date somebody last ran
+# `load_sap_costs` by hand, because the command was never put on cron and the
+# deck had no way to know the lake had moved on. The cost summary now checks
+# `delta.gold_db.sap_cost_data` for a newer extract on its own read path.
+#
+# COST_LAKE_AUTOREFRESH   off  -> the deck serves whatever was last loaded,
+#                                 which is the old behaviour. For a host that
+#                                 cannot reach the lake at all.
+# COST_LAKE_PROBE_SECONDS      how long an answer from the lake is reused
+#                              across viewers. The probe is one scalar; this
+#                              stops twenty people opening the deck at 09:00
+#                              producing twenty of them.
+# COST_SNAPSHOT_KEEP           how many extracts to keep once this refreshes
+#                              daily (~45,000 rows each). 0 keeps every one.
+#                              Deleting one is irreversible: the Finance query
+#                              returns only the newest, so an old extract
+#                              cannot be pulled back from the lake.
+COST_LAKE_AUTOREFRESH = env.bool("COST_LAKE_AUTOREFRESH", default=True)
+COST_LAKE_PROBE_SECONDS = env.int("COST_LAKE_PROBE_SECONDS", default=600)
+COST_SNAPSHOT_KEEP = env.int("COST_SNAPSHOT_KEEP", default=12)
 
 # REST Framework
 REST_FRAMEWORK = {

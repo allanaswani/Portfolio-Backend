@@ -1,12 +1,19 @@
 """Load the SAP cost extract, from the lake or from a file.
 
     manage.py load_sap_costs                      # from Trino
+    manage.py load_sap_costs --if-newer           # ...only if the lake moved
     manage.py load_sap_costs --file extract.xlsx  # from a file
     manage.py load_sap_costs --dry-run            # read and report only
 
 This is the job that should run on a schedule. Until it has run, the cost
 screens have nothing to show and say so rather than falling back to a figure
 somebody typed in once.
+
+``--if-newer`` is the form for cron. It asks the lake for one scalar - the
+newest extract date - and pulls only when that is ahead of what is already
+mirrored, so it can run every half hour without dragging 45,000 rows across
+the network each time. It is the same code path the CEO deck uses on its own
+read, so the two cannot drift apart.
 
 A load REPLACES its snapshot. Each SAP extract is a full copy for its date, not
 an increment, which is why the Finance query ends with ``WHERE d.dt = m.max_dt``
@@ -27,11 +34,61 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Read and report what would be written, and write nothing.")
+        parser.add_argument(
+            "--if-newer", action="store_true", dest="if_newer",
+            help="Ask the lake for the newest extract date and pull only if "
+                 "it is ahead of what is already loaded. The form for cron.")
 
     def handle(self, **options):
         from apps.staff_management import cost_analysis, cost_ingest
 
         write = self.stdout.write
+
+        if options.get("if_newer"):
+            # Cheap by design: one scalar, and a pull only when the lake has
+            # actually moved. Shares refresh_from_lake with the deck's own
+            # read, so a scheduled run and a page view can never disagree
+            # about what "the newest extract" is.
+            if options["file"]:
+                raise CommandError(
+                    "--if-newer asks the LAKE what is newest, so it cannot be "
+                    "combined with --file. Use one or the other.")
+            if options["dry_run"]:
+                try:
+                    snapshot = cost_ingest.latest_lake_snapshot()
+                except Exception as exc:  # noqa: BLE001
+                    # A cron line that cannot reach the lake has to say so in
+                    # one readable sentence, not a traceback nobody reads.
+                    raise CommandError(
+                        f"The lake could not be asked for its newest extract: "
+                        f"{exc}") from exc
+                loaded = cost_analysis.latest_snapshot()
+                write(f"  lake has          {snapshot or '-'}")
+                write(f"  already loaded    {loaded or '-'}")
+                behind = snapshot and (loaded is None or snapshot > loaded)
+                write(self.style.WARNING("--dry-run: nothing was written.")
+                      if not behind else
+                      self.style.SUCCESS(
+                          f"--dry-run: a real run would pull {snapshot}."))
+                return
+
+            result = cost_ingest.refresh_from_lake(loaded_by="load_sap_costs")
+            write(f"  lake has          {result['lake_snapshot'] or '-'}")
+            write(f"  already loaded    {result['mirror_snapshot'] or '-'}")
+            if result["error"]:
+                # A cron line that fails has to fail loudly, or the figures go
+                # quietly stale again - which is exactly what this flag exists
+                # to stop happening a second time.
+                raise CommandError(f"{result['detail']} ({result['error']})")
+            if not result["refreshed"]:
+                write(result["detail"])
+                return
+            write(self.style.SUCCESS("  " + result["detail"]))
+            if result["pruned"]:
+                write(f"  pruned            {len(result['pruned'])} older "
+                      f"extract(s), {result['pruned_rows']:,} row(s): "
+                      f"{', '.join(result['pruned'])}")
+            return
 
         if options["file"]:
             write(f"Reading {options['file']}…")

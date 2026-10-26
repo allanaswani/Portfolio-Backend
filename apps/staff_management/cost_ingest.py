@@ -75,6 +75,28 @@ max_date AS (SELECT MAX(dt) AS max_dt FROM data)
 SELECT d.* FROM data d CROSS JOIN max_date m WHERE d.dt = m.max_dt
 """
 
+#: "Is there anything newer in the lake?", asked on its own.
+#:
+#: The ``dt`` expression is a deliberate COPY of the one in TRINO_QUERY rather
+#: than a derivation of it. A probe that read the date differently from the
+#: load would announce an extract the load could then not find, and the deck
+#: would flip between two dates forever. The two move together or not at all.
+#:
+#: It exists so the CEO deck can ask the lake whether it is behind WITHOUT
+#: pulling 44,769 postings to discover that it is not - one scalar, on every
+#: check, against a 1.9-million-row table.
+LATEST_SNAPSHOT_QUERY = """
+SELECT MAX(
+    COALESCE(
+        CAST(date_parse(regexp_extract(REPLACE(dp.source_file_name, '.xls', ''),
+             '(\\d{2}-\\d{2}-\\d{4})'), '%d-%m-%Y') AS DATE),
+        CAST(date_parse(regexp_extract(REPLACE(dp.source_file_name, '.xls', ''),
+             '(\\d{2}-\\d{2}-\\d{2})'), '%d-%m-%y') AS DATE)
+    )
+) AS max_dt
+FROM delta.gold_db.sap_cost_data AS dp
+"""
+
 #: What the query returns, and what a filled template has to carry. The upload
 #: accepts a subset: anything absent is left blank rather than refused, because
 #: a correction file rarely carries all twenty-four columns.
@@ -348,11 +370,14 @@ def read_workbook(stream):
     return rows
 
 
-def fetch_from_trino():
-    """Run the Finance query against the lake → a list of dicts.
+def _connect():
+    """A connection to the lake, from the environment.
 
     Credentials come from the environment, never from this file:
     ``TRINO_HOST``, ``TRINO_PORT``, ``TRINO_USER``, ``TRINO_PASSWORD``.
+
+    Shared by the full pull and by the one-scalar freshness probe, so the deck
+    cannot end up probing one lake and loading from another.
     """
     import os
     import urllib3
@@ -395,7 +420,7 @@ def fetch_from_trino():
     user = user.strip().strip("'\"")
     password = password.strip().strip("'\"")
 
-    connection = trino.dbapi.connect(
+    return trino.dbapi.connect(
         host=host,
         port=int(os.environ.get("TRINO_PORT", "8443")),
         user=user,
@@ -404,7 +429,265 @@ def fetch_from_trino():
         http_scheme="https",
         verify=False,
     )
-    cursor = connection.cursor()
+
+
+def fetch_from_trino():
+    """Run the Finance query against the lake → a list of dicts."""
+    cursor = _connect().cursor()
     cursor.execute(TRINO_QUERY)
     columns = [c[0] for c in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+# ── Keeping the figures live ─────────────────────────────────────────────────
+#
+# The CEO deck was reporting operating costs frozen at whatever date somebody
+# last ran ``load_sap_costs`` by hand. Nothing in the estate moved it on: the
+# command was never added to host cron, and the deck has no way of knowing the
+# lake holds newer extracts than the mirror it reads.
+#
+# What follows closes that, in three parts:
+#
+# * :func:`latest_lake_snapshot` asks the lake ONE scalar — what is the newest
+#   extract date? — cheap enough to ask on a page view.
+# * :func:`refresh_from_lake` pulls and loads, but only when that answer is
+#   newer than what the mirror holds. A day with no new extract costs one
+#   scalar and nothing else.
+# * :func:`refresh_if_due` wraps that in a back-off and a lock, so twenty
+#   people opening the deck at 09:00 produce one probe between them.
+#
+# The mirror is kept rather than queried through on every read, because every
+# rule that turns a posting into a department figure — the credit sign, the
+# date off the assignment number, the three GL exclusions, the cost-centre
+# mapping — lives in Postgres beside it, and ``costs/postings/`` has to be able
+# to show the documents behind any figure on the screen. What changes is that
+# no human step stands between the lake and the deck any more.
+
+#: Don't ask the lake more often than this. A new extract lands at most daily,
+#: so a ten-minute floor is already far finer than the data moves.
+PROBE_EVERY_SECONDS = 600
+
+#: How many extracts to keep. Each is ~45,000 rows, and once this refreshes
+#: itself daily they accumulate at that rate. Only the newest is ever reported
+#: on; the older ones serve ``?snapshot=`` and comparing two loads. Set
+#: ``COST_SNAPSHOT_KEEP = 0`` to keep every extract for ever.
+#:
+#: This is a real deletion, and an old extract CANNOT be pulled back from the
+#: lake — the Finance query returns only ``max_dt``. Hence a generous default
+#: and a setting, rather than a hard-coded 2.
+DEFAULT_SNAPSHOT_KEEP = 12
+
+_PROBE_KEY = "sap_costs:last_probe"
+_LOCK_KEY = "sap_costs:refreshing"
+
+
+def latest_lake_snapshot():
+    """The newest SAP extract date **in the lake**, or None.
+
+    One row, one column. This is what makes the auto-refresh affordable: the
+    answer is almost always "the date you already have", and finding that out
+    must not cost a 44,769-row pull.
+    """
+    cursor = _connect().cursor()
+    cursor.execute(LATEST_SNAPSHOT_QUERY)
+    row = cursor.fetchone()
+    return _snapshot_from(row[0]) if row else None
+
+
+def prune_old_snapshots(keep=None):
+    """Keep the newest ``keep`` extracts, delete the rest.
+
+    → ``(dates_removed, rows_removed)``.
+
+    Only runs on an automatic refresh. A hand load leaves history alone,
+    because somebody loading an extract by hand usually wants to compare it
+    with the one before.
+    """
+    from django.conf import settings
+
+    from .models import SapCostPosting
+
+    if keep is None:
+        keep = getattr(settings, "COST_SNAPSHOT_KEEP", DEFAULT_SNAPSHOT_KEEP)
+    try:
+        keep = int(keep or 0)
+    except (TypeError, ValueError):
+        keep = DEFAULT_SNAPSHOT_KEEP
+    if keep <= 0:
+        return [], 0
+
+    dates = list(SapCostPosting.objects
+                 .exclude(snapshot_date__isnull=True)
+                 .values_list("snapshot_date", flat=True)
+                 .distinct().order_by("-snapshot_date"))
+    stale = dates[keep:]
+    if not stale:
+        return [], 0
+    rows = SapCostPosting.objects.filter(snapshot_date__in=stale).delete()[0]
+    return [d.isoformat() for d in stale], rows
+
+
+def refresh_from_lake(force=False, loaded_by="auto-refresh", keep=None,
+                      prune=True):
+    """Load the newest extract from the lake **if the mirror is behind it**.
+
+    → a dict saying what happened. It does **not** raise. The caller is usually
+    a page view, and a lake that is briefly unreachable has to leave the deck
+    showing the figures it already has rather than returning a 500 — a stale
+    figure that says it is stale beats no figure at all.
+    """
+    from . import cost_analysis
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mirror = cost_analysis.latest_snapshot()
+    result = {
+        "checked_at": now.isoformat(timespec="seconds"),
+        "lake_snapshot": None,
+        "mirror_snapshot": mirror.isoformat() if mirror else None,
+        "refreshed": False, "read": 0, "written": 0, "replaced": 0,
+        "pruned": [], "pruned_rows": 0, "busy": False,
+        "detail": "", "error": "",
+    }
+
+    try:
+        lake = latest_lake_snapshot()
+    except RuntimeError as exc:
+        # Not configured. A different problem from an unreachable lake, and it
+        # has a different fix, so it gets its own answer.
+        result["error"] = str(exc)
+        result["detail"] = (
+            "The lake is not configured on this host, so these figures are "
+            "whatever was last loaded by hand.")
+        return result
+    except Exception as exc:  # noqa: BLE001 - the reason is what matters
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["detail"] = (
+            "The lake could not be reached, so these figures are the last "
+            "extract that loaded.")
+        return result
+
+    result["lake_snapshot"] = lake.isoformat() if lake else None
+
+    if lake is None:
+        result["detail"] = (
+            "The lake holds no extract whose file name carries a date, so "
+            "there is nothing to load. A file named BSEG_2026, with no day "
+            "and month, cannot be dated and is invisible to this report by "
+            "design.")
+        return result
+
+    if mirror is not None and lake <= mirror and not force:
+        result["detail"] = (
+            f"Already on the newest extract the lake has ({lake}).")
+        return result
+
+    try:
+        rows = fetch_from_trino()
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["detail"] = (
+            f"The lake has a newer extract ({lake}) but it could not be "
+            f"pulled, so these figures are still the one before it.")
+        return result
+
+    if not rows:
+        # An empty pull must never wipe the snapshot that is there. The same
+        # rule the command enforces.
+        result["detail"] = (
+            f"The lake's {lake} extract came back empty. Nothing has been "
+            f"changed — an empty load must not replace a snapshot that has "
+            f"figures in it.")
+        return result
+
+    postings, report = rows_to_postings(rows, loaded_by=loaded_by)
+    result["read"] = report["read"]
+    if not postings:
+        result["detail"] = (
+            f"Nothing in the lake's {lake} extract could be read "
+            f"({report['read']:,} row(s) seen). Nothing has been changed.")
+        return result
+
+    saved = save_postings(postings, report)
+    if not saved["written"]:
+        result["error"] = saved["detail"]
+        result["detail"] = saved["detail"]
+        return result
+
+    result["refreshed"] = True
+    result["written"] = saved["written"]
+    result["replaced"] = saved["replaced"]
+    result["mirror_snapshot"] = saved["snapshot_date"]
+    if prune:
+        result["pruned"], result["pruned_rows"] = prune_old_snapshots(keep)
+    result["detail"] = (
+        f"Pulled the {saved['snapshot_date']} extract from the lake: "
+        f"{saved['written']:,} posting(s), replacing {saved['replaced']:,}.")
+    return result
+
+
+def refresh_if_due(min_seconds=None, force=False, loaded_by="auto-refresh"):
+    """:func:`refresh_from_lake`, but safe to call from a page view.
+
+    Two guards, because this sits on the CEO deck's read path:
+
+    * a **back-off** — the last probe's answer is cached, so the lake is asked
+      at most once every ``COST_LAKE_PROBE_SECONDS`` however many people have
+      the deck open;
+    * a **lock** — if a pull is already running, everybody else serves the
+      mirror as it stands rather than starting a second pull of the same
+      extract.
+
+    If the cache itself is not working the lock is skipped rather than treated
+    as permanently held. A broken cache must not freeze the figures, which is
+    the very failure this function exists to end.
+    """
+    from django.conf import settings
+    from django.core.cache import cache
+
+    from . import cost_analysis
+
+    if min_seconds is None:
+        min_seconds = getattr(
+            settings, "COST_LAKE_PROBE_SECONDS", PROBE_EVERY_SECONDS)
+
+    if not force:
+        try:
+            cached = cache.get(_PROBE_KEY)
+        except Exception:  # noqa: BLE001
+            cached = None
+        if isinstance(cached, dict):
+            return dict(cached, from_cache=True)
+
+    try:
+        got_lock = bool(cache.add(_LOCK_KEY, "1", timeout=1800))
+        held = cache.get(_LOCK_KEY) is not None
+    except Exception:  # noqa: BLE001
+        got_lock, held = True, False
+
+    if not got_lock and held:
+        mirror = cost_analysis.latest_snapshot()
+        return {
+            "checked_at": None, "lake_snapshot": None,
+            "mirror_snapshot": mirror.isoformat() if mirror else None,
+            "refreshed": False, "read": 0, "written": 0, "replaced": 0,
+            "pruned": [], "pruned_rows": 0, "busy": True, "from_cache": False,
+            "detail": "A refresh from the lake is already running.",
+            "error": "",
+        }
+
+    try:
+        result = refresh_from_lake(force=force, loaded_by=loaded_by)
+    finally:
+        try:
+            cache.delete(_LOCK_KEY)
+        except Exception:  # noqa: BLE001
+            pass
+
+    result["from_cache"] = False
+    try:
+        cache.set(_PROBE_KEY, result, int(min_seconds))
+    except Exception:  # noqa: BLE001
+        # A cache that will not hold the marker costs another probe, nothing
+        # more. It must not cost the refresh.
+        pass
+    return result

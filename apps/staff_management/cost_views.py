@@ -53,6 +53,21 @@ class CostSummaryView(APIView):
     tables could disagree about which extract they came from.
 
     ``?snapshot=YYYY-MM-DD`` reads an older extract; without it, the newest.
+
+    **This reads the lake, not a figure somebody loaded once.** Before it
+    answers, it asks ``delta.gold_db.sap_cost_data`` whether it holds a newer
+    extract than the mirror does, and pulls it if so. That check is a single
+    scalar and is backed off to one probe every ten minutes across all
+    viewers, so the usual cost of being live is one cheap query; the full pull
+    happens once per new extract and nobody has to remember to run anything.
+
+    Asking for a specific ``?snapshot=`` does **not** refresh — that is a
+    request for a particular historical extract, and quietly moving the
+    newest one underneath it would be the opposite of what was asked.
+
+    If the lake is unreachable the mirror is served as it stands and the
+    ``lake`` block in the payload says why, because a figure that admits it is
+    stale beats no figure at all on a screen the CEO is reading.
     """
 
     permission_classes = [IsAuthenticated]
@@ -60,7 +75,9 @@ class CostSummaryView(APIView):
     def get(self, request):
         import datetime
 
-        from . import cost_analysis
+        from django.conf import settings
+
+        from . import cost_analysis, cost_ingest
 
         raw = str(request.query_params.get("snapshot") or "").strip()
         snapshot = None
@@ -77,7 +94,16 @@ class CostSummaryView(APIView):
         if raw_year.isdigit():
             years = [int(raw_year) - 1, int(raw_year)]
 
+        # Live by default. Only skipped when a particular extract was asked
+        # for by date, or when a host has turned it off deliberately.
+        lake = None
+        if snapshot is None and getattr(
+                settings, "COST_LAKE_AUTOREFRESH", True):
+            lake = cost_ingest.refresh_if_due(
+                loaded_by=f"deck:{request.user}"[:150])
+
         payload = cost_analysis.summary(snapshot, years)
+        payload["lake"] = lake
         if payload["snapshot_date"] is None:
             # Said plainly rather than returning empty tables: the screen can
             # then tell "nothing loaded yet" apart from "loaded and nil".
@@ -85,6 +111,12 @@ class CostSummaryView(APIView):
                 "No SAP cost extract has been loaded yet. Run "
                 "'manage.py load_sap_costs' on the host, or load the extract "
                 "on this screen.")
+            if lake and lake.get("error"):
+                # The lake was tried and could not answer. That is a different
+                # thing from nobody having loaded anything, and it has a
+                # different fix, so it is said rather than hidden behind the
+                # generic "load one" advice.
+                payload["detail"] += f" The lake was tried: {lake['detail']}"
         return Response(payload)
 
 
