@@ -549,6 +549,7 @@ class AFHSellerMapping(models.Model):
     staff_unit = models.CharField(max_length=255, blank=True, null=True)
     org_unit = models.CharField(max_length=255, blank=True, null=True)
     name = models.CharField(max_length=255, blank=True, null=True)
+    sales_code = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
         managed = True
