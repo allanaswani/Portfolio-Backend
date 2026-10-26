@@ -226,6 +226,20 @@ _BOOK_SQL = f"""
       AND hc.cust_id IS NOT NULL
 """
 
+#: The same book, cust_id only.
+#:
+#: The summary COUNTS customers; it never prints a name, a balance or an RM.
+#: Running it through the full book above made it pay for a DISTINCT ON over
+#: retail_allocated_portfolio - 365,000 rows deduped - on every page view, for
+#: columns it then threw away. That is the sort of waste that turns a slow
+#: query into a killed worker and a 500 nobody can read.
+_BOOK_KEYS_SQL = f"""
+    SELECT hc.cust_id::bigint AS cust_id
+    FROM hf_customer hc
+    WHERE {{key}} = %(branch)s
+      AND hc.cust_id IS NOT NULL
+"""
+
 #: One row per customer who has transacted inside the lookback, carrying their
 #: most recent transaction. Bounded by the lookback on purpose: transaction
 #: history is the largest table in the estate and MAX() over all of it, per
@@ -240,11 +254,49 @@ _LAST_TXN_SQL = """
 """
 
 
-def _rows(sql, params):
-    with connection.cursor() as cur:
-        cur.execute(sql, params)
-        cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+#: How long one of these may run before the database stops it.
+#:
+#: transaction_diary is the largest table in the estate. Without a ceiling a
+#: bad plan does not fail - it holds a gunicorn worker until the worker itself
+#: is killed, which reaches the browser as a bare 500 with nothing in it to
+#: act on. With one, Postgres cancels the statement and says so, and the
+#: screen can print the reason.
+STATEMENT_TIMEOUT_MS = 25_000
+
+
+class ActivityQueryFailed(Exception):
+    """The database refused or could not finish an activity query.
+
+    Carried to the view as a message rather than a traceback, because the
+    person reading the screen has to be able to tell "this branch has no
+    customers" apart from "this did not run" - and a bare 500 says neither.
+    """
+
+
+def _rows(sql, params, timeout_ms=STATEMENT_TIMEOUT_MS):
+    from django.db import transaction
+
+    try:
+        # SET LOCAL, inside a transaction: a plain SET would leak the timeout
+        # onto every later request that reuses this pooled connection.
+        with transaction.atomic():
+            with connection.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = %s", [timeout_ms])
+                cur.execute(sql, params)
+                cols = [c[0] for c in cur.description]
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001 - the reason is the whole point
+        text = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+        if "statement timeout" in text.lower() or "canceling" in text.lower():
+            raise ActivityQueryFailed(
+                f"The database stopped this query after "
+                f"{timeout_ms // 1000} seconds. transaction_diary is the "
+                f"bank's whole transaction history, so a branch with a large "
+                f"book needs a shorter lookback - try ?lookback=90."
+            ) from exc
+        raise ActivityQueryFailed(
+            f"The activity query failed: {text or type(exc).__name__}"
+        ) from exc
 
 
 def _clean_window(days):
@@ -307,7 +359,7 @@ def branch_customer_activity(branch, lookback=None):
         # refuse this case before it gets here; this is the second lock.
         return _empty_activity(branch, lookback)
     sql = f"""
-        WITH book AS ({_BOOK_SQL}),
+        WITH book AS ({_BOOK_KEYS_SQL.format(key=_BRANCH_KEY)}),
         last_txn AS ({_LAST_TXN_SQL}),
         scored AS (
             SELECT b.cust_id, l.last_txn,

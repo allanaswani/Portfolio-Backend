@@ -786,6 +786,33 @@ class BranchCustomerActivityScopeTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(query.call_args[0][0], "MOMBASA BRANCH")
 
+    def test_a_query_failure_is_answered_not_swallowed(self):
+        """A bare 500 reaches the screen as "not loaded" and leaves nobody
+        anything to act on. The reason is carried instead."""
+        with mock.patch.object(
+                lq, "branch_customer_activity",
+                side_effect=lq.ActivityQueryFailed("the database stopped it")):
+            response = self.boss_client.get(
+                BM + "customers/activity/summary/MOMBASA BRANCH")
+        self.assertEqual(response.status_code, 503, response.content)
+        self.assertIn("the database stopped it", response.data["detail"])
+
+    def test_the_list_answers_a_failure_the_same_way(self):
+        with mock.patch.object(
+                lq, "branch_customer_activity_page",
+                side_effect=lq.ActivityQueryFailed("timed out")):
+            response = self.boss_client.get(
+                BM + "customers/activity/list/MOMBASA BRANCH")
+        self.assertEqual(response.status_code, 503, response.content)
+        self.assertIn("timed out", response.data["detail"])
+
+    def test_the_summary_does_not_pay_for_columns_it_discards(self):
+        """The summary only COUNTS. Running it through the full book made it
+        dedupe 365,000 retail_allocated_portfolio rows on every page view for
+        a name and an RM it then threw away."""
+        self.assertNotIn("retail_allocated_portfolio", lq._BOOK_KEYS_SQL)
+        self.assertIn("retail_allocated_portfolio", lq._BOOK_SQL)
+
     def test_signing_in_is_required(self):
         response = APIClient().get(BM + "customers/activity/summary/")
         self.assertIn(response.status_code, (401, 403))

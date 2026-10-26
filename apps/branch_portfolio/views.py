@@ -1206,8 +1206,14 @@ class BranchCustomerActivitySummaryView(APIView):
 
     def get(self, request, branch=None):
         name = _require_one_branch(request, branch)
-        return Response(lq.branch_customer_activity(
-            name, request.query_params.get("lookback")))
+        try:
+            return Response(lq.branch_customer_activity(
+                name, request.query_params.get("lookback")))
+        except lq.ActivityQueryFailed as exc:
+            # 503, not 500: the request was well formed and the screen can say
+            # what happened. A bare 500 renders as "not loaded" and leaves
+            # nobody anything to act on.
+            return Response({"detail": str(exc)}, status=503)
 
 
 @extend_schema(tags=["Branch Portfolio — Customer activity"])
@@ -1237,15 +1243,18 @@ class BranchCustomerActivityListView(APIView):
             page_size = paginator.page_size
         page_size = max(1, min(page_size, paginator.max_page_size))
 
-        rows, total = lq.branch_customer_activity_page(
-            name,
-            state=request.query_params.get("state") or "active",
-            days=request.query_params.get("window") or 30,
-            lookback=request.query_params.get("lookback"),
-            search=request.query_params.get("search") or "",
-            limit=page_size,
-            offset=(page_number - 1) * page_size,
-        )
+        try:
+            rows, total = lq.branch_customer_activity_page(
+                name,
+                state=request.query_params.get("state") or "active",
+                days=request.query_params.get("window") or 30,
+                lookback=request.query_params.get("lookback"),
+                search=request.query_params.get("search") or "",
+                limit=page_size,
+                offset=(page_number - 1) * page_size,
+            )
+        except lq.ActivityQueryFailed as exc:
+            return Response({"detail": str(exc)}, status=503)
         # `next` must be a real link or Export stops at the first page - the
         # same trap the drawdown list documents above.
         has_next = page_number * page_size < total
