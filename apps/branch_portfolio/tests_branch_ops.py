@@ -26,6 +26,7 @@ means the department falls back to the DMC unit, never a query error.
 from datetime import date
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from rest_framework.test import APIClient
@@ -585,6 +586,15 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
                     " VALUES (%s, now() - (%s * INTERVAL '1 day'))",
                     [cust_id, days + 200])
 
+        # The page reads the MIRROR, never transaction_diary - that live read
+        # took 25 seconds in production and the database cancelled it. So the
+        # test builds the mirror the way the host does, through the real
+        # command, and the whole chain is under test rather than just the SQL
+        # that reads the end of it.
+        call_command("load_activity_from_transactions",
+                     only_last_transaction=True,
+                     last_transaction_days=400, verbosity=0)
+
     # ── the summary ──────────────────────────────────────────────────────────
 
     def test_the_windows_nest(self):
@@ -625,8 +635,12 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
         inactive customer the branch has, not an absent one."""
         summary = lq.branch_customer_activity(self.HERE)
         labels = {b["label"]: b["customers"] for b in summary["dormancy"]}
-        self.assertEqual(labels[f"No transaction in "
-                                f"{lq.DEFAULT_LOOKBACK_DAYS} days"], 1)
+        # The window named is the one the MIRROR covers (400 days, what the
+        # refresh asked for), not a constant this module happens to hold. A
+        # screen must not claim a reach the data does not have.
+        self.assertEqual(labels["No transaction in 400 days"], 1)
+        self.assertEqual(summary["lookback_days"], 400)
+        self.assertFalse(summary["mirror_is_empty"])
 
     def test_only_the_most_recent_transaction_counts(self):
         """Every seeded customer also has a transaction 200 days older. If the

@@ -282,7 +282,15 @@ former Celery beat jobs; DatabaseCache and cron replace Redis/Celery entirely):
 0  7  7 * *  docker exec hf-backend python manage.py run_scorecard
 0  7  * * *  docker exec hf-backend python manage.py run_scorecard --current
 */30 * * * *  docker exec hf-backend python manage.py load_sap_costs --if-newer
+30 2  * * *  docker exec hf-backend python manage.py load_activity_from_transactions --only-last-transaction
 ```
+**The activity line is not optional.** The branch Customer Activity tables
+read `customer_last_transaction`, a per-customer last-transaction mirror.
+Until it is built those tables say so and show nothing. They used to compute
+it live from `transaction_diary` on every page view, which took 25 seconds
+and was cancelled by the database - the same mistake
+`sc_customer_monthly_activity` already warns about in its own docstring.
+Run it once by hand after deploying, then nightly.
 **The cost line is new, and it is a belt to the deck's own braces.** The CEO
 deck reported operating costs frozen at `SAP extract of 2026-10-08` for
 eighteen days, because `load_sap_costs` was documented as "the job that should

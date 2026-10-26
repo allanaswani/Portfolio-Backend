@@ -1846,3 +1846,53 @@ class CustomerMonthlyActivity(models.Model):
 
     def __str__(self):
         return f"{self.cust_id} {self.month:%b %Y}"
+
+
+class CustomerLastTransaction(models.Model):
+    """One row per customer: when they last transacted. Nothing else.
+
+    Why this exists
+    ───────────────
+    The branch "active / inactive customers" tables ask one question -
+    how long is it since this customer last did anything? - and the only
+    source for it is ``transaction_diary``, the largest table in the estate.
+    Computing ``MAX(tmstamp) GROUP BY customer`` over a year of it, for a
+    branch's whole book, ON A PAGE VIEW, is what the sibling mirror above
+    already warns against in its own docstring: a heavy read on a request path
+    runs past the worker timeout and the browser is handed a dead connection.
+    It did exactly that - 25 seconds, cancelled by the database.
+
+    So the heavy read moves off the request. ``load_activity_from_transactions``
+    fills this on a schedule and the page joins one indexed row per customer,
+    which is the same trade the scorecard already makes.
+
+    Day grain, not month
+    ────────────────────
+    ``CustomerMonthlyActivity`` above is attendance per MONTH, which cannot
+    answer "in the last 7 days". This carries the timestamp itself, so the
+    7 / 30 / 60 / 90 day windows and the dormancy spread all come off the one
+    column without another feed.
+
+    A customer with no row has not transacted inside the window the refresh
+    covers. That is reported as "no transaction in N days" and never as a
+    date, and never as zero days - the most dormant a customer can be is not
+    the least.
+    """
+
+    cust_id = models.BigIntegerField(unique=True)
+    #: The most recent transaction seen, within the window the refresh covers.
+    last_txn = models.DateTimeField(null=True, blank=True, db_index=True)
+    #: How far back the refresh that wrote this row looked, in days. On the
+    #: payload so a screen can say "no transaction in 400 days" with the
+    #: number the data actually supports rather than one it assumes.
+    lookback_days = models.IntegerField(default=0)
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "customer_last_transaction"
+        verbose_name = "Customer last transaction"
+        verbose_name_plural = "Customer last transaction"
+
+    def __str__(self):
+        return f"{self.cust_id} {self.last_txn or 'never'}"

@@ -44,6 +44,24 @@ DIGITAL_CHANNELS = (
 #: reported and the rest still load.
 TIMEOUT_MS = 600_000
 
+#: One row per customer: the most recent transaction inside the window.
+#:
+#: This is the SAME reduction the branch activity tables used to do on every
+#: page view, where it took 25 seconds and was cancelled by the database. Run
+#: here instead, on a schedule, with no worker waiting on it.
+#:
+#: Bounded by the lookback on purpose. A customer whose last transaction is
+#: older than the window simply has no row, which the screen reports as "no
+#: transaction in N days" - honest, and far cheaper than dating somebody who
+#: left in 2019.
+LAST_TXN_SQL = """
+    SELECT t.fk_customercust_id AS cust_id, MAX(t.tmstamp) AS last_txn
+    FROM transaction_diary t
+    WHERE t.tmstamp >= now() - (%s * INTERVAL '1 day')
+      AND t.fk_customercust_id IS NOT NULL
+    GROUP BY t.fk_customercust_id
+"""
+
 SQL = """
     SELECT t.fk_customercust_id AS cust_id,
            MAX(CASE WHEN t.chanel_description IS NOT NULL
@@ -81,6 +99,16 @@ class Command(BaseCommand):
                             help="Last month, YYYY-MM. Default: this month.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Count what each month holds, write none.")
+        parser.add_argument(
+            "--last-transaction-days", type=int, default=400,
+            help="How far back to look when refreshing the per-customer "
+                 "last-transaction mirror the branch activity tables read. "
+                 "0 skips that step.")
+        parser.add_argument(
+            "--only-last-transaction", action="store_true",
+            help="Refresh ONLY that mirror and skip the monthly rebuild. The "
+                 "form for a nightly cron: the monthly feed moves once a "
+                 "month, this moves every day.")
 
     def handle(self, **options):
         from django.db import connection, transaction
@@ -97,6 +125,10 @@ class Command(BaseCommand):
                else today.replace(day=1))
         if end < start:
             raise CommandError("--to is before --from.")
+
+        if options["only_last_transaction"]:
+            self._refresh_last_transaction(options, write)
+            return
 
         write("")
         write(f"  source            transaction_diary")
@@ -170,3 +202,55 @@ class Command(BaseCommand):
             write("  Both years are there, so Active Customers and Digital "
                   "Adoption can be scored against their own prior year.")
         write("")
+
+    def _refresh_last_transaction(self, options, write):
+        """Rebuild the per-customer last-transaction mirror.
+
+        Replaced wholesale rather than merged: the window moves forward every
+        night, so a customer who drops out of it has genuinely gone quiet and
+        must stop being reported as active. Merging would leave last night's
+        answer standing for ever.
+        """
+        from django.db import connection, transaction
+
+        from apps.staff_management.models import CustomerLastTransaction
+
+        days = int(options.get("last_transaction_days") or 0)
+        if days <= 0:
+            write("  last-transaction mirror: skipped (0 days asked for).")
+            return
+
+        write("")
+        write(f"  last-transaction mirror, looking back {days} days")
+        try:
+            with transaction.atomic(), connection.cursor() as cur:
+                cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
+                cur.execute(LAST_TXN_SQL, [days])
+                rows = cur.fetchall()
+        except Exception as exc:  # noqa: BLE001 - the reason belongs in output
+            raise CommandError(
+                f"The last-transaction mirror could not be built: "
+                f"{str(exc)[:200]}") from exc
+
+        write(f"      {len(rows):,} customer(s) transacted in that window")
+        if options["dry_run"]:
+            write(self.style.WARNING("  --dry-run: nothing was written."))
+            return
+        if not rows:
+            # An empty read must never be allowed to wipe a mirror that has
+            # figures in it. The same rule the cost load already enforces.
+            write(self.style.WARNING(
+                "  Nothing came back, so the mirror was left as it was - an "
+                "empty read must not wipe one that has figures in it."))
+            return
+
+        with transaction.atomic():
+            CustomerLastTransaction.objects.all().delete()
+            CustomerLastTransaction.objects.bulk_create(
+                [CustomerLastTransaction(cust_id=int(cust_id),
+                                         last_txn=last_txn,
+                                         lookback_days=days)
+                 for cust_id, last_txn in rows],
+                batch_size=5000)
+        write(self.style.SUCCESS(
+            f"  Wrote {len(rows):,} row(s) to customer_last_transaction."))

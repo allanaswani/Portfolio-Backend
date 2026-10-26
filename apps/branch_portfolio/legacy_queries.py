@@ -240,17 +240,24 @@ _BOOK_KEYS_SQL = f"""
       AND hc.cust_id IS NOT NULL
 """
 
-#: One row per customer who has transacted inside the lookback, carrying their
-#: most recent transaction. Bounded by the lookback on purpose: transaction
-#: history is the largest table in the estate and MAX() over all of it, per
-#: customer, is not something a page view can ask for.
+#: One row per customer, their most recent transaction - read from the
+#: MIRROR, not from transaction_diary.
+#:
+#: This was a live MAX(tmstamp) GROUP BY customer over a year of
+#: transaction_diary, joined to the branch's book, on every page view. It took
+#: 25 seconds and the database cancelled it. The sibling mirror
+#: ``sc_customer_monthly_activity`` warns about precisely this in its own
+#: docstring - "a heavy read on the card path runs past the worker timeout" -
+#: and this ignored it.
+#:
+#: ``customer_last_transaction`` now carries that reduction, refreshed by
+#: ``load_activity_from_transactions --only-last-transaction`` on a schedule.
+#: One indexed row per customer, so the join is the branch's book against a
+#: key, and the whole screen is milliseconds.
 _LAST_TXN_SQL = """
-    SELECT t.fk_customercust_id AS cust_id, MAX(t.tmstamp) AS last_txn
-    FROM transaction_diary t
-    JOIN book b ON b.cust_id = t.fk_customercust_id
-    WHERE t.tmstamp >= now() - (%(lookback)s * INTERVAL '1 day')
-      AND t.fk_customercust_id IS NOT NULL
-    GROUP BY t.fk_customercust_id
+    SELECT l.cust_id, l.last_txn
+    FROM customer_last_transaction l
+    JOIN book b ON b.cust_id = l.cust_id
 """
 
 
@@ -323,6 +330,24 @@ def _clean_lookback(days):
     return max(max(ACTIVITY_WINDOWS), min(days, 1825))
 
 
+def _mirror_state():
+    """``(loaded_at, lookback_days)`` of the last-transaction mirror.
+
+    ``(None, 0)`` when nothing has been loaded. The screen has to be able to
+    tell "this branch has no active customers" apart from "the mirror has
+    never been built", because they look identical and mean opposite things -
+    and getting that wrong is what put four zeros on a branch's page once
+    already.
+    """
+    from apps.staff_management.models import CustomerLastTransaction
+
+    row = (CustomerLastTransaction.objects.order_by("-loaded_at")
+           .values("loaded_at", "lookback_days").first())
+    if not row:
+        return None, 0
+    return row["loaded_at"], row["lookback_days"]
+
+
 def _empty_activity(branch, lookback):
     """The same shape a real answer has, with nothing in it.
 
@@ -338,6 +363,7 @@ def _empty_activity(branch, lookback):
         "windows_are_cumulative": True,
         "inactive": 0, "inactive_share": 0.0,
         "dormancy": [], "most_recent_transaction": None,
+        "mirror_built_at": None, "mirror_is_empty": True,
     }
 
 
@@ -384,7 +410,7 @@ def branch_customer_activity(branch, lookback=None):
                MAX(last_txn) AS most_recent_transaction
         FROM scored
     """
-    rows = _rows(sql, {"branch": key, "lookback": lookback})
+    rows = _rows(sql, {"branch": key})
     row = rows[0] if rows else {}
 
     customers = row.get("customers") or 0
@@ -397,16 +423,25 @@ def branch_customer_activity(branch, lookback=None):
     } for days in ACTIVITY_WINDOWS]
 
     inactive = row.get("inactive_90") or 0
+    built, covers = _mirror_state()
+    # Name the window the MIRROR actually covers. Saying "no transaction in
+    # 365 days" off a mirror built with 90 would claim a reach the data does
+    # not have, which is the kind of quiet overstatement nobody catches.
+    reach = covers or lookback
     buckets = [
         ("91-180 days", row.get("dormant_91_180") or 0),
         ("181-365 days", row.get("dormant_181_365") or 0),
         ("Over 365 days", row.get("dormant_over_365") or 0),
-        (f"No transaction in {lookback} days", row.get("never_in_lookback") or 0),
+        (f"No transaction in {reach} days", row.get("never_in_lookback") or 0),
     ]
     last_seen = row.get("most_recent_transaction")
     return {
         "branch": branch,
-        "lookback_days": lookback,
+        # What the MIRROR covers, which is what "no transaction in N days"
+        # can honestly claim - not what this call asked for.
+        "lookback_days": reach,
+        "mirror_built_at": built.isoformat() if built else None,
+        "mirror_is_empty": built is None,
         "customers": customers,
         # Four answers to "how recently", so they NEST. The screen must not
         # present them as a breakdown.
@@ -449,7 +484,7 @@ def branch_customer_activity_page(branch, state="active", days=30, lookback=None
     key = normalize_branch(branch)
     if not key:
         return [], 0
-    params = {"branch": key, "lookback": lookback, "days": days,
+    params = {"branch": key, "days": days,
               "limit": max(1, int(limit)), "offset": max(0, int(offset))}
 
     term = (search or "").strip()
