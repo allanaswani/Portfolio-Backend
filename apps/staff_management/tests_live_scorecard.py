@@ -270,3 +270,63 @@ class CardFromTheSystemTests(TestCase):
         self.assertEqual(response.data["reason"], "not_identified")
         self.assertIn("your profile", response.data["tried"])
         self.assertIn("the back-office roster", response.data["tried"])
+
+
+class PortfolioAumTests(TestCase):
+    """AUM is the deposit book plus the loan book.
+
+    The card used to tell people this was "a count somebody keeps" and to
+    have Administration type it in - on a figure that is the sum of two
+    numbers the same card already computes for its deposit-growth and
+    asset-growth lines. The only thing missing was the addition.
+    """
+
+    def actuals(self, deposits, loans, as_at=None):
+        from .live_scorecard import live_actuals
+
+        def fake(table, sales_code, as_at=None):
+            return deposits if table == "daily_balance_movement" else loans
+
+        with mock.patch("services.portfolio_service.rm_growth", fake):
+            return live_actuals("FJ4145", wanted={"portfolio_aum"},
+                                as_at=as_at)
+
+    @staticmethod
+    def half(position, base, when):
+        return {"position": position, "base": base,
+                "growth": None if position is None or base is None
+                else position - base,
+                "as_at": when, "as_at_label": "", "problem": None}
+
+    def test_the_two_books_are_added(self):
+        out = self.actuals(
+            self.half(300_000_000.0, 250_000_000.0, datetime.date(2026, 9, 30)),
+            self.half(200_000_000.0, 180_000_000.0, datetime.date(2026, 9, 30)))
+        self.assertEqual(out["portfolio_aum"]["value"], 500_000_000.0)
+        self.assertEqual(out["_bases"]["december_aum_book"], 430_000_000.0)
+        self.assertIn("deposit book + loan book", out["portfolio_aum"]["as_at_label"])
+
+    def test_the_as_at_is_the_older_of_the_two(self):
+        """The sum is only as complete as the half furthest behind. Dating it
+        to the newer reading would claim a currency it does not have."""
+        out = self.actuals(
+            self.half(300_000_000.0, 250_000_000.0, datetime.date(2026, 9, 30)),
+            self.half(200_000_000.0, 180_000_000.0, datetime.date(2026, 7, 31)))
+        self.assertEqual(out["portfolio_aum"]["as_at"],
+                         datetime.date(2026, 7, 31))
+
+    def test_one_book_missing_is_not_an_AUM(self):
+        """Deposits alone reported as AUM would understate the book by the
+        whole loan portfolio, and the number would look plausible."""
+        out = self.actuals(
+            self.half(300_000_000.0, 250_000_000.0, datetime.date(2026, 9, 30)),
+            self.half(None, None, None))
+        self.assertIsNone(out["portfolio_aum"]["value"])
+        self.assertIn("cannot be added", out["portfolio_aum"]["problem"])
+
+    def test_the_base_needs_both_closings(self):
+        out = self.actuals(
+            self.half(300_000_000.0, 250_000_000.0, datetime.date(2026, 9, 30)),
+            self.half(200_000_000.0, None, datetime.date(2026, 9, 30)))
+        self.assertEqual(out["portfolio_aum"]["value"], 500_000_000.0)
+        self.assertNotIn("december_aum_book", out["_bases"])

@@ -380,6 +380,7 @@ _READERS_BEHIND_A_BASE = {
     # under "_last_year_loan_loss". Mapping it to the wrong key removed that
     # reader from every card and the line reported "no base to work from".
     "last_year_loan_loss": {"_last_year_loan_loss"},
+    "december_aum_book": {"portfolio_aum"},
 }
 
 # ── Property (HFCB Properties) ───────────────────────────────────────────────
@@ -666,11 +667,29 @@ SOURCES["bo_training_hours"] = Source(actual_key="training_hours",
 
 #: Everything else the warehouse has no figure for. Listed rather than left to
 #: fall through, so the reason on the card is specific.
+#: Portfolio Management AUM is the deposit book plus the loan book - see the
+#: ``aum`` reader in :func:`live_actuals`. It was on the list below, which
+#: told people to have Administration type in a figure the platform already
+#: computes both halves of on the same card.
+SOURCES["portfolio_management_aum_dec_previous_year"] = Source(
+    actual_key="portfolio_aum",
+    # The FIGURE is measured. The TARGET is not a shared one and no DMC column
+    # carries it - it is per person, which is why this code was already in
+    # ``scorecard_manual.MANUAL_TARGETS`` before the figure was wired. It
+    # comes off the Summary Allocation sheet, where 90 people have one, and
+    # Administration can correct it under Figures to load. Saying so here is
+    # what keeps the card's message true: the old wording claimed the FIGURE
+    # had to be typed in, which was never so.
+    no_target_reason=(
+        "The figure is measured here now - your deposit book plus your loan "
+        "book. The TARGET is per person rather than per role, so it comes "
+        "off the Summary Allocation sheet, and Administration can correct it "
+        "under Scorecards → Figures to load."))
+
 for _code in (
     "leave_management", "audit", "errors",
     "banking_covenant_tracking_should_be_in_iapply",
     "tooling_and_account_planning_all_customers", "digital_adoption",
-    "portfolio_management_aum_dec_previous_year",
 ):
     SOURCES.setdefault(_code, Source(pending=_NOT_IN_WAREHOUSE))
 
@@ -1643,6 +1662,55 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             lambda: growth("loan_daily_balance_movement",
                            "december_loan_book"))
 
+    # ── Assets under management ───────────────────────────────────────────
+    #
+    # AUM is the DEPOSIT book plus the LOAN book, per RM. This line was listed
+    # as one no system here holds, and the card told people to have
+    # Administration type it in - on a figure that is two sums this platform
+    # already makes for the deposit-growth and asset-growth lines on the same
+    # card. The only thing missing was the addition.
+    #
+    # The POSITION, not the growth: "AUM (Dec previous year)" is a balance
+    # grown from last December's closing AUM, so the actual is the book as it
+    # stands and the base is the two December closings added together.
+    def aum():
+        deposits = svc.rm_growth("daily_balance_movement", sales_code,
+                                 as_at=as_at)
+        loans = svc.rm_growth("loan_daily_balance_movement", sales_code,
+                              as_at=as_at)
+
+        halves = [deposits, loans]
+        # Both halves have to be readable. Reporting deposits alone as "AUM"
+        # would understate the book by the whole loan portfolio and the number
+        # would look plausible, which is the worst kind of wrong.
+        broken = [h["problem"] for h in halves if h["problem"]]
+        if broken:
+            return _figure(None, problem=(
+                f"AUM is the deposit book plus the loan book and one of them "
+                f"could not be read: {broken[0]}"))
+        if any(h["position"] is None for h in halves):
+            return _figure(None, problem=(
+                "AUM is the deposit book plus the loan book, and one of them "
+                "has no balance for you - so the two cannot be added"))
+
+        # The base, for the rate target: December's deposit close plus
+        # December's loan close. Only when BOTH are there, for the same
+        # reason.
+        if all(h["base"] is not None for h in halves):
+            bases["december_aum_book"] = float(
+                deposits["base"] + loans["base"])
+
+        total = float(deposits["position"] + loans["position"])
+        # As at the OLDER of the two readings: the sum is only as complete as
+        # the half that is furthest behind, and dating it to the newer one
+        # would claim a currency it does not have.
+        dates = [h["as_at"] for h in halves if h["as_at"]]
+        at = min(dates) if dates else monthly
+        return _figure(total, at, (
+            f"deposit book + loan book, as at {at.day} {at:%b %Y}"))
+
+    attempt("portfolio_aum", aum)
+
     # ── Active customers, and digital adoption ────────────────────────────
     # The prior-year count is kept as a BASE as well as the figure, because
     # the target is a rate on it - exactly as the deposit and asset books are
@@ -2460,6 +2528,9 @@ MAY_BE_NEGATIVE = {
 TARGET_BASES = {
     "december_loan_book": "asset_growth",
     "december_deposit_book": "deposit_growth",
+    # Assets under management: the deposit book PLUS the loan book, which is
+    # what the line is called after - "AUM (Dec previous year)".
+    "december_aum_book": "portfolio_aum",
 }
 
 
