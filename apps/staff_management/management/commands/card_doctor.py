@@ -152,10 +152,22 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "who",
+            "who", nargs="?", default="",
             help="A sales code, or a name - \"Abed Lelgo\" works as well as "
                  "AKL3116. A name that matches several people lists them "
-                 "rather than picking one.")
+                 "rather than picking one. Omitted with --users, which asks "
+                 "about everybody instead of one person.")
+        parser.add_argument(
+            "--users", action="store_true",
+            help="Every signed-in account, and whether it can reach a card "
+                 "at all. The answer to \"it says my code is on no roster, "
+                 "and many others too\" - which needs a list, not one case.")
+        parser.add_argument(
+            "--only-broken", action="store_true",
+            help="With --users, print only the accounts that reach no card.")
+        parser.add_argument(
+            "--csv", default="",
+            help="With --users, also write the whole table to this file.")
         parser.add_argument(
             "--like", default="",
             help="Extra text to look for in the name columns - a surname "
@@ -234,7 +246,13 @@ class Command(BaseCommand):
             brn_code_for, pf_for, resolve_person, roster_row)
 
         write = self.stdout.write
-        code = options["who"].strip()
+        if options["users"]:
+            return self._users(write, options)
+        code = (options["who"] or "").strip()
+        if not code:
+            raise CommandError(
+                "Name somebody - a sales code or a name - or pass --users to "
+                "ask about every account at once.")
         limit = options["rows"]
 
         person = resolve_person(code)
@@ -342,4 +360,110 @@ class Command(BaseCommand):
               "spelling, that is the fault.")
         write("    n of a large number   the feed has them, so an empty line "
               "above it is a different problem.")
+        write("")
+
+    # -- everybody, and whether they can reach a card --------------------
+    def _users(self, write, options):
+        """Which signed-in accounts reach a card, and why the rest do not.
+
+        "My code is on none of the rosters - and many others" cannot be
+        answered one screenshot at a time. This walks every account the way
+        the scorecard page itself does, through the same
+        ``resolve_sales_code_for_user`` and ``build_card``, and prints the
+        verdict per person. No second implementation, so it cannot disagree
+        with what the page shows.
+
+        Read-only. Nothing is written and no card is signed.
+        """
+        import csv as csv_module
+
+        from django.contrib.auth import get_user_model
+
+        from apps.staff_management.live_scorecard import (
+            resolve_person, resolve_sales_code_for_user)
+
+        try:
+            from apps.portfolio.models import Profile
+        except Exception:  # noqa: BLE001 - reported, not fatal
+            Profile = None
+
+        users = list(get_user_model().objects
+                     .filter(is_active=True)
+                     .order_by("username"))
+        profiles = {}
+        if Profile is not None:
+            profiles = {p.user_id: p for p in Profile.objects.all()}
+
+        rows = []
+        for user in users:
+            profile = profiles.get(user.id)
+            code, how = resolve_sales_code_for_user(user, profile)
+            person = resolve_person(code) if code else None
+            if person is None:
+                verdict = ("no code at all" if not code
+                           else "code on no roster")
+            elif not person.role_code:
+                verdict = "role has no card"
+            else:
+                verdict = "OK"
+            rows.append({
+                "username": user.username,
+                "name": (user.get_full_name() or "").strip(),
+                "email": (user.email or "").strip(),
+                "profile_code": ((getattr(profile, "sales_code", "") or "").strip()
+                                 if profile is not None else ""),
+                "code": code,
+                "matched_by": how,
+                "roster": person.roster if person else "",
+                "role_code": person.role_code if person else "",
+                "verdict": verdict,
+            })
+
+        ok = [r for r in rows if r["verdict"] == "OK"]
+        broken = [r for r in rows if r["verdict"] != "OK"]
+        shown = broken if options["only_broken"] else rows
+
+        write("")
+        write(f"  {'account':26} {'code':10} {'verdict':18} "
+              f"{'role':22} matched by")
+        write(f"  {'-' * 26} {'-' * 10} {'-' * 18} {'-' * 22} {'-' * 30}")
+        for r in shown:
+            style = self.style.SUCCESS if r["verdict"] == "OK" else self.style.WARNING
+            write(style(
+                f"  {r['username'][:24]:26} {r['code'][:9]:10} "
+                f"{r['verdict']:18} {r['role_code'][:20]:22} "
+                f"{r['matched_by']}"))
+
+        write("")
+        write(f"  accounts            {len(rows):,}")
+        write(f"  reach a card        {len(ok):,}")
+        write(f"  reach nothing       {len(broken):,}")
+
+        # The two failures have different owners, so they are counted apart.
+        no_code = [r for r in broken if r["verdict"] == "no code at all"]
+        stale = [r for r in broken if r["verdict"] == "code on no roster"]
+        no_card = [r for r in broken if r["verdict"] == "role has no card"]
+        write("")
+        write(f"    nothing identifies them        {len(no_code):,}  "
+              f"-> no roster row and no HR row to match on")
+        write(f"    a code no roster holds         {len(stale):,}  "
+              f"-> usually a retired code typed onto the profile")
+        write(f"    a role with no card            {len(no_card):,}  "
+              f"-> on a roster, in a role the cards do not cover")
+
+        if stale:
+            write("")
+            write("  codes that are on no roster, with where they came from:")
+            for r in stale[:40]:
+                note = (f"profile says {r['profile_code']}"
+                        if r["profile_code"] else f"from {r['matched_by']}")
+                write(f"      {r['code']:<12} {r['username']:<24} {note}")
+
+        if options["csv"] and rows:
+            with open(options["csv"], "w", newline="", encoding="utf-8") as handle:
+                writer = csv_module.DictWriter(handle, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+            write("")
+            write(f"  wrote {options['csv']}")
         write("")

@@ -2422,11 +2422,27 @@ def resolve_person(sales_code):
                 team_leader=team_leader_of(row),
                 roster="the branch DMC roster", dmc_row=row)
 
-    # 2. the role history - the back-office roster
+    # 2. the role history - the roster the workbook's own List sheet fills
+    #
+    # This used to be filtered to ``role_code__startswith="bo_"``, which threw
+    # away the larger half of this table. ``scorecard_ingest.apply_roster``
+    # writes EVERY person on the workbook's List sheet here - 91 of them, with
+    # role codes like ``sme_rm`` and ``pb_bbc``, not just ``bo_*`` - and its
+    # own comment says why: "the engine walks StaffEmployeeData and reads each
+    # person's role from EmployeeRoleHistory, so both have to carry these 91
+    # people or nobody gets scored."
+    #
+    # The ``bo_`` filter meant a salesperson on the List roster but NOT on the
+    # branch DMC tables - a head-office RM, a commercial RM, anybody at H/O -
+    # fell through all three branches and was told their code "is on none of
+    # the three rosters" while sitting on one of them. The DMC roster is still
+    # tried first above, so this changes nothing for anybody it already
+    # answered; it only stops discarding the people it never did.
     from .models import EmployeeRoleHistory, StaffEmployeeData
 
     held = (EmployeeRoleHistory.objects
-            .filter(sales_code__iexact=code, role_code__startswith="bo_")
+            .filter(sales_code__iexact=code)
+            .exclude(role_code="")
             .order_by("-start_date").first())
     staff = StaffEmployeeData.objects.filter(sales_code__iexact=code).first()
     if held is not None:
@@ -2441,7 +2457,12 @@ def resolve_person(sales_code):
             role_code=held.role_code,
             branch=(getattr(staff, "staff_unit", "") or parts[1] or ""),
             team_leader=parts[3] or "",
-            roster="the back-office roster")
+            # Named for what it is, since this table now answers for sales
+            # roles as well: "the back-office roster" on a commercial RM's
+            # card would send them to the wrong person to get it corrected.
+            roster=("the back-office roster"
+                    if held.role_code.startswith("bo_")
+                    else "the scorecard roster"))
 
     # 3. the HR record, by job title
     if staff is not None:
@@ -2500,6 +2521,17 @@ def resolve_sales_code_for_user(user, profile=None):
     are actually populated for everybody else. Order matters: the earlier an
     identifier appears, the more specific it is to one person.
 
+    **Every candidate is checked against the rosters before it is accepted.**
+    This used to return the profile's code the moment it found one, and a
+    profile code is typed in by hand from whatever roster was open at the
+    time. A retired code - and the desk's workbook is full of them, the same
+    person appearing as AL3116 in the old ranked sheet and AKL3116 on the
+    current List sheet - dead-ended the whole thing: the person was told their
+    code is on no roster while their work e-mail would have found them on the
+    HR roster two lines further down. A candidate nothing holds a card for is
+    no longer allowed to stop the search; it is only used as the answer if
+    nothing better turns up, so the screen can still name which code it tried.
+
     Nothing here guesses. Every lookup is an exact match, and any lookup that
     finds more than one person is discarded rather than resolved arbitrarily -
     showing somebody else's scorecard is far worse than showing none.
@@ -2511,22 +2543,29 @@ def resolve_sales_code_for_user(user, profile=None):
         rows = list(queryset[:2])
         return rows[0] if len(rows) == 1 else None
 
-    code = ""
+    #: ``(code, how)`` in order of trust. Collected rather than returned from,
+    #: because the most trusted identifier is not always the one that holds a
+    #: card - see the docstring.
+    candidates = []
+
+    def offer(code, how):
+        code = (code or "").strip()
+        if code and not any(code.upper() == c.upper() for c, _h in candidates):
+            candidates.append((code, how))
+
     if profile is not None:
-        code = (getattr(profile, "sales_code", "") or "").strip()
-    if code:
-        return code, _SELF_LOOKUPS[0]
+        offer(getattr(profile, "sales_code", ""), _SELF_LOOKUPS[0])
 
     username = (getattr(user, "username", "") or "").strip()
     email = (getattr(user, "email", "") or "").strip()
 
-    # The back-office roster is keyed on a code shaped like EKN1329, which is
-    # what a branch operations person has instead of a sales code. If the
-    # sign-in name IS that code, there is nothing further to look up.
+    # The roster table is keyed on a code shaped like EKN1329, which is what a
+    # branch operations person has instead of a sales code. If the sign-in
+    # name IS that code, there is nothing further to look up.
     if username:
         held = one(EmployeeRoleHistory.objects.filter(sales_code__iexact=username))
-        if held is not None and (held.sales_code or "").strip():
-            return held.sales_code.strip(), _SELF_LOOKUPS[1]
+        if held is not None:
+            offer(held.sales_code, _SELF_LOOKUPS[1])
 
     # The HR roster is the bridge for everybody else: it carries the e-mail,
     # the PF number, the name and the sales code on one row.
@@ -2563,18 +2602,24 @@ def resolve_sales_code_for_user(user, profile=None):
         staff = one(queryset)
         if staff is None:
             continue
-        found = (staff.sales_code or "").strip()
-        if found:
-            return found, how
-        # Recognised, but the HR row carries no sales code. The back-office
-        # roster may still know them by their own code, so that is tried
-        # before giving up on a person we have positively identified.
+        offer(staff.sales_code, how)
+        # Recognised, but the HR row may carry no sales code, or one no roster
+        # holds. The roster table may still know them by their own code, so
+        # that is offered too rather than giving up on a person we have
+        # positively identified.
         by_name = one(EmployeeRoleHistory.objects.filter(
             notes__istartswith=f"{(staff.staff_name or '').strip()} |"))
-        if by_name is not None and (by_name.sales_code or "").strip():
-            return by_name.sales_code.strip(), self_how(how)
+        if by_name is not None:
+            offer(by_name.sales_code, self_how(how))
 
-    return "", ""
+    for code, how in candidates:
+        if resolve_person(code) is not None:
+            return code, how
+
+    # Nothing we hold is on a roster. The most trusted candidate is still
+    # returned, because "AA3104 is on no roster" is something Administration
+    # can act on and "we could not work out who you are" is not.
+    return candidates[0] if candidates else ("", "")
 
 
 def self_how(how):

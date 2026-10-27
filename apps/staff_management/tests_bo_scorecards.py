@@ -424,6 +424,83 @@ class ReachingYourOwnCardTests(TestCase):
                          last_name="Kim")
         self.assertEqual(self.resolve(user, None), ("", ""))
 
+    # ── a code the profile carries that no roster holds ──────────────────────
+
+    def test_a_retired_profile_code_no_longer_dead_ends_the_search(self):
+        """The reported fault, in one test.
+
+        A profile sales code is typed in by hand off whatever roster was open
+        at the time, and the desk's workbook is full of retired codes - the
+        same person is AL3116 on the old ranked sheet and AKL3116 on the
+        current List sheet. The profile used to be returned the instant it
+        held anything, so a retired code meant "your sales code is on none of
+        the rosters" for somebody whose work e-mail was on the HR roster two
+        lines further down.
+        """
+        from apps.portfolio.models import Profile
+
+        user = self.user(username="peter.kimani",
+                         email="peter.kimani@hfgroup.co.ke")
+        profile = Profile.objects.filter(user=user).first()
+        profile.sales_code = "AA3104"          # on no roster in this estate
+        profile.save()
+
+        code, how = self.resolve(user, profile)
+        self.assertEqual(code, "PKM1180")
+        self.assertIn("e-mail", how)
+
+    def test_a_code_on_no_roster_is_still_named_when_nothing_else_answers(self):
+        """It must not become "we could not work out who you are".
+
+        Administration can act on "AA3104 is on no roster". They cannot act on
+        a shrug, and the code is the only thing in the message that tells them
+        where to look.
+        """
+        from apps.portfolio.models import Profile
+
+        user = self.user(username="stranger.here")
+        profile = Profile.objects.filter(user=user).first()
+        profile.sales_code = "AA3104"
+        profile.save()
+        self.assertEqual(self.resolve(user, profile),
+                         ("AA3104", "your profile"))
+
+    # ── the sales roster in employee_role_history ────────────────────────────
+
+    def test_a_sales_role_on_the_roster_table_reaches_a_card(self):
+        """``resolve_person`` used to read this table only for ``bo_*`` roles.
+
+        ``scorecard_ingest.apply_roster`` writes every person on the
+        workbook's List sheet here with role codes like ``sme_rm``, and its own
+        comment says both tables "have to carry these 91 people or nobody gets
+        scored". The ``bo_`` filter threw all of them away, so a salesperson
+        who is not ALSO on the branch DMC tables - anybody at head office -
+        was told their code is on none of the three rosters while sitting on
+        one of them.
+        """
+        from .live_scorecard import resolve_person
+
+        self.EmployeeRoleHistory.objects.create(
+            sales_code="CMM4236", role_code="sme_rm",
+            start_date=datetime.date(2026, 1, 1),
+            notes="Charles Muchiri | H/O | Zone A | Stephen Mutava")
+
+        person = resolve_person("CMM4236")
+        self.assertIsNotNone(person)
+        self.assertEqual(person.role_code, "sme_rm")
+        self.assertEqual(person.branch, "H/O")
+        # Not "the back-office roster": a commercial RM told that would take
+        # it to the wrong desk to have it corrected.
+        self.assertEqual(person.roster, "the scorecard roster")
+
+    def test_a_back_office_row_still_says_the_back_office(self):
+        from .live_scorecard import resolve_person
+
+        person = resolve_person("PKM1180")
+        self.assertIsNotNone(person)
+        self.assertEqual(person.role_code, "bo_tl_rbo")
+        self.assertEqual(person.roster, "the back-office roster")
+
 
 class MyCardEndpointTests(TestCase):
     """``my-card/`` end to end for somebody with no sales code on file."""

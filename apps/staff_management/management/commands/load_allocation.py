@@ -32,6 +32,13 @@ class Command(BaseCommand):
         parser.add_argument("--year", type=int, default=None,
                             help="Performance year. Defaults to this year.")
         parser.add_argument("--sheet", default="Summary Allocation")
+        parser.add_argument(
+            "--roster", action="store_true",
+            help="Also load the workbook's List sheet - the 91 people and "
+                 "which card each is on. The web upload has always done both "
+                 "together; this command did only the targets, so a roster "
+                 "loaded from the host was silently skipped and those people "
+                 "were told their code is on no roster.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Report what would be written, write none.")
         parser.add_argument("--check", default="",
@@ -44,7 +51,7 @@ class Command(BaseCommand):
         from apps.staff_management.scorecard_automation.models import (
             ScEmployeeKpiTarget, ScKpi)
         from apps.staff_management.scorecard_ingest import (
-            apply_allocation, read_allocation)
+            apply_allocation, apply_roster, read_allocation, read_roster)
 
         write = self.stdout.write
         year = options["year"] or datetime.date.today().year
@@ -139,10 +146,46 @@ class Command(BaseCommand):
                 write(self.style.WARNING(
                     f"      {code} is not on that sheet."))
 
+        roster, roster_warnings = [], []
+        if options["roster"]:
+            try:
+                roster, roster_warnings = read_roster(str(path))
+            except Exception as exc:  # noqa: BLE001 - the reason is the answer
+                raise CommandError(
+                    f"The List sheet could not be read: {exc}") from exc
+            write("")
+            write(f"  roster            {len(roster)} people on the List sheet")
+            by_role = {}
+            for row in roster:
+                by_role[row["role"]] = by_role.get(row["role"], 0) + 1
+            for role, count in sorted(by_role.items()):
+                write(f"      {role[:40]:42} {count:4}")
+            for warning in roster_warnings:
+                write(self.style.WARNING(f"      {warning}"))
+
         if options["dry_run"]:
             write("")
             write(self.style.WARNING("  --dry-run: nothing was written."))
             return
+
+        if options["roster"] and roster:
+            seated = apply_roster(roster, year, changed_by="load_allocation")
+            write("")
+            write(self.style.SUCCESS(
+                f"  Roster: {seated['roles_added']} role(s) added, "
+                f"{seated['roles_updated']} changed, "
+                f"{seated['roles_unchanged']} already right; "
+                f"{seated['people_added']} staff record(s) created."))
+            if seated["no_pf_number"]:
+                # Named rather than counted: the scorecard knows these people
+                # by sales code and HR does not know them by PF, which is a
+                # roster gap for Administration, not a failed load.
+                write(self.style.WARNING(
+                    f"  {len(seated['no_pf_number'])} person(s) have no PF "
+                    f"number anywhere, so no staff record was created for "
+                    f"them. Their role was still recorded, which is the half "
+                    f"the card reads: "
+                    f"{', '.join(seated['no_pf_number'][:20])}"))
 
         result = apply_allocation(
             rows, year, source_label="Summary Allocation",
