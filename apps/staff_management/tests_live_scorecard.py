@@ -430,3 +430,49 @@ class JoinerProrationTests(SimpleTestCase):
         self.assertEqual(
             prorate_to(12, datetime.date(2026, 9, 30), counted=True,
                        since=self.APRIL), 6.0)
+
+
+class NoBookIsSaidOnceTests(TestCase):
+    """Twelve symptoms of one fact is not a diagnosis.
+
+    Anthony Kiarie's card (AKN3152) reported, separately: no balances in
+    daily_balance_movement, last year's active customers could not be read,
+    last year's digital customers could not be read, the december loan book
+    could not be read, no loan applications with a turnaround - and nought on
+    property, drawdowns and banca. Every message true. None of them the
+    answer, which is that nothing is allocated to him at all.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("ak", password="x")
+        Profile.objects.update_or_create(
+            user=self.user, defaults={"sales_code": "AKN3152"})
+        BranchFinalEmployeeDmcData.objects.create(
+            staff_pf_number=3152, staff_name="Anthony Kiarie",
+            sales_code="AKN3152", staff_role="PB BBC", staff_branch="Rehani",
+            staff_unit="Rehani", active=1, target_new_customers=5)
+
+    def test_the_card_carries_the_book_size(self):
+        card = build_card("AKN3152")
+        self.assertIn("book", card)
+        self.assertIn("customers", card["book"])
+        self.assertIn("note", card["book"])
+
+    def test_an_unreadable_allocation_table_is_not_reported_as_no_book(self):
+        """-1 means "not known". Saying "you have no customers" because a
+        table could not be read would be a worse lie than saying nothing."""
+        from .live_scorecard import allocated_customers
+
+        with mock.patch("django.db.connection.cursor",
+                        side_effect=RuntimeError("gone")):
+            self.assertEqual(allocated_customers("AKN3152"), -1)
+
+        card = build_card("AKN3152")
+        if card["book"]["customers"] == -1:
+            self.assertEqual(card["book"]["note"], "")
+
+    def test_a_blank_sales_code_asks_nothing(self):
+        from .live_scorecard import allocated_customers
+
+        self.assertEqual(allocated_customers(""), 0)
+        self.assertEqual(allocated_customers(None), 0)

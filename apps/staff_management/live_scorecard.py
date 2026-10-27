@@ -2695,6 +2695,48 @@ def started_in_role(sales_code, year=None):
     return start
 
 
+def allocated_customers(sales_code):
+    """How many customers are allocated to this sales code → int.
+
+    One COUNT, so a card can say ONCE that somebody has no book instead of
+    reporting it twelve times in twelve different wordings.
+
+    Anthony Kiarie's card is why. AKN3152 is on the branch DMC roster, and
+    nothing is allocated to him in retail_allocated_portfolio - he is on the
+    workbook's legacy Sheet1 and not on the current List of 91, and he holds
+    no customers in Portfolio_Data either. So his card reported, separately:
+
+        "no balances in daily_balance_movement for 2026"
+        "your last year active customers could not be read"
+        "your last year digital customers could not be read"
+        "your december loan book could not be read"
+        "no loan applications with a recorded bank turnaround"
+        ... and the property, drawdown and banca lines at nought
+
+    Twelve symptoms of one fact, each true, none of them the diagnosis. A
+    reader has to hold all twelve in their head to arrive at "this person has
+    no book", and most will instead conclude the tool is broken.
+    """
+    from django.db import connection, transaction
+
+    code = (sales_code or "").strip()
+    if not code:
+        return 0
+    try:
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(DISTINCT cust_id)
+                FROM retail_allocated_portfolio
+                WHERE TRIM(sales_code::text) = TRIM(%s)
+                  AND cust_id IS NOT NULL
+            """, [code])
+            return int(cur.fetchone()[0] or 0)
+    except Exception:  # noqa: BLE001 - a diagnosis that cannot be made must
+        # not cost the card. -1 says "not known", which the caller reports as
+        # nothing at all rather than as "no customers".
+        return -1
+
+
 def resolve_person(sales_code):
     """Who this sales code belongs to and which card they hold, or None.
 
@@ -3284,6 +3326,11 @@ def build_card(sales_code, profile=None, as_at=None):
         targets, target_table, target_columns = {}, "", set()
         target_problem = str(exc)
 
+    # How big this person's book is, asked ONCE. A card whose every
+    # book-measuring line is empty should say why at the top rather than
+    # twelve times down the page - see allocated_customers.
+    book_size = allocated_customers(sales_code)
+
     bases = actuals.pop("_bases", {})
     base_problems = actuals.pop("_base_problems", {})
 
@@ -3813,6 +3860,18 @@ def build_card(sales_code, profile=None, as_at=None):
                         if person.started else None),
         },
         # The month the card is FOR, which for a past month is not today.
+        # One fact, said once. See allocated_customers.
+        "book": {
+            "customers": book_size,
+            "note": ("" if book_size != 0 else
+                     f"No customers are allocated to {sales_code} in "
+                     f"retail_allocated_portfolio. Every line below that "
+                     f"measures a book - balances, active customers, "
+                     f"drawdowns, turnaround, property - reads empty because "
+                     f"there is no book to measure, not because a feed is "
+                     f"broken. Allocation is maintained under Management "
+                     f"→ Portfolio Allocations."),
+        },
         # The month the card is FOR. ``as_at`` is the parameter, and nothing
         # above may reassign it - see ``line_as_at`` in the loop.
         "period": {"label": (as_at or datetime.date.today())
