@@ -148,7 +148,7 @@ def _previous(month):
     return (month.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
 
 
-def two_month_active(sales_code, year, digital=False):
+def two_month_active(sales_code, year, digital=False, upto=None):
     """Customers on this RM's book active in TWO consecutive months.
 
     → ``{year: (count, as_at)}`` for every year the feed covers, or
@@ -289,7 +289,15 @@ def two_month_active(sales_code, year, digital=False):
 
     out = {}
     for month in sorted(mine, reverse=True):
+        # ``upto`` is the month END a card for a NAMED MONTH is for. Without
+        # it the latest pair in the year always won, so a September card was
+        # given a September-October pair - a figure from after the period the
+        # card reports. The guard sits beside the ``furthest`` one because it
+        # is the same kind of rule: do not report a month that is not this
+        # card's to report.
         if month > furthest or month.year in out:
+            continue
+        if upto is not None and month > upto:
             continue
         # As at the END of the month the pair closes on, because that is the
         # month the figure is complete for.

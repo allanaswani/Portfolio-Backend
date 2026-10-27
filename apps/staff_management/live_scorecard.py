@@ -1357,15 +1357,19 @@ def _two_month_active(sales_code, year, upto=None, digital=False):
     """
     from . import active_channels, registration_activity
 
+    # ``upto`` was declared on this function and never used - Pylance found
+    # it. Both feeds reduce to "the latest qualifying pair in the year", so
+    # without it a September card reported a September-October pair.
     found = registration_activity.two_month_active(
-        sales_code, year, digital=digital)
+        sales_code, year, digital=digital, upto=upto)
     if "error" not in found:
         return found
 
     # Only when the registration data is absent, not when it is empty.
     if "not on this database" not in found["error"]:
         return found
-    return active_channels.two_month_active(sales_code, year, digital=digital)
+    return active_channels.two_month_active(
+        sales_code, year, digital=digital, upto=upto)
 
 
 #: The grades that count as AT RISK. Confirmed by the business on
@@ -1574,7 +1578,8 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         def read():
             # ONE read covers both years: this year for the figure, last
             # year for the base a rate target is applied to.
-            found = _two_month_active(sales_code, year, digital=digital)
+            found = _two_month_active(sales_code, year, digital=digital,
+                                      upto=as_at)
             if "error" in found:
                 return _figure(None, problem=found["error"])
 
@@ -1656,13 +1661,20 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     def audit():
         from . import audit_returns
 
-        found = audit_returns.for_branch(branch)
+        # The return that had closed by the card's month, not whichever is
+        # newest. Internal Audit report quarterly and load late, so a
+        # September card was being given a Q4 return the moment one arrived.
+        period = audit_returns.latest_period(as_at=as_at)
+        found = audit_returns.for_branch(branch, period) if period else None
         if found is None:
-            period = audit_returns.latest_period()
             if not period:
                 why = ("Internal Audit's return has not been loaded yet. "
                        "Administration \u2192 Scorecards \u2192 Audit returns "
-                       "is where that happens")
+                       "is where that happens"
+                       if audit_returns.latest_period() is None else
+                       f"Internal Audit have loaded no return that had closed "
+                       f"by {(as_at or datetime.date.today()):%b %Y}, so this "
+                       f"card's period has none to read")
             elif not (branch or "").strip():
                 why = ("the roster records no branch against your sales code, "
                        "and this is a branch measure")
@@ -1970,20 +1982,31 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     attempt(("par", "loan_loss_charge"), ifrs)
 
     # ── Customer experience, from what CX maintain ────────────────────────
-    # Contactability and CSAT for one RM, for the newest period CX have
-    # loaded. Quarterly, so the as-at is the quarter's own end rather than the
-    # last closed month - the target is not pro-rated for these lines anyway
-    # (they are in FULL_YEAR_TARGETS: 60% is 60% in March and in December).
+    # Contactability and CSAT for one RM, for the newest period CX have loaded
+    # THAT HAD CLOSED BY THIS CARD'S MONTH. Quarterly, so the as-at is the
+    # quarter's own end rather than the last closed month - the target is not
+    # pro-rated for these lines anyway (they are in FULL_YEAR_TARGETS: 60% is
+    # 60% in March and in December).
     def cx():
         from . import cx_metrics
 
-        row = cx_metrics.for_rm(sales_code)
+        # The survey that had closed by the card's month. This read the newest
+        # period CX had loaded, whatever month the card was for, so a June
+        # card carried Q3 figures. It also assigned to a local called
+        # ``as_at`` further down, which made the enclosing ``as_at`` - the
+        # card's own month - unreachable from in here; that local is now
+        # ``at``.
+        period = cx_metrics.latest_period(as_at=as_at)
+        row = cx_metrics.for_rm(sales_code, period) if period else None
         if row is None:
-            period = cx_metrics.latest_period()
             if not period:
                 why = ("the CX team have not loaded a survey period yet. "
                        "Administration → Scorecards → Customer "
-                       "experience is where that happens.")
+                       "experience is where that happens."
+                       if cx_metrics.latest_period() is None else
+                       f"CX have loaded no survey period that had closed by "
+                       f"{(as_at or datetime.date.today()):%b %Y}, so this "
+                       f"card's period has none to read.")
             else:
                 why = (f"the CX survey for {period} does not include you. CX "
                        f"key their return on the RM's NAME, so this is either "
@@ -2003,14 +2026,14 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             marked["full_marks"] = True
             return {"cx_contactability": dict(marked), "cx_csat": dict(marked)}
 
-        as_at = cx_period_end(row["period"])
+        at = cx_period_end(row["period"])
         return {
             "cx_contactability": _figure(
-                row["contactability"], as_at, label,
+                row["contactability"], at, label,
                 problem=None if row["contactability"] is not None else
                 f"{label} has no contactability figure for you"),
             "cx_csat": _figure(
-                row["csat"], as_at, label,
+                row["csat"], at, label,
                 problem=None if row["csat"] is not None else
                 f"{label} has no CSAT figure for you"),
         }
@@ -2023,6 +2046,44 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     out["_bases"] = bases
     out["_base_problems"] = base_problems
     return out
+
+
+def period_at_or_before(periods, as_at=None):
+    """The newest of ``periods`` that had CLOSED by ``as_at``.
+
+    ``periods`` are strings in the two shapes this estate stores - ``2026-Q3``
+    and ``2026-09`` - and :func:`cx_period_end` already turns either into the
+    date it ended on.
+
+    Without ``as_at`` the newest period wins, which is what a live card wants.
+
+    With one, a period that ended AFTER the card's month is not eligible. The
+    CX survey and Internal Audit's return both used to answer with whatever
+    was newest whatever month was asked for, so a June card was scored on the
+    Q3 survey - figures from after the period it claims to report. September
+    happened to be right only because Q3 ends on 30 September.
+
+    None when nothing had closed by then: a card for a month before the first
+    survey has no survey, and saying so is better than lending it a later one.
+    """
+    eligible = []
+    for period in periods:
+        if not period:
+            continue
+        ends = cx_period_end(period)
+        if ends is None:
+            # Unparseable, so it cannot be placed in time. Allowed through
+            # only on a live card, where "newest" is the whole rule.
+            if as_at is None:
+                eligible.append((period, None))
+            continue
+        if as_at is None or ends <= as_at:
+            eligible.append((period, ends))
+    if not eligible:
+        return None
+    # Newest by string, which sorts correctly for both shapes - the reason
+    # the period is stored that way. See cx_metrics.latest_period.
+    return max(eligible, key=lambda pair: pair[0])[0]
 
 
 def cx_period_end(period):

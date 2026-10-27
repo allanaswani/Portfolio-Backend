@@ -224,7 +224,7 @@ def _previous(month):
     return (month.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
 
 
-def two_month_active(sales_code, year, digital=False):
+def two_month_active(sales_code, year, digital=False, upto=None):
     """Customers on this RM's book active in TWO consecutive months.
 
     → ``{year: (count, as_at)}`` for every year the mirror covers, or
@@ -292,6 +292,11 @@ def two_month_active(sales_code, year, digital=False):
         # The first row for each year is its latest pair, because the query
         # orders the months descending within the year.
         if yr in out:
+            continue
+        # ``upto`` is the month end a NAMED-MONTH card is for. The rows are
+        # already newest first, so skipping the months after it lets the
+        # right pair win rather than one from after the card's period.
+        if upto is not None and month > upto:
             continue
         last_day = (month.replace(day=28) + datetime.timedelta(days=4))
         last_day = last_day.replace(day=1) - datetime.timedelta(days=1)

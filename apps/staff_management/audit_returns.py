@@ -343,11 +343,22 @@ def save(rows, period, who="", source=""):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def latest_period():
+def latest_period(as_at=None):
+    """The newest audit period loaded, or None.
+
+    ``as_at`` restricts it to returns that had CLOSED by that date. Internal
+    Audit report quarterly and load late, so without this a September card
+    picked up a Q4 return as soon as one arrived - a figure from after the
+    period the card reports.
+    """
+    from .live_scorecard import period_at_or_before
     from .models import ScAuditReturn
 
-    return (ScAuditReturn.objects.order_by("-period")
-            .values_list("period", flat=True).first())
+    periods = (ScAuditReturn.objects.order_by("-period")
+               .values_list("period", flat=True).distinct())
+    if as_at is None:
+        return periods.first()
+    return period_at_or_before(list(periods), as_at)
 
 
 def for_branch(branch, period=None):

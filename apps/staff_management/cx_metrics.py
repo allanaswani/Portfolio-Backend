@@ -295,8 +295,13 @@ def save(rm_rows, segment_rows, who=""):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def latest_period():
+def latest_period(as_at=None):
     """The newest period loaded, or None.
+
+    ``as_at`` restricts it to periods that had CLOSED by that date, which is
+    what a card for a named month needs - see
+    ``live_scorecard.period_at_or_before``. Omitted, the newest wins, which
+    is what the live card and every screen in Administration want.
 
     Newest by string, which sorts correctly for both ``2026-Q2`` and
     ``2026-06`` — the reason the period is stored in that shape.
@@ -305,15 +310,24 @@ def latest_period():
     CX's summary sheet is filled in before the per-RM sheets on a bad quarter —
     and reading only the RM table would make that period invisible.
     """
+    from .live_scorecard import period_at_or_before
     from .models import CxRmMetric, CxSegmentMetric
 
-    found = [
-        model.objects.order_by("-period").values_list(
-            "period", flat=True).first()
-        for model in (CxRmMetric, CxSegmentMetric)
-    ]
-    found = [period for period in found if period]
-    return max(found) if found else None
+    if as_at is None:
+        found = [
+            model.objects.order_by("-period").values_list(
+                "period", flat=True).first()
+            for model in (CxRmMetric, CxSegmentMetric)
+        ]
+        found = [period for period in found if period]
+        return max(found) if found else None
+
+    # Every period, not just the newest from each table: the newest may have
+    # closed after the card's month, and then the one before it is the answer.
+    periods = set()
+    for model in (CxRmMetric, CxSegmentMetric):
+        periods |= set(model.objects.values_list("period", flat=True).distinct())
+    return period_at_or_before(periods, as_at)
 
 
 def for_rm(sales_code, period=None):
