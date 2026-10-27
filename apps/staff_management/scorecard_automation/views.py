@@ -299,7 +299,15 @@ class ScorecardActualsUploadView(_WorkbookUploadView):
                            "read the workbook for."}, status=400)
 
         try:
-            result = read_actuals(upload, month, definitions)
+            # The rosters, so a row whose SALES CODE CELL IS BLANK still
+            # reaches its owner by name. Nine people in the sales template -
+            # Anna Amasinde, Simon Waruingi, John Gichuki, Jane Imana and
+            # five more, every one of them a head - have figures and no code,
+            # and without this every figure of theirs is read and discarded.
+            from apps.staff_management.cx_metrics import roster_names
+
+            result = read_actuals(upload, month, definitions,
+                                  names=roster_names())
         except Exception as exc:  # noqa: BLE001 - the message is for the reader
             return Response(
                 {"file": f"That workbook could not be read: {exc}"}, status=400)
@@ -318,6 +326,14 @@ class ScorecardActualsUploadView(_WorkbookUploadView):
                        for k, n in sorted(found.items())],
             "not_configured": result.skipped,
             "could_not_read": result.unreadable,
+            # People with figures and no sales code whose name no roster
+            # matched either. Reported rather than dropped: these are real
+            # figures and the only thing missing is one cell, which somebody
+            # can fill in a minute once they know whose it is.
+            "no_sales_code": [
+                {"sheet": sheet, "row": row_number, "name": person,
+                 "role": role, "figures": many}
+                for sheet, row_number, person, role, many in result.unkeyed],
             "warnings": result.warnings,
         }
 

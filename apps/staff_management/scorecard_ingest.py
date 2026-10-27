@@ -70,6 +70,11 @@ class ReadResult:
     skipped: list = field(default_factory=list)
     sheets_seen: int = 0
     people: int = 0
+    #: Rows that carry a NAME and figures but no sales code, and whose name
+    #: no roster matched - ``[(sheet, row, name, role, how_many_figures)]``.
+    #: Named rather than dropped: these are real figures for real people and
+    #: silently discarding them is what hid nine of them.
+    unkeyed: list = field(default_factory=list)
 
     @property
     def total(self):
@@ -78,6 +83,22 @@ class ReadResult:
 
 def _text(value):
     return "" if value is None else " ".join(str(value).split())
+
+
+def _fold_name(name):
+    """A name as a comparison key.
+
+    MUST fold exactly the way ``cx_metrics.fold_name`` does, because the map
+    this is looked up in is built by ``cx_metrics.roster_names`` with that
+    function: lower case, everything but letters and spaces dropped,
+    whitespace collapsed. A key folded any other way - upper case, say -
+    matches nothing at all and the fallback silently does nothing, which is
+    indistinguishable from the bug it is here to fix.
+    """
+    import re as _re
+
+    text = _re.sub(r"[^a-z ]", " ", str(name or "").lower())
+    return " ".join(text.split())
 
 
 def _blocks(header):
@@ -116,8 +137,28 @@ def _number(value):
     return None
 
 
-def read_actuals(source, eom_date, definitions):
+def read_actuals(source, eom_date, definitions, names=None):
     """Read one review month out of the workbook.
+
+    ``names`` is ``{folded name: sales code}`` - see
+    ``cx_metrics.roster_names`` - and it is how a row with a BLANK SALES CODE
+    still reaches its owner.
+
+    That blank is not hypothetical. In ``2026_Actual_Template``, nine people
+    have figures and no code in their row, and every one of them is a head:
+
+        Anna Amasinde    SME HEAD        Simon Waruingi   SME HEAD
+        John Gichuki     TRADE HEAD      Jane Imana       PB HEAD
+        Christopher Opiyo  Charles Munuve  Jerusha Igombo
+        Imelda Muganda     Steven Lila
+
+    Anna Amasinde's revenue contribution runs from 33.5m to 143.6m across the
+    months of that file. This keyed every row on the code cell alone, so all
+    of it was read and thrown away - and the card then reported she was on no
+    roster, which is a different complaint about the same missing cell.
+
+    Passed in rather than queried here, like ``definitions``, so the parser
+    stays testable without a database.
 
     ``definitions`` are the ``ScKpi`` rows to look for — passed in rather than
     queried here so the parser stays testable without a database, and so the
@@ -181,10 +222,27 @@ def read_actuals(source, eom_date, definitions):
                 continue
 
             code_column = start + 1
+            # PF number, sales code, name - in that order on every sheet of
+            # these templates. The name is the fallback key.
+            name_column = start + 2
             found = 0
-            for raw in rows[1:]:
+            unkeyed_here = {}
+            for row_number, raw in enumerate(rows[1:], 2):
                 code = _text(raw[code_column]) if code_column < len(raw) else ""
+                person = (_text(raw[name_column])
+                          if name_column < len(raw) else "")
+                if not code and person:
+                    # The code cell is empty. Ask the rosters who this name is
+                    # before giving up on the row.
+                    code = (names or {}).get(_fold_name(person), "")
                 if not code:
+                    if person:
+                        role = (_text(raw[start + 3])
+                                if start + 3 < len(raw) else "")
+                        value = _number(raw[column]) if column < len(raw) else None
+                        if value is not None:
+                            key = (real, row_number, person, role)
+                            unkeyed_here[key] = unkeyed_here.get(key, 0) + 1
                     continue
                 value = _number(raw[column]) if column < len(raw) else None
                 if value is None:
@@ -199,6 +257,10 @@ def read_actuals(source, eom_date, definitions):
                     sheet=real, block=block))
                 seen_codes.add(code.upper())
                 found += 1
+            for (sheet_name, row_number, person, role), many in \
+                    sorted(unkeyed_here.items()):
+                result.unkeyed.append(
+                    (sheet_name, row_number, person, role, many))
             if not found:
                 result.warnings.append(
                     f"{kpi.kpi_code}: {real} block {block} has no figures for "
