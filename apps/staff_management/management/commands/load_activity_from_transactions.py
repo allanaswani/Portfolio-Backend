@@ -31,6 +31,7 @@ on the Windows console and takes the command down with it.
 import datetime
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone as djtimezone
 
 #: What counts as DIGITAL. The two channel descriptions the CEO dashboard
 #: already treats as digital - see ``gceo_legacy.digital_active_30`` - so
@@ -86,6 +87,33 @@ def _month(text, what):
     except Exception as exc:  # noqa: BLE001
         raise CommandError(
             f"--{what} should be YYYY-MM, for example 2025-01.") from exc
+
+
+def _aware(value, zone):
+    """Stamp the warehouse's naive timestamps with the bank's own time zone.
+
+    ``transaction_diary.tmstamp`` is ``timestamp without time zone``, so
+    psycopg hands back a naive ``datetime`` for every row.
+
+    Django copes with that - ``DateTimeField.get_prep_value`` localises a
+    naive value with ``get_default_timezone()``, which is exactly what this
+    does, so the figures were never wrong. What it also does is
+    ``warnings.warn`` FIRST, once per value. The message embeds the timestamp
+    itself, so Python's warning registry cannot collapse them, and a run over
+    a few hundred thousand customers writes a few hundred thousand
+    RuntimeWarnings to the console. That is what made the first production
+    attempt look hung at the write step, with the months already read.
+
+    So the conversion happens here, up front and once per row, and Django
+    finds nothing left to complain about. Africa/Nairobi has never observed
+    DST, so there is no ambiguous hour for ``make_aware`` to resolve - the
+    case Django's own comment there says it cannot handle.
+
+    An already-aware value is returned untouched, and ``None`` stays ``None``.
+    """
+    if value is None or djtimezone.is_aware(value):
+        return value
+    return djtimezone.make_aware(value, zone)
 
 
 def _next(month):
@@ -257,6 +285,11 @@ class Command(BaseCommand):
         write(f"  last-transaction mirror, {len(months)} month(s) back to "
               f"{floor:%b %Y}, newest first")
 
+        # Looked up once, not per row: this loop sees hundreds of thousands
+        # of timestamps and `transaction_diary.tmstamp` is "timestamp WITHOUT
+        # time zone", so every one of them arrives naive.
+        zone = djtimezone.get_default_timezone()
+
         latest = {}
         failed = []
         for month in months:
@@ -278,7 +311,7 @@ class Command(BaseCommand):
             for cust_id, last_txn in rows:
                 key = int(cust_id)
                 if key not in latest:        # newest month wins
-                    latest[key] = last_txn
+                    latest[key] = _aware(last_txn, zone)
                     fresh += 1
             write(f"      {month:%b %Y}  {len(rows):>8,} transacted   "
                   f"{fresh:>8,} new to the mirror")

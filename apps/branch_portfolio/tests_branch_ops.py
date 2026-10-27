@@ -23,12 +23,13 @@ actually filters. The staff path degrades instead: ``employee_table`` absent
 means the department falls back to the DMC unit, never a query error.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.db import connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
+from django.utils import timezone as djtimezone
 from rest_framework.test import APIClient
 
 from unittest import mock
@@ -498,6 +499,47 @@ class ActivityArgumentTests(SimpleTestCase):
         """One page view must not be able to ask for five years of the bank's
         transaction history."""
         self.assertEqual(lq._clean_lookback(99_999), 1825)
+
+
+class LastTransactionTimestampTests(SimpleTestCase):
+    """The mirror's timestamps, before they reach the column.
+
+    ``transaction_diary.tmstamp`` is ``timestamp without time zone``, so the
+    loader gets naive datetimes. Django would localise them itself, so the
+    stored figure was never wrong - but it warns first, once per value, with
+    the timestamp in the message so the warnings cannot be collapsed. A few
+    hundred thousand customers meant a few hundred thousand RuntimeWarnings,
+    which is what stalled the first production run at the write step.
+
+    These assert the conversion is a no-op on the reading: the wall clock must
+    not move, or every window would shift by the offset.
+    """
+
+    def test_a_naive_timestamp_is_stamped_with_the_banks_own_zone(self):
+        from apps.staff_management.management.commands import (
+            load_activity_from_transactions as cmd)
+
+        zone = djtimezone.get_default_timezone()
+        naive = datetime(2026, 9, 30, 22, 54, 5)
+        made = cmd._aware(naive, zone)
+
+        self.assertTrue(djtimezone.is_aware(made))
+        # The wall-clock reading must not move: 22:54 stays 22:54, in Nairobi.
+        self.assertEqual(made.replace(tzinfo=None), naive)
+        self.assertEqual(made.utcoffset(), timedelta(hours=3))
+        # And it must agree with what Django would have done unaided, since
+        # that is the behaviour this replaces rather than changes.
+        self.assertEqual(
+            made, djtimezone.make_aware(naive, djtimezone.get_default_timezone()))
+
+    def test_an_aware_timestamp_is_left_exactly_as_it_is(self):
+        from apps.staff_management.management.commands import (
+            load_activity_from_transactions as cmd)
+
+        zone = djtimezone.get_default_timezone()
+        already = djtimezone.now()
+        self.assertIs(cmd._aware(already, zone), already)
+        self.assertIsNone(cmd._aware(None, zone))
 
 
 class BranchCustomerActivitySqlTests(TransactionTestCase):
