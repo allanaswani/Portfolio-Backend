@@ -144,8 +144,11 @@ def _holder_counts():
                 continue
             seen.add(folded)
             counts[role] += 1
+    # Not just ``bo_``: apply_roster writes the workbook's List sheet here
+    # with sales role codes, and counting only the back office understated
+    # every sales role by however many of its holders are off the DMC table.
     for code, role in (EmployeeRoleHistory.objects
-                       .filter(role_code__startswith=BO_PREFIX)
+                       .exclude(role_code="")
                        .values_list("sales_code", "role_code")):
         folded = (code or "").strip().upper()
         if not folded or folded in seen:
@@ -200,7 +203,7 @@ def roster(role_code="", search=""):
              in StaffEmployeeData.objects.exclude(sales_code="")
              .values_list("sales_code", "staff_name", "staff_unit")}
     for entry in (EmployeeRoleHistory.objects
-                  .filter(role_code__startswith=BO_PREFIX)
+                  .exclude(role_code="")
                   .order_by("sales_code")):
         code = (entry.sales_code or "").strip().upper()
         if not code or code in seen:
@@ -221,7 +224,10 @@ def roster(role_code="", search=""):
             "branch": unit or parts[1],
             "line_manager": parts[3],
             "roster": "employee_role_history",
-            "family": "back office",
+            # Read off the role code, the way lines 115 and 253 already do:
+            # this table is no longer the back office's alone.
+            "family": ("back office" if entry.role_code.startswith(BO_PREFIX)
+                       else "sales"),
         })
 
     if wanted:

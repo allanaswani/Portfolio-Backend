@@ -208,14 +208,18 @@ def _roster():
             seen.add(code)
             out.append((code, row.staff_name or "", row.staff_role or "", role))
 
-    # The back office. Names come from the HR record where there is one, and
-    # from the roster's own notes otherwise - which is where migration 0032 put
-    # them, because employee_role_history has nowhere else for a name.
+    # Everybody else on the roster table - the back office that migration
+    # 0032 seeded AND the List-sheet people ``apply_roster`` writes with sales
+    # role codes. Filtering this to ``bo_`` left the second group off the list
+    # of people who need a figure, so nobody could enter one for them.
+    # Names come from the HR record where there is one, and from the roster's
+    # own notes otherwise - which is where migration 0032 put them, because
+    # employee_role_history has nowhere else for a name.
     names = {(code or "").strip().upper(): name for code, name
              in StaffEmployeeData.objects.exclude(sales_code="")
              .values_list("sales_code", "staff_name")}
     for entry in (EmployeeRoleHistory.objects
-                  .filter(role_code__startswith="bo_").order_by("sales_code")):
+                  .exclude(role_code="").order_by("sales_code")):
         code = (entry.sales_code or "").strip().upper()
         if not code or code in seen:
             continue

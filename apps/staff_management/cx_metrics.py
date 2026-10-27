@@ -140,9 +140,12 @@ def roster_names():
     for name, code in StaffEmployeeData.objects.exclude(
             sales_code="").values_list("staff_name", "sales_code"):
         remember(name, code)
-    # The back-office roster keeps the name in notes - see migration 0032.
-    for code, notes in EmployeeRoleHistory.objects.filter(
-            role_code__startswith="bo_").values_list("sales_code", "notes"):
+    # The roster table keeps the name in notes - see migration 0032. Read in
+    # full rather than filtered to ``bo_``, because apply_roster puts the
+    # List-sheet people here too and a CX figure for one of them would
+    # otherwise find nobody to attach to.
+    for code, notes in EmployeeRoleHistory.objects.exclude(
+            role_code="").values_list("sales_code", "notes"):
         remember((notes or "").split("|")[0], code)
     return out
 

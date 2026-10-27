@@ -88,13 +88,26 @@ class Command(BaseCommand):
                  .exclude(sales_code__isnull=True)
                  .exclude(sales_code="")
                  .values_list("sales_code", flat=True))
-        back_office = (EmployeeRoleHistory.objects
-                       .filter(role_code__startswith="bo_")
-                       .exclude(sales_code__isnull=True)
-                       .exclude(sales_code="")
-                       .values_list("sales_code", flat=True))
+        # The WHOLE roster table, not just the ``bo_`` half.
+        #
+        # This filter is why a September coverage run reported 2,885 lines and
+        # left out everybody on the workbook's List sheet who is not also on
+        # branch_employee_dmc_data - head office, Commercial, Mortgage,
+        # Diaspora, Ultimate. ``scorecard_ingest.apply_roster`` writes all 91
+        # of them here with role codes like ``sme_rm``, so a report that asks
+        # this table for ``bo_`` only is measuring a sample it quietly chose,
+        # and the figure it prints is not the bank's coverage.
+        #
+        # The ``seen`` set below already de-dupes against the sales pass, so
+        # anybody on both tables is still counted once, from the DMC row that
+        # carries their targets.
+        rostered = (EmployeeRoleHistory.objects
+                    .exclude(role_code="")
+                    .exclude(sales_code__isnull=True)
+                    .exclude(sales_code="")
+                    .values_list("sales_code", flat=True))
 
-        for code in list(sales) + list(back_office):
+        for code in list(sales) + list(rostered):
             key = (code or "").strip().upper()
             if not key or key in seen:
                 continue
