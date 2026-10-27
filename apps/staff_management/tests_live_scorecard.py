@@ -13,7 +13,8 @@ from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
 from apps.portfolio.models import Profile
-from .live_scorecard import build_card, role_code_for, score_for
+from .live_scorecard import (
+    build_card, prorate_to, role_code_for, score_for)
 from .models import BranchFinalEmployeeDmcData
 
 
@@ -376,3 +377,56 @@ class ToleranceBandTests(SimpleTestCase):
         self.assertEqual(up(10.0), 1.0)
         self.assertEqual(up(9.5), 0.5)
         self.assertEqual(up(8.0), 0.0)
+
+
+class JoinerProrationTests(SimpleTestCase):
+    """A target for twelve months cannot be asked of somebody who has been
+    here for six.
+
+    The List sheet records it in ``prorate_new`` - 24 of its 91 people are
+    not full-year - and ``apply_roster`` turns that into a start date on
+    ``employee_role_history`` saying exactly why: "prorate_new becomes the
+    role's start date, because that is what the engine prorates from". The
+    engine then never read it, and Peter Muriungi (prorate_new 9, so from
+    April) was asked 22,500,000 x 9.871/12 = 18,508,064 at the end of
+    October - nine and a half months of plan against seven of tenure.
+    """
+
+    ANNUAL = 22_500_000
+    APRIL = datetime.date(2026, 4, 1)
+
+    def test_the_slice_starts_when_the_person_did(self):
+        at = datetime.date(2026, 9, 30)
+        self.assertEqual(prorate_to(self.ANNUAL, at), 16_875_000)          # 9/12
+        self.assertEqual(prorate_to(self.ANNUAL, at, since=self.APRIL),
+                         11_250_000)                                       # 6/12
+
+    def test_at_year_end_a_nine_month_joiner_owes_nine_twelfths(self):
+        """The check that settles the denominator. prorate_new = 9 means nine
+        active months, and nine twelfths of the annual is what falls out."""
+        self.assertEqual(
+            prorate_to(self.ANNUAL, datetime.date(2026, 12, 31),
+                       since=self.APRIL),
+            self.ANNUAL * 9 / 12)
+
+    def test_a_full_year_person_is_untouched(self):
+        at = datetime.date(2026, 9, 30)
+        self.assertEqual(prorate_to(self.ANNUAL, at, since=None),
+                         prorate_to(self.ANNUAL, at))
+
+    def test_a_start_date_from_an_earlier_year_is_ignored(self):
+        """They have been here all of THIS year."""
+        at = datetime.date(2026, 9, 30)
+        self.assertEqual(
+            prorate_to(self.ANNUAL, at, since=datetime.date(2025, 4, 1)),
+            prorate_to(self.ANNUAL, at))
+
+    def test_a_start_after_the_as_at_date_cannot_go_negative(self):
+        self.assertEqual(
+            prorate_to(self.ANNUAL, datetime.date(2026, 3, 31),
+                       since=datetime.date(2026, 9, 1)), 0.0)
+
+    def test_counts_are_still_whole_units(self):
+        self.assertEqual(
+            prorate_to(12, datetime.date(2026, 9, 30), counted=True,
+                       since=self.APRIL), 6.0)

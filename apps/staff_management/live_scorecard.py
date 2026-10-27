@@ -2622,6 +2622,13 @@ class Person:
     #: The DMC row, when there is one. Back-office staff have none, and their
     #: targets come off the role's card instead.
     dmc_row: object = None
+    #: When this person STARTED in the role this year, or None for somebody
+    #: who has held it all year. ``scorecard_ingest.apply_roster`` works it
+    #: out from the List sheet's ``prorate_new`` column and says what it is
+    #: for: "prorate_new becomes the role's start date, because that is what
+    #: the engine prorates from". The engine then never read it. See
+    #: :func:`prorate_to`.
+    started: object = None
 
 
 #: The ``List`` sheet's job titles for back-office staff, as
@@ -2662,6 +2669,32 @@ def bo_role_for(job_title):
     return None
 
 
+def started_in_role(sales_code, year=None):
+    """When this person started their current role THIS YEAR, or None.
+
+    ``None`` means they have held it since 1 January, which is the ordinary
+    case and the one that changes nothing.
+
+    24 of the 91 people on the desk's roster are not full-year - joiners and
+    role changers - and the List sheet records it in ``prorate_new``.
+    ``apply_roster`` turns that into a start date on ``employee_role_history``
+    for exactly this purpose.
+    """
+    import datetime
+
+    from .models import EmployeeRoleHistory
+
+    year = year or datetime.date.today().year
+    start = (EmployeeRoleHistory.objects
+             .filter(sales_code__iexact=(sales_code or "").strip(),
+                     start_date__year=year)
+             .order_by("-start_date")
+             .values_list("start_date", flat=True).first())
+    if start is None or start <= datetime.date(year, 1, 1):
+        return None
+    return start
+
+
 def resolve_person(sales_code):
     """Who this sales code belongs to and which card they hold, or None.
 
@@ -2694,11 +2727,15 @@ def resolve_person(sales_code):
     if row is not None:
         role = role_code_for(row.staff_role)
         if role is not None:
+            # The DMC roster has no start date on it. The role history
+            # does, so it is asked even when the DMC row answered for the
+            # role - a joiner is a joiner whichever list names them.
             return Person(
                 sales_code=code, name=row.staff_name or "", role_code=role,
                 branch=row.staff_branch or row.staff_unit or "",
                 team_leader=team_leader_of(row),
-                roster="the branch DMC roster", dmc_row=row)
+                roster="the branch DMC roster", dmc_row=row,
+                started=started_in_role(code))
 
     # 2. the role history - the roster the workbook's own List sheet fills
     #
@@ -2740,7 +2777,12 @@ def resolve_person(sales_code):
             # card would send them to the wrong person to get it corrected.
             roster=("the back-office roster"
                     if held.role_code.startswith("bo_")
-                    else "the scorecard roster"))
+                    else "the scorecard roster"),
+            started=(held.start_date
+                     if held.start_date
+                     and held.start_date > datetime.date(
+                         held.start_date.year, 1, 1)
+                     else None))
 
     # 3. the HR record, by job title - SALES titles as well as back-office
     #
@@ -3036,8 +3078,25 @@ def pf_for(sales_code, dmc_row=None):
     return str(getattr(staff, "staff_pf_number", "") or "").strip()
 
 
-def prorate_to(annual, as_at=None, counted=False):
+def prorate_to(annual, as_at=None, counted=False, since=None):
     """An annual target sliced to the date the ACTUAL is as at.
+
+    ``since`` is the date this person STARTED the role, when that is later
+    than 1 January. The slice is then measured from their start rather than
+    from the turn of the year, because a target for twelve months of work
+    cannot be asked of somebody who has been there for six.
+
+    Peter Muriungi is the case. His List row carries ``prorate_new = 9``, so
+    he began in April. His card asked 22,500,000 x 9.871/12 = 18,508,064 of
+    him at the end of October - nine months and a half of plan, against seven
+    months of tenure. From April the same slice is 6/12 at a September
+    closing, and that is what he is actually accountable for. 24 of the 91
+    people on the roster are in his position.
+
+    The DENOMINATOR stays 12. The annual figure is the year's target for the
+    role, and a joiner is answerable for the part of the year they were there
+    - not for the whole of it compressed into their months. Scaling by their
+    own months instead would hand a five-month joiner the full annual plan.
 
     ELAPSED MONTHS, which is what the bank's own sheets use.
 
@@ -3071,6 +3130,18 @@ def prorate_to(annual, as_at=None, counted=False):
     import calendar
     in_month = calendar.monthrange(as_at.year, as_at.month)[1]
     months = (as_at.month - 1) + (as_at.day / in_month)
+
+    if since is not None:
+        if isinstance(since, datetime.datetime):
+            since = since.date()
+        # Only within the same year, and only when it is actually later than
+        # the turn of it. A start date from a previous year says they have
+        # been here all of this one.
+        if since.year == as_at.year and since > datetime.date(as_at.year, 1, 1):
+            start_months = (since.month - 1) + (
+                (since.day - 1) / calendar.monthrange(since.year, since.month)[1])
+            months = max(0.0, months - start_months)
+
     sliced = float(annual) * (months / 12)
     return float(round(sliced)) if counted else sliced
 
@@ -3558,7 +3629,8 @@ def build_card(sales_code, profile=None, as_at=None):
         slice_to = as_at if as_at else line_as_at
         ytd_target = (to_slice if full_year
                       else prorate_to(to_slice, slice_to,
-                                      counted=source.counted))
+                                      counted=source.counted,
+                                      since=person.started))
 
         # The missing TARGET is reported ahead of a failed read, because a line
         # with no target cannot be scored whatever the actual turns out to be,
@@ -3733,6 +3805,12 @@ def build_card(sales_code, profile=None, as_at=None):
             # Which of the three rosters answered, so a card can be traced to
             # the list it came off.
             "roster": person.roster,
+            # When they started the role, for somebody who has not held it all
+            # year. On the card so a target that looks small can be explained
+            # rather than queried: it is smaller because they have been here
+            # for part of the year.
+            "started": (person.started.isoformat()
+                        if person.started else None),
         },
         # The month the card is FOR, which for a past month is not today.
         # The month the card is FOR. ``as_at`` is the parameter, and nothing
