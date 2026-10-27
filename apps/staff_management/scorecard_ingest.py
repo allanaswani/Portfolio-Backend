@@ -85,6 +85,54 @@ def _text(value):
     return "" if value is None else " ".join(str(value).split())
 
 
+#: Sheets that hold no figures of their own - they ADD UP other sheets.
+#:
+#: ``VIC`` in the back-office template is 1,284 copies of::
+#:
+#:     =VLOOKUP($B2, VIC_Life!$B:$R,     COLUMN()-1, 0)
+#:    + VLOOKUP($B2, VIC_Non_Life!$B:$R, COLUMN()-1, 0)
+#:
+#: So when both source sheets are blank for a month the sheet computes
+#: ``0 + 0`` and caches a nought in every row. Read as a figure, that is 107
+#: back-office people scored 0% on a month nobody has loaded - which is what
+#: was happening for September, October, November, December AND January 2026,
+#: measured in that file:
+#:
+#:     Aug  107 non-blank, 95 zero, 12 non-zero
+#:     Sep  107 non-blank, 107 zero, 0 non-zero   <- VIC_Life/Non_Life empty
+#:
+#: A nought on a sheet like this is only a figure when at least one of the
+#: sheets it adds up has something for that month. Declared rather than
+#: guessed at from the shape of the data, because on a sheet like
+#: ``Operation_Lossess`` a column of noughts is a real and good month.
+DERIVED_SHEETS = {
+    "vic": ("vic_life", "vic_non_life"),
+}
+
+
+def _source_has_a_figure(workbook, by_lower, sheet_names, month):
+    """Does any of these sheets hold a value for ``month``? → bool.
+
+    Used only for :data:`DERIVED_SHEETS`. A sheet that is not in the workbook
+    counts as holding nothing, which is the safe direction: it makes the
+    derived nought untrusted rather than trusted.
+    """
+    for wanted in sheet_names:
+        real = by_lower.get(wanted)
+        if real is None:
+            continue
+        rows = list(workbook[real].iter_rows(values_only=True))
+        if not rows:
+            continue
+        column = _month_column(list(rows[0]), 0, month)
+        if column is None:
+            continue
+        for raw in rows[1:]:
+            if column < len(raw) and _number(raw[column]) is not None:
+                return True
+    return False
+
+
 def _fold_name(name):
     """A name as a comparison key.
 
@@ -205,6 +253,20 @@ def read_actuals(source, eom_date, definitions, names=None):
         result.sheets_seen += 1
         header = list(rows[0])
         starts = _blocks(header)
+
+        # A sheet that only adds up other sheets cannot be trusted for a
+        # month those sheets are empty for - it caches 0 + 0 and the nought
+        # looks exactly like a figure. See DERIVED_SHEETS.
+        adds_up = DERIVED_SHEETS.get(sheet_lower)
+        if adds_up and not _source_has_a_figure(
+                workbook, by_lower, adds_up, month):
+            for kpi in kpis:
+                result.unreadable.append(
+                    f"{kpi.kpi_code}: {real} adds up "
+                    f"{' and '.join(adds_up)}, and neither holds anything for "
+                    f"{month:%B %Y} - so every nought on it is the formula, "
+                    f"not a figure, and none of it was loaded.")
+            continue
 
         for kpi in kpis:
             block = kpi.actuals_block or 1

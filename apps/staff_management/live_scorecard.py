@@ -1005,7 +1005,55 @@ def _table_rows(table):
         return 0
 
 
-def _property_sales_ytd(staff_name, year):
+def seller_spellings(sales_code, staff_pf=""):
+    """Every name the property feeds might carry for this SALES CODE.
+
+    The property unit feeds carry no code column - ``staff_name`` is all they
+    have - so "map them on the sales code" has to go through a table that
+    holds both. One already does, and the desk already maintains it through a
+    screen and a CSV upload: ``afh_seller_mapping``, whose ``staff_id`` is
+    the sales code or the PF number, with the staff member's own ``name`` and
+    the ``afh_name`` the form was filled in with.
+
+    It was being used for the affordable-housing half of the property line
+    only. The same row answers for the HFDI and CRM unit feeds, because it is
+    the same person and the same question: which spellings are theirs. So one
+    mapping now serves all three feeds, and a spelling added to fix affordable
+    housing fixes the unit feeds at the same time.
+
+    Returns a list of spellings, never ``None``. Empty when the mapping has
+    nothing for this code, which leaves the name matching exactly as it was.
+    """
+    from django.db import transaction
+
+    from apps.hfdi.models import AFHSellerMapping
+
+    code = (sales_code or "").strip()
+    pf = str(staff_pf or "").strip()
+    keys = [k for k in (code, pf) if k]
+    if not keys:
+        return []
+
+    out = []
+    try:
+        with transaction.atomic():
+            rows = (AFHSellerMapping.objects
+                    .filter(staff_id__in=keys)
+                    .values_list("name", "afh_name"))
+            for proper, typed in rows:
+                for spelling in (proper, typed):
+                    text = " ".join(str(spelling or "").split()).strip()
+                    if text and not any(
+                            text.upper() == seen.upper() for seen in out):
+                        out.append(text)
+    except Exception:  # noqa: BLE001 - an absent mapping must not blank a
+        # card. Without it the name matching stands, which is where this
+        # started, so failing quiet here loses nothing that was working.
+        return []
+    return out
+
+
+def _property_sales_ytd(staff_name, year, sales_code="", staff_pf=""):
     """HFDI and CRM property this person sold → (units, value, seen, latest).
 
     Read across BOTH unit-level feeds and de-duplicated, because they hold the
@@ -1038,6 +1086,14 @@ def _property_sales_ytd(staff_name, year):
     if not present:
         return None, None, False, None, []
 
+    # Mapped by SALES CODE first - see seller_spellings. These are spellings
+    # somebody has stated belong to this code, so they are trusted ahead of
+    # anything matched by resemblance.
+    accepted = [name]
+    for spelling in seller_spellings(sales_code, staff_pf):
+        if not any(spelling.upper() == seen.upper() for seen in accepted):
+            accepted.append(spelling)
+
     # How these feeds spell him, which is not always how the roster does.
     #
     # The CANDIDATES are kept. ``resolve_feed_name`` already works out which
@@ -1049,8 +1105,9 @@ def _property_sales_ytd(staff_name, year):
     # acted on.
     spelling, _how, candidates = resolve_feed_name(
         PROPERTY_UNIT_TABLES, "staff_name", name)
-    if spelling:
-        name = spelling
+    if spelling and not any(spelling.upper() == seen.upper()
+                            for seen in accepted):
+        accepted.append(spelling)
 
     branches, params = [], []
     for index, table in enumerate(present):
@@ -1062,9 +1119,12 @@ def _property_sales_ytd(staff_name, year):
                    {index} AS feed,
                    ROW_NUMBER() OVER () AS rn
             FROM {table}
-            WHERE UPPER(TRIM(COALESCE(staff_name, ''))) = UPPER(TRIM(%s))
+            WHERE UPPER(TRIM(COALESCE(staff_name, ''))) = ANY(%s)
         """)
-        params.append(name)
+        # Every accepted spelling, upper-cased and trimmed to match the
+        # column expression. ANY() rather than a chain of ORs so one bind
+        # parameter carries however many spellings the mapping holds.
+        params.append([s.strip().upper() for s in accepted])
 
     sql = f"""
         WITH everything AS ({' UNION ALL '.join(branches)}),
@@ -1850,8 +1910,11 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         reported as a nil: missing from both reads exactly like assisting
         nobody, and those must not look the same on a scorecard.
         """
+        # The sales code and the PF go in too: afh_seller_mapping holds the
+        # spellings these feeds carry against one or the other, which is how
+        # a feed with no code column is still keyed on the code.
         hfdi_units, hfdi_value, on_return, latest, near = _property_sales_ytd(
-            staff_name, year)
+            staff_name, year, sales_code=sales_code, staff_pf=staff_pf)
         afh_units, afh_value, mapped = _afh_property_ytd(
             sales_code, staff_name, year)
 
