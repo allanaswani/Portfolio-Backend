@@ -81,6 +81,34 @@ def build_card_workbook(card, signoff=None):
     staff = card.get("staff") or {}
     bold = Font(bold=True)
 
+    # ── the mark ──────────────────────────────────────────────────────────
+    #
+    # Every scorecard sheet in the desk's own workbook carries a cell reading
+    # "HFCB Logo" in row 2, where the image sits. This file goes to a reviewer
+    # and gets signed, and it was going out with no mark on it at all - no
+    # images, no drawings, nothing.
+    #
+    # Anchored at H1, which is clear: the header block writes to columns 1, 3,
+    # 4, 5, 7 and 11, so H to J are empty in the rows it spans. Scaled to a
+    # tenth of the source (1300x575) so it reads as a letterhead rather than
+    # covering the card.
+    #
+    # Guarded by exists(): a missing asset must never turn a download into a
+    # 500. A card with no logo is a card somebody can still sign.
+    import pathlib
+
+    from openpyxl.drawing.image import Image as SheetImage
+
+    mark = pathlib.Path(__file__).parent / "assets" / "hfcb-logo.png"
+    if mark.exists():
+        try:
+            logo = SheetImage(str(mark))
+            logo.width, logo.height = 132, 58
+            ws.add_image(logo, "H1")
+            ws.row_dimensions[1].height = 34
+        except Exception:  # noqa: BLE001 - see above; the card still goes out
+            pass
+
     def fraction(value):
         """A weight or a score, kept as the fraction the bank's sheet holds.
 
@@ -99,7 +127,13 @@ def build_card_workbook(card, signoff=None):
     # The bank is HFCB. "HFC" is the old name and must not go out on a
     # document somebody puts their signature to.
     title = (staff.get("title") or "").upper()
-    at(1, 1, f"{datetime.date.today().year} {title} OBJECTIVES - HFCB",
+    # The card's OWN year, not today's. A September 2026 card downloaded in
+    # January would otherwise head itself 2027 - the same fault as the period
+    # label, which took whatever date happened to be to hand.
+    period_text = str(((card.get("period") or {}).get("as_at") or ""))[:4]
+    year = int(period_text) if period_text.isdigit() else \
+        datetime.date.today().year
+    at(1, 1, f"{year} {title} OBJECTIVES - HFCB",
        bold=True, size=13, color=teal)
 
     at(2, 1, "Staff Name:", bold=True)

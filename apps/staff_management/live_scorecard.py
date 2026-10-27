@@ -141,6 +141,15 @@ class Source:
     #: message blames the DMC row, which is wrong for a line whose target is
     #: missing for a reason of its own - the dormancy rate being the case this
     #: was added for.
+    #: A TOLERANCE BAND, in the line's own units. Full marks at or inside
+    #: the target, HALF marks within ``band`` of it, nothing beyond. The
+    #: account-opening cards are scored this way and the sheet says so::
+    #:
+    #:     =IF(H15<=G15, 1, IF(AND(H15>G15, H15<=G15+1), 0.5, 0))
+    #:
+    #: Nought means "not banded" and the line is scored in proportion as
+    #: before. See :func:`score_for`.
+    band: float = 0.0
     no_target_reason: str = ""
 
 
@@ -478,18 +487,31 @@ _register(["bo_vic_non_life"], Source(actual_key="banca_non_life"))
 # A number of DAYS, and lower is better: the cards say "PB AO TAT OF 1 Day".
 # The turnaround is per APPLICATION, so a branch's figure is not dragged by
 # an application that went round the houses.
+#
+# Scored as a TOLERANCE BAND of one day, which is what the sheet does::
+#
+#     =IF(H15<=G15, 1, IF(AND(H15>G15, H15<=G15+1), 0.5, 0))
+#
+# At or inside the target day, full marks; within one day of it, half; beyond
+# that, nothing. In proportion instead, a TAT of 6.76 days against a 1 day
+# target scored 1/6.76 = 14.8%, which hands partial credit for a service
+# standard missed by nearly six days.
 _register(["bo_account_opening_pb"],
-          Source(actual_key="ao_tat_pb", higher_is_better=False))
+          Source(actual_key="ao_tat_pb", higher_is_better=False,
+                 band=1.0, cap=1.0))
 _register(["bo_account_opening_bb"],
-          Source(actual_key="ao_tat_bb", higher_is_better=False))
+          Source(actual_key="ao_tat_bb", higher_is_better=False,
+                 band=1.0, cap=1.0))
 _register(["bo_account_opening_ub"],
-          Source(actual_key="ao_tat_ub", higher_is_better=False))
+          Source(actual_key="ao_tat_ub", higher_is_better=False,
+                 band=1.0, cap=1.0))
 # SME and business banking are the same population - ``core.segments`` reads
 # BUSINESS BANKING, SME, SMALL ENTERPRISES and MEDIUM ENTERPRISES as one
 # segment - so this line differs from the BB one only in its target, five
 # days against one, which is already on the card.
 _register(["bo_account_opening_sme"],
-          Source(actual_key="ao_tat_sme", higher_is_better=False))
+          Source(actual_key="ao_tat_sme", higher_is_better=False,
+                 band=1.0, cap=1.0))
 
 # ── the control and service measures ─────────────────────────────────────
 # Each names the return it comes from, because "measured elsewhere" without
@@ -3043,7 +3065,7 @@ def prorate_to(annual, as_at=None, counted=False):
 
 
 def score_for(actual, target, higher_is_better, threshold=False,
-              cap=SCORE_CAP):
+              cap=SCORE_CAP, band=0.0):
     """How far a line got, clamped to 0 … ``cap`` (1.2 for almost every line).
 
     ``1 + (actual - target) / abs(target)``, which is plain ``actual / target``
@@ -3066,6 +3088,26 @@ def score_for(actual, target, higher_is_better, threshold=False,
     """
     if actual is None or not target:
         return None
+    if band:
+        # A TOLERANCE BAND. Three outcomes, no middle ground inside them:
+        # full marks at or inside the target, half marks within ``band`` of
+        # it, nothing beyond. The account-opening sheet writes it out::
+        #
+        #     =IF(H15<=G15, 1, IF(AND(H15>G15, H15<=G15+1), 0.5, 0))
+        #
+        # Scored in proportion instead, a PB account-opening TAT of 6.76 days
+        # against a target of 1 day came out at 1/6.76 = 14.8% - partial
+        # credit for a standard missed by nearly six days. The band gives it
+        # nought, which is what the card the desk sends gives it.
+        #
+        # Capped at 1.0, not 1.2: the formula's best outcome is 1, and there
+        # is no way to beat a standard you have merely met.
+        inside = actual <= target if not higher_is_better else actual >= target
+        if inside:
+            return min(1.0, cap)
+        edge = (target + band) if not higher_is_better else (target - band)
+        within = actual <= edge if not higher_is_better else actual >= edge
+        return 0.5 if within else 0.0
     if threshold:
         # Met or not met. Scoring a threshold in proportion would hand partial
         # credit for a limit that was broken.
@@ -3585,7 +3627,7 @@ def build_card(sales_code, profile=None, as_at=None):
             cap = getattr(mapping, "score_cap", None) or source.cap
             score = None if pending else score_for(
                 actual, ytd_target, source.higher_is_better,
-                threshold=source.threshold, cap=cap)
+                threshold=source.threshold, cap=cap, band=source.band)
         weighted = None if score is None else weight * score
         if weighted is not None:
             total += weighted

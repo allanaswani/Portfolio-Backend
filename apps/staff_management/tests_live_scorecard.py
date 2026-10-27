@@ -9,7 +9,7 @@ import datetime
 from unittest import mock
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
 from apps.portfolio.models import Profile
@@ -330,3 +330,49 @@ class PortfolioAumTests(TestCase):
             self.half(200_000_000.0, None, datetime.date(2026, 9, 30)))
         self.assertEqual(out["portfolio_aum"]["value"], 500_000_000.0)
         self.assertNotIn("december_aum_book", out["_bases"])
+
+
+class ToleranceBandTests(SimpleTestCase):
+    """The account-opening rule, written out on the sheet as
+
+        =IF(H15<=G15, 1, IF(AND(H15>G15, H15<=G15+1), 0.5, 0))
+
+    Full marks at or inside the target day, half marks within one day of it,
+    nothing beyond. Scored in proportion instead, a PB account-opening TAT of
+    6.76 days against a target of 1 day came out at 1/6.76 = 14.8% - partial
+    credit for a service standard missed by nearly six days.
+    """
+
+    def band(self, actual, target=1.0):
+        return score_for(actual, target, higher_is_better=False,
+                         cap=1.0, band=1.0)
+
+    def test_at_or_inside_the_target_is_full_marks(self):
+        self.assertEqual(self.band(1.0), 1.0)
+        self.assertEqual(self.band(0.4), 1.0)
+
+    def test_within_one_day_is_half_marks(self):
+        self.assertEqual(self.band(1.01), 0.5)
+        self.assertEqual(self.band(2.0), 0.5)
+
+    def test_beyond_the_band_is_nothing(self):
+        self.assertEqual(self.band(2.01), 0.0)
+        # The figure off the real card.
+        self.assertEqual(self.band(6.76), 0.0)
+
+    def test_it_is_not_the_proportional_answer(self):
+        """1/6.76 is 14.8%, which is what the card showed before."""
+        proportional = score_for(6.76, 1.0, higher_is_better=False, cap=1.0)
+        self.assertAlmostEqual(proportional, 0.1479, places=3)
+        self.assertEqual(self.band(6.76), 0.0)
+
+    def test_no_actual_is_still_no_score(self):
+        self.assertIsNone(self.band(None))
+
+    def test_a_bigger_is_better_band_runs_the_other_way(self):
+        """Nothing uses this yet, but the band must not silently invert."""
+        up = lambda a: score_for(a, 10.0, higher_is_better=True,
+                                 cap=1.0, band=1.0)
+        self.assertEqual(up(10.0), 1.0)
+        self.assertEqual(up(9.5), 0.5)
+        self.assertEqual(up(8.0), 0.0)
