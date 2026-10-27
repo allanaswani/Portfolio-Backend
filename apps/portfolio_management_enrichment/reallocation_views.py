@@ -24,6 +24,7 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
+from django.db.models.functions import Lower, Trim
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -290,10 +291,29 @@ class TLReallocationTransferHistoryView(_HierarchicalTransferListView):
 
 @extend_schema(tags=[_TAG])
 class RmAllocationListView(generics.ListAPIView):
-    """Active RMs available as transfer targets."""
+    """Active RMs available as transfer targets.
+
+    The status match is CASE AND SPACE INSENSITIVE. It was
+    ``rm_active_status="Active"`` - an exact string - so a feed writing
+    "ACTIVE", "active" or "Active " with a trailing space dropped that RM out
+    of the list silently, and the only symptom is a name somebody cannot find
+    when they go to reallocate a customer to them. An exact match on a
+    free-text status column from an upstream load is a coin toss.
+
+    ``?search=`` matches the code or the name, so "is this RM on the list at
+    all" can be answered without reading the whole list.
+    """
     permission_classes = [IsAuthenticated]
     serializer_class = RmAllocationListSerializer
-    queryset = RmAllocationList.objects.filter(rm_active_status="Active")
+
+    def get_queryset(self):
+        qs = RmAllocationList.objects.annotate(
+            _status=Trim(Lower("rm_active_status"))).filter(_status="active")
+        needle = (self.request.query_params.get("search") or "").strip()
+        if needle:
+            qs = qs.filter(Q(rm_code__icontains=needle)
+                           | Q(rm_name__icontains=needle))
+        return qs
 
 
 @extend_schema(tags=[_TAG])

@@ -186,3 +186,104 @@ class CustomerAllocationBaseUploadTests(TestCase):
         r = self.client.post(f"{PME}api/csv-upload/", {"file": bad}, format="multipart")
         self.assertEqual(r.status_code, 400, r.content)
         self.assertIn("missing", str(r.data).lower())
+
+
+class AllocationReachesTheReallocationPagesTests(TestCase):
+    """An allocation changed on /management/portfolio-allocations has to show
+    on the Portfolio Reallocation pages.
+
+    It did not, and the reason was not a cache or a delay. That dialog writes
+    ``retail_allocated_portfolio``; these pages read
+    ``customer_allocation_base``. Two tables, nothing joining them, so a
+    customer moved to a new RM went on reading "Allocated: Unmanaged" on the
+    reallocation page for ever.
+    """
+
+    FIELDS = dict(
+        group_id="G1", customer_name="WILBUR AMARA", segment="ULTIMATE",
+        main_segment_prev="ULTIMATE", main_segment="ULTIMATE",
+        customer_branch_name="THIKA ROAD MALL-TRM BRANCH", cust_branch="260",
+        proposed_segment="ULTIMATE", aum_group=Decimal("0"),
+        aum_cust_id=Decimal("0"), rm_code_prev="Unmanaged",
+        rm_name_prev="Unmanaged", rm_role_prev="", rm_branch_prev="",
+        rm_segment_prev="", rank_branch=1, rank_rm_code=1,
+        rm_code="Unmanaged", rm_name="Unmanaged", rm_role="",
+        rm_branch_name="", rm_branch_code="", rm_active_status="Active",
+        source="etl", active_one_month=Decimal("0"),
+        active_two_month=Decimal("0"), active_three_month=Decimal("0"))
+
+    class Row:
+        """What the serializer hands perform_update, with only the fields the
+        mirror reads."""
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    def mirror(self, row):
+        from apps.staff_management.legacy_views import (
+            RetailAllocatedPortfolioDetailView)
+        return RetailAllocatedPortfolioDetailView._move_allocation_base(row)
+
+    def test_the_new_rm_reaches_the_reallocation_page(self):
+        CustomerAllocationBase.objects.create(cust_id="1201871", **self.FIELDS)
+        moved = self.mirror(self.Row(
+            cust_id=1201871, sales_code="BAO3322", rm_name="Beldine Otieno",
+            branch="260", main_segment="DIASPORA"))
+        self.assertEqual(moved, 1)
+
+        base = CustomerAllocationBase.objects.get(cust_id="1201871")
+        self.assertEqual(base.rm_code, "BAO3322")
+        self.assertEqual(base.rm_name, "Beldine Otieno")
+        self.assertEqual(base.rm_branch_code, "260")
+        self.assertEqual(base.main_segment, "DIASPORA")
+
+    def test_the_etls_previous_columns_are_left_alone(self):
+        """``*_prev`` is the ETL's own snapshot. The reallocation history
+        people read comes from portfolio_customer_transfer_history, so there
+        is no reason to write these - and overwriting an upstream column to
+        make a page look right is how a feed starts lying."""
+        CustomerAllocationBase.objects.create(cust_id="1201871", **self.FIELDS)
+        self.mirror(self.Row(
+            cust_id=1201871, sales_code="BAO3322", rm_name="Beldine Otieno",
+            branch="260", main_segment="DIASPORA"))
+        base = CustomerAllocationBase.objects.get(cust_id="1201871")
+        self.assertEqual(base.rm_code_prev, "Unmanaged")
+        self.assertEqual(base.rm_name_prev, "Unmanaged")
+
+    def test_a_customer_with_no_base_row_is_not_an_error(self):
+        """The allocation itself has already been saved by this point. Losing
+        it because no base row exists would be the worse outcome."""
+        self.assertEqual(self.mirror(self.Row(
+            cust_id=999999, sales_code="BAO3322", rm_name="Beldine Otieno",
+            branch="260", main_segment="DIASPORA")), 0)
+
+    def test_the_text_and_numeric_cust_ids_still_match(self):
+        """cust_id is numeric on one table and text on the other."""
+        CustomerAllocationBase.objects.create(cust_id="1201871", **self.FIELDS)
+        self.assertEqual(self.mirror(self.Row(
+            cust_id="1201871 ", sales_code="BAO3322", rm_name="Beldine Otieno",
+            branch="260", main_segment="DIASPORA")), 1)
+
+
+class RmListStatusTests(TestCase):
+    """An RM whose status is spelt differently must not vanish."""
+
+    def rows(self):
+        for code, name, status in (("BAO3322", "Beldine Otieno", "Active"),
+                                   ("DN3998", "Doris Njuki", "ACTIVE"),
+                                   ("EK4188", "Edward Kosgei", " active "),
+                                   ("XX0001", "Gone Away", "Inactive")):
+            RmAllocationList.objects.create(
+                rm_code=code, rm_name=name, rm_role="DIASPORA RM",
+                rm_branch_name="Diaspora", rm_branch_code="260",
+                rm_active_status=status, source="etl", rm_segment="DIASPORA")
+
+    def test_case_and_spacing_no_longer_decide_who_is_active(self):
+        self.rows()
+        user = _user("alloc.user", "portfolio_mgt", "BAO3322")
+        client = APIClient()
+        client.force_authenticate(user)
+        body = client.get(PME + "rm_list/").data
+        rows = body["results"] if isinstance(body, dict) else body
+        codes = {r["rm_code"] for r in rows}
+        self.assertEqual(codes, {"BAO3322", "DN3998", "EK4188"})
+        self.assertNotIn("XX0001", codes)

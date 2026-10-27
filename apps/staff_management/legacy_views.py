@@ -872,12 +872,60 @@ class RetailAllocatedPortfolioDetailView(generics.RetrieveUpdateAPIView):
         # Surfaced on the response so the screen can say "this customer had
         # four rows and all four moved" rather than appearing to half-work.
         self._siblings_moved = moved
+        self._base_moved = self._move_allocation_base(row)
+
+    @staticmethod
+    def _move_allocation_base(row):
+        """Carry the reallocation into ``customer_allocation_base``.
+
+        TWO TABLES, AND NOTHING JOINED THEM.
+
+        This dialog writes ``retail_allocated_portfolio``. The Portfolio
+        Reallocation screens - the customer page, its header, its search -
+        read ``customer_allocation_base``, which is a different table
+        altogether. So a customer moved here kept reading "Allocated:
+        Unmanaged" on the reallocation page afterwards, and not for a moment:
+        for ever. It was reported as the change "not taking effect
+        immediately", but there was no delay involved and no cache. The two
+        halves of the same screenfull were never connected.
+
+        Only the CURRENT allocation is written. The ``*_prev`` columns are the
+        ETL's own snapshot of the previous state and are left exactly alone -
+        the reallocation history people read comes from
+        ``portfolio_customer_transfer_history``, not from these, and
+        overwriting an ETL column to make a page look right is how a feed
+        starts lying.
+
+        ``cust_id`` is numeric on one table and text on the other, so the
+        match is made on the text form. Failure here is reported, never
+        raised: the allocation itself has already been saved, and losing that
+        because a mirror could not be written would be the worse outcome.
+        """
+        if row.cust_id is None:
+            return 0
+        try:
+            from apps.portfolio_management_enrichment.models import (
+                CustomerAllocationBase)
+
+            return (CustomerAllocationBase.objects
+                    .filter(cust_id=str(row.cust_id).strip())
+                    .update(rm_code=row.sales_code or "",
+                            rm_name=row.rm_name or "",
+                            rm_branch_code=row.branch or "",
+                            main_segment=row.main_segment or ""))
+        except Exception:  # noqa: BLE001 - see the docstring
+            return 0
 
     def update(self, request, *args, **kwargs):
         response = super().update(request, *args, **kwargs)
         moved = getattr(self, "_siblings_moved", 0)
         if isinstance(response.data, dict):
             response.data["rows_also_updated"] = moved
+            # So the screen can say the reallocation reached the Portfolio
+            # Reallocation pages too, rather than leaving somebody to find out
+            # by opening one.
+            response.data["allocation_base_updated"] = getattr(
+                self, "_base_moved", 0)
         return response
 
 
