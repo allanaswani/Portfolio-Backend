@@ -548,7 +548,33 @@ class PropertySalesTests(TestCase):
         self.assertEqual(units["ytd_actual"], 0.0)
         self.assertFalse(units["pending"])
         self.assertIn("nil", units["as_at"])
-        self.assertIn("none of the three property feeds", units["as_at"])
+        # "Somebody Else" shares neither first nor last word with this person,
+        # so there is no near-miss to report and a nil is the right answer.
+        # The wording says that now - no name LIKE theirs - because the case
+        # where the feed does hold a name like theirs is a spelling to fix and
+        # no longer scores nought. See test_a_near_miss_spelling_is_reported.
+        self.assertIn("no property feed holds any name like", units["as_at"])
+
+    def test_a_near_miss_spelling_is_reported_not_scored_nought(self):
+        """The feed holds a name LIKE theirs. That is a spelling to reconcile.
+
+        These feeds are keyed on the name - no property table in this estate
+        carries a sales code - so the whole line turns on the spellings
+        agreeing. ``resolve_feed_name`` already works out which names look
+        like this person's and refuses to choose when two could be them; the
+        card discarded that and said "on none of the three property feeds",
+        which reads as "sold nothing" and scored nought.
+
+        Two Faiths here, so neither can be chosen. The card must say what it
+        found rather than bury it under a nil.
+        """
+        self.sale("Faith W Muthinja", 3_000_000)
+        self.sale("Faith Muthinja Wanjiru", 2_000_000)
+        units = self.line("number_of_property")
+        self.assertIsNone(units["ytd_actual"],
+                          "a spelling to fix must not be scored as a nil")
+        self.assertIn("spell somebody very like", units["pending"])
+        self.assertIn("Faith", units["pending"])
 
     def test_absent_from_an_EMPTY_feed_is_still_no_figure(self):
         """The honest exception. If no property feed holds anything, absence

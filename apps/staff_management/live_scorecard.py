@@ -1031,15 +1031,23 @@ def _property_sales_ytd(staff_name, year):
 
     name = " ".join((staff_name or "").split()).strip()
     if not name:
-        return None, None, False, None
+        return None, None, False, None, []
 
     present = [table for table in PROPERTY_UNIT_TABLES
                if _table_columns(table)]
     if not present:
-        return None, None, False, None
+        return None, None, False, None, []
 
     # How these feeds spell him, which is not always how the roster does.
-    spelling, _how, _candidates = resolve_feed_name(
+    #
+    # The CANDIDATES are kept. ``resolve_feed_name`` already works out which
+    # names in the feed look like this person's and refuses to pick one when
+    # two could be him - and this threw that away, so the card could only say
+    # "on none of the three property feeds" when what it actually knew was
+    # "the feed holds ABED K. LELGO and ABED LELGO and I would not choose".
+    # Those two statements go to different people and only one of them can be
+    # acted on.
+    spelling, _how, candidates = resolve_feed_name(
         PROPERTY_UNIT_TABLES, "staff_name", name)
     if spelling:
         name = spelling
@@ -1081,7 +1089,12 @@ def _property_sales_ytd(staff_name, year):
     with connection.cursor() as cur:
         cur.execute(sql, params + [year, year, year])
         units, value, ever, latest = cur.fetchone()
-    return (int(units or 0), float(value or 0), bool(ever), latest)
+    # ``near`` is the spellings in the feed that resemble this person but
+    # were not unique enough to choose between. Empty when the name matched,
+    # and empty when the feed holds nothing like it at all - which is the
+    # difference between "fix the spelling" and "he sold none".
+    near = [] if ever else sorted({" ".join(c.split()) for c in candidates})
+    return (int(units or 0), float(value or 0), bool(ever), latest, near)
 
 
 def _afh_property_ytd(sales_code, staff_name, year):
@@ -1837,7 +1850,7 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         reported as a nil: missing from both reads exactly like assisting
         nobody, and those must not look the same on a scorecard.
         """
-        hfdi_units, hfdi_value, on_return, latest = _property_sales_ytd(
+        hfdi_units, hfdi_value, on_return, latest, near = _property_sales_ytd(
             staff_name, year)
         afh_units, afh_value, mapped = _afh_property_ytd(
             sales_code, staff_name, year)
@@ -1870,8 +1883,24 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 return {"property_units": _figure(None, problem=why),
                         "property_value": _figure(None, problem=why)}
 
-            label = (f"nil - {staff_name or sales_code} is on none of the "
-                     f"three property feeds")
+            if near:
+                # The feeds DO hold names like this one. That is a spelling to
+                # reconcile, not a nil to accept, and scoring it nought would
+                # bury the one fact that fixes it. Reported as no figure, the
+                # way an unreadable feed is, with the candidates named.
+                why = (f"the property feeds spell somebody very like "
+                       f"{staff_name or sales_code} - "
+                       f"{', '.join(near[:4])}"
+                       f"{' and more' if len(near) > 4 else ''} - but not "
+                       f"closely enough to be sure it is the same person. "
+                       f"These feeds are keyed on the NAME, so until the "
+                       f"spellings agree this cannot be told apart from "
+                       f"selling nothing")
+                return {"property_units": _figure(None, problem=why),
+                        "property_value": _figure(None, problem=why)}
+
+            label = (f"nil - no property feed holds any name like "
+                     f"{staff_name or sales_code}")
             return {"property_units": _figure(0.0, monthly, label),
                     "property_value": _figure(0.0, monthly, label)}
 
@@ -2541,9 +2570,21 @@ def resolve_person(sales_code):
                     if held.role_code.startswith("bo_")
                     else "the scorecard roster"))
 
-    # 3. the HR record, by job title
+    # 3. the HR record, by job title - SALES titles as well as back-office
+    #
+    # This asked ``bo_role_for`` only, so the HR roster could answer for a
+    # teller and never for an RM. That is why a salesperson who is not on the
+    # branch DMC tables had to be loaded from the workbook's List sheet before
+    # the platform would admit they existed - and loading a spreadsheet to see
+    # a person is the thing this is meant to replace.
+    #
+    # ``role_code_for`` is the SAME mapping the DMC roster's ``staff_role``
+    # goes through, so nothing new is invented here: a job title reading
+    # "snr RM" resolves to ultimate_rm on the HR record exactly as it does on
+    # a DMC row. The back-office mapping is still tried FIRST, so every
+    # person this already answered for is answered identically.
     if staff is not None:
-        role = bo_role_for(staff.job_title)
+        role = bo_role_for(staff.job_title) or role_code_for(staff.job_title)
         if role is not None:
             return Person(
                 sales_code=code, name=staff.staff_name or "", role_code=role,
