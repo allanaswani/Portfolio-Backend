@@ -319,9 +319,10 @@ class Command(BaseCommand):
 
                 spelling, how, candidates = resolve_feed_name(
                     PROPERTY_UNIT_TABLES, "staff_name", name)
-                if how == "first-last":
+                if how == "same words":
                     write(f"      {'spelt there as:':<24} {spelling!r} "
-                          f"(matched on first and last name, not exactly)")
+                          f"(same words as the roster, in a different order "
+                          f"or with a middle name)")
                 elif not spelling and candidates:
                     write(f"      {'ambiguous:':<24} "
                           f"{', '.join(repr(c) for c in candidates[:6])} - "

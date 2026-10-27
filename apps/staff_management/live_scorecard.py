@@ -959,6 +959,17 @@ def names_agree(one, other):
 def resolve_feed_name(tables, column, name):
     """How a feed spells this person's name → ``(spelling, how, candidates)``.
 
+    ``candidates`` are the names that GENUINELY resemble this person and could
+    not be chosen between - never the SQL prefilter's hits.
+
+    That distinction was a real fault. The prefilter below matches on either
+    end of the name, so "Jane Karathe" pulls back every Jane in the feed, and
+    returning that list had the card telling her it held "somebody very like
+    Jane Karathe - Jane Gitiya, Jane Kihika". Those are two different women
+    who share a first name. A shared first name is not a near miss, and
+    reporting it as one turns a plain nil into a spelling hunt that cannot
+    end.
+
     The roster and the property feeds do not agree on middle names. The DMC
     roster carries the full legal name because HR does — ``ABED KIPKOECH
     LELGO``, whose sales code AKL3116 is built from all three initials — and
@@ -1004,7 +1015,8 @@ def resolve_feed_name(tables, column, name):
         return "", "", []
     exact = [nm for nm, is_exact in rows if is_exact]
     if exact:
-        return exact[0], "exact", [nm for nm, _ in rows]
+        # Matched. There is nothing ambiguous left to report.
+        return exact[0], "exact", []
 
     # The SQL above is a cheap filter on the two ends of the name. The
     # decision is made here on the words themselves, because the
@@ -1013,8 +1025,12 @@ def resolve_feed_name(tables, column, name):
     agreed = [nm for nm, _ in rows if names_agree(nm, name)]
     distinct = sorted({" ".join(nm.split()).upper() for nm in agreed})
     if len(distinct) == 1:
-        return agreed[0], "same words", [nm for nm, _ in rows]
-    return "", "", [nm for nm, _ in rows]
+        return agreed[0], "same words", []
+    # Either several names agree and none can be chosen - a real spelling to
+    # settle - or NONE agreed, and then this list is empty and the caller is
+    # free to read the absence as a nil. The prefilter's hits never appear
+    # here: sharing one end of a name is not resembling somebody.
+    return "", "", distinct
 
 
 def _table_rows(table):

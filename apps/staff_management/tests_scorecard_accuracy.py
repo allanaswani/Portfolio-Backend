@@ -576,6 +576,28 @@ class PropertySalesTests(TestCase):
         self.assertIn("spell somebody very like", units["pending"])
         self.assertIn("Faith", units["pending"])
 
+    def test_a_shared_FIRST_NAME_is_not_a_near_miss(self):
+        """The fault this reported from production.
+
+        The SQL prefilter inside resolve_feed_name matches on either END of
+        the name, so "Jane Karathe" pulls back every Jane in the feed. The
+        card was handed that list and told her it held "somebody very like
+        Jane Karathe - Jane Gitiya, Jane Kihika". Those are two different
+        women who happen to share a first name.
+
+        A shared first name is not a resemblance. It must read as a nil, the
+        way anybody else absent from a populated feed does, or a plain nought
+        becomes a spelling hunt that cannot end.
+        """
+        self.sale("Faith Wambui", 3_000_000)      # shares only "Faith"
+        self.sale("Faith Njoroge", 2_000_000)     # shares only "Faith"
+        units = self.line("number_of_property")
+        self.assertEqual(units["ytd_actual"], 0.0,
+                         "a shared first name must not block the nil")
+        self.assertFalse(units["pending"])
+        self.assertIn("no property feed holds any name like", units["as_at"])
+        self.assertNotIn("very like", str(units.get("pending") or ""))
+
     def test_absent_from_an_EMPTY_feed_is_still_no_figure(self):
         """The honest exception. If no property feed holds anything, absence
         proves nothing about this person and a nil would be an invention."""
