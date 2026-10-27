@@ -539,7 +539,7 @@ def rm_balances(sales_code):
     }
 
 
-def rm_growth(table, sales_code):
+def rm_growth(table, sales_code, as_at=None):
     """An RM's YTD GROWTH in one balance-movement table.
 
     → ``{"position", "base", "growth", "as_at", "as_at_label", "problem"}``
@@ -568,7 +568,12 @@ def rm_growth(table, sales_code):
         return {"position": None, "base": None, "growth": None, "as_at": None,
                 "as_at_label": None, "problem": f"{table} is not in the database"}
 
-    today = datetime.now().date()
+    # ``as_at`` is the month end a NAMED-MONTH card is for. Without it this
+    # always answered with the newest balance it could find - "yesterday" -
+    # so a September scorecard was scored on October's deposit and asset
+    # books. The live card still wants yesterday, which is why this is a
+    # parameter rather than a change of default.
+    today = as_at or datetime.now().date()
     base_column = f"dec_{str(today.year - 1)[-2:]}_bal"
     if base_column not in columns:
         return {"position": None, "base": None, "growth": None, "as_at": None,
@@ -581,13 +586,22 @@ def rm_growth(table, sales_code):
     # a negative "growth" for a book that has not shrunk.
     months = [(c, lbl) for c, lbl in _closed_months()
               if c in columns and c.endswith(f"_{str(today.year)[-2:]}_bal")]
-    ladder = [(c, "yesterday" if c == "yester_1_bal" else "2 days ago")
-              for c in ("yester_1_bal", "yester_2_bal") if c in columns]
-    ladder += [(c, f"as at {lbl}") for c, lbl in months]
+    if as_at is not None:
+        # No "yesterday" rung, and no month AFTER the one asked for: either
+        # would answer with a balance from outside the card's period.
+        months = [(c, lbl) for c, lbl in months
+                  if _month_end(c) is not None and _month_end(c) <= as_at]
+        ladder = [(c, f"as at {lbl}") for c, lbl in months]
+    else:
+        ladder = [(c, "yesterday" if c == "yester_1_bal" else "2 days ago")
+                  for c in ("yester_1_bal", "yester_2_bal") if c in columns]
+        ladder += [(c, f"as at {lbl}") for c, lbl in months]
     if not ladder:
         return {"position": None, "base": None, "growth": None, "as_at": None,
                 "as_at_label": None,
-                "problem": f"{table} has no balance column for {today.year} yet"}
+                "problem": (f"{table} has no balance column at or before "
+                            f"{as_at:%b %Y}" if as_at else
+                            f"{table} has no balance column for {today.year} yet")}
 
     wanted = [c for c, _ in ladder] + [base_column]
     seg = ("AND COALESCE(customer_segment, '') <> ALL(%s)"

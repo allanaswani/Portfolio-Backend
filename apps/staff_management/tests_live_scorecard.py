@@ -132,6 +132,54 @@ class CardFromTheSystemTests(TestCase):
         self.assertLess(target, 38_400_000, "a YTD target is less than the year")
         self.assertGreater(target, 0)
 
+    def test_the_card_is_labelled_with_its_own_month(self):
+        """The month the card is FOR, not the date of whichever line came last.
+
+        ``build_card`` assigned the per-line figure date straight over its own
+        ``as_at`` parameter, so the payload was built from whatever the LAST
+        KPI line carried. On a real September card the last line is PAR, whose
+        IFRS feed stops at July 2025, and the card footed itself "Performance
+        score for July 2025" while every line above it said 30 Sep 2026.
+        """
+        self.roster()
+        september = datetime.date(2026, 9, 30)
+        card = build_card("FJ4145", as_at=september)
+        self.assertEqual(card["period"]["label"], "September 2026")
+        self.assertEqual(card["period"]["as_at"], september.isoformat())
+
+    def test_a_named_month_slices_every_target_to_that_month(self):
+        """A "YTD target for September" belongs to September.
+
+        Pro-rating each line to its own feed's date put three of Abed Lelgo's
+        September lines outside September: loan loss to 1 Jul 2025 (half a
+        year, on a card claiming three quarters), VIC to 15 Oct and loan
+        disbursements to 22 Oct. The target must not move with the feed.
+        """
+        self.roster()
+        card = build_card("FJ4145", as_at=datetime.date(2026, 9, 30))
+        lines = [ln for group in card["perspectives"] for ln in group["lines"]]
+        nine_twelfths = 38_400_000 * 9 / 12
+        deposits = [ln for ln in lines if ln["kpi_code"] in
+                    ("grow_deposits", "deposit_growth",
+                     "deposit_growth_liab_growth_ntb_liab", "deposits_portfolio")]
+        self.assertTrue(deposits, "no deposit line on the card")
+        target = deposits[0]["ytd_target"]
+        self.assertIsNotNone(target)
+        # Nine months of the year, to the shilling - not ten, and not six.
+        self.assertAlmostEqual(target, nine_twelfths, delta=1.0)
+
+    def test_a_live_card_still_slices_to_each_lines_own_date(self):
+        """The rule only changes for a NAMED month. A live card keeps the
+        desk's own rule, which the eight real cards were calibrated against:
+        a figure three weeks old is not judged against a target that assumes
+        today."""
+        self.roster()
+        card = build_card("FJ4145")          # no as_at - the live card
+        self.assertEqual(
+            card["period"]["label"],
+            datetime.date.today().strftime("%B %Y"))
+        self.assertIsNone(card["period"]["as_at"])
+
     def test_a_line_with_no_warehouse_figure_is_pending_not_zero(self):
         self.roster()
         card = build_card("FJ4145")

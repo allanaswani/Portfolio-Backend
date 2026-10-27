@@ -741,12 +741,17 @@ def last_closed_month_end(today=None):
     return first - datetime.timedelta(days=1)
 
 
-def _drawdowns_ytd(sales_code, year):
+def _drawdowns_ytd(sales_code, year, up_to=None):
     """Net drawdowns this year for one RM → (value, as-at date).
 
     ``drawdown_daily`` stamps the seller two ways — ``salesperson`` and
     ``loan_officer_id`` — and which is populated varies, so both are tried
     rather than assuming one.
+
+    ``up_to`` is the month end a NAMED-MONTH card is for. Without it this read
+    the whole year to date, so a September card showed drawdowns "as at 22 Oct
+    2026" - three weeks of October counted into September. Filtering on the
+    YEAR was never enough on its own: a year is not a month.
     """
     from django.db import connection
 
@@ -755,14 +760,16 @@ def _drawdowns_ytd(sales_code, year):
         FROM drawdown_daily
         WHERE EXTRACT(YEAR FROM drawdown_dt) = %s
           AND (TRIM(salesperson) ILIKE %s OR TRIM(loan_officer_id) ILIKE %s)
+          AND (%s IS NULL OR drawdown_dt <= %s)
     """
+    code = sales_code.strip()
     with connection.cursor() as cur:
-        cur.execute(sql, [year, sales_code.strip(), sales_code.strip()])
+        cur.execute(sql, [year, code, code, up_to, up_to])
         row = cur.fetchone()
     return float(row[0] or 0), row[1]
 
 
-def _premiums_ytd(sales_code, year):
+def _premiums_ytd(sales_code, year, up_to=None):
     """Bancassurance premiums for one RM this year → total, life, non-life,
     and the residual.
 
@@ -792,7 +799,7 @@ def _premiums_ytd(sales_code, year):
                                    <> 'life' THEN p.premiums END), 0) AS non_life,
             COUNT(*) FILTER (WHERE m.product IS NULL) AS unmapped,
             MAX(p.starting_date) FILTER (
-                WHERE p.starting_date <= CURRENT_DATE) AS latest
+                WHERE p.starting_date <= COALESCE(%s, CURRENT_DATE)) AS latest
         FROM insurance_policies p
         LEFT JOIN premium_types_mapping m
                ON LOWER(TRIM(m.product)) = LOWER(TRIM(p.product))
@@ -800,10 +807,14 @@ def _premiums_ytd(sales_code, year):
           AND UPPER(TRIM(%s)) IN (UPPER(TRIM(COALESCE(p.code, ''))),
                                   UPPER(TRIM(COALESCE(p.rm, ''))),
                                   UPPER(TRIM(COALESCE(p.sales_person, ''))))
+          -- A named-month card counts only policies written by that month end.
+          -- Without this a September card read VIC premiums "as at 15 Oct
+          -- 2026" and scored October's sales as September's.
+          AND (%s IS NULL OR p.starting_date <= %s)
     """
     code = sales_code.strip()
     with connection.cursor() as cur:
-        cur.execute(sql, [str(year), code])
+        cur.execute(sql, [up_to, str(year), code, up_to, up_to])
         total, life, non_life, unmapped, latest = cur.fetchone()
     total = float(total or 0)
     life = float(life or 0)
@@ -1541,7 +1552,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     bases = {}
 
     def growth(table, base_name):
-        g = svc.rm_growth(table, sales_code)
+        # A September card must not read yesterday's balance. rm_growth walks
+        # a ladder of month-end columns with two "yesterday" rungs on top of
+        # it; given a month, it starts at that month instead.
+        g = svc.rm_growth(table, sales_code, as_at=as_at)
         if g["base"] is not None:
             bases[base_name] = g["base"]
         return _figure(g["growth"], g["as_at"], g["as_at_label"], g["problem"])
@@ -1753,16 +1767,18 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     # ── Disbursements ─────────────────────────────────────────────────────
     def drawdowns():
-        value, as_at = _drawdowns_ytd(sales_code, year)
-        return _figure(value, as_at,
-                       f"as at {as_at.day} {as_at:%b %Y}" if as_at else None)
+        # ``up_to=as_at``, the parameter - only a card asked for a NAMED month
+        # bounds this. A live card is meant to move with the book.
+        value, at = _drawdowns_ytd(sales_code, year, up_to=as_at)
+        return _figure(value, at,
+                       f"as at {at.day} {at:%b %Y}" if at else None)
 
     attempt("drawdowns", drawdowns)
 
     # ── Bancassurance ─────────────────────────────────────────────────────
     def premiums():
         total, life, non_life, other, unmapped, latest = _premiums_ytd(
-            sales_code, year)
+            sales_code, year, up_to=as_at)
         # The as-at comes off the newest policy on the book rather than the
         # calendar: the premium load is monthly, and dating it to today would
         # slice the target past the figure.
@@ -3065,7 +3081,16 @@ def build_card(sales_code, profile=None, as_at=None):
         figure = actuals.get(source.actual_key) if source.actual_key else None
         unwired = bool(source.actual_key) and figure is None
         actual = figure["value"] if figure else None
-        as_at = figure["as_at"] if figure else None
+        # ``line_as_at``, NOT ``as_at``. This loop used to assign straight
+        # over the ``as_at`` PARAMETER - the month the whole card is for - so
+        # by the time the payload was built at the bottom of this function
+        # ``as_at`` held whatever date the LAST KPI line happened to carry.
+        # On Abed Lelgo's September card that last line is PAR, whose IFRS
+        # feed stops at July 2025, and the card footed itself "Performance
+        # score for July 2025" while every line above it correctly said
+        # "as at 30 Sep 2026". Signing it would have frozen a September card
+        # labelled with a date fourteen months earlier.
+        line_as_at = figure["as_at"] if figure else None
         as_at_label = figure["as_at_label"] if figure else None
         problem = figure["problem"] if figure else None
         failed = bool(figure.get("failed")) if figure else False
@@ -3155,7 +3180,7 @@ def build_card(sales_code, profile=None, as_at=None):
             if actual is not None and actual != loaded:
                 warehouse_said = actual
             actual = loaded
-            as_at = loaded_as_at
+            line_as_at = loaded_as_at
             as_at_label = f"loaded by Administration for {loaded_as_at:%b %Y}"
             problem = None
             failed = False
@@ -3211,8 +3236,34 @@ def build_card(sales_code, profile=None, as_at=None):
         # carries the workbook arithmetic this matches to the cent.
         full_year = mapping.kpi_code in FULL_YEAR_TARGETS
         to_slice = fy_target if growth_target is None else growth_target
+        # WHICH DATE THE TARGET IS SLICED TO.
+        #
+        # A live card slices each line to the date that line's own actual is
+        # as at. That is the desk's rule and it is what the eight real cards
+        # were calibrated against - a figure that is three weeks old must not
+        # be judged against a target that assumes today.
+        #
+        # A card for a NAMED MONTH slices every line to that month's end,
+        # because a "YTD target for September" is a property of September and
+        # not of whichever feed happened to answer. Per-line dates here
+        # produced nonsense on Abed Lelgo's September card, and the arithmetic
+        # says so to the shilling:
+        #
+        #   Loan Loss      -1,380,571 x 1 Jul 2025  =   -693,997   (6.0/12)
+        #                  should be   x 30 Sep 2026 = -1,035,428   (9.0/12)
+        #   VIC Premiums   12,223,177 x 15 Oct 2026 =  9,660,253
+        #                  should be   x 30 Sep 2026 =  9,167,383
+        #   Net Loan Disb  780,000,000 x 22 Oct 2026 = 631,129,032
+        #                  should be   x 30 Sep 2026 = 585,000,000
+        #
+        # The loan-loss feed stops at July 2025, so its target was cut to half
+        # a year on a card claiming three quarters of one - and the line then
+        # scored 120%. The two October dates sliced a September target to
+        # October. At a month end with current feeds the two rules give the
+        # same answer, which is why the calibration never saw this.
+        slice_to = as_at if as_at else line_as_at
         ytd_target = (to_slice if full_year
-                      else prorate_to(to_slice, as_at,
+                      else prorate_to(to_slice, slice_to,
                                       counted=source.counted))
 
         # The missing TARGET is reported ahead of a failed read, because a line
@@ -3358,7 +3409,7 @@ def build_card(sales_code, profile=None, as_at=None):
             "score": score,
             "weighted_score": weighted,
             "as_at": as_at_label,
-            "as_at_date": as_at.isoformat() if as_at else None,
+            "as_at_date": line_as_at.isoformat() if line_as_at else None,
             "higher_is_better": source.higher_is_better,
             # So the card can say why a line is at exactly 100% with no
             # figure beside it, instead of looking like a bug.
@@ -3390,6 +3441,8 @@ def build_card(sales_code, profile=None, as_at=None):
             "roster": person.roster,
         },
         # The month the card is FOR, which for a past month is not today.
+        # The month the card is FOR. ``as_at`` is the parameter, and nothing
+        # above may reassign it - see ``line_as_at`` in the loop.
         "period": {"label": (as_at or datetime.date.today())
                    .strftime("%B %Y"),
                    "as_at": (as_at.isoformat() if as_at else None)},
