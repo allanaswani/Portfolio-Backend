@@ -1684,6 +1684,14 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     # target is applied to ("Grow by 43% of the Dec book Balance"), so the one
     # read answers both halves of the line.
     bases = {}
+    # Why a base could not be read, keyed like ``bases``. Created HERE, beside
+    # ``bases``, because the readers below write to it the moment ``attempt``
+    # calls them. It used to be created further down, at the loan-loss read,
+    # so the active-customer and digital readers - which run first - raised
+    # NameError on it whenever last year's count was missing. ``attempt``
+    # swallowed that, which blanked THIS year's figure as well and left the
+    # card saying only "that figure could not be read".
+    base_problems = {}
 
     def growth(table, base_name):
         # A September card must not read yesterday's balance. rm_growth walks
@@ -1692,6 +1700,8 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         g = svc.rm_growth(table, sales_code, as_at=as_at)
         if g["base"] is not None:
             bases[base_name] = g["base"]
+        elif g["problem"]:
+            base_problems[base_name] = g["problem"]
         return _figure(g["growth"], g["as_at"], g["as_at_label"], g["problem"])
 
     attempt("deposit_growth",
@@ -1760,6 +1770,11 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             found = _two_month_active(sales_code, year, digital=digital,
                                       upto=as_at)
             if "error" in found:
+                # The base needs the reason too. Without it the card printed
+                # "...and that figure could not be read." and stopped, which
+                # is the one wording that cannot be acted on - the feed's own
+                # error was in ``problem`` and never reached the line.
+                base_problems[base_name] = found["error"]
                 return _figure(None, problem=found["error"])
 
             prior = found.get(year - 1)
@@ -1903,8 +1918,6 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     # this read is what gives that line a target at all. The per-person DMC
     # table has no provision column, and the branch table's one is the
     # BRANCH's allowance, which is not a person's.
-    base_problems = {}
-
     def last_year_provision():
         value, problem = svc.rm_loan_loss(sales_code, year - 1)
         if value is None:

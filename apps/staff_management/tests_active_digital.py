@@ -377,3 +377,31 @@ class ACardOnlyReadsItsOwnFeedsTests(TestCase):
         for base in in_use:
             with self.subTest(base):
                 self.assertIn(base, _READERS_BEHIND_A_BASE)
+
+
+class NoPriorYearTests(TestCase):
+    """A book with this year's activity and none last year.
+
+    The reader recorded why the base was missing into ``base_problems``
+    before that dict existed - it was created further down, at the loan-loss
+    read - so it raised NameError, ``attempt`` swallowed it, and the card
+    lost THIS year's figure too and said only "that figure could not be
+    read". Every card whose prior-year count was nought looked like that.
+    """
+
+    def test_this_years_figure_survives_a_missing_base(self):
+        from unittest import mock
+
+        from .live_scorecard import live_actuals
+
+        this_year = {YEAR: (7, datetime.date(YEAR, 9, 30))}
+        with mock.patch("apps.staff_management.live_scorecard."
+                        "_two_month_active", return_value=this_year):
+            out = live_actuals(CODE, wanted={"active_customers",
+                                              "digital_adoption"})
+
+        figure = out["active_customers"]
+        self.assertFalse(figure.get("failed"), figure)
+        self.assertEqual(figure["value"], 7)
+        # And the card can now say WHY there is no base.
+        self.assertIn("last_year_active_customers", out["_base_problems"])
