@@ -71,6 +71,11 @@ urlpatterns = [
     # fills every back-office card rather than ten.
     path("manual-figures/bo-actuals/",
          workbook_views.BoActualsUploadView.as_view()),
+    # Finance's IFRS movement workbook, a month per call, into
+    # loans_mom_ifrs_movement - whose only route in (the old CSV upload) was
+    # never carried over, which is why it stopped at July 2025.
+    path("manual-figures/ifrs-movement/",
+         workbook_views.IfrsMovementUploadView.as_view()),
     # People's OWN signed scorecards, many at a time. The master workbook
     # carries one card per role; everybody else's targets are on their own
     # file and exist nowhere else.

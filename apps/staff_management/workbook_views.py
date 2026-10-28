@@ -366,3 +366,99 @@ class ScorecardCardsUploadView(APIView):
             "detail": (f"Saved {written} figure(s) for {matched} person/"
                        f"people. They show on the cards straight away."),
         })
+
+
+@extend_schema(tags=[_TAG])
+class IfrsMovementUploadView(APIView):
+    """Finance's IFRS movement workbook, a month at a time, into
+    ``loans_mom_ifrs_movement``.
+
+    The table stopped at 1 July 2025 because its only route in - the old
+    system's CSV upload - was never carried over; every PAR and Loan Loss line
+    has been reading July 2025 since. See ``staff_management.ifrs_movement``.
+
+    - no ``month``: the months the workbook holds, and the months the table
+      already has - so the screen knows what to load;
+    - ``month`` (YYYY-MM): that month's rows and totals, written only with
+      ``apply`` - which REPLACES the month, as the old upload did, so loading
+      it twice never doubles it.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    MAX_BYTES = 60 * 1024 * 1024
+
+    def post(self, request):
+        import datetime
+        import os
+        import tempfile
+
+        from apps.staff_management import ifrs_movement as im
+
+        if not may_load(request.user):
+            return Response(
+                {"detail": "Only an administrator can load the IFRS "
+                           "movement."}, status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose the workbook first."}, status=400)
+        if not upload.name.lower().endswith(".xlsb"):
+            return Response(
+                {"file": f"{upload.name} is not the IFRS movement workbook - "
+                         f"Finance's file is an .xlsb."}, status=400)
+        if upload.size > self.MAX_BYTES:
+            return Response(
+                {"file": f"That file is {upload.size / 1024 / 1024:.1f} MB; "
+                         f"the limit is {self.MAX_BYTES // 1024 // 1024} MB."},
+                status=400)
+
+        # pyxlsb reads a path. A large upload already has one; a small one is
+        # written out for the length of the request.
+        made = None
+        if hasattr(upload, "temporary_file_path"):
+            path = upload.temporary_file_path()
+        else:
+            handle, made = tempfile.mkstemp(suffix=".xlsb")
+            with os.fdopen(handle, "wb") as out:
+                for chunk in upload.chunks():
+                    out.write(chunk)
+            path = made
+        try:
+            return self._handle(request, path, im, datetime)
+        except im.IfrsWorkbookError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        finally:
+            if made:
+                os.unlink(made)
+
+    def _handle(self, request, path, im, datetime):
+        in_book = im.months_in(path)
+        held = [m.isoformat() for m in im.months_held()]
+        raw = str(request.data.get("month", "")).strip()
+        if not raw:
+            return Response({
+                "months_in_workbook": sorted(m.isoformat() for m in in_book),
+                "months_in_table": held,
+                "latest_in_table": held[-1] if held else None,
+            })
+        try:
+            month = datetime.datetime.strptime(raw[:7], "%Y-%m").date()
+        except ValueError:
+            return Response({"month": "Which month? e.g. 2026-08"}, status=400)
+        if month not in in_book:
+            return Response(
+                {"month": f"The workbook has no {month:%b %Y} sheet."},
+                status=400)
+
+        rows, totals = im.read_month(path, in_book[month])
+        body = {
+            "month": month.isoformat(), "sheet": in_book[month],
+            "totals": totals, "already_in_table": month.isoformat() in held,
+            "applied": False,
+        }
+        if str(request.data.get("apply", "")).lower() not in ("1", "true",
+                                                              "yes"):
+            return Response(body)
+        body["written"] = im.replace_month(month, rows)
+        body["applied"] = True
+        return Response(body, status=201)
