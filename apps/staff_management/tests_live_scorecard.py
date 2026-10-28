@@ -38,7 +38,10 @@ class RoleResolutionTests(TestCase):
         self.assertEqual(role_code_for("SME BBC Nairobi"), "sme_bbc")
 
     def test_an_unknown_role_is_not_guessed_at(self):
-        for written in ("Branch Manager", "Teller", "", None, "Head of SME"):
+        # "Head of SME" used to be here; it has a card since 0060. A head of
+        # something with no card is still not guessed onto one.
+        for written in ("Branch Manager", "Teller", "", None,
+                        "Head of Treasury"):
             with self.subTest(repr(written)):
                 self.assertIsNone(role_code_for(written))
 
