@@ -2755,7 +2755,29 @@ def bo_role_for(job_title):
     for alias in sorted(BO_TITLE_ALIASES, key=len, reverse=True):
         if folded.startswith(alias + " ") or folded == alias:
             return BO_TITLE_ALIASES[alias]
+    # "Senior Teller", "Relief Teller", "Teller II": a teller by any other
+    # title is still a teller, and the cash centre's is its own card. Only
+    # the WORD teller - nothing here matches a fragment of another title.
+    words = folded.replace("/", " ").split()
+    if "teller" in words or "tellers" in words:
+        if "cash" in words and ({"centre", "center"} & set(words)):
+            return "bo_cash_centre_teller"
+        return "bo_teller"
     return None
+
+
+def card_role_for(title):
+    """The card for ANY role title - sales first, then back office → code or
+    None.
+
+    The DMC roster's ``staff_role`` was read through :func:`role_code_for`
+    alone, which knows only the sales roles. Every teller on that roster who
+    was not among the 41 the back-office workbook seeded - JWR3503 among
+    them - was told "There is no scorecard for your role on the branch DMC
+    roster" while the teller card sat configured. Use this wherever a role
+    title is turned into a card.
+    """
+    return role_code_for(title) or bo_role_for(title)
 
 
 def started_in_role(sales_code, year=None):
@@ -2856,7 +2878,7 @@ def resolve_person(sales_code):
     # 1. the sales roster
     row = roster_row(code)
     if row is not None:
-        role = role_code_for(row.staff_role)
+        role = card_role_for(row.staff_role)
         if role is not None:
             # The DMC roster has no start date on it. The role history
             # does, so it is asked even when the DMC row answered for the
@@ -2929,7 +2951,7 @@ def resolve_person(sales_code):
     # a DMC row. The back-office mapping is still tried FIRST, so every
     # person this already answered for is answered identically.
     if staff is not None:
-        role = bo_role_for(staff.job_title) or role_code_for(staff.job_title)
+        role = card_role_for(staff.job_title)
         if role is not None:
             return Person(
                 sales_code=code, name=staff.staff_name or "", role_code=role,

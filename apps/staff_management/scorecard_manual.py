@@ -189,7 +189,7 @@ def _roster():
     Listing only the sales side is how 101 people would have had figures that
     nobody could load.
     """
-    from .live_scorecard import role_code_for
+    from .live_scorecard import card_role_for
     from .models import (
         BranchEmployeeDmcData, BranchFinalEmployeeDmcData,
         EmployeeRoleHistory, StaffEmployeeData)
@@ -202,7 +202,7 @@ def _roster():
             code = (row.sales_code or "").strip().upper()
             if not code or code in seen:
                 continue
-            role = role_code_for(row.staff_role)
+            role = card_role_for(row.staff_role)
             if role is None:
                 continue
             seen.add(code)

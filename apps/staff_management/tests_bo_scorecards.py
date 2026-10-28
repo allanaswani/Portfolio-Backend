@@ -575,3 +575,40 @@ class MyCardEndpointTests(TestCase):
         response = client.get(self.URL + "holder/")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.data, {"holds_card": False})
+
+
+class TellerOnTheDmcRosterTests(TestCase):
+    """JWR3503: a teller on the branch DMC roster, NOT among the 41 the
+    back-office workbook seeded. The DMC role was read through the sales
+    role list only, so every such teller was told "There is no scorecard for
+    your role on the branch DMC roster" - every time, while the teller card
+    sat configured."""
+
+    def setUp(self):
+        from .models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_pf_number=3503, staff_name="J W R", sales_code="JWR3503",
+            staff_role="TELLER", staff_branch="Rehani", staff_unit="Rehani",
+            active=1)
+
+    def test_the_teller_gets_the_teller_card(self):
+        from .live_scorecard import build_card, resolve_person
+
+        person = resolve_person("JWR3503")
+        self.assertEqual(person.role_code, "bo_teller")
+        card = build_card("JWR3503")
+        self.assertNotEqual(card.get("reason"), "role_has_no_card", card)
+
+    def test_teller_titles_by_any_name(self):
+        from .live_scorecard import card_role_for
+
+        for title, role in (("TELLER", "bo_teller"),
+                            ("Senior Teller", "bo_teller"),
+                            ("Relief Teller", "bo_teller"),
+                            ("Cash Centre Teller", "bo_cash_centre_teller"),
+                            ("SME RM", "sme_rm"),
+                            ("Tellership Analyst", None),
+                            ("Driver", None)):
+            with self.subTest(title):
+                self.assertEqual(card_role_for(title), role)

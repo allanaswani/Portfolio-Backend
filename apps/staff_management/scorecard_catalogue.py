@@ -128,7 +128,7 @@ def cards(role_code=""):
 
 def _holder_counts():
     """How many people hold each card, across all three rosters."""
-    from .live_scorecard import role_code_for
+    from .live_scorecard import card_role_for
     from .models import (
         BranchEmployeeDmcData, BranchFinalEmployeeDmcData, EmployeeRoleHistory)
 
@@ -139,7 +139,7 @@ def _holder_counts():
             folded = (code or "").strip().upper()
             if not folded or folded in seen:
                 continue
-            role = role_code_for(role_text)
+            role = card_role_for(role_text)
             if role is None:
                 continue
             seen.add(folded)
@@ -165,7 +165,7 @@ def roster(role_code="", search=""):
     until the platform knows that EKN1329 is a branch operations manager, and
     that is on none of the sales tables.
     """
-    from .live_scorecard import role_code_for
+    from .live_scorecard import card_role_for
     from .models import (
         BranchEmployeeDmcData, BranchFinalEmployeeDmcData, EmployeeRoleHistory,
         StaffEmployeeData)
@@ -183,7 +183,7 @@ def roster(role_code="", search=""):
             code = (row.sales_code or "").strip().upper()
             if not code or code in seen:
                 continue
-            role = role_code_for(row.staff_role)
+            role = card_role_for(row.staff_role)
             if role is None:
                 continue
             seen.add(code)
@@ -196,7 +196,10 @@ def roster(role_code="", search=""):
                 "branch": row.staff_branch or row.staff_unit or "",
                 "line_manager": getattr(row, "team_leader", "") or "",
                 "roster": label,
-                "family": "sales",
+                # The DMC roster carries tellers too, now that their title
+                # reaches a card - so read the family off the role.
+                "family": ("back office" if role.startswith(BO_PREFIX)
+                           else "sales"),
             })
 
     staff = {(code or "").strip().upper(): (name, unit) for code, name, unit

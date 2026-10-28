@@ -116,7 +116,7 @@ def roster_names():
     All three rosters, because a CX file covers RMs who may be on any of them.
     Built once per load rather than per row.
     """
-    from .live_scorecard import role_code_for
+    from .live_scorecard import card_role_for
     from .models import (
         BranchEmployeeDmcData, BranchFinalEmployeeDmcData, EmployeeRoleHistory,
         StaffEmployeeData,
@@ -135,7 +135,7 @@ def roster_names():
                 "staff_name", "sales_code", "staff_role"):
             # Only people who hold a card: a name that matches a non-sales
             # employee would attach a CX figure to somebody with no scorecard.
-            if role_code_for(role) is not None:
+            if card_role_for(role) is not None:
                 remember(name, code)
     for name, code in StaffEmployeeData.objects.exclude(
             sales_code="").values_list("staff_name", "sales_code"):
