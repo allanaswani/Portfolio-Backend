@@ -1930,3 +1930,63 @@ class SchemeScorecard(models.Model):
 
     def __str__(self):
         return f"{self.sales_code} {self.month:%Y-%m} {self.sheet}"
+
+
+class HrLeaveBalance(models.Model):
+    """Aruti's Employee Leave Balance List, a snapshot per "As On Date" - see
+    :mod:`apps.staff_management.hr_reports`."""
+
+    as_of = models.DateField(db_index=True)
+    pf_number = models.IntegerField(db_index=True)
+    leave_code = models.CharField(max_length=10)     # AL, SL, CL, ML, PL
+    leave_name = models.CharField(max_length=60, blank=True, default="")
+    name = models.CharField(max_length=200, blank=True, default="")
+    joined = models.DateField(null=True, blank=True)
+    period_start = models.DateField(null=True, blank=True)
+    period_end = models.DateField(null=True, blank=True)
+    bf = models.FloatField(null=True, blank=True)
+    adjustment = models.FloatField(null=True, blank=True)
+    accrued = models.FloatField(null=True, blank=True)
+    encashment = models.FloatField(null=True, blank=True)
+    issued = models.FloatField(null=True, blank=True)
+    balance = models.FloatField(null=True, blank=True)
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "hr_leave_balance"
+        unique_together = [("as_of", "pf_number", "leave_code")]
+
+    def __str__(self):
+        return f"{self.pf_number} {self.leave_code} {self.as_of}"
+
+
+class HrEmployeeListing(models.Model):
+    """Aruti's Employee Listing Report, a snapshot per report date. Birth
+    date, age, gender, bank and membership are not stored - no card uses
+    them. See :mod:`apps.staff_management.hr_reports`."""
+
+    as_of = models.DateField(db_index=True)
+    pf_number = models.IntegerField(db_index=True)
+    name = models.CharField(max_length=200, blank=True, default="")
+    branch = models.CharField(max_length=120, blank=True, default="")
+    department_group = models.CharField(max_length=120, blank=True,
+                                        default="")
+    department = models.CharField(max_length=120, blank=True, default="")
+    section = models.CharField(max_length=120, blank=True, default="")
+    job = models.CharField(max_length=200, blank=True, default="")
+    grade = models.CharField(max_length=60, blank=True, default="")
+    employment_type = models.CharField(max_length=60, blank=True, default="")
+    date_hired = models.DateField(null=True, blank=True)
+    email = models.CharField(max_length=200, blank=True, default="")
+    end_of_contract = models.DateField(null=True, blank=True)
+    leaving_reason = models.CharField(max_length=200, blank=True, default="")
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "hr_employee_listing"
+        unique_together = [("as_of", "pf_number")]
+
+    def __str__(self):
+        return f"{self.pf_number} {self.name} {self.as_of}"

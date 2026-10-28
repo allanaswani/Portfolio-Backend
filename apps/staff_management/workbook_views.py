@@ -462,3 +462,63 @@ class IfrsMovementUploadView(APIView):
         body["written"] = im.replace_month(month, rows)
         body["applied"] = True
         return Response(body, status=201)
+
+
+@extend_schema(tags=[_TAG])
+class HrReportUploadView(APIView):
+    """Aruti's leave balance list OR its employee listing - whichever the
+    file is - stored as a snapshot for the date the report states.
+
+    Reports from different months are kept side by side; loading a date
+    again replaces only that date. Reads and reports first; writes only with
+    ``apply``. See ``staff_management.hr_reports``.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    MAX_BYTES = 30 * 1024 * 1024
+
+    def post(self, request):
+        import os
+        import tempfile
+
+        from apps.staff_management import hr_reports as hr
+
+        if not may_load(request.user):
+            return Response({"detail": "Only an administrator can load HR "
+                                       "reports."}, status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose the report first."}, status=400)
+        if upload.size > self.MAX_BYTES:
+            return Response(
+                {"file": f"That file is {upload.size / 1024 / 1024:.1f} MB; "
+                         f"the limit is {self.MAX_BYTES // 1024 // 1024} MB."},
+                status=400)
+
+        handle, path = tempfile.mkstemp(suffix=".xls")
+        try:
+            with os.fdopen(handle, "wb") as out:
+                for chunk in upload.chunks():
+                    out.write(chunk)
+            kind, as_of, rows, report = hr.read(path)
+        except hr.HrReportError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        finally:
+            os.unlink(path)
+
+        label = ("Leave balance list" if kind == hr.LEAVE
+                 else "Employee listing")
+        held = [d.isoformat() for d in hr.snapshots(kind)]
+        body = {
+            "report": kind, "label": label, "as_of": as_of.isoformat(),
+            "summary": report, "dates_held": held,
+            "replaces": as_of.isoformat() in held, "applied": False,
+        }
+        if str(request.data.get("apply", "")).lower() not in ("1", "true",
+                                                              "yes"):
+            return Response(body)
+        body["written"] = hr.replace_snapshot(kind, as_of, rows)
+        body["applied"] = True
+        body["dates_held"] = [d.isoformat() for d in hr.snapshots(kind)]
+        return Response(body, status=201)

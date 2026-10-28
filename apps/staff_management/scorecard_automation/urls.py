@@ -76,6 +76,9 @@ urlpatterns = [
     # never carried over, which is why it stopped at July 2025.
     path("manual-figures/ifrs-movement/",
          workbook_views.IfrsMovementUploadView.as_view()),
+    # Aruti's leave balance list or employee listing - a snapshot per date.
+    path("manual-figures/hr-report/",
+         workbook_views.HrReportUploadView.as_view()),
     # People's OWN signed scorecards, many at a time. The master workbook
     # carries one card per role; everybody else's targets are on their own
     # file and exist nowhere else.
