@@ -3598,7 +3598,7 @@ def build_card(sales_code, profile=None, as_at=None):
                               "been loaded yet. Administration loads the "
                               "Scheme template and actuals workbook under "
                               "Scorecards."}
-        return scheme_cards.card_payload(record)
+        return scheme_cards.card_payload(record, asked=as_at)
 
     mappings = list(ScRoleKpiMapping.objects.filter(role_code=role_code)
                     .order_by("kpi_order"))

@@ -405,6 +405,13 @@ class Actuals:
 
     def lookup(self, sheet, first, last, name, month):
         """=VLOOKUP(name, sheet!$C$first:$Q$last, month + 3, 0)"""
+        value = self.cell(sheet, first, last, name, month)
+        return 0.0 if value is None else value
+
+    def cell(self, sheet, first, last, name, month):
+        """The cell VLOOKUP lands on - None where it is EMPTY, which VLOOKUP
+        itself reports as 0. Kept apart so a card can say a figure was never
+        entered for that month instead of presenting a blank as a nought."""
         rows = self.sheets.get(sheet)
         if rows is None:
             raise SchemeCardError(f"the actuals workbook has no {sheet!r} sheet")
@@ -416,7 +423,7 @@ class Actuals:
             if _fold(row[2]) == wanted:           # column C
                 value = row[2 + month + 2]        # C + (month + 3) - 1
                 if value is None or value == "":
-                    return 0.0                    # an empty cell reads as 0
+                    return None
                 if isinstance(value, bool):
                     return float(value)
                 if isinstance(value, (int, float)):
@@ -524,9 +531,12 @@ def compute_card(card, name, month, joined, actuals, loaded=None):
     out, total, weight = [], 0.0, 0.0
     for line in card.lines:
         source = line.actual[0]
+        empty = False
         if source == "lookup":
             _kind, sheet, first, last = line.actual
-            actual = actuals.lookup(sheet, first, last, name, month)
+            raw = actuals.cell(sheet, first, last, name, month)
+            empty = raw is None
+            actual = 0.0 if empty else raw
         elif source == "revenue":
             actual = actuals.revenue_ytd(month)
         elif source == "loaded":
@@ -558,7 +568,7 @@ def compute_card(card, name, month, joined, actuals, loaded=None):
             "description": line.description, "weight": line.weight,
             "fy_target": full, "ytd_target": ytd, "actual": actual,
             "score": score, "weighted": weighted, "counted": line.counted,
-            "note": line.note,
+            "note": line.note, "empty": empty,
         })
     return {"lines": out, "total": total, "weight": weight}
 
@@ -672,39 +682,39 @@ def months_with_figures(actuals, names):
     return found
 
 
-def compute_all(template, actuals_book, month=None, loaded_by_code=None):
-    """Every person on the List → ``([(RosterRow, result)], unplaced,
-    month)``.
+def compute_months(template, actuals_book, loaded_for=None, only=None):
+    """Every month the actuals workbook holds, for everybody on the List →
+    ``({month: [(RosterRow, result)]}, unplaced)``.
 
-    ``month`` (1..12) defaults to the template's own review month. A month the
-    actuals workbook holds no figures for is refused, naming the months it
-    does hold - not computed into a card of zeros.
+    One load, every month - so any month can be opened afterwards, not just
+    the one the template happens to be set to. ``only`` restricts it to one
+    month (1..12), refused if the workbook holds nothing for it.
+    ``loaded_for(month)`` gives that month's figures typed under Figures to
+    load.
     """
     roster, unplaced = read_roster(template)
     actuals = Actuals.from_workbook(actuals_book)
-    month = month or template_month(template)
-    if month is None:
-        raise SchemeCardError(
-            "Which month? The template's Constants sheet does not say, so the "
-            "month has to be given.")
-    held = months_with_figures(actuals, [person.name for person in roster])
-    if month not in held:
-        latest = max(held) if held else None
-        raise SchemeCardError(
-            f"The actuals workbook has no figures for {_MONTHS[month - 1]}. "
-            + (f"The latest month it holds figures for is "
-               f"{_MONTHS[latest - 1]}." if latest else
-               "It holds no monthly figures at all.")
-            + " Computing a month it does not hold would read every figure as "
-              "0.")
-    loaded_by_code = loaded_by_code or {}
-    cards = []
-    for person in roster:
-        result = compute_card(CARDS[person.sheet], person.name, month,
-                              person.joined, actuals,
-                              loaded_by_code.get(person.sales_code, {}))
-        cards.append((person, result))
-    return cards, unplaced, month
+    held = sorted(months_with_figures(actuals,
+                                      [person.name for person in roster]))
+    if not held:
+        raise SchemeCardError("The actuals workbook holds no monthly figures "
+                              "for anybody on the List.")
+    if only is not None:
+        if only not in held:
+            raise SchemeCardError(
+                f"The actuals workbook has no figures for "
+                f"{_MONTHS[only - 1]}. It holds "
+                f"{', '.join(_MONTHS[m - 1] for m in held)}.")
+        held = [only]
+    out = {}
+    for month in held:
+        loaded = loaded_for(month) if loaded_for else {}
+        out[month] = [
+            (person, compute_card(CARDS[person.sheet], person.name, month,
+                                  person.joined, actuals,
+                                  loaded.get(person.sales_code, {})))
+            for person in roster]
+    return out, unplaced
 
 
 def loaded_figures(month_start):
@@ -751,9 +761,19 @@ def stored_for(sales_code, as_at=None):
     return rows.order_by("-month").first()
 
 
-def card_payload(record):
+def months_loaded(sales_code):
+    """The months a person's Scheme card is stored for → ["2026-01", ...]."""
+    from .models import SchemeScorecard
+
+    return [m.strftime("%Y-%m") for m in SchemeScorecard.objects.filter(
+        sales_code__iexact=(sales_code or "").strip())
+        .order_by("month").values_list("month", flat=True)]
+
+
+def card_payload(record, asked=None):
     """A stored Scheme card in the shape every other card has, so the same
-    page, download and signature show it."""
+    page, download and signature show it. ``asked`` is the month end the
+    viewer asked for; where it is not the stored month, the card says so."""
     card = CARDS.get(record.sheet)
     data = record.card or {}
     perspectives, seen = [], {}
@@ -779,6 +799,12 @@ def card_payload(record):
             pending = ("The actuals workbook has no row for this name in the "
                        "block this line reads, so the workbook's own total is "
                        "an error too.")
+        as_at = f"as at {month_end.day} {month_end:%b %Y}"
+        if line.get("empty"):
+            # Scored as the workbook scores it - an empty cell is 0 - but
+            # said, so a blank is never read as a real nought.
+            as_at = (f"no figure entered for {month_end:%B} in the actuals "
+                     f"workbook - read as 0, as the workbook reads it")
         fy, ytd, actual = (line["fy_target"], line["ytd_target"],
                            line["actual"])
         seen[name]["lines"].append({
@@ -802,7 +828,7 @@ def card_payload(record):
             # The Head of Schemes' revenue line is scored and left out of his
             # total, as on his card.
             "counted_in_total": line.get("counted", True),
-            "as_at": f"as at {month_end.day} {month_end:%b %Y}",
+            "as_at": as_at,
             "as_at_date": month_end.isoformat(),
             "higher_is_better": True,
             "full_marks_rule": "",
@@ -838,12 +864,34 @@ def card_payload(record):
         "scored_weight": round(scored, 4),
         "unscored_weight": round(unscored, 4),
         "perspectives": perspectives,
+        "months_loaded": months_loaded(record.sales_code),
+        # A month the desk only partly filled in. Scored exactly as the
+        # workbook would score it - but said at the top, because a January
+        # card with 14 of 16 lines empty reads 4.6% and looks like a
+        # collapse rather than like a workbook nobody has filled in yet.
+        "coverage_note": _coverage_note(data.get("lines", []), record.month),
+        "showing_other_month": (
+            "" if asked is None or asked.replace(day=1) == record.month else
+            f"Nothing is loaded for {asked:%B %Y}; this is "
+            f"{record.month:%B %Y}, the latest month on or before it."),
         "how_scored": ("Computed exactly as the desk's Scheme scorecard "
                        "workbook computes it, line by line - including where "
                        "the workbook's own formulas are known to be wrong. "
                        "Any line that differs from what it says carries a "
                        "note."),
     }
+
+
+def _coverage_note(lines, month):
+    looked_up = [ln for ln in lines if "empty" in ln]
+    empty = sum(1 for ln in looked_up if ln["empty"])
+    if not empty:
+        return ""
+    return (f"{empty} of {len(lines)} lines had no figure for "
+            f"{month:%B %Y} in the actuals workbook, so they read as 0 - as "
+            f"the workbook itself reads them. Those lines are marked; the "
+            f"score is low because the month is not filled in, not because "
+            f"of the results.")
 
 
 def _month_end(first):

@@ -146,3 +146,52 @@ class WrongMonthTests(TestCase):
         total = sc.compute_card(sc.CARDS["SCHEMES_RM"], "Dennis Kimathi", 9,
                                 2, june_actuals())["total"]
         self.assertAlmostEqual(total, 0.15, places=9)
+
+
+class EveryMonthTests(TestCase):
+    """One load stores every month the workbook holds, so an admin can open
+    any of them - and a month the desk only partly filled says so."""
+
+    def test_june_is_still_exactly_as_signed_among_all_months(self):
+        actuals = june_actuals()
+        names = [name for _c, name, _r, _j in ROSTER]
+        held = sorted(sc.months_with_figures(actuals, names))
+        self.assertEqual(held[-1], 6)
+        for code, name, role, joined in ROSTER:
+            card = sc.CARDS[sc.ROLE_SHEETS[sc._fold(role)]]
+            self.assertEqual(
+                sc.compute_card(card, name, 6, joined, actuals)["total"],
+                SIGNED_JUNE[name])
+
+    def test_a_partly_filled_month_is_flagged_on_the_card(self):
+        from .models import SchemeScorecard
+
+        result = sc.compute_card(sc.CARDS["SCHEMES_RM"], "Dennis Kimathi", 1,
+                                 2, june_actuals())
+        empty = sum(1 for ln in result["lines"] if ln["empty"])
+        self.assertGreater(empty, 0)
+        record = SchemeScorecard(sales_code="DK4239", staff_name="Dennis",
+                                 sheet="SCHEMES_RM",
+                                 month=datetime.date(2026, 1, 1),
+                                 card=result, total=result["total"])
+        payload = sc.card_payload(record)
+        self.assertIn(f"{empty} of 16 lines had no figure for January",
+                      payload["coverage_note"])
+        flagged = [ln for p in payload["perspectives"] for ln in p["lines"]
+                   if ln["as_at"].startswith("no figure entered")]
+        self.assertEqual(len(flagged), empty)
+
+    def test_asking_for_a_month_not_loaded_says_which_month_it_shows(self):
+        from .models import SchemeScorecard
+
+        result = sc.compute_card(sc.CARDS["SCHEMES_RM"], "Dennis Kimathi", 6,
+                                 2, june_actuals())
+        record = SchemeScorecard(sales_code="DK4239", staff_name="Dennis",
+                                 sheet="SCHEMES_RM",
+                                 month=datetime.date(2026, 6, 1),
+                                 card=result, total=result["total"])
+        payload = sc.card_payload(record, asked=datetime.date(2026, 9, 30))
+        self.assertIn("Nothing is loaded for September 2026",
+                      payload["showing_other_month"])
+        self.assertEqual(sc.card_payload(record, asked=datetime.date(
+            2026, 6, 30))["showing_other_month"], "")

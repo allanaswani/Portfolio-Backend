@@ -260,8 +260,9 @@ class _WorkbookUploadView(APIView):
 
 @extend_schema(tags=[_TAG])
 class ScorecardSchemeUploadView(_WorkbookUploadView):
-    """The Scheme scorecards for one month: the desk's template (``template``,
-    for its List roster) and the actuals workbook (``actuals``).
+    """The Scheme scorecards for every month the actuals workbook holds: the
+    desk's template (``template``, for its List roster) and the actuals
+    workbook (``actuals``). ``month`` limits it to one.
 
     Computed exactly as the template computes them - see
     ``staff_management.scheme_cards``. Reports every card first; writes only
@@ -300,47 +301,54 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
                                               read_only=True)
             actuals = openpyxl.load_workbook(files["actuals"], data_only=True,
                                              read_only=True)
-            # The month is the TEMPLATE's own unless one is asked for. It used
-            # to be required, and the screen pre-filled last month - so June
-            # workbooks were computed as September, every figure read as an
-            # empty cell, and Dennis Kimathi's 77.3% card showed 15%.
+            # EVERY month the actuals workbook holds is computed and stored,
+            # so any month can be opened afterwards - one load, not one load
+            # per month. ``month`` limits it to one. It used to be a single
+            # required month that the screen pre-filled with LAST month, so
+            # June workbooks were stored as September and Dennis Kimathi's
+            # 77.3% card showed 15%; a month with no figures is now refused.
+            period = sc.template_period(template)
+            year = period.year if period else datetime.date.today().year
+            only = None
             raw = str(request.data.get("month", "")).strip()
             if raw:
                 try:
-                    month_start = datetime.datetime.strptime(
-                        raw[:7], "%Y-%m").date()
+                    asked = datetime.datetime.strptime(raw[:7], "%Y-%m").date()
                 except ValueError:
                     return Response({"month": "Which month? e.g. 2026-06"},
                                     status=400)
-            else:
-                month_start = sc.template_period(template)
-                if month_start is None:
-                    return Response(
-                        {"month": "The template does not say its month - "
-                                  "choose one."}, status=400)
-            cards, unplaced, _month = sc.compute_all(
-                template, actuals, month_start.month,
-                sc.loaded_figures(month_start))
+                year, only = asked.year, asked.month
+            by_month, unplaced = sc.compute_months(
+                template, actuals,
+                lambda m: sc.loaded_figures(datetime.date(year, m, 1)),
+                only=only)
         except sc.SchemeCardError as exc:
             return Response({"detail": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001 - the message is for the reader
             return Response({"detail": f"Those workbooks could not be read: "
                                        f"{exc}"}, status=400)
 
-        body = {
-            "applied": False,
-            "month": month_start.isoformat(),
-            "cards": [{
+        def row(person, result):
+            total = result["total"]
+            return {
                 "sales_code": person.sales_code, "name": person.name,
                 "card": person.sheet, "joined": person.joined,
-                "total": (result["total"]
-                          if isinstance(result["total"], float) else None),
-                "total_error": (result["total"]
-                                if isinstance(result["total"], str) else ""),
+                "total": total if isinstance(total, float) else None,
+                "total_error": total if isinstance(total, str) else "",
+                "empty_lines": sum(1 for ln in result["lines"]
+                                   if ln.get("empty")),
                 "not_loaded": [ln["kpi"] for ln in result["lines"]
                                if ln["score"] is None
                                and ln["weighted"] is None],
-            } for person, result in cards],
+            }
+
+        months = [{"month": datetime.date(year, m, 1).isoformat(),
+                   "cards": [row(p, r) for p, r in cards]}
+                  for m, cards in by_month.items()]
+        body = {
+            "applied": False,
+            "template_month": period.isoformat() if period else None,
+            "months": months,
             "not_placed": [{"row": n, "name": name, "role": role}
                            for n, name, role in unplaced],
         }
@@ -348,7 +356,9 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
             return Response(body)
 
         who = (request.user.get_full_name() or request.user.username).strip()
-        body["saved"] = sc.store(cards, month_start, loaded_by=who)
+        body["saved"] = sum(
+            sc.store(cards, datetime.date(year, m, 1), loaded_by=who)
+            for m, cards in by_month.items())
         body["applied"] = True
         return Response(body, status=201)
 

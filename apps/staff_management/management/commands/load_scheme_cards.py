@@ -5,8 +5,9 @@
     manage.py load_scheme_cards ... --apply
     manage.py load_scheme_cards --delete-month 2026-09 --apply
 
-The month defaults to the template's own (Constants!B4). A month the actuals
-workbook holds no figures for is refused. --delete-month removes the cards
+Every month the actuals workbook holds is computed and stored, so any month
+can be opened afterwards; --month limits it to one, refused if the workbook
+holds nothing for it. --delete-month removes the cards
 stored for a month that should never have been loaded.
 
 Reports every card first and writes only with --apply. The cards are the
@@ -30,8 +31,8 @@ class Command(BaseCommand):
         parser.add_argument("--delete-month", default="",
                             help="YYYY-MM: remove the cards stored for it")
         parser.add_argument("--month", default="",
-                            help="YYYY-MM; defaults to the template's own "
-                                 "review month (Constants!B4)")
+                            help="YYYY-MM: only this month; default every month "
+                                 "the actuals workbook holds")
         parser.add_argument("--apply", action="store_true",
                             help="write the cards; without it, only report")
 
@@ -66,35 +67,42 @@ class Command(BaseCommand):
                                           read_only=True)
         actuals = openpyxl.load_workbook(opts["actuals"], data_only=True,
                                          read_only=True)
+        period = sc.template_period(template)
+        year = period.year if period else datetime.date.today().year
+        only = None
         if opts["month"]:
             try:
-                month_start = datetime.datetime.strptime(
+                asked = datetime.datetime.strptime(
                     opts["month"][:7], "%Y-%m").date()
             except ValueError:
                 raise CommandError(
                     f"{opts['month']!r} is not a month (YYYY-MM)")
-        else:
-            month_start = sc.template_period(template)
-            if month_start is None:
-                raise CommandError("The template does not say its month; "
-                                   "give --month YYYY-MM.")
+            year, only = asked.year, asked.month
         try:
-            cards, unplaced, _month = sc.compute_all(
-                template, actuals, month_start.month,
-                sc.loaded_figures(month_start))
+            by_month, unplaced = sc.compute_months(
+                template, actuals,
+                lambda m: sc.loaded_figures(datetime.date(year, m, 1)),
+                only=only)
         except sc.SchemeCardError as exc:
             raise CommandError(str(exc))
 
-        self.stdout.write(f"Scheme scorecards - {month_start:%b %Y}")
-        for person, result in cards:
-            total = result["total"]
-            shown = f"{total:.4%}" if isinstance(total, float) else str(total)
-            missing = [ln["kpi"] for ln in result["lines"]
-                       if ln["score"] is None and ln["weighted"] is None]
+        for month, cards in by_month.items():
             self.stdout.write(
-                f"  {person.sales_code:8} {person.name:22} {person.sheet:14} "
-                f"{shown:>9}"
-                + (f"   not loaded: {', '.join(missing)}" if missing else ""))
+                f"Scheme scorecards - {datetime.date(year, month, 1):%b %Y}")
+            for person, result in cards:
+                total = result["total"]
+                shown = (f"{total:.4%}" if isinstance(total, float)
+                         else str(total))
+                empty = sum(1 for ln in result["lines"] if ln.get("empty"))
+                missing = [ln["kpi"] for ln in result["lines"]
+                           if ln["score"] is None and ln["weighted"] is None]
+                self.stdout.write(
+                    f"  {person.sales_code:8} {person.name:22} "
+                    f"{person.sheet:14} {shown:>9}"
+                    + (f"   {empty} line(s) with no figure that month"
+                       if empty else "")
+                    + (f"   not loaded: {', '.join(missing)}"
+                       if missing else ""))
         for number, name, role in unplaced:
             self.stdout.write(f"  List row {number}: {name} ({role}) - no "
                               f"Scheme card for that role, or no sales code")
@@ -102,5 +110,9 @@ class Command(BaseCommand):
         if not opts["apply"]:
             self.stdout.write("Nothing written. Add --apply to store them.")
             return
-        stored = sc.store(cards, month_start, loaded_by="load_scheme_cards")
-        self.stdout.write(self.style.SUCCESS(f"Stored {stored} card(s)."))
+        stored = sum(
+            sc.store(cards, datetime.date(year, month, 1),
+                     loaded_by="load_scheme_cards")
+            for month, cards in by_month.items())
+        self.stdout.write(self.style.SUCCESS(
+            f"Stored {stored} card(s) across {len(by_month)} month(s)."))
