@@ -37,6 +37,7 @@ def make_the_feeds():
                 "ApplicationId" varchar(40),
                 "Customerid" varchar(40),
                 "SellerCode" varchar(40),
+                "Branch" varchar(10),
                 "CreationDate" varchar(40),
                 "ActionDate" timestamp without time zone,
                 "StatusTo" varchar(80)
@@ -264,3 +265,58 @@ class ItReachesTheCardTests(TestCase):
         self.assertAlmostEqual(line["ytd_actual"], 1.0, places=4)
         self.assertFalse(line["pending"])
         self.assertIn("account", line["as_at"])
+
+
+class BackOfficeScopeTests(TestCase):
+    """A BOM or the RBO team is never the seller on an application, so keyed
+    on their own code both Account Opening lines found nothing for EVERY
+    holder. ``bo_scope`` widens the read to the branch, or the bank."""
+
+    def setUp(self):
+        make_the_feeds()
+        a_customer(1, "MASS")
+        with connection.cursor() as cur:
+            for app_id, seller, branch, done in (
+                    ("A1", "RM0001", "200", "2026-03-02 00:00:00"),
+                    ("A2", "RM0002", "200", "2026-03-04 00:00:00"),
+                    ("A3", "RM0003", "510", "2026-03-11 00:00:00")):
+                cur.execute(
+                    'INSERT INTO iapply_accounts_tat ("ApplicationId", '
+                    '"Customerid", "SellerCode", "Branch", "CreationDate", '
+                    '"ActionDate") VALUES (%s, %s, %s, %s, %s, %s)',
+                    [app_id, "1", seller, branch, "2026-03-01 00:00:00",
+                     done])
+
+    def test_a_branch_reads_its_own_applications_only(self):
+        found = ao.turnarounds("BOM9999", YEAR, branch_code=200)
+        days, applications, _latest = found["pb"]
+        self.assertEqual(applications, 2)
+        self.assertAlmostEqual(days, 2.0, places=4)   # (1 + 3) / 2
+
+    def test_the_bank_reads_every_application(self):
+        days, applications, _latest = ao.turnarounds(
+            "RBO9999", YEAR, bank_wide=True)["pb"]
+        self.assertEqual(applications, 3)
+
+    def test_the_scope_by_role(self):
+        from .live_scorecard import bo_scope
+
+        self.assertIsNone(bo_scope("sme_rm", "200"))       # sellers: own code
+        self.assertEqual(bo_scope("bo_bom", "200"), (200, False, "your branch's"))
+        self.assertEqual(bo_scope("bo_rbo", ""), (None, True, "the bank's"))
+        self.assertEqual(bo_scope("bo_tl_rbo", "200")[1], True)
+        self.assertIsNone(bo_scope("bo_cso", ""))          # no branch, no guess
+
+    def test_the_card_falls_back_only_when_the_own_code_finds_nothing(self):
+        from .live_scorecard import live_actuals
+
+        bom = live_actuals("BOM9999", brn_code="200", role_code="bo_bom",
+                           wanted={"ao_tat_pb"})["ao_tat_pb"]
+        self.assertAlmostEqual(bom["value"], 2.0, places=4)
+        self.assertIn("your branch's", bom["as_at_label"])
+
+        # A seller with applications of their own keeps exactly their figure.
+        rm = live_actuals("RM0003", brn_code="200", role_code="bo_bom",
+                          wanted={"ao_tat_pb"})["ao_tat_pb"]
+        self.assertAlmostEqual(rm["value"], 10.0, places=4)
+        self.assertNotIn("branch", rm["as_at_label"])

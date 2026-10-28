@@ -68,8 +68,15 @@ NAMED_ELSEWHERE = (
 )
 
 
-def turnarounds(sales_code, year):
+def turnarounds(sales_code, year, branch_code=None, bank_wide=False):
     """Account-opening turnaround for one person, every segment at once.
+
+    ``branch_code`` / ``bank_wide`` widen the read from the person's own
+    ``SellerCode`` to every application of their branch, or of the bank.
+    That is for back-office cards: a branch operations manager or the RBO
+    team never appears as a seller, so keyed on their own code the line
+    could never find a single application. ``live_scorecard.bo_scope``
+    decides which, and only after their own code has found nothing.
 
     → ``{segment: (average_days, applications, latest)}``.
 
@@ -97,7 +104,18 @@ def turnarounds(sales_code, year):
                 "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
                 'THEN "ActionDate"::text::timestamp END)')
 
-    pieces, params = [], [sales_code.strip(), year]
+    if bank_wide:
+        who, params = "TRUE", [year]
+    elif branch_code not in (None, ""):
+        # "Branch" is the numeric branch code (accounts_tat.py maps it with
+        # its _BRANCH_MAP), stored as text on some loads - hence the guard.
+        who = ("NULLIF(regexp_replace(\"Branch\"::text, '\\D', '', 'g'), '')"
+               "::int = %s")
+        params = [int(branch_code), year]
+    else:
+        who = "UPPER(TRIM(COALESCE(\"SellerCode\", ''))) = UPPER(TRIM(%s))"
+        params = [sales_code.strip(), year]
+    pieces = []
     order = []
     for segment in ("pb", "bb", "ub", "sme"):
         if segment == "pb":
@@ -131,7 +149,7 @@ def turnarounds(sales_code, year):
                    {started} AS started,
                    {finished} AS finished
             FROM iapply_accounts_tat
-            WHERE UPPER(TRIM(COALESCE("SellerCode", ''))) = UPPER(TRIM(%s))
+            WHERE {who}
             GROUP BY "ApplicationId"
         ), scoped AS (
             SELECT t.started, t.finished,

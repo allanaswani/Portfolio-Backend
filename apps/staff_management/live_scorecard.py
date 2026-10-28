@@ -741,9 +741,13 @@ for _code in (
 #: insurance feed - so computing it here is a real option rather than a
 #: rewrite. It is not done yet, and until it is the card should say which of
 #: the two it is waiting for rather than naming a screen that will not fix it.
-SOURCES.setdefault("weighted_sales", Source(pending=_WEIGHTED_SALES_PENDING))
-SOURCES.setdefault("weighted_sales_dashboard",
-                   Source(pending=_WEIGHTED_SALES_PENDING))
+#:
+#: It is read now - not computed here. The report computes the score and the
+#: ETL saves it per seller into ``weighted_sales_seller_scores``; see
+#: :mod:`.weighted_sales`. Recomputing eleven lines and their per-role weights
+#: in a second place would only give two answers to compare.
+for _code in ("weighted_sales", "weighted_sales_dashboard"):
+    SOURCES[_code] = Source(actual_key="weighted_sales_score")
 
 #: PAR is a ratio against a threshold, not an amount against a plan. The roster
 #: carries an NPL amount (``target_npl``), which is a different measure, so
@@ -1426,8 +1430,44 @@ def _dormant_base(branch, brn_code, year):
                   f"{brought_back} brought back)")
 
 
-def _tat_ytd(sales_code, year, sla_days=7):
+#: Back-office cards whose turnaround is the WHOLE bank's: the retail back
+#: office opens accounts for every branch from head office, so there is no
+#: one branch whose applications are theirs.
+BANK_WIDE_BO = ("bo_rbo", "bo_tl_rbo")
+
+
+def bo_scope(role_code, brn_code):
+    """Whose applications a back-office card's turnaround lines read, once
+    the holder's own code has found none → ``(branch_code, bank_wide, whose)``
+    or None.
+
+    Both iApply readers key on the SELLER. A branch operations manager, a
+    teller or the RBO team is never the seller, so on every BOM card "TAT
+    (Loan)" and on every RBO card both Account Opening lines (15% each) had
+    nothing to find - "No figure yet" for EVERY holder in scorecard_coverage.
+    The cards measure the branch's turnaround ("Branch loan TAT") and, for
+    the RBO, the bank's; both tables carry the numeric branch code.
+
+    Only a fallback: anyone whose own code does find applications keeps
+    exactly the figure they had.
+    """
+    role = (role_code or "").strip()
+    if not role.startswith("bo_"):
+        return None
+    if role in BANK_WIDE_BO:
+        return None, True, "the bank's"
+    code = str(brn_code or "").strip()
+    if code.isdigit():
+        return int(code), False, "your branch's"
+    return None
+
+
+def _tat_ytd(sales_code, year, sla_days=7, branch_code=None, bank_wide=False):
     """Loan turnaround for this person's applications this year.
+
+    ``branch_code`` / ``bank_wide`` read the branch's or the bank's
+    applications instead of the person's own - for a back-office card, whose
+    holder is never the seller. See :func:`bo_scope`.
 
     → ``(average_days, share_within_sla, applications, latest)``
 
@@ -1448,11 +1488,19 @@ def _tat_ytd(sales_code, year, sla_days=7):
                MAX(creation_date)
         FROM iapply_loan_approvals_data_dump
         WHERE EXTRACT(YEAR FROM creation_date) = %s
-          AND UPPER(TRIM(COALESCE(seller_code, ''))) = UPPER(TRIM(%s))
+          AND {who}
           AND total_bank_tat IS NOT NULL
     """
+    if bank_wide:
+        who, key = "TRUE", []
+    elif branch_code not in (None, ""):
+        who, key = "branch = %s", [int(branch_code)]
+    else:
+        who = "UPPER(TRIM(COALESCE(seller_code, ''))) = UPPER(TRIM(%s))"
+        key = [sales_code.strip()]
+    sql = sql.replace("{who}", who)
     with connection.cursor() as cur:
-        cur.execute(sql, [sla_days, year, sales_code.strip()])
+        cur.execute(sql, [sla_days, year] + key)
         average, total, within, latest = cur.fetchone()
     if not total:
         return None, None, 0, None
@@ -1607,7 +1655,7 @@ def _figure(value, as_at=None, label=None, problem=None, failed=False):
 
 
 def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
-                 brn_code="", wanted=None, as_at=None):
+                 brn_code="", wanted=None, as_at=None, role_code=""):
     """Every figure the warehouse can give for this RM.
 
     ``wanted`` is the set of actual_keys the person's own card reads. A reader
@@ -2122,21 +2170,40 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
              "new_customers_multi_product"), new_accounts)
 
     # ── Loan turnaround, from iApply ──────────────────────────────────────
+    # A back-office holder is never the seller; see :func:`bo_scope`.
+    scope = bo_scope(role_code, brn_code)
+
     def turnaround():
         days, within, applications, latest = _tat_ytd(sales_code, year)
+        whose = ""
+        if not applications and scope is not None:
+            branch_code, bank_wide, whose = scope
+            days, within, applications, latest = _tat_ytd(
+                sales_code, year, branch_code=branch_code,
+                bank_wide=bank_wide)
         if not applications:
             why = ("no loan applications with a recorded bank turnaround for "
-                   "this sales code this year")
+                   + (f"{whose} applications" if whose else "this sales code")
+                   + " this year")
             return {"tat_days": _figure(None, problem=why),
                     "tat_within_sla": _figure(None, problem=why)}
         at = latest or monthly
-        label = (f"{applications} application"
+        label = (f"{applications} {whose + ' ' if whose else ''}application"
                  f"{'' if applications == 1 else 's'}, as at "
                  f"{at.day} {at:%b %Y}")
         return {"tat_days": _figure(days, at, label),
                 "tat_within_sla": _figure(within, at, label)}
 
     attempt(("tat_days", "tat_within_sla"), turnaround)
+
+    # ── Weighted Sales, off the dashboard the report already scores ───────
+    def weighted_sales():
+        from . import weighted_sales as ws
+
+        score, at, label, problem = ws.seller_score(sales_code, upto=as_at)
+        return _figure(score, at, label, problem)
+
+    attempt("weighted_sales_score", weighted_sales)
 
     # ── Account-opening turnaround, by segment ────────────────────────────
     # A different feed from the loan turnaround above, and a different
@@ -2150,17 +2217,26 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             # 611k rows and nothing indexes SellerCode, so a query per
             # segment meant four scans for every card built.
             found = ao.turnarounds(sales_code, year)
+            whose = ""
+            if scope is not None and not any(
+                    seen for _d, seen, _l in found.values()):
+                branch_code, bank_wide, whose = scope
+                found = ao.turnarounds(sales_code, year,
+                                       branch_code=branch_code,
+                                       bank_wide=bank_wide)
             for segment, (days, applications, latest) in found.items():
                 key = f"ao_tat_{segment}"
                 if not applications:
                     out_[key] = _figure(None, problem=(
-                        f"no account-opening applications under this sales "
-                        f"code in {year} for that segment"))
+                        f"no account-opening applications "
+                        + (f"in {whose} book" if whose
+                           else "under this sales code")
+                        + f" in {year} for that segment"))
                     continue
                 at = latest or monthly
                 out_[key] = _figure(
                     days, at,
-                    f"{applications} account"
+                    f"{applications} {whose + ' ' if whose else ''}account"
                     f"{'' if applications == 1 else 's'} opened, average "
                     f"turnaround to {at.day} {at:%b %Y}")
         except ao.AccountOpeningUnavailable as exc:
@@ -3323,7 +3399,8 @@ def build_card(sales_code, profile=None, as_at=None):
 
     actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row),
                            person.branch, brn_code_for(sales_code, row),
-                           wanted=wanted, as_at=as_at)
+                           wanted=wanted, as_at=as_at,
+                           role_code=person.role_code)
 
     # Reading the plan gets the same savepoint treatment as reading the
     # warehouse. A failure here used to come out as a blank page, and a blank
