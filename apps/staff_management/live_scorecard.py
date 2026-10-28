@@ -214,21 +214,23 @@ _register(
     Source(target_field="target_loan_disbursement", actual_key="drawdowns"))
 
 # The two mortgage lines are the market-rate / non-market-rate split, and the
-# DMC roster carries a target for each. The ACTUAL needs the same split, and
-# drawdown_daily carries no rate classification, so the target is shown and the
-# figure is not invented.
+# DMC roster carries a target for each. drawdown_daily carries no FLAG, but it
+# carries the rate itself - ``final_interest`` on every drawdown - so the split
+# is made on that. See :data:`COMMERCIAL_RATE_ABOVE`.
 _register(
     ["net_mortgage_sales_10_commercial_rate_mortgages"],
     Source(target_field="target_mortgage_mrkt_rate",
-           pending="The target is the market-rate mortgage plan. Splitting the "
-                   "ACTUAL the same way needs a market/non-market rate flag on "
-                   "the drawdown, which drawdown_daily does not carry."))
+           actual_key="mortgage_commercial"))
 _register(
     ["net_mortgage_sales_10_non_commercial_rate_mortgages"],
     Source(target_field="target_mortgage_non_mrkt_rate",
-           pending="The target is the non-market-rate mortgage plan. Splitting "
-                   "the ACTUAL the same way needs a market/non-market rate flag "
-                   "on the drawdown, which drawdown_daily does not carry."))
+           actual_key="mortgage_non_commercial"))
+
+#: A drawdown priced ABOVE this rate (percent a year) is a commercial-rate
+#: mortgage; at or below it, non-commercial - the 10% the cards name on both
+#: lines, which is the affordable / KMRC-funded book's price. One number, so
+#: if the desk draws the line elsewhere this is the only thing to change.
+COMMERCIAL_RATE_ABOVE = 10.0
 
 # ── Customers ────────────────────────────────────────────────────────────────
 _register(
@@ -715,6 +717,12 @@ for _code in (
 ):
     SOURCES.setdefault(_code, Source(pending=_NOT_IN_WAREHOUSE))
 
+#: Errors IS held - it is the iApply TAT report's returned applications, as a
+#: share of the seller's applications. See :mod:`.loan_applications`. Lower is
+#: better: the card's 0.05 is "no more than 5% sent back".
+SOURCES["errors"] = Source(actual_key="loan_application_errors",
+                           higher_is_better=False)
+
 #: Weighted Sales is NOT "a count somebody keeps", which is what it used to
 #: say here, and the generic message sent people to the wrong screen.
 #:
@@ -812,6 +820,35 @@ def _drawdowns_ytd(sales_code, year, up_to=None):
         cur.execute(sql, [year, code, code, up_to, up_to])
         row = cur.fetchone()
     return float(row[0] or 0), row[1]
+
+
+def _mortgage_split_ytd(sales_code, year, up_to=None):
+    """Net drawdowns this year split by rate → ``(commercial, non_commercial,
+    latest)``.
+
+    The same rows and the same seller match as :func:`_drawdowns_ytd`, so the
+    two halves add up to the Drawdowns line on the same card. A drawdown with
+    no rate recorded is in neither half rather than guessed into one.
+    """
+    from django.db import connection
+
+    sql = """
+        SELECT COALESCE(SUM(net_drawdown) FILTER (
+                   WHERE final_interest > %s), 0),
+               COALESCE(SUM(net_drawdown) FILTER (
+                   WHERE final_interest <= %s), 0),
+               MAX(drawdown_dt)
+        FROM drawdown_daily
+        WHERE EXTRACT(YEAR FROM drawdown_dt) = %s
+          AND (TRIM(salesperson) ILIKE %s OR TRIM(loan_officer_id) ILIKE %s)
+          AND (%s IS NULL OR drawdown_dt <= %s)
+    """
+    code = sales_code.strip()
+    rate = COMMERCIAL_RATE_ABOVE
+    with connection.cursor() as cur:
+        cur.execute(sql, [rate, rate, year, code, code, up_to, up_to])
+        commercial, non_commercial, latest = cur.fetchone()
+    return float(commercial or 0), float(non_commercial or 0), latest
 
 
 def _premiums_ytd(sales_code, year, up_to=None):
@@ -2027,6 +2064,21 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     attempt("drawdowns", drawdowns)
 
+    # ── Mortgage sales, split at the commercial rate ──────────────────────
+    def mortgage_split():
+        commercial, non_commercial, at = _mortgage_split_ytd(
+            sales_code, year, up_to=as_at)
+        when = f", as at {at.day} {at:%b %Y}" if at else ""
+        rate = f"{COMMERCIAL_RATE_ABOVE:g}%"
+        return {
+            "mortgage_commercial": _figure(
+                commercial, at, f"drawn above {rate}{when}"),
+            "mortgage_non_commercial": _figure(
+                non_commercial, at, f"drawn at {rate} or below{when}"),
+        }
+
+    attempt(("mortgage_commercial", "mortgage_non_commercial"), mortgage_split)
+
     # ── Bancassurance ─────────────────────────────────────────────────────
     def premiums():
         total, life, non_life, other, unmapped, latest = _premiums_ytd(
@@ -2176,6 +2228,26 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     def turnaround():
         days, within, applications, latest = _tat_ytd(sales_code, year)
         whose = ""
+        if not applications:
+            # The summarised dump has no row for this seller - every Mortgage
+            # ARM on the coverage run. The raw trail the iApply report itself
+            # reads usually does. Share-within-SLA is not on the trail, so
+            # only the days are filled from it.
+            from . import loan_applications as la
+
+            try:
+                trail = la.seller_applications(sales_code, year, up_to=as_at)
+            except la.LoanTrailUnavailable:
+                trail = None
+            if trail and trail["applications"] and trail["tat_days"] is not None:
+                at = trail["latest"] or monthly
+                label = (f"{trail['applications']} application"
+                         f"{'' if trail['applications'] == 1 else 's'} on the "
+                         f"iApply trail, as at {at.day} {at:%b %Y}")
+                return {"tat_days": _figure(trail["tat_days"], at, label),
+                        "tat_within_sla": _figure(None, problem=(
+                            "only the days are on the iApply trail for this "
+                            "sales code, not the share inside the standard"))}
         if not applications and scope is not None:
             branch_code, bank_wide, whose = scope
             days, within, applications, latest = _tat_ytd(
@@ -2195,6 +2267,26 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 "tat_within_sla": _figure(within, at, label)}
 
     attempt(("tat_days", "tat_within_sla"), turnaround)
+
+    # ── Application errors: what iApply sent back ─────────────────────────
+    def application_errors():
+        from . import loan_applications as la
+
+        try:
+            trail = la.seller_applications(sales_code, year, up_to=as_at)
+        except la.LoanTrailUnavailable as exc:
+            return _figure(None, problem=str(exc))
+        if not trail["applications"]:
+            return _figure(None, problem=(
+                f"no loan applications on the iApply trail under this sales "
+                f"code in {year}"))
+        at = trail["latest"] or monthly
+        return _figure(trail["error_rate"], at, (
+            f"{trail['returned']} of {trail['applications']} application"
+            f"{'' if trail['applications'] == 1 else 's'} returned, as at "
+            f"{at.day} {at:%b %Y}"))
+
+    attempt("loan_application_errors", application_errors)
 
     # ── Weighted Sales, off the dashboard the report already scores ───────
     def weighted_sales():
