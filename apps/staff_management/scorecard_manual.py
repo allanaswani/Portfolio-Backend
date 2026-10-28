@@ -174,6 +174,50 @@ MANUAL_TARGETS = {
                         "is entered here",
 }
 
+# The heads' cards (migration 0060). Every head line is a DEPARTMENT figure
+# that no per-person table carries, and every money target is that head's own,
+# so all of them are loadable - actual and target both. The 2026 actuals
+# workbook already carries most of them on the head's row, and loading it
+# fills them; the rest are typed here.
+_HEAD_LINES = {
+    "head_revenue": "Department revenue contribution",
+    "head_pbt": "Department PBT (with FTP, full cost and provisions)",
+    "head_trade_income": "Trade income",
+    "head_trade_interest_income": "Trade finance interest income",
+    "head_commitment_fees": "Commitment fees",
+    "head_deposit_growth": "Department deposit growth",
+    "head_total_deposit_book": "Total deposit book (bank)",
+    "head_asset_growth": "Department asset growth",
+    "head_loan_book": "Loan book",
+    "head_trade_loans_growth": "Trade finance loans growth",
+    "head_trade_volume": "Trade finance activity volume",
+    "head_disbursement": "Department disbursements",
+    "head_new_customers": "New customers",
+    "head_focus_accounts": "Focus accounts",
+    "head_active_customers": "Active customers",
+    "head_digital_migration": "Digital migration / active score",
+    "head_strategic_initiatives": "Strategic initiatives - share completed",
+    "head_npl": "NPL ratio",
+    "head_nps": "Customer satisfaction (NPS)",
+    "head_sla": "SLA / turnaround in days",
+    "head_branch_audit": "Branch audit rating",
+    "head_cost_management": "Branch business cost",
+    "head_training": "Team training hours",
+    "head_productivity": "Team productivity",
+    "head_interest_expense": "Overall interest expense rate",
+    "head_unutilized_scheme_funds": "Un-utilized scheme funds",
+    "head_new_schemes": "New schemes onboarded",
+    "head_scheme_deposit_growth": "Scheme deposit growth",
+    "head_ib_growth": "IB growth",
+    "head_pb_dsr_disbursement": "PB DSR disbursement",
+    "head_sme_dsr_disbursement": "SME DSR disbursement",
+    "head_dsr_productivity": "DSR weighted sales productivity",
+    "head_scheme_rm_productivity": "Scheme RM weighted productivity",
+}
+MANUAL_ACTUALS.update(_HEAD_LINES)
+MANUAL_TARGETS.update({code: "a department target, set per head"
+                       for code in _HEAD_LINES})
+
 COLUMNS = ["sales_code", "staff_name", "staff_role", "kpi_code", "kpi_name",
            "what_this_is", "target", "actual", "month"]
 

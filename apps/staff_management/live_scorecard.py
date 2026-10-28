@@ -79,6 +79,22 @@ ROLE_ALIASES = {
     "commercial rm trade": "commercial_rm_trade",
     "commercial rm- trade": "commercial_rm_trade",
     "commercial trade rm": "commercial_rm_trade",
+    # The heads (migration 0060). Their titles as the actuals workbook, the
+    # scorecard workbook and the HR roster write them.
+    "sme head": "sme_head",
+    "head of sme": "sme_head",
+    "head of sme and commercial": "sme_head",
+    "head of sme banking": "sme_head",
+    "trade head": "trade_head",
+    "head of trade finance": "trade_head",
+    "head of trade": "trade_head",
+    "pb head": "pb_head",
+    "head of personal banking": "pb_head",
+    "head of sales and ib": "sales_ib_head",
+    "head of sales and institutional banking": "sales_ib_head",
+    "head of branch business": "branch_business_head",
+    "head of commercial": "head_commercial",
+    "head of commercial banking": "head_commercial",
 }
 
 
@@ -735,6 +751,44 @@ for _code in (
 #: asks you to stay under a limit.
 SOURCES["errors"] = Source(actual_key="loan_application_errors",
                            higher_is_better=False, threshold=True)
+
+#: The heads' lines (migration 0060). A head's figure is the DEPARTMENT's -
+#: SME's deposits, Trade's commission, the branches' revenue - and nothing here
+#: adds a department up from one person's code, which is all a head's card
+#: has. So each says where its figure comes from instead of reading the head's
+#: own (empty) book: the 2026 actuals workbook, which already carries most of
+#: them on the head's own row, or Figures to load.
+_HEAD_PENDING = (
+    "A head is measured on the department's total, which comes from the "
+    "actuals workbook: Administration loads it under Scorecards → Actuals, "
+    "and it then shows here. A figure the workbook does not carry is entered "
+    "under Scorecards → Figures to load.")
+_HEAD_COUNTED = {"head_new_customers", "head_focus_accounts",
+                 "head_active_customers", "head_digital_migration",
+                 "head_new_schemes", "head_training"}
+_HEAD_LOWER = {"head_npl", "head_sla", "head_cost_management",
+               "head_interest_expense"}
+for _code in (
+        "head_revenue", "head_pbt", "head_trade_income",
+        "head_trade_interest_income", "head_commitment_fees",
+        "head_deposit_growth", "head_total_deposit_book", "head_asset_growth",
+        "head_loan_book", "head_trade_loans_growth", "head_trade_volume",
+        "head_disbursement", "head_new_customers", "head_focus_accounts",
+        "head_active_customers", "head_digital_migration",
+        "head_strategic_initiatives", "head_npl", "head_nps", "head_sla",
+        "head_branch_audit", "head_cost_management", "head_training",
+        "head_productivity", "head_interest_expense",
+        "head_unutilized_scheme_funds", "head_new_schemes",
+        "head_scheme_deposit_growth", "head_ib_growth",
+        "head_pb_dsr_disbursement", "head_sme_dsr_disbursement",
+        "head_dsr_productivity", "head_scheme_rm_productivity"):
+    SOURCES[_code] = Source(
+        pending=_HEAD_PENDING,
+        higher_is_better=_code not in _HEAD_LOWER,
+        counted=_code in _HEAD_COUNTED,
+        # Survey and training lines stop at full marks on every card that
+        # carries them; see the CX and training registrations above.
+        cap=1.0 if _code in ("head_nps", "head_training") else SCORE_CAP)
 
 #: Weighted Sales is NOT "a count somebody keeps", which is what it used to
 #: say here, and the generic message sent people to the wrong screen.
@@ -2627,6 +2681,10 @@ FULL_YEAR_TARGETS = {
     "tat_loan", "weigted_tat",
     "weigted_tat_sla_service_standards_query_response_time",
     "weighted_sales", "weighted_sales_dashboard", "leave_management",
+    # The heads' thresholds: a rate or a rating that holds all year.
+    "head_nps", "head_productivity", "head_dsr_productivity",
+    "head_scheme_rm_productivity", "head_branch_audit", "head_npl",
+    "head_sla", "head_interest_expense", "head_strategic_initiatives",
 }
 
 #: The back-office thresholds, read off those cards rather than decided from a
