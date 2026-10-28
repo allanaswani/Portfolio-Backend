@@ -1944,13 +1944,22 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 from . import active_channels
 
                 span = active_channels.coverage()
-                if span["rows"] and span["first_month"]:
+                if (span["rows"] and span["first_month"]
+                        and span["first_month"].year >= year):
                     base_problems[base_name] = (
                         f"the activity feed starts at "
                         f"{span['first_month']:%b %Y} and so does not reach "
-                        f"{year - 1}. Until it does, this line's target comes "
-                        f"from the scorecard workbook, which carries the "
-                        f"{year} figure for each person")
+                        f"{year - 1}")
+                elif span["rows"] and span["first_month"]:
+                    # The feed DOES reach last year. It said "starts at Jan
+                    # 2025 and so does not reach 2025" here - which reads as
+                    # nonsense, because the true reason is that this book
+                    # had no customer active in two consecutive months of
+                    # last year in the feed.
+                    base_problems[base_name] = (
+                        f"no customer on your book was active in two "
+                        f"consecutive months of {year - 1} in the activity "
+                        f"feed")
                 else:
                     base_problems[base_name] = (
                         "the customer activity feed has not been loaded yet "
@@ -4022,7 +4031,15 @@ def build_card(sales_code, profile=None, as_at=None):
                 f"{float(mapping.kpi_target) * 100:.0f}% of your {spelt}, and "
                 f"that figure could not be read"
                 + (f": {base_problems[base_name]}." if base_name in base_problems
-                   else "."))
+                   else ".")
+                # The fix, named. The base falls back to the workbook's
+                # Summary Allocation sheet whenever the warehouse has none,
+                # and the reason a card still shows this is almost always
+                # that the workbook has not been loaded on this server.
+                + " Your figure is also on the scorecard workbook's Summary "
+                  "Allocation sheet: Administration loads it under Scorecards "
+                  "→ Figures to load → Load the scorecard workbook, and this "
+                  "line then works from it.")
             pending_label = "No base to work from"
         elif field and target_problem:
             # The exception text is kept in ``diagnostic`` for whoever has to
@@ -4060,6 +4077,14 @@ def build_card(sales_code, profile=None, as_at=None):
             # Not a fault - the figure honestly is not there, and the reason
             # says which piece is missing.
             pending = f"No figure for this line: {problem}."
+            # Any line takes the figure the desk's actuals template carries
+            # for it, so name that route where the line has a sheet in it.
+            sheet = (named[mapping.kpi_code].actuals_sheet
+                     if mapping.kpi_code in named else "")
+            if sheet:
+                pending += (f" The desk's actuals template carries this line "
+                            f"on its {sheet} sheet: loading it under "
+                            f"Scorecards → Figures to load fills this line.")
             pending_label = "No figure yet"
         elif actual is None:
             pending = "The warehouse has no figure for this line yet."

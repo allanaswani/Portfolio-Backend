@@ -449,6 +449,15 @@ class ScorecardActualsUploadView(_WorkbookUploadView):
         body["saved"] = apply_actuals(result, month, changed_by=who)
         body["applied"] = True
 
+        # The live cards read the loaded figures directly; the old monthly
+        # run is a stored snapshot beside them and is slow. A screen loading
+        # January to August in one go asks to skip it rather than run it
+        # eight times inside one request.
+        if str(request.data.get("run", "true")).lower() in ("0", "false",
+                                                             "no"):
+            body["scorecard_run"] = False
+            return Response(body, status=201)
+
         # And score it, so the card is current without a second action.
         try:
             EmployeeMonthlyPerformanceService.run_monthly_kpi_scorecard(
