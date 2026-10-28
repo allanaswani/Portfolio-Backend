@@ -24,6 +24,8 @@ urlpatterns = [
 
     # The signed-in person's own card, laid out as the card is.
     path("my-card/", views.ScorecardCardView.as_view()),
+    # Whether you hold a card at all - the home screen's "My Scorecard" tile.
+    path("my-card/holder/", views.ScorecardHolderView.as_view()),
 
     # Signing freezes the figures; the download renders the signed copy when
     # there is one, and is marked unsigned when there is not.

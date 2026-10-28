@@ -655,6 +655,43 @@ class ScorecardCardView(APIView):
 # ── Signing and downloading a card ───────────────────────────────────────────
 
 
+@extend_schema(tags=[_TAG])
+class ScorecardHolderView(APIView):
+    """Does the signed-in person hold a card at all? -> ``{holds_card, ...}``.
+
+    The home screen asks this to decide whether to show a "My Scorecard"
+    tile. "My Scorecard" was only ever a link on the RM, TL and Branch
+    menus, and a teller, CSO or BOM is in none of those groups - so the 41
+    tellers had a configured card, were recognised by my-card/, and had no
+    link anywhere that reached it. They signed in to Customer 360 and nothing
+    else.
+
+    Only who the person is and which card they hold: no figures, so it is
+    cheap enough to ask on every visit to home, unlike my-card/ itself.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.portfolio.models import Profile
+        from apps.staff_management.live_scorecard import (
+            resolve_person, resolve_sales_code_for_user)
+
+        profile = Profile.objects.filter(user_id=request.user.id).first()
+        code, _how = resolve_sales_code_for_user(request.user, profile)
+        person = resolve_person(code) if code else None
+        if person is None:
+            return Response({"holds_card": False})
+        return Response({
+            "holds_card": True,
+            "sales_code": person.sales_code,
+            "role_code": person.role_code,
+            "role_name": (ScRole.objects.filter(role_code=person.role_code)
+                          .values_list("role_name", flat=True).first()
+                          or person.role_code),
+        })
+
+
 def _own_sales_code(request):
     """The caller's own sales code, or "". Never taken from the request body:
     a card belongs to one person and there is no parameter to forget to check.

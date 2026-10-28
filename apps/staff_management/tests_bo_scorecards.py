@@ -556,3 +556,22 @@ class MyCardEndpointTests(TestCase):
         mine = self.client.get(self.URL).data
         theirs = self.client.get(self.URL + "?sales_code=SOMEONEELSE").data
         self.assertEqual(mine.get("sales_code"), theirs.get("sales_code"))
+
+    def test_the_home_tile_knows_a_back_office_holder(self):
+        """A teller or TL RBO is in no group whose menu carries "My
+        Scorecard"; the home tile is their only way in, and it asks this."""
+        response = self.client.get(self.URL + "holder/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.data["holds_card"])
+        self.assertEqual(response.data["sales_code"], "PKM1180")
+        self.assertEqual(response.data["role_code"], "bo_tl_rbo")
+
+    def test_the_home_tile_stays_hidden_for_somebody_with_no_card(self):
+        from django.contrib.auth.models import User
+
+        stranger = User.objects.create_user("nobody.here", password="x")
+        client = APIClient()
+        client.force_authenticate(stranger)
+        response = client.get(self.URL + "holder/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.data, {"holds_card": False})
