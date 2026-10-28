@@ -3041,6 +3041,28 @@ def resolve_person(sales_code):
     if not code:
         return None
 
+    # 0. the Scheme scorecard workbook. Its List sheet is the authority for
+    # who holds a Scheme card - it is what the desk's own macro walks - and a
+    # stored card says so. Asked first, because a Scheme RM may also sit on a
+    # sales roster under a title that would put them on the wrong card.
+    from django.db import transaction
+
+    from . import scheme_cards
+
+    try:
+        # In its own savepoint: before migration 0061 runs the table is not
+        # there, and that must not take every other card down with it.
+        with transaction.atomic():
+            scheme = scheme_cards.stored_for(code)
+    except Exception:  # noqa: BLE001
+        scheme = None
+    if scheme is not None:
+        return Person(
+            sales_code=code, name=scheme.staff_name,
+            role_code=scheme_cards.ROLE_CODES.get(scheme.sheet, scheme.sheet),
+            branch="Head Office",
+            roster="the Scheme scorecard workbook")
+
     # 1. the sales roster
     row = roster_row(code)
     if row is not None:
@@ -3562,6 +3584,21 @@ def build_card(sales_code, profile=None, as_at=None):
 
     role_code = person.role_code
     row = person.dmc_row
+
+    # The Scheme cards are the desk's workbook computed exactly - stored per
+    # month by load_scheme_cards - not the live engine. See scheme_cards.
+    from . import scheme_cards
+
+    if role_code in scheme_cards.ROLE_CODES.values():
+        record = scheme_cards.stored_for(sales_code, as_at=as_at)
+        if record is None:
+            return {"has_card": False, "reason": "scheme_month_not_loaded",
+                    "sales_code": sales_code,
+                    "detail": "Your Scheme scorecard for this month has not "
+                              "been loaded yet. Administration loads the "
+                              "Scheme template and actuals workbook under "
+                              "Scorecards."}
+        return scheme_cards.card_payload(record)
 
     mappings = list(ScRoleKpiMapping.objects.filter(role_code=role_code)
                     .order_by("kpi_order"))

@@ -1896,3 +1896,37 @@ class CustomerLastTransaction(models.Model):
 
     def __str__(self):
         return f"{self.cust_id} {self.last_txn or 'never'}"
+
+
+class SchemeScorecard(models.Model):
+    """One person's Scheme scorecard for one month, as the desk's workbook
+    computes it - see :mod:`apps.staff_management.scheme_cards`.
+
+    Stored, not computed per request: the card is the template's formulas over
+    the actuals workbook the desk keeps, and the platform holds that workbook
+    only for as long as an upload lasts. ``card`` is the whole computed card,
+    line by line, so what was signed can be shown again exactly.
+    """
+
+    sales_code = models.CharField(max_length=40, db_index=True)
+    staff_name = models.CharField(max_length=200, blank=True, default="")
+    #: The template sheet the card came off - SCHEMES_RM, HOD_SCHEMES, ...
+    sheet = models.CharField(max_length=40)
+    #: First day of the review month.
+    month = models.DateField(db_index=True)
+    #: The List sheet's prorate_new: months of the year before joining.
+    joined = models.IntegerField(default=0)
+    card = models.JSONField(default=dict)
+    #: The card's total, or None where the workbook's own total is an error.
+    total = models.FloatField(null=True, blank=True)
+    loaded_by = models.CharField(max_length=150, blank=True, default="")
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "scheme_scorecard"
+        unique_together = [("sales_code", "month")]
+        ordering = ["month", "sales_code"]
+
+    def __str__(self):
+        return f"{self.sales_code} {self.month:%Y-%m} {self.sheet}"

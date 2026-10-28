@@ -50,6 +50,9 @@ urlpatterns = [
     # itself so the RM's card is current without a second action.
     path("upload-actuals/", views.ScorecardActualsUploadView.as_view()),
     path("upload-allocation/", views.ScorecardAllocationUploadView.as_view()),
+    # The Scheme cards: the template (roster) and the actuals workbook, one
+    # month at a time, computed exactly as the template does.
+    path("upload-scheme/", views.ScorecardSchemeUploadView.as_view()),
 
     # Administration: the figures the system cannot compute - the survey, the
     # learning system, HR, Audit - plus any target the DMC load has no column

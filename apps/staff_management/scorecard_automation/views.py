@@ -259,6 +259,89 @@ class _WorkbookUploadView(APIView):
 
 
 @extend_schema(tags=[_TAG])
+class ScorecardSchemeUploadView(_WorkbookUploadView):
+    """The Scheme scorecards for one month: the desk's template (``template``,
+    for its List roster) and the actuals workbook (``actuals``).
+
+    Computed exactly as the template computes them - see
+    ``staff_management.scheme_cards``. Reports every card first; writes only
+    with ``apply=true``.
+    """
+
+    def post(self, request):
+        import datetime
+
+        import openpyxl
+
+        from apps.staff_management import scheme_cards as sc
+
+        if not _may_load(request.user):
+            return Response(
+                {"detail": "Only an administrator can load the Scheme cards."},
+                status=403)
+
+        files = {}
+        for field in ("template", "actuals"):
+            upload = request.FILES.get(field)
+            if upload is None:
+                return Response({field: f"Choose the {field} workbook."},
+                                status=400)
+            if not upload.name.lower().endswith(self.SUFFIXES):
+                return Response({field: f"{upload.name} is not an Excel "
+                                        f"workbook."}, status=400)
+            if upload.size > self.MAX_BYTES:
+                return Response({field: f"{upload.name} is over "
+                                        f"{self.MAX_BYTES // 1024 // 1024} MB."},
+                                status=400)
+            files[field] = upload
+
+        raw = str(request.data.get("month", "")).strip()
+        try:
+            month_start = datetime.datetime.strptime(raw[:7], "%Y-%m").date()
+        except ValueError:
+            return Response({"month": "Which month? e.g. 2026-06"}, status=400)
+
+        try:
+            template = openpyxl.load_workbook(files["template"], data_only=True,
+                                              read_only=True)
+            actuals = openpyxl.load_workbook(files["actuals"], data_only=True,
+                                             read_only=True)
+            cards, unplaced = sc.compute_all(template, actuals,
+                                             month_start.month,
+                                             sc.loaded_figures(month_start))
+        except sc.SchemeCardError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        except Exception as exc:  # noqa: BLE001 - the message is for the reader
+            return Response({"detail": f"Those workbooks could not be read: "
+                                       f"{exc}"}, status=400)
+
+        body = {
+            "applied": False,
+            "month": month_start.isoformat(),
+            "cards": [{
+                "sales_code": person.sales_code, "name": person.name,
+                "card": person.sheet, "joined": person.joined,
+                "total": (result["total"]
+                          if isinstance(result["total"], float) else None),
+                "total_error": (result["total"]
+                                if isinstance(result["total"], str) else ""),
+                "not_loaded": [ln["kpi"] for ln in result["lines"]
+                               if ln["score"] is None
+                               and ln["weighted"] is None],
+            } for person, result in cards],
+            "not_placed": [{"row": n, "name": name, "role": role}
+                           for n, name, role in unplaced],
+        }
+        if not self._asked_to_apply(request):
+            return Response(body)
+
+        who = (request.user.get_full_name() or request.user.username).strip()
+        body["saved"] = sc.store(cards, month_start, loaded_by=who)
+        body["applied"] = True
+        return Response(body, status=201)
+
+
+@extend_schema(tags=[_TAG])
 class ScorecardActualsUploadView(_WorkbookUploadView):
     """Load one review month of the RM actuals workbook.
 
