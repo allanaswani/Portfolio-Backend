@@ -221,8 +221,11 @@ class CardCalibrationTests(SimpleTestCase):
         which is exactly what happened with PAR: the seven cards turned out to
         agree that it is a pass/fail threshold, so it was implemented that way
         and taken off this list."""
+        # "errors" came off this list when it went live, the way PAR did:
+        # every card states it as a ceiling ("< 5 %"), so it is pass/fail -
+        # see test_errors_is_a_pass_fail_ceiling below.
         outside = {
-            "leave_management", "errors",
+            "leave_management",
         }
         for code in sorted(outside):
             with self.subTest(code):
@@ -231,6 +234,13 @@ class CardCalibrationTests(SimpleTestCase):
                     SOURCES[code].pending,
                     f"{code} is now scored live, but the eight cards do not "
                     f"agree on how to cap it - decide the cap first")
+
+    def test_errors_is_a_pass_fail_ceiling(self):
+        """Errors went live off iApply's returned applications. The cards
+        agree on its shape - "< 5 %" on every one - so, like PAR, it is a
+        threshold: under it full marks, over it nothing."""
+        self.assertTrue(SOURCES["errors"].threshold)
+        self.assertFalse(SOURCES["errors"].higher_is_better)
 
     def test_the_survey_lines_are_live_and_stop_at_full_marks(self):
         """The CX lines came OFF the list above, and this is the decision that

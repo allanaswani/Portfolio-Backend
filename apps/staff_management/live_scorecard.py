@@ -216,7 +216,8 @@ _register(
 # The two mortgage lines are the market-rate / non-market-rate split, and the
 # DMC roster carries a target for each. drawdown_daily carries no FLAG, but it
 # carries the rate itself - ``final_interest`` on every drawdown - so the split
-# is made on that. See :data:`COMMERCIAL_RATE_ABOVE`.
+# is made on that, the way the drawdown report makes it. See
+# :data:`MARKET_RATE_FROM`.
 _register(
     ["net_mortgage_sales_10_commercial_rate_mortgages"],
     Source(target_field="target_mortgage_mrkt_rate",
@@ -226,11 +227,17 @@ _register(
     Source(target_field="target_mortgage_non_mrkt_rate",
            actual_key="mortgage_non_commercial"))
 
-#: A drawdown priced ABOVE this rate (percent a year) is a commercial-rate
-#: mortgage; at or below it, non-commercial - the 10% the cards name on both
-#: lines, which is the affordable / KMRC-funded book's price. One number, so
-#: if the desk draws the line elsewhere this is the only thing to change.
-COMMERCIAL_RATE_ABOVE = 10.0
+#: A MORTGAGE drawn at this rate or above (percent a year) is market rate;
+#: below it, non-market. Copied from the bank's own drawdown report,
+#: ``drawdown_report_correct.py``::
+#:
+#:     (PRODUCT_CATEGORY == "MORTGAGE") & (FINAL_INTEREST >= 10): "MARKET RATE",
+#:     (PRODUCT_CATEGORY == "MORTGAGE") & (FINAL_INTEREST < 10): "NON_MARKET RATE"
+#:
+#: and PRODUCT_CATEGORY is ``product_mapping.loan_category`` on the product
+#: id. (The scheme cards' "Commercial" is a different measure - any loan
+#: above 9.5% - and is not this.)
+MARKET_RATE_FROM = 10.0
 
 # ── Customers ────────────────────────────────────────────────────────────────
 _register(
@@ -718,10 +725,16 @@ for _code in (
     SOURCES.setdefault(_code, Source(pending=_NOT_IN_WAREHOUSE))
 
 #: Errors IS held - it is the iApply TAT report's returned applications, as a
-#: share of the seller's applications. See :mod:`.loan_applications`. Lower is
-#: better: the card's 0.05 is "no more than 5% sent back".
+#: share of the seller's applications. See :mod:`.loan_applications`.
+#:
+#: PASS/FAIL, like PAR. Every card states it as a ceiling - "< 5 %" on
+#: Mortgage_Business, BDM_Mortgages and Home_Loan_Specialist alike - and the
+#: scheme cards score their own "< 5%" line (NPL) as exactly that:
+#: =IF(AND(H<=0.05,H>=0),1,0). Scored in proportion, an error rate of nought
+#: would divide into the target and pay the 120% cap for a line that only
+#: asks you to stay under a limit.
 SOURCES["errors"] = Source(actual_key="loan_application_errors",
-                           higher_is_better=False)
+                           higher_is_better=False, threshold=True)
 
 #: Weighted Sales is NOT "a count somebody keeps", which is what it used to
 #: say here, and the generic message sent people to the wrong screen.
@@ -826,25 +839,28 @@ def _mortgage_split_ytd(sales_code, year, up_to=None):
     """Net drawdowns this year split by rate → ``(commercial, non_commercial,
     latest)``.
 
-    The same rows and the same seller match as :func:`_drawdowns_ytd`, so the
-    two halves add up to the Drawdowns line on the same card. A drawdown with
-    no rate recorded is in neither half rather than guessed into one.
+    MORTGAGE products only - ``product_mapping.loan_category`` on the product
+    id, exactly as the drawdown report decides it - and the same seller match
+    as :func:`_drawdowns_ytd`. A drawdown with no rate recorded is in neither
+    half rather than guessed into one.
     """
     from django.db import connection
 
     sql = """
-        SELECT COALESCE(SUM(net_drawdown) FILTER (
-                   WHERE final_interest > %s), 0),
-               COALESCE(SUM(net_drawdown) FILTER (
-                   WHERE final_interest <= %s), 0),
-               MAX(drawdown_dt)
-        FROM drawdown_daily
-        WHERE EXTRACT(YEAR FROM drawdown_dt) = %s
-          AND (TRIM(salesperson) ILIKE %s OR TRIM(loan_officer_id) ILIKE %s)
-          AND (%s IS NULL OR drawdown_dt <= %s)
+        SELECT COALESCE(SUM(d.net_drawdown) FILTER (
+                   WHERE d.final_interest >= %s), 0),
+               COALESCE(SUM(d.net_drawdown) FILTER (
+                   WHERE d.final_interest < %s), 0),
+               MAX(d.drawdown_dt)
+        FROM drawdown_daily d
+        JOIN product_mapping pm ON pm.code::text = d.id_product::text
+        WHERE UPPER(TRIM(pm.loan_category)) = 'MORTGAGE'
+          AND EXTRACT(YEAR FROM d.drawdown_dt) = %s
+          AND (TRIM(d.salesperson) ILIKE %s OR TRIM(d.loan_officer_id) ILIKE %s)
+          AND (%s IS NULL OR d.drawdown_dt <= %s)
     """
     code = sales_code.strip()
-    rate = COMMERCIAL_RATE_ABOVE
+    rate = MARKET_RATE_FROM
     with connection.cursor() as cur:
         cur.execute(sql, [rate, rate, year, code, code, up_to, up_to])
         commercial, non_commercial, latest = cur.fetchone()
@@ -2069,12 +2085,12 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         commercial, non_commercial, at = _mortgage_split_ytd(
             sales_code, year, up_to=as_at)
         when = f", as at {at.day} {at:%b %Y}" if at else ""
-        rate = f"{COMMERCIAL_RATE_ABOVE:g}%"
+        rate = f"{MARKET_RATE_FROM:g}%"
         return {
             "mortgage_commercial": _figure(
-                commercial, at, f"drawn above {rate}{when}"),
+                commercial, at, f"mortgages drawn at {rate} or above{when}"),
             "mortgage_non_commercial": _figure(
-                non_commercial, at, f"drawn at {rate} or below{when}"),
+                non_commercial, at, f"mortgages drawn below {rate}{when}"),
         }
 
     attempt(("mortgage_commercial", "mortgage_non_commercial"), mortgage_split)

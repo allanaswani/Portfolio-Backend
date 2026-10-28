@@ -14,7 +14,7 @@ from django.test import TestCase
 
 from . import loan_applications as la
 from .live_scorecard import (
-    COMMERCIAL_RATE_ABOVE, SOURCES, _mortgage_split_ytd, live_actuals)
+    MARKET_RATE_FROM, SOURCES, _mortgage_split_ytd, live_actuals)
 
 CODE = "MB4100"
 YEAR = 2026
@@ -27,17 +27,28 @@ def make_drawdowns():
                 id bigserial PRIMARY KEY,
                 drawdown_dt date, salesperson varchar(255),
                 loan_officer_id varchar(50), final_interest double precision,
-                net_drawdown double precision
+                net_drawdown double precision, id_product bigint
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS product_mapping (
+                code bigint, loan_category varchar(60),
+                loan_security varchar(60)
+            )
+        """)
+        cur.execute("INSERT INTO product_mapping VALUES "
+                    "(40001, 'MORTGAGE', 'SECURED'), "
+                    "(40065, 'TERM LOAN', 'UNSECURED')")
 
 
-def drawn(rate, amount, on=datetime.date(YEAR, 3, 1), code=CODE):
+def drawn(rate, amount, on=datetime.date(YEAR, 3, 1), code=CODE,
+          product=40001):
     with connection.cursor() as cur:
         cur.execute(
             "INSERT INTO drawdown_daily (drawdown_dt, salesperson, "
-            "loan_officer_id, final_interest, net_drawdown) "
-            "VALUES (%s, %s, '', %s, %s)", [on, code, rate, amount])
+            "loan_officer_id, final_interest, net_drawdown, id_product) "
+            "VALUES (%s, %s, '', %s, %s, %s)",
+            [on, code, rate, amount, product])
 
 
 def make_trail():
@@ -68,12 +79,13 @@ class MortgageSplitTests(TestCase):
         make_drawdowns()
 
     def test_the_rate_splits_the_drawdowns(self):
-        drawn(13.5, 4_000_000)                       # commercial
-        drawn(COMMERCIAL_RATE_ABOVE, 3_000_000)      # at 10%: non-commercial
-        drawn(9.5, 1_000_000)                        # non-commercial
+        drawn(13.5, 4_000_000)                     # market
+        drawn(MARKET_RATE_FROM, 3_000_000)         # exactly 10%: market
+        drawn(9.5, 1_000_000)                      # non-market (KMRC price)
+        drawn(16.26, 9_000_000, product=40065)     # a UPL: not a mortgage
         commercial, non_commercial, latest = _mortgage_split_ytd(CODE, YEAR)
-        self.assertEqual(commercial, 4_000_000)
-        self.assertEqual(non_commercial, 4_000_000)
+        self.assertEqual(commercial, 7_000_000)
+        self.assertEqual(non_commercial, 1_000_000)
         self.assertEqual(latest, datetime.date(YEAR, 3, 1))
 
     def test_the_lines_read_it_and_are_no_longer_pending(self):
