@@ -604,11 +604,99 @@ def read_roster(template):
     return rows, unplaced
 
 
-def compute_all(template, actuals_book, month, loaded_by_code=None):
-    """Every person on the List, for ``month`` (1..12) →
-    ``([(RosterRow, result)], unplaced)``."""
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+           "August", "September", "October", "November", "December")
+
+
+def template_month(template):
+    """The review month the template is set to → 1..12, or None.
+
+    ``Constants!B2`` ("Month_count") - the number every card's ``K5`` and
+    ``Constants!C7`` ("Jun-26") are driven from.
+    """
+    if "Constants" in template.sheetnames:
+        for row in template["Constants"].iter_rows(min_row=1, max_row=10,
+                                                   max_col=2, values_only=True):
+            if row and str(row[0] or "").strip().lower() == "month_count":
+                if _num(row[1]) and 1 <= int(row[1]) <= 12:
+                    return int(row[1])
+    return None
+
+
+def template_period(template):
+    """The template's review month as a date (the 1st), or None -
+    ``Constants!B4`` ("Review", 30 Jun 2026), else Month_count in this year."""
+    import datetime
+
+    if "Constants" in template.sheetnames:
+        for row in template["Constants"].iter_rows(min_row=1, max_row=10,
+                                                   max_col=2, values_only=True):
+            if row and str(row[0] or "").strip().lower() == "review":
+                value = row[1]
+                if isinstance(value, datetime.datetime):
+                    value = value.date()
+                if isinstance(value, datetime.date):
+                    return value.replace(day=1)
+    month = template_month(template)
+    if month is None:
+        return None
+    return datetime.date(datetime.date.today().year, month, 1)
+
+
+def months_with_figures(actuals, names):
+    """The months the actuals workbook actually holds figures for → set.
+
+    A month is there when a row naming somebody on the List (``names``), in a
+    sheet the cards look up, carries a real non-zero number in that month's
+    column. Used to refuse a month the workbook has nothing for: every lookup
+    would read an empty cell as 0, and the card would score only the lines
+    that pass on a blank - exactly how a September card read 15%.
+
+    Only the List's names, because every block's HEADER row carries the
+    month dates themselves across all twelve columns; only non-zero numbers,
+    because a stray formula left on a row (Utilization!L3 on Phiedis Kyengo's
+    row) evaluates to 0 in July and would otherwise make July look loaded.
+    """
+    wanted = {_fold(name) for name in names}
+    sheets = {line.actual[1] for card in CARDS.values() for line in card.lines
+              if line.actual[0] == "lookup"}
+    found = set()
+    for sheet in sheets:
+        for row in actuals.sheets.get(sheet, {}).values():
+            if _fold(row[2]) not in wanted:
+                continue
+            for month in range(1, 13):
+                value = row[2 + month + 2]
+                if _num(value) and value != 0:
+                    found.add(month)
+    return found
+
+
+def compute_all(template, actuals_book, month=None, loaded_by_code=None):
+    """Every person on the List → ``([(RosterRow, result)], unplaced,
+    month)``.
+
+    ``month`` (1..12) defaults to the template's own review month. A month the
+    actuals workbook holds no figures for is refused, naming the months it
+    does hold - not computed into a card of zeros.
+    """
     roster, unplaced = read_roster(template)
     actuals = Actuals.from_workbook(actuals_book)
+    month = month or template_month(template)
+    if month is None:
+        raise SchemeCardError(
+            "Which month? The template's Constants sheet does not say, so the "
+            "month has to be given.")
+    held = months_with_figures(actuals, [person.name for person in roster])
+    if month not in held:
+        latest = max(held) if held else None
+        raise SchemeCardError(
+            f"The actuals workbook has no figures for {_MONTHS[month - 1]}. "
+            + (f"The latest month it holds figures for is "
+               f"{_MONTHS[latest - 1]}." if latest else
+               "It holds no monthly figures at all.")
+            + " Computing a month it does not hold would read every figure as "
+              "0.")
     loaded_by_code = loaded_by_code or {}
     cards = []
     for person in roster:
@@ -616,7 +704,7 @@ def compute_all(template, actuals_book, month, loaded_by_code=None):
                               person.joined, actuals,
                               loaded_by_code.get(person.sales_code, {}))
         cards.append((person, result))
-    return cards, unplaced
+    return cards, unplaced, month
 
 
 def loaded_figures(month_start):

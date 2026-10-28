@@ -295,20 +295,32 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
                                 status=400)
             files[field] = upload
 
-        raw = str(request.data.get("month", "")).strip()
-        try:
-            month_start = datetime.datetime.strptime(raw[:7], "%Y-%m").date()
-        except ValueError:
-            return Response({"month": "Which month? e.g. 2026-06"}, status=400)
-
         try:
             template = openpyxl.load_workbook(files["template"], data_only=True,
                                               read_only=True)
             actuals = openpyxl.load_workbook(files["actuals"], data_only=True,
                                              read_only=True)
-            cards, unplaced = sc.compute_all(template, actuals,
-                                             month_start.month,
-                                             sc.loaded_figures(month_start))
+            # The month is the TEMPLATE's own unless one is asked for. It used
+            # to be required, and the screen pre-filled last month - so June
+            # workbooks were computed as September, every figure read as an
+            # empty cell, and Dennis Kimathi's 77.3% card showed 15%.
+            raw = str(request.data.get("month", "")).strip()
+            if raw:
+                try:
+                    month_start = datetime.datetime.strptime(
+                        raw[:7], "%Y-%m").date()
+                except ValueError:
+                    return Response({"month": "Which month? e.g. 2026-06"},
+                                    status=400)
+            else:
+                month_start = sc.template_period(template)
+                if month_start is None:
+                    return Response(
+                        {"month": "The template does not say its month - "
+                                  "choose one."}, status=400)
+            cards, unplaced, _month = sc.compute_all(
+                template, actuals, month_start.month,
+                sc.loaded_figures(month_start))
         except sc.SchemeCardError as exc:
             return Response({"detail": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001 - the message is for the reader

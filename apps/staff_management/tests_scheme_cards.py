@@ -126,3 +126,23 @@ class StoredCardTests(TestCase):
                        if ln["kpi_code"] == "scheme_revenue")
         self.assertFalse(revenue["counted_in_total"])
         self.assertIn("Outside the card's total", revenue["diagnostic"])
+
+
+class WrongMonthTests(TestCase):
+    """June workbooks computed as September: every figure read as an empty
+    cell, and Dennis Kimathi's 77.3% card showed 15%."""
+
+    def test_a_month_the_workbook_does_not_hold_is_refused(self):
+        actuals = june_actuals()
+        names = [name for _c, name, _r, _j in ROSTER]
+        held = sc.months_with_figures(actuals, names)
+        self.assertIn(6, held)
+        self.assertNotIn(9, held)
+        # The header rows carry all twelve month dates; they must not count.
+        self.assertNotIn(12, held)
+
+    def test_dennis_in_september_would_have_been_the_15_percent_card(self):
+        """What the refusal prevents, so the rule is not loosened later."""
+        total = sc.compute_card(sc.CARDS["SCHEMES_RM"], "Dennis Kimathi", 9,
+                                2, june_actuals())["total"]
+        self.assertAlmostEqual(total, 0.15, places=9)
