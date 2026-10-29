@@ -130,7 +130,7 @@ SALES_ROLE_CODES = {
     "HEAD OF COMMERCIAL": "head_commercial",
 }
 
-BACK_OFFICE, SALES = "back_office", "sales"
+BACK_OFFICE, SALES, BRANCH_BUSINESS = "back_office", "sales", "branch_business"
 
 
 class Spec:
@@ -182,6 +182,29 @@ SPECS = {
         summaries=(("Monthly_Summ", 4, 0, 4),),
         files=("sales_scorecards", "sales_actuals"),
         source="the sales scorecards workbook",
+    ),
+    # BB_Scorecards - the branch managers. Its macro (Do_Monthly_Summary)
+    # puts everybody on the List through BM_Scorecard: C2 the name, C3 the
+    # branch; K2 the score, written to Branch_Monthly_Summary. It reads the
+    # SAME actuals template as the sales workbook, at the BM's own rows.
+    BRANCH_BUSINESS: Spec(
+        book=BRANCH_BUSINESS,
+        label="branch business",
+        marker="BM_Scorecard",
+        role_sheets={}, default_sheet="BM_Scorecard",
+        list_cols={"pf": 0, "code": 1, "name": 2, "role": None, "branch": 3,
+                   "bbm": 8},
+        inputs={(1, 2): "name", (2, 2): "branch", (2, 4): "bbm"},
+        score=(1, 10),                                # K2
+        month_column=(0, 1), month_count=(1, 1), year=(5, 1),
+        header="KPI", ends=("Reviewee",),
+        cols={"perspective": 1, "measure": 2, "initiative": 3, "weight": 4,
+              "prior": 5, "growth": 6, "fy": 7, "ytd": 8, "actual": 9,
+              "score": 10, "weighted": 11, "feed": 13},
+        summaries=(("Branch_Monthly_Summary", 2, 1, 5),),
+        files=("bb_scorecards", "sales_actuals"),
+        source="the branch business scorecards workbook",
+        title="Branch Manager", role_code="bbm",
     ),
 }
 
@@ -488,7 +511,10 @@ def _read_scorecards_path(path):
                 "sheet beside it")
         book = {"book": spec.book, "cards": {}, "tables": {}, "problems": []}
         wanted = set()
-        for sheet in sorted(set(spec.role_sheets.values())):
+        for sheet in sorted(set(spec.role_sheets.values())
+                            | ({spec.default_sheet}
+                               if getattr(spec, "default_sheet", None)
+                               else set())):
             if sheet not in names:
                 book["problems"].append(f"{sheet} is not in the workbook")
                 continue
@@ -1217,7 +1243,8 @@ class Holder:
         self.role = str(at("role") or "").strip()
         self.branch = at("branch")
         self.bbm = at("bbm")
-        self.sheet = spec.role_sheets.get(self.role)
+        self.sheet = (spec.role_sheets.get(self.role)
+                      or getattr(spec, "default_sheet", None))
 
 
 def spec_of(book):
@@ -1617,10 +1644,13 @@ def card_payload(record, asked=None):
             "sales_code": record.sales_code,
             "name": record.staff_name,
             "title": (TITLES.get(sheet, sheet) if spec.book == BACK_OFFICE
-                      else data.get("role") or sheet),
+                      else getattr(spec, "title", "")
+                      or data.get("role") or sheet),
             "role_code": (ROLE_CODES.get(sheet, sheet)
                           if spec.book == BACK_OFFICE else
-                          SALES_ROLE_CODES.get(data.get("role", ""), sheet)),
+                          getattr(spec, "role_code", "")
+                          or SALES_ROLE_CODES.get(data.get("role", ""),
+                                                  sheet)),
             "branch": record.branch,
             "team_leader": "",
             "roster": f"{spec.source}'s List",
@@ -1710,9 +1740,24 @@ def live_card(sales_code, engine_card, as_at):
     base = compute(book, actuals, holder, month)
     actual_col = spec.cols["actual"]
     overrides, found = {}, {}
+    # The back office first reads the feeds the probe has proven - a count
+    # off transaction_diary that gave the desk's own figures for a closed
+    # month (bo_live_feeds). They win over the engine, whose readers look
+    # up a seller code that a teller does not sell under.
+    feeds_live = {}
+    if spec.book == BACK_OFFICE:
+        from . import bo_live_feeds
+
+        feeds_live = {_key(k): v for k, v in bo_live_feeds.proven().items()}
     for wl in base["lines"]:
         if wl["typed"]:
             continue
+        feed = feeds_live.get(_key(wl["feed"]))
+        if feed is not None:
+            value = bo_live_feeds.live_value(feed, code, as_at)
+            if value is not None:
+                overrides[(wl["row"] - 1, actual_col)] = float(value)
+                continue
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)
                  or next((p for p in pool if p["name"] and

@@ -3109,6 +3109,19 @@ def resolve_person(sales_code):
             branch=bo.branch,
             roster="the back-office scorecards workbook")
 
+    # 0c. the branch business workbook's List - the branch managers.
+    try:
+        with transaction.atomic():
+            bm = bo_workbook.stored_for(code,
+                                        book=bo_workbook.BRANCH_BUSINESS)
+    except Exception:  # noqa: BLE001 - before migration 0064
+        bm = None
+    if bm is not None:
+        return Person(
+            sales_code=code, name=bm.staff_name, role_code="bbm",
+            branch=bm.branch,
+            roster="the branch business scorecards workbook")
+
     # 1. the sales roster
     row = roster_row(code)
     if row is not None:
@@ -3614,9 +3627,9 @@ def build_card(sales_code, profile=None, as_at=None):
         # so "now" is today, live.
         try:
             with transaction.atomic():
-                held = workbook_cards.stored_for(sales_code) or \
-                    workbook_cards.stored_for(sales_code,
-                                              book=workbook_cards.SALES)
+                held = next((r for r in (
+                    workbook_cards.stored_for(sales_code, book=b)
+                    for b in workbook_cards.SPECS) if r is not None), None)
         except Exception:  # noqa: BLE001 - before migration 0063
             held = None
         if held is not None:
@@ -3708,12 +3721,16 @@ def _engine_card(sales_code, profile=None, as_at=None):
 
         from . import workbook_cards
 
-        try:
-            with transaction.atomic():
-                closed = workbook_cards.stored_month(
-                    sales_code, as_at.replace(day=1), workbook_cards.SALES)
-        except Exception:  # noqa: BLE001 - before migration 0064
-            closed = None
+        closed = None
+        for book in (workbook_cards.SALES, workbook_cards.BRANCH_BUSINESS):
+            try:
+                with transaction.atomic():
+                    closed = workbook_cards.stored_month(
+                        sales_code, as_at.replace(day=1), book)
+            except Exception:  # noqa: BLE001 - before migration 0064
+                closed = None
+            if closed is not None:
+                break
         if closed is not None:
             return workbook_cards.card_payload(closed, asked=as_at)
 

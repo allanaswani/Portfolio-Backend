@@ -270,12 +270,22 @@ class BoActualsUploadView(APIView):
                                            "Nothing has been saved yet."})
             workbook_cards.save_file(spec.files[1], actuals_book, upload.name,
                                      who)
-            book = workbook_cards.saved(spec.files[0])
-            if book is not None:
-                cards["stored"] = workbook_cards.rebuild(book, actuals_book,
-                                                         who)
+            # The branch business workbook reads this same template.
+            details = []
+            for other in workbook_cards.SPECS.values():
+                if other.files[1] != spec.files[1]:
+                    continue
+                book = workbook_cards.saved(other.files[0])
+                if book is None:
+                    continue
+                stored = workbook_cards.rebuild(book, actuals_book, who)
+                details.append(f"{stored:,} {other.label} card-month(s) "
+                               f"computed.")
+                if other is spec:
+                    cards["stored"] = stored
             return Response({"applied": True, "cards": cards,
-                             "detail": self._stored_detail(cards, spec)})
+                             "detail": " ".join(details) or
+                             self._stored_detail(cards, spec)})
 
         # The back-office template feeds two things: the cards computed from
         # the scorecards workbook's own formulas (every month), and the
