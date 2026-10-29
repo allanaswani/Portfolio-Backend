@@ -740,6 +740,13 @@ for _code in (
 ):
     SOURCES.setdefault(_code, Source(pending=_NOT_IN_WAREHOUSE))
 
+#: Leave IS held now - Aruti's Employee Leave Balance List, loaded under
+#: Figures to load. The share of available annual leave taken, against the
+#: card's target of 1 ("clear leave days before EOY"). Full marks at most:
+#: nobody clears more than all of their leave. See hr_reports.leave_cleared.
+for _code in ("leave_management", "bo_leave_management"):
+    SOURCES[_code] = Source(actual_key="leave_cleared", cap=1.0)
+
 #: Errors IS held - it is the iApply TAT report's returned applications, as a
 #: share of the seller's applications. See :mod:`.loan_applications`.
 #:
@@ -2074,6 +2081,18 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         return _figure(hours, as_at, label)
 
     attempt("training_hours", training)
+
+    # ── Leave cleared, from Aruti's leave balance report ──────────────────
+    def leave():
+        from . import hr_reports
+
+        upto = as_at or datetime.date.today()
+        share, at, label, problem = hr_reports.leave_cleared(staff_pf, upto)
+        if share is None:
+            return _figure(None, problem=problem)
+        return _figure(share, at, label)
+
+    attempt("leave_cleared", leave)
 
     # ── Last year's provision, which is this year's Loan Loss TARGET ──────
     # Not history. Every card that carries the Loan Loss line states its

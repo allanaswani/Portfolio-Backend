@@ -230,3 +230,51 @@ def snapshots(kind):
 
     model = HrLeaveBalance if kind == LEAVE else HrEmployeeListing
     return sorted(model.objects.values_list("as_of", flat=True).distinct())
+
+
+def leave_cleared(pf_number, upto=None):
+    """Annual leave cleared, from the newest Aruti leave report on or before
+    ``upto`` → ``(share, as_of, label, problem)``.
+
+    The card's line is "Clear leave days before EOY", target 1. The share is
+    days TAKEN over days AVAILABLE so far - brought forward, plus adjustment,
+    plus accrued to the report's date - so at the year end, when everything
+    has accrued, it is exactly the share of the year's leave cleared.
+
+    Only a report dated on or before the card's month: an October report on
+    an August card would score August on leave taken in September.
+    """
+    from .models import HrLeaveBalance
+
+    pf = str(pf_number or "").strip()
+    if not pf.isdigit():
+        return None, None, None, ("the leave report is keyed on the PF number, "
+                                  "and none is recorded for this person")
+    rows = HrLeaveBalance.objects.filter(pf_number=int(pf), leave_code="AL")
+    if upto is not None:
+        rows = rows.filter(as_of__lte=upto)
+    row = rows.order_by("-as_of").first()
+    if row is None:
+        newest = (HrLeaveBalance.objects.order_by("-as_of")
+                  .values_list("as_of", flat=True).first())
+        if newest is None:
+            return None, None, None, (
+                "no Aruti leave report has been loaded yet - Scorecards → "
+                "Figures to load → Load Aruti HR reports")
+        if upto is not None and newest > upto:
+            return None, None, None, (
+                f"the leave report loaded is as at {newest:%d %b %Y}, after "
+                f"this card's month; none is loaded for {upto:%B %Y} or "
+                f"before")
+        return None, None, None, (
+            f"PF {pf} is not on the annual-leave list of the Aruti leave "
+            f"report as at {newest:%d %b %Y}")
+    available = (row.bf or 0) + (row.adjustment or 0) + (row.accrued or 0)
+    if available <= 0:
+        return None, row.as_of, None, (
+            f"no annual leave was available to PF {pf} as at "
+            f"{row.as_of:%d %b %Y}, so there was none to clear")
+    taken = row.issued or 0
+    label = (f"{taken:g} of {available:.2f} days taken (Aruti, as at "
+             f"{row.as_of:%d %b %Y})")
+    return taken / available, row.as_of, label, None

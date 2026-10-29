@@ -223,10 +223,11 @@ class CardCalibrationTests(SimpleTestCase):
         and taken off this list."""
         # "errors" came off this list when it went live, the way PAR did:
         # every card states it as a ceiling ("< 5 %"), so it is pass/fail -
-        # see test_errors_is_a_pass_fail_ceiling below.
-        outside = {
-            "leave_management",
-        }
+        # see test_errors_is_a_pass_fail_ceiling below. "leave_management"
+        # came off when Aruti's leave report was wired: its target is 1
+        # (all leave cleared) and a share of leave cleared cannot pass 1, so
+        # full marks is the only cap - the Scheme cards cap it there too.
+        outside = set()
         for code in sorted(outside):
             with self.subTest(code):
                 self.assertIn(code, SOURCES, f"{code} lost its Source entry")

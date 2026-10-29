@@ -60,3 +60,39 @@ class SnapshotTests(TestCase):
             with self.subTest(personal):
                 self.assertNotIn(personal, stored)
                 self.assertNotIn(personal, hr.LISTING_KEEP.values())
+
+
+class LeaveClearedTests(TestCase):
+
+    def setUp(self):
+        hr.replace_snapshot(hr.LEAVE, datetime.date(2026, 10, 8),
+                            [leave_row(pf=3116)])
+
+    def test_the_share_is_days_taken_over_days_available(self):
+        share, as_of, label, problem = hr.leave_cleared(
+            "3116", datetime.date(2026, 10, 31))
+        self.assertIsNone(problem)
+        # 21 taken of 3 + 0 + 21.56 available.
+        self.assertAlmostEqual(share, 21 / 24.56, places=9)
+        self.assertEqual(as_of, datetime.date(2026, 10, 8))
+        self.assertIn("21 of 24.56 days taken", label)
+
+    def test_an_august_card_does_not_borrow_octobers_report(self):
+        share, _as_of, _label, problem = hr.leave_cleared(
+            "3116", datetime.date(2026, 8, 31))
+        self.assertIsNone(share)
+        self.assertIn("as at 08 Oct 2026, after this card's month", problem)
+
+    def test_the_card_line_reads_it(self):
+        from .live_scorecard import SOURCES, live_actuals
+
+        for code in ("leave_management", "bo_leave_management"):
+            with self.subTest(code):
+                self.assertEqual(SOURCES[code].actual_key, "leave_cleared")
+                self.assertFalse(SOURCES[code].pending)
+                self.assertEqual(SOURCES[code].cap, 1.0)
+        out = live_actuals("AKL3116", staff_pf="3116",
+                           wanted={"leave_cleared"},
+                           as_at=datetime.date(2026, 10, 31))
+        self.assertAlmostEqual(out["leave_cleared"]["value"], 21 / 24.56,
+                               places=9)
