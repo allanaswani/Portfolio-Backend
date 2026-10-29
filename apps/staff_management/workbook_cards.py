@@ -1772,20 +1772,32 @@ def live_card(sales_code, engine_card, as_at):
     # off transaction_diary that gave the desk's own figures for a closed
     # month (bo_live_feeds). They win over the engine, whose readers look
     # up a seller code that a teller does not sell under.
-    feeds_live = {}
+    # A branch manager's row is the branch's own total, so the branch
+    # feeds the probe has proven (bb_live_feeds) are read by branch - the
+    # engine's per-person readers never give a branch total.
+    feeds_live, reader = {}, None
     if spec.book == BACK_OFFICE:
         from . import bo_live_feeds
 
         feeds_live = {_key(k): v for k, v in bo_live_feeds.proven().items()}
+        reader = lambda feed: bo_live_feeds.live_value(feed, code, as_at)  # noqa: E731
+    elif spec.book == BRANCH_BUSINESS:
+        from . import bb_live_feeds
+
+        feeds_live = {_key(k): v for k, v in bb_live_feeds.proven().items()}
+        reader = lambda feed: bb_live_feeds.live_value(  # noqa: E731
+            feed, holder.branch, as_at)
     for wl in base["lines"]:
         if wl["typed"]:
             continue
         feed = feeds_live.get(_key(wl["feed"]))
         if feed is not None:
-            value = bo_live_feeds.live_value(feed, code, as_at)
+            value = reader(feed)
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
+        if spec.book == BRANCH_BUSINESS:
+            continue
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)
                  or next((p for p in pool if p["name"] and
