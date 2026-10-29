@@ -192,9 +192,9 @@ class StoredCardTests(TestCase):
     def test_a_month_before_any_card_says_so(self):
         from .live_scorecard import build_card
 
+        # Outside the workbook's year: not a workbook card, stored or live.
         card = build_card("BCK3783", as_at=datetime.date(2025, 12, 31))
-        self.assertFalse(card["has_card"])
-        self.assertEqual(card["reason"], "bo_month_not_loaded")
+        self.assertNotIn("workbook_card", card)
 
 
 def sales_book():

@@ -1250,11 +1250,17 @@ def _layout(spec, card):
     return header, end
 
 
-def compute(book, actuals, holder, month):
-    """One person's card for one month → dict, as the workbook would show it."""
+def compute(book, actuals, holder, month, overrides=None):
+    """One person's card for one month → dict, as the workbook would show it.
+
+    ``overrides`` puts a value straight into a card cell - {(row, col):
+    value} - which is how the live card hands the formulas today's figures
+    in place of the template's.
+    """
     spec = spec_of(book)
     card = book["cards"][holder.sheet]
     ev = Evaluator(book, actuals, holder, month)
+    ev.inputs.update(overrides or {})
     col = spec.cols
     header, end = _layout(spec, card)
 
@@ -1289,9 +1295,12 @@ def compute(book, actuals, holder, month):
             "score": at(r, "score"),
             "weighted": at(r, "weighted"),
             "feed": _txt(feed),
-            # A line whose actual is typed on the card (complaints,
-            # compliments) rather than read off the template.
-            "typed": f"{r},{col['actual']}" not in card["f"],
+            # A line whose actual the card settles itself - typed
+            # (complaints) or worked out on the card (compliments = its own
+            # target) - rather than reading the template through INDIRECT.
+            "typed": not any(
+                t[0] == "f" and t[1] == "INDIRECT"
+                for t in card["f"].get(f"{r},{col['actual']}", [])),
             "empty": (_feed_empty(actuals, feed, holder.name, month)
                       if spec.book == BACK_OFFICE else None),
         })
@@ -1640,3 +1649,127 @@ def card_payload(record, asked=None):
                        f"macro fills and reads, so the score is the one the "
                        f"workbook gives."),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# The live card: the workbook's rules, today's figures
+# ─────────────────────────────────────────────────────────────────────────
+
+def _key(text):
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def live_card(sales_code, engine_card, as_at):
+    """The month still open, scored by the workbook's own formulas over the
+    figures the warehouse gives today → a card, or None.
+
+    A closed month is the stored card - the template the desk filled, the
+    score the desk sent. The open month has no template yet, so each line's
+    actual is the live engine's warehouse figure for that line, put into the
+    card's actual cell; the workbook's own targets, caps and weights then
+    score it. A line the warehouse has no figure for is shown as waiting for
+    one, never as a zero.
+    """
+    from .models import BoScorecard
+    from .scorecard_automation.models import ScKpi
+
+    code = (sales_code or "").strip()
+    latest = (BoScorecard.objects.filter(sales_code__iexact=code)
+              .order_by("-month").first())
+    if latest is None:
+        return None
+    spec = SPECS.get(latest.book, SPECS[BACK_OFFICE])
+    book, actuals = saved(spec.files[0]), saved(spec.files[1])
+    if book is None or actuals is None:
+        return None
+    holder = next((h for h in holders(book)
+                   if h.sales_code == code.upper() and h.sheet), None)
+    if holder is None or holder.sheet not in book["cards"]:
+        return None
+
+    if as_at is None:
+        first_this = datetime.date.today().replace(day=1)
+        as_at = first_this - datetime.timedelta(days=1)
+    if as_at.year != book_year(book):
+        return None
+    month = as_at.month
+
+    # The live engine's figure for each of its lines, labelled with the
+    # template sheet that line reads - which is what the workbook names too.
+    live_lines = [ln for p in (engine_card or {}).get("perspectives", [])
+                  for ln in p["lines"]]
+    feeds = dict(ScKpi.objects.filter(
+        kpi_code__in=[ln["kpi_code"] for ln in live_lines])
+        .values_list("kpi_code", "actuals_sheet"))
+    pool = [{"feed": _key(feeds.get(ln["kpi_code"]) or ""),
+             "name": _key(ln.get("kpi_name")), "line": ln}
+            for ln in live_lines]
+
+    # Pass one with the template's own figures for the month, so the rows
+    # and feeds are known; then the same card with today's figures in.
+    base = compute(book, actuals, holder, month)
+    actual_col = spec.cols["actual"]
+    overrides, found = {}, {}
+    for wl in base["lines"]:
+        if wl["typed"]:
+            continue
+        match = (next((p for p in pool if p["feed"] and
+                       p["feed"] == _key(wl["feed"])), None)
+                 or next((p for p in pool if p["name"] and
+                          p["name"] == _key(wl["measure"])), None))
+        if match is None:
+            continue
+        pool.remove(match)
+        value = match["line"].get("ytd_actual")
+        found[wl["row"]] = match["line"]
+        if _num(value):
+            overrides[(wl["row"] - 1, actual_col)] = float(value)
+    card = compute(book, actuals, holder, month, overrides)
+
+    total, waiting = 0.0, 0
+    for wl in card["lines"]:
+        live = (wl["row"] - 1, actual_col) in overrides
+        if wl["typed"] or live:
+            if _num(wl["weighted"]):
+                total += wl["weighted"]
+            continue
+        waiting += 1
+        engine = found.get(wl["row"]) or {}
+        wl["actual"] = wl["score"] = wl["weighted"] = None
+        wl["waiting"] = (engine.get("pending") or
+                         "The warehouse has no figure for this line yet.")
+    card["total"] = total
+
+    record = type("LiveRecord", (), {})()
+    record.book, record.card, record.total = spec.book, card, total
+    record.recorded, record.month = None, as_at.replace(day=1)
+    record.sales_code, record.staff_name = code.upper(), holder.name
+    record.sheet, record.branch = holder.sheet, str(holder.branch or "")
+    payload = card_payload(record)
+    for p in payload["perspectives"]:
+        for ln, wl in zip(p["lines"], [w for w in card["lines"]
+                                       if (w["perspective"] or "Other")
+                                       == p["perspective"]]):
+            if wl.get("waiting"):
+                ln["pending"] = wl["waiting"]
+                ln["pending_label"] = "Waiting for data"
+                ln["as_at"] = ""
+            else:
+                ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
+    payload.update({
+        "live": True,
+        "pending_lines": waiting,
+        "scored_lines": len(card["lines"]) - waiting,
+        # Every month of the year to now: stored where the desk closed it,
+        # live where it has not.
+        "months_loaded": [f"{as_at.year}-{m:02d}"
+                          for m in range(1, as_at.month + 1)],
+        "coverage_note": (
+            "" if not waiting else
+            f"{waiting} line(s) have no live figure yet and are not counted; "
+            f"they fill in as the warehouse has them."),
+        "how_scored": (f"Live: today's warehouse figures, scored by "
+                       f"{spec.source}'s own targets, caps and weights. "
+                       f"Closed months show the card the desk sent."),
+    })
+    return payload

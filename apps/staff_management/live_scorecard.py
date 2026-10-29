@@ -3598,6 +3598,46 @@ def score_for(actual, target, higher_is_better, threshold=False,
 
 
 def build_card(sales_code, profile=None, as_at=None):
+    """The card: a closed month as the desk sent it, the open month live.
+
+    For anyone a scorecards workbook holds, the open month is the workbook's
+    own rules over today's warehouse figures (workbook_cards.live_card);
+    everybody else gets the engine's card as before.
+    """
+    from django.db import transaction
+
+    from . import workbook_cards
+
+    if as_at is None:
+        # No month asked for is the month in progress. For somebody a
+        # workbook holds, the last closed month is already a stored card -
+        # so "now" is today, live.
+        try:
+            with transaction.atomic():
+                held = workbook_cards.stored_for(sales_code) or \
+                    workbook_cards.stored_for(sales_code,
+                                              book=workbook_cards.SALES)
+        except Exception:  # noqa: BLE001 - before migration 0063
+            held = None
+        if held is not None:
+            as_at = datetime.date.today()
+    card = _engine_card(sales_code, profile=profile, as_at=as_at)
+    if card.get("live") or not card.get("has_card"):
+        try:
+            with transaction.atomic():
+                scored = workbook_cards.live_card(sales_code, card, as_at)
+        except Exception:  # noqa: BLE001 - never lose the card over this
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "live workbook card failed for %s", sales_code)
+            scored = None
+        if scored is not None:
+            return scored
+    return card
+
+
+def _engine_card(sales_code, profile=None, as_at=None):
     """The whole card for one RM.
 
     ``as_at`` is the month END the card is for - 30 September for a
@@ -3649,18 +3689,15 @@ def build_card(sales_code, profile=None, as_at=None):
     # The back-office cards likewise, for whoever the workbook's List holds:
     # its own formulas over the actuals template, stored per month on load.
     # Anyone the List does not name falls through to the live engine.
-    if person.roster == "the back-office scorecards workbook":
+    # A month the desk has closed is the card it sent; the month still open
+    # is computed below and scored by the workbook in build_card.
+    if person.roster == "the back-office scorecards workbook" and as_at:
         from . import workbook_cards as bo_workbook
 
-        record = bo_workbook.stored_for(sales_code, as_at=as_at)
-        if record is None:
-            return {"has_card": False, "reason": "bo_month_not_loaded",
-                    "sales_code": sales_code,
-                    "detail": "No back-office card is loaded for this month "
-                              "or before it. Administration loads the "
-                              "back-office scorecards workbook and actuals "
-                              "template under Scorecards → Figures to load."}
-        return bo_workbook.card_payload(record, asked=as_at)
+        record = bo_workbook.stored_month(sales_code, as_at.replace(day=1),
+                                          bo_workbook.BACK_OFFICE)
+        if record is not None:
+            return bo_workbook.card_payload(record, asked=as_at)
 
     # A sales month the desk has closed - its actuals template loaded - is the
     # sales workbook's own card for that month: its formulas over the
