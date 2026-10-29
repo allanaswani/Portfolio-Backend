@@ -1,6 +1,8 @@
 """Find which warehouse counts give the desk's back-office figures.
 
     docker exec hf-backend python manage.py bo_feed_probe --month 2026-09
+    docker exec hf-backend python manage.py bo_feed_probe --month 2026-09 \
+        --who "Bob Waigwa"
 
 Compares, for a month the desk has closed, each teller's transaction counts
 in transaction_diary with the figure on the back-office actuals template,
@@ -19,6 +21,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--month", required=True,
                             help="YYYY-MM, a month the template has")
+        parser.add_argument("--who", help="one teller's name or sales code: "
+                            "show their template figures beside their "
+                            "transactions instead of probing")
 
     def handle(self, *args, **options):
         from apps.staff_management import bo_live_feeds
@@ -27,4 +32,8 @@ class Command(BaseCommand):
             when = datetime.datetime.strptime(options["month"], "%Y-%m")
         except ValueError:
             raise CommandError(f"{options['month']!r} is not YYYY-MM")
+        if options["who"]:
+            bo_live_feeds.explain(when.year, when.month, options["who"],
+                                  out=self.stdout.write)
+            return
         bo_live_feeds.probe(when.year, when.month, out=self.stdout.write)

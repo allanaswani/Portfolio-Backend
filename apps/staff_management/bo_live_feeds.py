@@ -173,6 +173,10 @@ def probe(year, month, out=print):
                             "rows": label, "name": any_name, "match": share}
         if best is None:
             continue
+        if not best["match"]:
+            out(f"  {sheet:28}   0.0% of {len(people):3} tellers match  - no "
+                f"warehouse count gives any teller's figure")
+            continue
         best.update({"sheet": sheet, "cumulative": cumulative,
                      "people": len(people), "month": f"{year}-{month:02d}"})
         verdict = "LIVE" if best["match"] >= PASS_SHARE else "not good enough"
@@ -193,6 +197,64 @@ def probe(year, month, out=print):
         f"warehouse count that gives the desk's figures; they stay on the "
         f"template.")
     return found
+
+
+def explain(year, month, who, out=print):
+    """One teller side by side: the desk's figure on every sheet, and what
+    transaction_diary holds for them that month - to read the definition off
+    when no count matches on its own."""
+    from .workbook_cards import BACK_OFFICE, SPECS, saved
+
+    spec = SPECS[BACK_OFFICE]
+    book, actuals = saved(spec.files[0]), saved(spec.files[1])
+    if book is None or actuals is None:
+        out("Load the back-office scorecards workbook and actuals template "
+            "first.")
+        return
+    wanted = who.strip().lower()
+    people = _identifiers(book)
+    match = [(n, c) for n, c in people.items()
+             if wanted in n or wanted == c.lower()]
+    if len(match) != 1:
+        out(f"{len(match)} people on the List match {who!r}: "
+            f"{', '.join(sorted(n for n, _ in match)[:10]) or 'none'}")
+        return
+    name, code = match[0]
+    first, nxt = _month_bounds(year, month)
+    out(f"{name.title()} ({code}), {first:%B %Y}")
+    out("On the template:")
+    for sheet in sorted(actuals):
+        desk = _template_values(actuals, sheet, month)
+        if name not in desk or desk[name][0] is None:
+            continue
+        now, before = desk[name]
+        if _cumulative(actuals, sheet):
+            out(f"  {sheet:28} {now:g} (cumulative; this month "
+                f"{now - (before or 0.0):g})")
+        else:
+            out(f"  {sheet:28} {now:g}")
+
+    rows = _rows("""SELECT count(*), count(DISTINCT trx_date::date),
+                           string_agg(DISTINCT coalesce(reverse_flag, '(blank)'),
+                                      ', ')
+                    FROM transaction_diary
+                    WHERE upper(trim(trx_usr)) = %s
+                      AND trx_date >= %s AND trx_date < %s""",
+                 [code, first, nxt], PROBE_TIMEOUT_MS)
+    total, worked, flags = rows[0]
+    out(f"In transaction_diary: {total} transactions on {worked} days "
+        f"(reverse_flag values: {flags or 'none'})")
+    for trx_code, name_, n_all, n_orig in _rows(
+            """SELECT trx_code, max(trx_name), count(*),
+                      count(*) FILTER (WHERE coalesce(reverse_flag, 'Original')
+                                       = 'Original')
+               FROM transaction_diary
+               WHERE upper(trim(trx_usr)) = %s
+                 AND trx_date >= %s AND trx_date < %s
+               GROUP BY 1 ORDER BY 3 DESC""",
+            [code, first, nxt], PROBE_TIMEOUT_MS):
+        out(f"  {trx_code!s:>6}  {str(name_)[:40]:40} {n_all:6} "
+            f"({n_orig} original)")
 
 
 def live_value(feed, sales_code, as_at):
