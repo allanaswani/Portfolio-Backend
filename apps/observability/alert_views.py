@@ -25,7 +25,8 @@ class AlertRecipientSerializer(serializers.ModelSerializer):
         model = AlertRecipient
         fields = [
             "id", "email", "name", "downtime", "data_health",
-            "sensitive_change", "daily_digest", "is_active", "created_at",
+            "sensitive_change", "daily_digest", "usage_report", "is_active",
+            "created_at",
         ]
         read_only_fields = ["id", "created_at"]
 

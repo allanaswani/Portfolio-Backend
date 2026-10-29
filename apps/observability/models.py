@@ -162,11 +162,14 @@ class AlertRecipient(models.Model):
     KIND_DATA_HEALTH = "data_health"
     KIND_SENSITIVE_CHANGE = "sensitive_change"
     KIND_DAILY_DIGEST = "daily_digest"
+    KIND_USAGE_REPORT = "usage_report"
     KIND_CHOICES = [
         (KIND_DOWNTIME, "Downtime and error spikes"),
         (KIND_DATA_HEALTH, "Data health — missing, empty or newly stale tables"),
         (KIND_SENSITIVE_CHANGE, "Sensitive changes — deletions, roles, rates"),
         (KIND_DAILY_DIGEST, "Daily digest"),
+        (KIND_USAGE_REPORT,
+         "Daily usage report - the portfolio tool and Customer 360"),
     ]
 
     email = models.EmailField(unique=True)
@@ -175,6 +178,8 @@ class AlertRecipient(models.Model):
     data_health = models.BooleanField(default=True)
     sensitive_change = models.BooleanField(default=False)
     daily_digest = models.BooleanField(default=False)
+    # Who used the portfolio tool and Customer 360 yesterday - send_usage_report.
+    usage_report = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     history = HistoricalRecords()
