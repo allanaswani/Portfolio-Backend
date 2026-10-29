@@ -1689,6 +1689,34 @@ def _key(text):
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
+def waiting_on(sales_code):
+    """A loaded workbook's List holds this person but no card of theirs is
+    computed yet → the sentence saying which file is missing, or None.
+
+    The cards are computed only once both a workbook and the actuals
+    template it reads are loaded; until then the person is on no roster that
+    gives them a card, and "no scorecard for your role" would be wrong.
+    """
+    code = (sales_code or "").strip().upper()
+    if not code:
+        return None
+    for spec in SPECS.values():
+        book = saved(spec.files[0])
+        if book is None or not any(h.sales_code == code
+                                   for h in holders(book)):
+            continue
+        if saved(spec.files[1]) is None:
+            return (f"You are on the {spec.label} scorecards workbook, but "
+                    f"the actuals template it reads has not been loaded, so "
+                    f"no card is computed yet. Administration loads it under "
+                    f"Scorecards → Figures to load → Load the scorecard "
+                    f"workbooks.")
+        return (f"You are on the {spec.label} scorecards workbook, but no "
+                f"card was computed for you - load the actuals template "
+                f"again under Scorecards → Figures to load.")
+    return None
+
+
 def live_card(sales_code, engine_card, as_at):
     """The month still open, scored by the workbook's own formulas over the
     figures the warehouse gives today → a card, or None.

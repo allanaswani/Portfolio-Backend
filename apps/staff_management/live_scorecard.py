@@ -3666,6 +3666,16 @@ def _engine_card(sales_code, profile=None, as_at=None):
     from .scorecard_automation.models import ScKpi, ScRole, ScRoleKpiMapping
 
     person = resolve_person(sales_code)
+    if person is None or not person.role_code:
+        from . import workbook_cards
+
+        try:
+            waiting = workbook_cards.waiting_on(sales_code)
+        except Exception:  # noqa: BLE001 - before migration 0063
+            waiting = None
+        if waiting:
+            return {"has_card": False, "reason": "workbook_not_computed",
+                    "sales_code": sales_code, "detail": waiting}
     if person is None:
         return {"has_card": False, "reason": "not_on_any_roster",
                 "sales_code": sales_code,
