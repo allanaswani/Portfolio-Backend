@@ -1,0 +1,1373 @@
+"""The back-office scorecards, computed exactly as the desk's workbook does.
+
+Two files make a back-office card, and the desk keeps both:
+
+* ``2026_BO_Non_Sales_Scorecards ….xlsb`` - one card sheet per role
+  (TELLER_SCORECARD, BOM_SCORECARD, …), the List of who holds which, and the
+  Constants the targets cascade from;
+* ``2026_BO_Actual_Template.xlsx`` - a sheet per feed (KYC, CASA, NPS, …),
+  a row per person and a column per month.
+
+The desk's macro (``explode_scores`` / ``Do_Monthly_Summary``) walks the List
+and, for each person, types their NAME into the card sheet's C2 and their
+BRANCH into C4, sets the month in Constants, and reads the score in J6. Every
+figure on the card is a formula over those two cells:
+
+    PM          typed on the card (or looked up by branch in Constants)
+    YTD Target  =F10*('Constants'!$B$2-$M10)          monthly × months
+                =F16*(('Constants'!$B$2-$M16)/12)     annual × months/12
+                =F11                                   a level
+    Actual      =VLOOKUP($C$2, INDIRECT("[template]"&$L10&"!$c:$R"), $O$1, 0)
+    % Score     =IF(H10/G10>1.2, 1.2, H10/G10)  - and 20 other shapes
+    Weighted    =I10*E10
+
+This module does not re-type those rules. It reads the formulas themselves
+out of the .xlsb - shared formulas included, which the usual readers leave as
+``#PTG1!`` - and evaluates them with a small Excel evaluator, person by person
+and month by month, exactly as the macro does. So next year's workbook, with
+its own lines, weights and caps, is next year's cards with no code change, and
+the September card for Bob Waigwa is 92.58% because that is what the
+workbook's own J6 says when his name is in C2.
+
+Only the cards are evaluated. The List, BMs, Constants and mapping sheets are
+read as the values the workbook last saved; the macro does not recompute them
+either.
+
+Everything here is pure: :func:`read_scorecards` and :func:`read_actuals`
+turn the two files into plain data, :func:`compute` turns that data into
+cards. Storing them is :func:`store`.
+"""
+
+from __future__ import annotations
+
+import datetime
+import math
+import os
+import re
+import struct
+import tempfile
+
+#: The macro's own mapping of List role → card sheet (explode_scores,
+#: explode_RBO_scores). BOMCSO and CASHTELLER_SCORECARD are still in the
+#: workbook but read the 2023/2024 templates and no List role reaches them.
+ROLE_SHEETS = {
+    "BOM": "BOM_SCORECARD",
+    "CSO": "CSO_SCORECARD",
+    "CSO_UB": "CSO_UB_SCORECARD",
+    "CSM_DB": "CSM_DB_SCORECARD",
+    "Cash_Center": "CASH_TELLER_SCORECARD",
+    "Teller": "TELLER_SCORECARD",
+    "BSA": "BSA_SCORECARD",
+    "RBO": "RBO_SCORECARD",
+    "TL_RBO": "TL_RBO_SCORECARD",
+}
+
+#: The platform role each card sheet is shown under.
+ROLE_CODES = {
+    "BOM_SCORECARD": "bo_bom",
+    "CSO_SCORECARD": "bo_cso",
+    "CSO_UB_SCORECARD": "bo_cso_ub",
+    "CSM_DB_SCORECARD": "bo_csm_diaspora",
+    "CASH_TELLER_SCORECARD": "bo_cash_teller",
+    "TELLER_SCORECARD": "bo_teller",
+    "BSA_SCORECARD": "bo_bsa",
+    "RBO_SCORECARD": "bo_rbo",
+    "TL_RBO_SCORECARD": "bo_tl_rbo",
+}
+
+TITLES = {
+    "BOM_SCORECARD": "Branch Operations Manager",
+    "CSO_SCORECARD": "Customer Service",
+    "CSO_UB_SCORECARD": "Customer Service - Ultimate Banking",
+    "CSM_DB_SCORECARD": "Client Service Manager - Diaspora Banking",
+    "CASH_TELLER_SCORECARD": "Cash Centre Teller",
+    "TELLER_SCORECARD": "Teller",
+    "BSA_SCORECARD": "Branch Service Ambassador",
+    "RBO_SCORECARD": "Retail Back Office (Account Opening)",
+    "TL_RBO_SCORECARD": "Retail Back Office Team Leader",
+}
+
+#: The macro's summary sheets - what it last wrote for every person, every
+#: month. Read only to check this module against.
+SUMMARY_SHEETS = ("Monthly_Summ", "RBO_Monthly_Summ")
+
+#: Cells the macro types into a card before reading it, and the score it reads.
+NAME_CELL, BRANCH_CELL, SCORE_CELL = (1, 2), (3, 2), (5, 9)
+#: Constants!B1 is the VLOOKUP column into the template's C:R (Jan = 5), B2
+#: the months elapsed.
+MONTH_COLUMN_CELL, MONTH_COUNT_CELL = (0, 1), (1, 1)
+FIRST_MONTH_INDEX = 5
+
+
+class BoWorkbookError(Exception):
+    """The file is not what it was said to be; the message says why."""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Values
+# ─────────────────────────────────────────────────────────────────────────
+
+class Err:
+    """An Excel error value. Carried, not raised - Excel's IF can step round
+    one, and a card with an error on it shows the error."""
+
+    __slots__ = ("code",)
+
+    def __init__(self, code):
+        self.code = code
+
+    def __repr__(self):
+        return self.code
+
+    def __eq__(self, other):
+        return isinstance(other, Err) and other.code == self.code
+
+    def __hash__(self):
+        return hash(self.code)
+
+
+NA, DIV0, VALUE, REF, NAME = (Err("#N/A"), Err("#DIV/0!"), Err("#VALUE!"),
+                              Err("#REF!"), Err("#NAME?"))
+_ERROR_CODES = {0x00: "#NULL!", 0x07: "#DIV/0!", 0x0F: "#VALUE!",
+                0x17: "#REF!", 0x1D: "#NAME?", 0x24: "#NUM!", 0x2A: "#N/A"}
+
+
+def _plain(value):
+    """A stored value back into Python: errors were written as {"e": code}."""
+    if isinstance(value, dict) and "e" in value:
+        return Err(value["e"])
+    return value
+
+
+def _store_value(value):
+    if isinstance(value, Err):
+        return {"e": value.code}
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return {"e": "#NUM!"}
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    return value
+
+
+class Rng:
+    __slots__ = ("sheet", "r1", "c1", "r2", "c2")
+
+    def __init__(self, sheet, r1, c1, r2, c2):
+        self.sheet, self.r1, self.c1, self.r2, self.c2 = sheet, r1, c1, r2, c2
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Reading the .xlsb: values, and formulas as a token list
+# ─────────────────────────────────────────────────────────────────────────
+
+def _signed(value, bits):
+    return value - (1 << bits) if value & (1 << (bits - 1)) else value
+
+
+def _tokens(raw, row, col, workbook, ptgs, Formula):
+    """pyxlsb2's parsed tokens → our own JSON-able RPN.
+
+    ``row``/``col`` are the cell the formula sits in: a shared formula's
+    references are offsets from it.
+    """
+    from pyxlsb2.ptgs import function_names
+
+    out = []
+    for t in Formula.parse(raw)._tokens:
+        name = type(t).__name__
+        if isinstance(t, (ptgs.NumberPtg, ptgs.IntegerPtg)):
+            out.append(["n", float(t.value)])
+        elif isinstance(t, ptgs.StringPtg):
+            out.append(["n", t.value])
+        elif isinstance(t, ptgs.BooleanPtg):
+            out.append(["n", bool(t.value)])
+        elif isinstance(t, ptgs.ErrorPtg):
+            out.append(["n", {"e": _ERROR_CODES.get(t.value, "#N/A")}])
+        elif isinstance(t, ptgs.MissArgPtg):
+            out.append(["n", None])
+        elif isinstance(t, ptgs.RefNPtg):
+            r = row + _signed(t.row, 32) if not t.row_rel else t.row
+            c = col + _signed(t.col, 14) if not t.col_rel else t.col
+            out.append(["r", None, r, c])
+        elif isinstance(t, ptgs.AreaNPtg):
+            r1 = row + _signed(t.first_row, 32) if not t.first_row_rel else t.first_row
+            r2 = row + _signed(t.last_row, 32) if not t.last_row_rel else t.last_row
+            c1 = col + _signed(t.first_col, 14) if not t.first_col_rel else t.first_col
+            c2 = col + _signed(t.last_col, 14) if not t.last_col_rel else t.last_col
+            out.append(["a", None, r1, c1, r2, c2])
+        elif isinstance(t, ptgs.Ref3dPtg):
+            out.append(["r", _sheet_of(workbook, t.extern_sheet_idx),
+                        t.row, t.col])
+        elif isinstance(t, ptgs.Area3dPtg):
+            out.append(["a", _sheet_of(workbook, t.extern_sheet_idx),
+                        t.first_row, t.first_col, t.last_row, t.last_col])
+        elif isinstance(t, ptgs.RefPtg):
+            out.append(["r", None, t.row, t.col])
+        elif isinstance(t, ptgs.AreaPtg):
+            out.append(["a", None, t.first_row, t.first_col, t.last_row,
+                        t.last_col])
+        elif name in _BINARY:
+            out.append(["b", _BINARY[name]])
+        elif name in _UNARY:
+            out.append(["u", _UNARY[name]])
+        elif isinstance(t, ptgs.ParenPtg):
+            continue
+        elif isinstance(t, ptgs.AttrPtg):
+            # tAttrSum is SUM of one argument, written compactly; the rest
+            # (space, if/goto jumps, volatile) change nothing evaluated
+            # eagerly.
+            if t.attr_sum:
+                out.append(["f", "SUM", 1])
+            continue
+        elif isinstance(t, ptgs.FuncPtg):
+            entry = function_names.get(t.idx, ("#UNKNOWN",))
+            if len(entry) < 2:
+                raise BoWorkbookError(f"function {entry[0]} with no fixed "
+                                      f"argument count")
+            out.append(["f", entry[0], entry[1]])
+        elif isinstance(t, ptgs.FuncVarPtg):
+            if t.idx == 255:
+                # A newer function (_xlfn.CONCAT): its name is the token
+                # pushed first among its arguments.
+                out.append(["udf", t.argc])
+            else:
+                out.append(["f", function_names.get(t.idx, ("#UNKNOWN",))[0],
+                            t.argc])
+        elif isinstance(t, ptgs.NamePtg):
+            # A defined name. The cards use one only in their titles; read
+            # as Excel reads a name it cannot resolve.
+            out.append(["n", {"e": "#NAME?"}])
+        elif isinstance(t, ptgs.NameXPtg):
+            try:
+                label = t.stringify([], workbook)
+            except Exception:  # noqa: BLE001
+                label = "#NAME"
+            out.append(["name", label])
+        else:
+            raise BoWorkbookError(f"formula element {name} is not supported")
+    return out
+
+
+_BINARY = {"AddPtg": "+", "SubstractPtg": "-", "MultiplyPtg": "*",
+           "DividePtg": "/", "PowerPtg": "^", "ConcatPtg": "&",
+           "LessPtg": "<", "LessEqualPtg": "<=", "EqualPtg": "=",
+           "GreaterEqualPtg": ">=", "GreaterPtg": ">", "NotEqualPtg": "<>",
+           "RangePtg": ":"}
+_UNARY = {"UPlusPtg": "+", "UMinusPtg": "-", "PercentPtg": "%"}
+
+
+def _sheet_of(workbook, extern_idx):
+    _link, first, last = workbook.resolve_extern_sheet_id(extern_idx)
+    if first == last and first >= 0:
+        return workbook.sheets[first].name
+    raise BoWorkbookError("a reference to another workbook")
+
+
+def _read_sheet(workbook, name, with_formulas):
+    """→ {"grid": [[value, …], …], "f": {"r,c": tokens}}."""
+    from pyxlsb2 import ptgs, recordtypes as rt
+    from pyxlsb2.formula import Formula
+    from pyxlsb2.recordreader import RecordReader
+    from pyxlsb2.records import BaseRecord
+
+    class _Raw(BaseRecord):
+        @classmethod
+        def read(cls, reader, rectype, reclen):
+            r = cls()
+            r.data = reader.read(reclen)
+            return r
+
+    RecordReader._records[427] = _Raw  # BrtShrFmla - the shared formulas
+
+    sheet = workbook.get_sheet_by_name(name)
+    sheet._fp.seek(sheet._data_offset, os.SEEK_SET)
+    cells, shared, row = {}, [], -1
+    for rectype, rec in RecordReader(sheet._fp):
+        if rectype == rt.ROW_HDR:
+            row = rec.r
+        elif rectype == 427:
+            r1, r2, c1, c2 = struct.unpack_from("<iiii", rec.data, 0)
+            cce = struct.unpack_from("<i", rec.data, 16)[0]
+            shared.append(((r1, r2, c1, c2), rec.data[20:20 + cce]))
+        elif rt.CELL_BLANK <= rectype <= rt.FMLA_ERROR and rec.c is not None:
+            value = rec.v
+            if rectype == rt.CELL_ISST and isinstance(value, int):
+                strings = workbook.stringtable._strings
+                value = strings[value] if 0 <= value < len(strings) else value
+            elif type(value).__name__ == "ErrorValue":
+                value = {"e": "#N/A"}
+            cells[(row, rec.c)] = (value, rec.f)
+        elif rectype == rt.END_SHEET_DATA:
+            break
+
+    height = max((r for r, _ in cells), default=-1) + 1
+    width = max((c for _, c in cells), default=-1) + 1
+    grid = [[None] * width for _ in range(height)]
+    formulas, problems = {}, []
+    for (r, c), (value, raw) in cells.items():
+        grid[r][c] = _store_value(value) if not isinstance(value, dict) else value
+        if not with_formulas or not raw:
+            continue
+        try:
+            first = Formula.parse(raw)._tokens
+            if first and isinstance(first[0], ptgs.ExpPtg):
+                raw = next((data for (a, b, x, y), data in shared
+                            if a <= r <= b and x <= c <= y), None)
+                if raw is None:
+                    raise BoWorkbookError("its shared formula is missing")
+            formulas[f"{r},{c}"] = _tokens(raw, r, c, workbook, ptgs, Formula)
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"{name}!{_a1(r, c)}: {exc}")
+    return {"grid": grid, "f": formulas}, problems
+
+
+def _a1(row, col):
+    letters, n = "", col + 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"{letters}{row + 1}"
+
+
+def read_scorecards(stream):
+    """The scorecards .xlsb → plain data (see :func:`compute`)."""
+    with tempfile.NamedTemporaryFile(suffix=".xlsb", delete=False) as tmp:
+        for chunk in (stream.chunks() if hasattr(stream, "chunks")
+                      else [stream.read()]):
+            tmp.write(chunk)
+        path = tmp.name
+    try:
+        return _read_scorecards_path(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _read_scorecards_path(path):
+    from pyxlsb2 import open_workbook
+
+    try:
+        workbook = open_workbook(path)
+    except Exception as exc:  # noqa: BLE001
+        raise BoWorkbookError(f"that is not an .xlsb workbook ({exc})")
+    with workbook:
+        names = [s.name for s in workbook.sheets]
+        if "List" not in names or "TELLER_SCORECARD" not in names:
+            raise BoWorkbookError(
+                "this is not the back-office scorecards workbook - it has no "
+                "List and no TELLER_SCORECARD sheet")
+        book = {"cards": {}, "tables": {}, "problems": []}
+        wanted = set()
+        for sheet in sorted(set(ROLE_SHEETS.values())):
+            if sheet not in names:
+                book["problems"].append(f"{sheet} is not in the workbook")
+                continue
+            data, problems = _read_sheet(workbook, sheet, True)
+            book["cards"][sheet] = data
+            book["problems"] += problems
+            for tokens in data["f"].values():
+                for t in tokens:
+                    if t[0] in ("r", "a") and t[1]:
+                        wanted.add(t[1])
+        for sheet in sorted((wanted | {"List", "Constants"} |
+                             set(SUMMARY_SHEETS)) - set(book["cards"])):
+            if sheet in names:
+                book["tables"][sheet] = _read_sheet(workbook, sheet,
+                                                    False)[0]["grid"]
+    return book
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Reading the actuals template
+# ─────────────────────────────────────────────────────────────────────────
+
+def read_actuals(stream):
+    """The actuals template → {sheet: grid}. Every sheet, every month."""
+    from openpyxl import load_workbook
+
+    try:
+        book = load_workbook(stream, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise BoWorkbookError(f"that is not an .xlsx workbook ({exc})")
+    out = {}
+    for sheet in book.worksheets:
+        grid = []
+        for row in sheet.iter_rows(max_col=26, values_only=True):
+            grid.append([_store_value(v) for v in row])
+        while grid and all(v in (None, "") for v in grid[-1]):
+            grid.pop()
+        out[sheet.title] = grid
+    if not out.get("KYC") and not out.get("CASA"):
+        raise BoWorkbookError("this is not the back-office actuals template "
+                              "- it has no KYC or CASA sheet")
+    return out
+
+
+#: A month is in the template when it carries at least this share of the
+#: figures its fullest month does. The October 2026 template has 1,753
+#: non-zero figures for September and ONE for October - a stray, not a month.
+MONTH_SHARE = 0.25
+
+
+def template_months(actuals):
+    """The months the template has figures for → [1, 2, … 9].
+
+    Counted in non-zero numbers, because several sheets are pre-filled with
+    zeros to December.
+    """
+    counts = [0] * 12
+    for grid in actuals.values():
+        for row in grid[1:]:
+            for index in range(12):
+                column = 6 + index
+                value = row[column] if column < len(row) else None
+                if isinstance(value, (int, float)) and not isinstance(
+                        value, bool) and value != 0:
+                    counts[index] += 1
+    top = max(counts) or 1
+    return [i + 1 for i, n in enumerate(counts)
+            if n and n >= top * MONTH_SHARE]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Evaluating
+# ─────────────────────────────────────────────────────────────────────────
+
+class Evaluator:
+    """One card sheet, one person, one month."""
+
+    def __init__(self, book, actuals, sheet, name, branch, month):
+        self.book, self.actuals, self.sheet = book, actuals, sheet
+        self.card = book["cards"][sheet]
+        self.month = month
+        self.inputs = {NAME_CELL: name, BRANCH_CELL: branch}
+        self.memo, self.busy = {}, set()
+
+    # -- cells --------------------------------------------------------------
+    def value(self, sheet, r, c):
+        if sheet in (None, self.sheet):
+            return self.cell(r, c)
+        if sheet == "Constants" and (r, c) == MONTH_COLUMN_CELL:
+            return float(self.month + FIRST_MONTH_INDEX - 1)
+        if sheet == "Constants" and (r, c) == MONTH_COUNT_CELL:
+            return float(self.month)
+        grid = self.book["tables"].get(sheet)
+        if grid is None:
+            return REF
+        return _plain(_at(grid, r, c))
+
+    def cell(self, r, c):
+        key = (r, c)
+        if key in self.inputs:
+            return self.inputs[key]
+        if key in self.memo:
+            return self.memo[key]
+        tokens = self.card["f"].get(f"{r},{c}")
+        if tokens is None:
+            return _plain(_at(self.card["grid"], r, c))
+        if key in self.busy:
+            return REF  # a circular reference
+        self.busy.add(key)
+        try:
+            result = self.run(tokens, r, c)
+            if isinstance(result, Rng):
+                result = self.scalar(result, r, c)
+        finally:
+            self.busy.discard(key)
+        self.memo[key] = result
+        return result
+
+    def scalar(self, rng, r, c):
+        """Implicit intersection - a range used where one value is wanted."""
+        if rng.r1 == rng.r2 and rng.c1 == rng.c2:
+            return self.value(rng.sheet, rng.r1, rng.c1)
+        if rng.c1 == rng.c2 and rng.r1 <= r <= rng.r2:
+            return self.value(rng.sheet, r, rng.c1)
+        if rng.r1 == rng.r2 and rng.c1 <= c <= rng.c2:
+            return self.value(rng.sheet, rng.r1, c)
+        return VALUE
+
+    def cells_of(self, rng):
+        if rng.sheet and rng.sheet.startswith("@"):
+            grid = self.actuals.get(rng.sheet[1:], [])
+            last = min(rng.r2, len(grid) - 1)
+            for r in range(rng.r1, last + 1):
+                for c in range(rng.c1, rng.c2 + 1):
+                    yield _plain(_at(grid, r, c))
+            return
+        if rng.sheet in (None, self.sheet):
+            last = min(rng.r2, len(self.card["grid"]) + 5)
+        else:
+            last = min(rng.r2, len(self.book["tables"].get(rng.sheet, [])))
+        for r in range(rng.r1, last + 1):
+            for c in range(rng.c1, rng.c2 + 1):
+                yield self.value(rng.sheet, r, c)
+
+    # -- the stack machine -------------------------------------------------
+    def run(self, tokens, r, c):
+        stack = []
+        for t in tokens:
+            kind = t[0]
+            if kind == "n":
+                stack.append(_plain(t[1]))
+            elif kind == "r":
+                stack.append(Rng(t[1], t[2], t[3], t[2], t[3]))
+            elif kind == "a":
+                stack.append(Rng(t[1], t[2], t[3], t[4], t[5]))
+            elif kind == "name":
+                stack.append(("name", t[1]))
+            elif kind == "u":
+                v = self.number(stack.pop(), r, c)
+                if isinstance(v, Err):
+                    stack.append(v)
+                elif t[1] == "-":
+                    stack.append(-v)
+                elif t[1] == "%":
+                    stack.append(v / 100.0)
+                else:
+                    stack.append(v)
+            elif kind == "b":
+                right, left = stack.pop(), stack.pop()
+                stack.append(self.binary(t[1], left, right, r, c))
+            elif kind == "f":
+                argc = t[2]
+                args = stack[len(stack) - argc:] if argc else []
+                del stack[len(stack) - argc:]
+                stack.append(self.call(t[1], args, r, c))
+            elif kind == "udf":
+                argc = t[1]
+                args = stack[len(stack) - argc:]
+                del stack[len(stack) - argc:]
+                label = args[0][1] if isinstance(args[0], tuple) else ""
+                stack.append(self.call(label.replace("_xlfn.", "").upper(),
+                                       args[1:], r, c))
+        return stack[-1] if stack else None
+
+    def get(self, v, r, c):
+        return self.scalar(v, r, c) if isinstance(v, Rng) else v
+
+    def number(self, v, r, c):
+        v = self.get(v, r, c)
+        if isinstance(v, Err):
+            return v
+        if v is None or v == "":
+            return 0.0
+        if isinstance(v, bool):
+            return 1.0 if v else 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        try:
+            return float(str(v).replace(",", "").strip())
+        except ValueError:
+            return VALUE
+
+    def text(self, v, r, c):
+        v = self.get(v, r, c)
+        if isinstance(v, Err):
+            return v
+        if v is None:
+            return ""
+        if isinstance(v, bool):
+            return "TRUE" if v else "FALSE"
+        if isinstance(v, float):
+            return _general(v)
+        return str(v)
+
+    def binary(self, op, left, right, r, c):
+        if op == ":":
+            if isinstance(left, Rng) and isinstance(right, Rng):
+                return Rng(left.sheet, min(left.r1, right.r1),
+                           min(left.c1, right.c1), max(left.r2, right.r2),
+                           max(left.c2, right.c2))
+            return VALUE
+        if op == "&":
+            a, b = self.text(left, r, c), self.text(right, r, c)
+            if isinstance(a, Err):
+                return a
+            if isinstance(b, Err):
+                return b
+            return a + b
+        if op in ("<", "<=", "=", ">=", ">", "<>"):
+            a, b = self.get(left, r, c), self.get(right, r, c)
+            if isinstance(a, Err):
+                return a
+            if isinstance(b, Err):
+                return b
+            return _compare(op, a, b)
+        a, b = self.number(left, r, c), self.number(right, r, c)
+        if isinstance(a, Err):
+            return a
+        if isinstance(b, Err):
+            return b
+        if op == "+":
+            return a + b
+        if op == "-":
+            return a - b
+        if op == "*":
+            return a * b
+        if op == "/":
+            return DIV0 if b == 0 else a / b
+        if op == "^":
+            try:
+                return float(a ** b)
+            except (OverflowError, ZeroDivisionError, ValueError):
+                return Err("#NUM!")
+        return VALUE
+
+    # -- functions ----------------------------------------------------------
+    def call(self, fn, args, r, c):
+        fn = fn.upper()
+        if fn == "IF":
+            cond = self.get(args[0], r, c)
+            if isinstance(cond, Err):
+                return cond
+            truth = _truth(cond)
+            if isinstance(truth, Err):
+                return truth
+            if truth:
+                return self.get(args[1], r, c) if len(args) > 1 else True
+            return self.get(args[2], r, c) if len(args) > 2 else False
+        if fn in ("AND", "OR"):
+            values = []
+            for a in args:
+                for v in (self.cells_of(a) if isinstance(a, Rng) else [a]):
+                    if isinstance(v, Err):
+                        return v
+                    if v is None or isinstance(v, str):
+                        continue
+                    values.append(bool(v))
+            if not values:
+                return VALUE
+            return all(values) if fn == "AND" else any(values)
+        if fn == "NOT":
+            t = _truth(self.get(args[0], r, c))
+            return t if isinstance(t, Err) else not t
+        if fn in ("MIN", "MAX", "SUM", "AVERAGE", "COUNT"):
+            numbers = []
+            for a in args:
+                if isinstance(a, Rng):
+                    for v in self.cells_of(a):
+                        if isinstance(v, Err):
+                            return v
+                        if isinstance(v, (int, float)) and not isinstance(
+                                v, bool):
+                            numbers.append(float(v))
+                else:
+                    v = self.number(a, r, c)
+                    if isinstance(v, Err):
+                        return v
+                    numbers.append(v)
+            if fn == "COUNT":
+                return float(len(numbers))
+            if fn == "SUM":
+                total = 0.0
+                for n in numbers:  # left to right, as Excel adds
+                    total += n
+                return total
+            if fn == "AVERAGE":
+                return (sum(numbers) / len(numbers)) if numbers else DIV0
+            if not numbers:
+                return 0.0
+            return min(numbers) if fn == "MIN" else max(numbers)
+        if fn == "ABS":
+            v = self.number(args[0], r, c)
+            return v if isinstance(v, Err) else abs(v)
+        if fn in ("ROUND", "ROUNDUP", "ROUNDDOWN"):
+            v, d = self.number(args[0], r, c), self.number(args[1], r, c)
+            if isinstance(v, Err):
+                return v
+            if isinstance(d, Err):
+                return d
+            return _round(fn, v, int(d))
+        if fn in ("IFERROR",):
+            v = self.get(args[0], r, c)
+            return self.get(args[1], r, c) if isinstance(v, Err) else v
+        if fn in ("ISERROR", "ISNA"):
+            v = self.get(args[0], r, c)
+            if fn == "ISNA":
+                return v == NA
+            return isinstance(v, Err)
+        if fn == "VLOOKUP":
+            return self.vlookup(args, r, c)
+        if fn == "INDIRECT":
+            return self.indirect(self.text(args[0], r, c))
+        if fn in ("CONCAT", "CONCATENATE"):
+            out = ""
+            for a in args:
+                for v in (self.cells_of(a) if isinstance(a, Rng) else [a]):
+                    s = self.text(v, r, c)
+                    if isinstance(s, Err):
+                        return s
+                    out += s
+            return out
+        if fn == "TEXT":
+            v = self.get(args[0], r, c)
+            fmt = self.text(args[1], r, c)
+            return _format(v, fmt)
+        if fn == "YEAR":
+            v = self.number(args[0], r, c)
+            if isinstance(v, Err):
+                return v
+            return float(_from_serial(v).year)
+        if fn == "MONTH":
+            v = self.number(args[0], r, c)
+            return v if isinstance(v, Err) else float(_from_serial(v).month)
+        if fn == "DATE":
+            y, m, d = (self.number(a, r, c) for a in args[:3])
+            for v in (y, m, d):
+                if isinstance(v, Err):
+                    return v
+            return _to_serial(int(y), int(m), int(d))
+        if fn == "COLUMN":
+            if args and isinstance(args[0], Rng):
+                return float(args[0].c1 + 1)
+            return float(c + 1)
+        if fn == "ROW":
+            if args and isinstance(args[0], Rng):
+                return float(args[0].r1 + 1)
+            return float(r + 1)
+        return NAME
+
+    def indirect(self, ref):
+        """``[2026_BO_Actual_Template.xlsx]KYC!$c:$R`` → a range on the
+        template; anything else on this workbook."""
+        if isinstance(ref, Err):
+            return ref
+        m = re.match(r"^\s*(?:\[[^\]]*\])?'?([^'!]+)'?!\$?([A-Za-z]+)\$?(\d*)"
+                     r"(?::\$?([A-Za-z]+)\$?(\d*))?\s*$", ref)
+        if not m:
+            return REF
+        sheet, c1, r1, c2, r2 = m.groups()
+        external = ref.strip().startswith("[")
+        col1 = _column_index(c1)
+        col2 = _column_index(c2 or c1)
+        row1 = int(r1) - 1 if r1 else 0
+        row2 = int(r2) - 1 if r2 else 1048575
+        if external:
+            if sheet not in self.actuals:
+                return REF
+            return Rng("@" + sheet, row1, col1, row2, col2)
+        return Rng(sheet, row1, col1, row2, col2)
+
+    def vlookup(self, args, r, c):
+        key = self.get(args[0], r, c)
+        if isinstance(key, Err):
+            return key
+        table = args[1]
+        if not isinstance(table, Rng):
+            return table if isinstance(table, Err) else VALUE
+        index = self.number(args[2], r, c)
+        if isinstance(index, Err):
+            return index
+        index = int(index)
+        exact = True
+        if len(args) > 3:
+            mode = self.get(args[3], r, c)
+            exact = not _truth(mode) if not isinstance(mode, Err) else True
+        if index < 1 or index > table.c2 - table.c1 + 1:
+            return REF
+        grid = self._grid_of(table.sheet)
+        last = min(table.r2, len(grid) - 1)
+        if exact:
+            for row in range(table.r1, last + 1):
+                if _lookup_equal(key, _plain(_at(grid, row, table.c1))):
+                    found = self._grid_value(table.sheet, row,
+                                             table.c1 + index - 1)
+                    return 0.0 if found is None else found
+            return NA
+        best = None
+        for row in range(table.r1, last + 1):
+            v = _plain(_at(grid, row, table.c1))
+            if v is None or isinstance(v, Err):
+                continue
+            if _compare("<=", v, key) is True:
+                best = row
+            else:
+                break
+        if best is None:
+            return NA
+        found = self._grid_value(table.sheet, best, table.c1 + index - 1)
+        return 0.0 if found is None else found
+
+    def _grid_of(self, sheet):
+        if sheet and sheet.startswith("@"):
+            return self.actuals.get(sheet[1:], [])
+        if sheet in (None, self.sheet):
+            return self.card["grid"]
+        return self.book["tables"].get(sheet, [])
+
+    def _grid_value(self, sheet, r, c):
+        if sheet and sheet.startswith("@"):
+            return _plain(_at(self.actuals.get(sheet[1:], []), r, c))
+        return self.value(sheet, r, c)
+
+
+def _at(grid, r, c):
+    if 0 <= r < len(grid):
+        row = grid[r]
+        if 0 <= c < len(row):
+            return row[c]
+    return None
+
+
+def _column_index(letters):
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return n - 1
+
+
+def _truth(v):
+    if isinstance(v, Err):
+        return v
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    s = str(v).strip().upper()
+    if s == "TRUE":
+        return True
+    if s == "FALSE":
+        return False
+    return VALUE
+
+
+def _compare(op, a, b):
+    """Excel's comparison: blank is 0 against a number and "" against text;
+    text sorts after every number; text compares without case."""
+    if a is None:
+        a = "" if isinstance(b, str) else 0.0
+    if b is None:
+        b = "" if isinstance(a, str) else 0.0
+    if isinstance(a, bool):
+        a_rank, a = 2, float(a)
+    elif isinstance(a, (int, float)):
+        a_rank, a = 0, float(a)
+    else:
+        a_rank, a = 1, str(a).lower()
+    if isinstance(b, bool):
+        b_rank, b = 2, float(b)
+    elif isinstance(b, (int, float)):
+        b_rank, b = 0, float(b)
+    else:
+        b_rank, b = 1, str(b).lower()
+    left, right = (a_rank, a), (b_rank, b)
+    if a_rank != b_rank:
+        left, right = (a_rank,), (b_rank,)
+    return {"<": left < right, "<=": left <= right, "=": left == right,
+            ">=": left >= right, ">": left > right,
+            "<>": left != right}[op]
+
+
+def _lookup_equal(key, value):
+    if value is None or isinstance(value, Err):
+        return False
+    if isinstance(key, str) or isinstance(value, str):
+        if not (isinstance(key, str) and isinstance(value, str)):
+            return False
+        # Exact match ignores case and nothing else: "Bob Waigwa " is not
+        # "Bob Waigwa", in Excel or here.
+        return key.lower() == value.lower()
+    try:
+        return float(key) == float(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _round(fn, v, digits):
+    factor = 10 ** digits
+    x = v * factor
+    if fn == "ROUND":
+        y = math.floor(abs(x) + 0.5)
+    elif fn == "ROUNDUP":
+        y = math.ceil(abs(x) - 1e-9)
+    else:
+        y = math.floor(abs(x) + 1e-9)
+    return math.copysign(y, x) / factor
+
+
+def _general(v):
+    if v == int(v) and abs(v) < 1e15:
+        return str(int(v))
+    return repr(v)
+
+
+def _format(v, fmt):
+    if isinstance(v, Err):
+        return v
+    if isinstance(fmt, Err):
+        return fmt
+    if v is None:
+        v = 0.0
+    if not isinstance(v, (int, float)):
+        return str(v)
+    m = re.match(r"^0(?:\.(0+))?(%?)$", fmt or "")
+    if not m:
+        return _general(float(v))
+    decimals = len(m.group(1) or "")
+    if m.group(2):
+        return f"{v * 100:.{decimals}f}%"
+    return f"{v:.{decimals}f}"
+
+
+_EPOCH = datetime.date(1899, 12, 30)
+
+
+def _from_serial(serial):
+    return _EPOCH + datetime.timedelta(days=int(serial))
+
+
+def _to_serial(year, month, day):
+    year += (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    first = datetime.date(year, month, 1)
+    return float((first - _EPOCH).days + day - 1)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cards
+# ─────────────────────────────────────────────────────────────────────────
+
+class Holder:
+    """A List row: who, and which card."""
+
+    def __init__(self, row_index, row):
+        def at(i):
+            return row[i] if i < len(row) else None
+
+        self.row = row_index
+        pf = at(0)
+        self.pf = (str(int(pf)) if isinstance(pf, float) and pf == int(pf)
+                   else str(pf or "").strip())
+        self.sales_code = str(at(1) or "").strip().upper()
+        self.name = at(2) if isinstance(at(2), str) else str(at(2) or "")
+        self.role = str(at(3) or "").strip()
+        self.branch = at(4)
+        self.sheet = ROLE_SHEETS.get(self.role)
+
+
+def holders(book):
+    grid = book["tables"].get("List", [])
+    out = []
+    for index, row in enumerate(grid[1:], start=1):
+        holder = Holder(index, row)
+        if holder.name and (holder.sales_code or holder.pf):
+            out.append(holder)
+    return out
+
+
+def _layout(card):
+    """Where the lines are: the header row says, and the TOTAL row ends them."""
+    grid = card["grid"]
+    header = next((i for i, row in enumerate(grid)
+                   if any(isinstance(v, str) and v.strip() == "Perspective"
+                          for v in row)), 7)
+    total = next((i for i, row in enumerate(grid)
+                  if i > header and any(isinstance(v, str) and
+                                        v.strip().upper().startswith("TOTAL SCORE")
+                                        for v in row)), len(grid))
+    return header, total
+
+
+def compute(book, actuals, holder, month):
+    """One person's card for one month → dict, as the workbook would show it."""
+    card = book["cards"][holder.sheet]
+    ev = Evaluator(book, actuals, holder.sheet, holder.name, holder.branch,
+                   month)
+    header, total_row = _layout(card)
+    lines, perspective = [], ""
+    for r in range(header + 1, total_row):
+        weight = ev.cell(r, 4)
+        measure = ev.cell(r, 2)
+        initiative = ev.cell(r, 3)
+        label = ev.cell(r, 1)
+        if isinstance(label, str) and label.strip():
+            perspective = " ".join(label.split())
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            continue
+        if not (_txt(measure) or _txt(initiative)):
+            continue  # the weights' own total row
+        feed = ev.cell(r, 11)
+        lines.append({
+            "row": r + 1,
+            "perspective": perspective,
+            "measure": _txt(measure),
+            "initiative": _txt(initiative),
+            "weight": float(weight),
+            "pm": _out(ev.cell(r, 5)),
+            "ytd_target": _out(ev.cell(r, 6)),
+            "actual": _out(ev.cell(r, 7)),
+            "score": _out(ev.cell(r, 8)),
+            "weighted": _out(ev.cell(r, 9)),
+            "feed": _txt(feed),
+            # A line whose actual is typed on the card (complaints,
+            # compliments) rather than read off the template.
+            "typed": f"{r},7" not in card["f"],
+            "empty": _feed_empty(actuals, feed, holder.name, month),
+        })
+    score = ev.cell(*SCORE_CELL)
+    return {"sheet": holder.sheet, "month": month, "lines": lines,
+            "total": _out(score)}
+
+
+def _txt(v):
+    return " ".join(v.split()) if isinstance(v, str) else ""
+
+
+def _out(v):
+    if isinstance(v, Err):
+        return {"e": v.code}
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return {"e": "#NUM!"}
+    return v
+
+
+def _feed_empty(actuals, feed, name, month):
+    """Is this person's cell for the month blank on the template sheet?"""
+    if not isinstance(feed, str) or feed not in actuals:
+        return None
+    for row in actuals[feed][1:]:
+        if len(row) > 2 and isinstance(row[2], str) and isinstance(name, str) \
+                and row[2].lower() == name.lower():
+            column = 6 + month - 1
+            value = row[column] if column < len(row) else None
+            return value in (None, "")
+    return None
+
+
+def recorded_scores(book):
+    """What the macro wrote, by person → {(sales code, month): score}.
+
+    Matched on the sales code column, not the row: the List has been
+    re-ordered since some of these months were written.
+    """
+    out = {}
+    for (_sheet, _i, code, month), score in summary_scores(book).items():
+        if code:
+            out[(code, month)] = score
+    return out
+
+
+def summary_scores(book):
+    """What the macro last wrote → {(List row, month): score}."""
+    out = {}
+    for sheet, first_list_row in (("Monthly_Summ", 1), ("RBO_Monthly_Summ",
+                                                        None)):
+        grid = book["tables"].get(sheet, [])
+        if not grid:
+            continue
+        for i, row in enumerate(grid[1:], start=1):
+            code = str(row[1] if len(row) > 1 else "").strip().upper()
+            for month in range(1, 13):
+                column = 6 + month - 1
+                v = row[column] if column < len(row) else None
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    out[(sheet, i, code, month)] = float(v)
+    return out
+
+
+def compare_with_summary(book, actuals, months=None):
+    """Every person, every month the macro recorded, against this module.
+
+    → (matches, differences) where a difference is a dict. Monthly_Summ's row
+    n is the List's row n (the macro walks both together from row 2);
+    RBO_Monthly_Summ's row 2 is List row 112.
+    """
+    people = holders(book)
+    by_row = {h.row: h for h in people}
+    rbo_rows = sorted(h.row for h in people if h.role in ("RBO", "TL_RBO"))
+    matches, diffs = 0, []
+    for (sheet, i, code, month), recorded in summary_scores(book).items():
+        if months and month not in months:
+            continue
+        if sheet == "Monthly_Summ":
+            holder = by_row.get(i)
+        else:
+            holder = by_row.get(rbo_rows[i - 1]) if i - 1 < len(rbo_rows) \
+                else None
+        if holder is None or holder.sheet is None:
+            continue
+        if holder.role in ("RBO", "TL_RBO") and sheet == "Monthly_Summ":
+            continue
+        result = compute(book, actuals, holder, month)
+        total = result["total"]
+        if isinstance(total, (int, float)) and abs(total - recorded) < 1e-9:
+            matches += 1
+        else:
+            diffs.append({"name": holder.name, "role": holder.role,
+                          "month": month, "recorded": recorded,
+                          "computed": total})
+    return matches, diffs
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Storing, and showing
+# ─────────────────────────────────────────────────────────────────────────
+
+def _first_of(year, month):
+    return datetime.date(year, month, 1)
+
+
+def book_year(book):
+    grid = book["tables"].get("Constants", [])
+    year = _at(grid, 4, 1)
+    if isinstance(year, (int, float)) and 2000 < year < 2100:
+        return int(year)
+    return datetime.date.today().year
+
+
+def compute_all(book, actuals, months=None):
+    """Every holder × every month with figures → [(holder, month, card)]."""
+    months = months or template_months(actuals)
+    out = []
+    for holder in holders(book):
+        if holder.sheet is None or holder.sheet not in book["cards"]:
+            continue
+        for month in months:
+            out.append((holder, month, compute(book, actuals, holder, month)))
+    return out
+
+
+def store(results, year, recorded=None, loaded_by=""):
+    """One row per person per month, replaced on reload → how many."""
+    from django.db import transaction
+
+    from .models import BoScorecard
+
+    recorded = recorded or {}
+    with transaction.atomic():
+        for holder, month, card in results:
+            total = card["total"]
+            BoScorecard.objects.update_or_create(
+                sales_code=holder.sales_code or holder.pf,
+                month=_first_of(year, month),
+                defaults={
+                    "staff_pf": holder.pf, "staff_name": holder.name,
+                    "sheet": holder.sheet, "branch": str(holder.branch or ""),
+                    "card": card,
+                    "total": total if _num(total) else None,
+                    "recorded": recorded.get((holder.sales_code, month)),
+                    "loaded_by": loaded_by,
+                })
+    return len(results)
+
+
+def save_file(kind, payload, file_name="", loaded_by=""):
+    from .models import BoWorkbookFile
+
+    BoWorkbookFile.objects.update_or_create(
+        kind=kind, defaults={"payload": payload, "file_name": file_name,
+                             "loaded_by": loaded_by})
+
+
+def saved(kind):
+    from .models import BoWorkbookFile
+
+    row = BoWorkbookFile.objects.filter(kind=kind).first()
+    return row.payload if row is not None else None
+
+
+def check(book, actuals):
+    """What loading would do → a report. Nothing is written.
+
+    The proof is the macro's own record: every month it wrote on
+    Monthly_Summ is recomputed and compared, by sales code.
+    """
+    months = template_months(actuals)
+    people = [h for h in holders(book) if h.sheet in book["cards"]]
+    recorded = recorded_scores(book)
+    by_month = {}
+    for holder in people:
+        for month in months:
+            score = recorded.get((holder.sales_code, month))
+            if score is None:
+                continue
+            total = compute(book, actuals, holder, month)["total"]
+            tally = by_month.setdefault(month, {"recorded": 0, "same": 0})
+            tally["recorded"] += 1
+            if _num(total) and abs(total - score) < 1e-9:
+                tally["same"] += 1
+    roles = {}
+    for holder in holders(book):
+        roles[holder.role or "(blank)"] = roles.get(holder.role or "(blank)",
+                                                    0) + 1
+    return {
+        "year": book_year(book),
+        "months": months,
+        "people": len(people),
+        "cards": sorted({h.sheet for h in people}),
+        "roles_without_a_card": sorted(
+            r for r in roles if r not in ROLE_SHEETS and r != "(blank)"),
+        "left": sum(1 for h in people
+                    if str(h.branch or "").strip().lower() == "left"),
+        "against_the_macro": [
+            {"month": m, "recorded": t["recorded"], "same": t["same"]}
+            for m, t in sorted(by_month.items())],
+        "problems": book.get("problems", []),
+    }
+
+
+def rebuild(book, actuals, loaded_by=""):
+    """Compute and store every card for every month → how many stored."""
+    results = compute_all(book, actuals)
+    return store(results, book_year(book), recorded_scores(book),
+                 loaded_by=loaded_by)
+
+
+def stored_for(sales_code, as_at=None):
+    from .models import BoScorecard
+
+    code = (sales_code or "").strip()
+    rows = BoScorecard.objects.filter(sales_code__iexact=code)
+    if as_at is not None:
+        rows = rows.filter(month__lte=as_at)
+    return rows.order_by("-month").first()
+
+
+def months_loaded(sales_code):
+    from .models import BoScorecard
+
+    return [m.strftime("%Y-%m") for m in BoScorecard.objects.filter(
+        sales_code__iexact=(sales_code or "").strip())
+        .order_by("month").values_list("month", flat=True)]
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _month_end(first):
+    nxt = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    return nxt - datetime.timedelta(days=1)
+
+
+def card_payload(record, asked=None):
+    """A stored back-office card in the shape every card has."""
+    data = record.card or {}
+    perspectives, seen = [], {}
+    scored = unscored = 0.0
+    month_end = _month_end(record.month)
+    for line in data.get("lines", []):
+        name = line["perspective"] or "Other"
+        if name not in seen:
+            seen[name] = {"perspective": name, "weight": 0.0, "lines": []}
+            perspectives.append(seen[name])
+        seen[name]["weight"] += line["weight"]
+        score, weighted = line.get("score"), line.get("weighted")
+        if _num(score):
+            scored += line["weight"]
+        else:
+            unscored += line["weight"]
+        pm, ytd, actual = line.get("pm"), line.get("ytd_target"), \
+            line.get("actual")
+        error = next((v["e"] for v in (actual, score) if isinstance(v, dict)),
+                     "")
+        pending = ""
+        if error:
+            pending = (f"The workbook itself shows {error} here: "
+                       f"{record.staff_name} has no row on the "
+                       f"{line.get('feed') or 'actuals'} sheet of the actuals "
+                       f"template." if error == "#N/A" else
+                       f"The workbook itself shows {error} on this line.")
+        as_at = f"as at {month_end.day} {month_end:%b %Y}"
+        if line.get("typed"):
+            as_at = "typed on the card in the workbook"
+        elif line.get("empty"):
+            as_at = (f"no figure for {month_end:%B} on the "
+                     f"{line.get('feed')} sheet - read as 0, as the workbook "
+                     f"reads it")
+        seen[name]["lines"].append({
+            "kpi_code": (line.get("feed") or line["measure"]).lower(),
+            "kpi_name": line["measure"] or line["initiative"],
+            "measure_of_success": line["initiative"] or line["measure"],
+            "weight": line["weight"],
+            "ytd_target": ytd if _num(ytd) else None,
+            "annual_target": pm if _num(pm) else None,
+            "target_text": pm if isinstance(pm, str) else "",
+            "prior_year": None,
+            "growth_target": None,
+            "target_field": "",
+            "target_source": "the back-office scorecards workbook",
+            "full_year_target": pm == ytd,
+            "ytd_actual": actual if _num(actual) else None,
+            "warehouse_said": None,
+            "score": score if _num(score) else None,
+            "weighted_score": weighted if _num(weighted) else None,
+            "counted_in_total": True,
+            "as_at": as_at,
+            "as_at_date": month_end.isoformat(),
+            "higher_is_better": True,
+            "full_marks_rule": "",
+            "score_cap": None,
+            "pending": pending,
+            "pending_label": "Workbook error" if pending else "",
+            "diagnostic": "",
+        })
+    total = record.total
+    sheet = record.sheet
+    empty = sum(1 for ln in data.get("lines", [])
+                if ln.get("empty") and not ln.get("typed"))
+    # The macro's own record wins: it is what the desk sent, with the List
+    # and the targets as they were that month. The workbook carries only
+    # today's - Q2's revised targets, today's branches, leavers marked
+    # "left" - so recomputing an old month can come out differently, and
+    # where it does the card says so rather than quietly replacing a score
+    # somebody signed.
+    recorded = record.recorded
+    notes = []
+    if _num(recorded) and not (_num(total) and abs(recorded - total) < 1e-9):
+        notes.append(
+            f"The desk's scorecard run recorded {recorded:.1%} for "
+            f"{record.month:%B %Y}, with the targets and List as they were "
+            f"then, and that is the score shown. The lines below are the "
+            f"month recomputed from the workbook as it is now (revised "
+            f"targets, current branches), which gives "
+            + (f"{total:.1%}." if _num(total) else
+               "an error in the workbook itself."))
+        total = recorded
+    if empty:
+        notes.append(
+            f"{empty} line(s) had no figure for {record.month:%B %Y} on the "
+            f"actuals template, so they read as 0 - as the workbook reads "
+            f"them.")
+    return {
+        "has_card": True,
+        "live": False,
+        "back_office_workbook": True,
+        "staff": {
+            "sales_code": record.sales_code,
+            "name": record.staff_name,
+            "title": TITLES.get(sheet, sheet),
+            "role_code": ROLE_CODES.get(sheet, sheet),
+            "branch": record.branch,
+            "team_leader": "",
+            "roster": "the back-office scorecards workbook's List",
+            "started": None,
+        },
+        "book": {"customers": None, "note": ""},
+        "period": {"label": record.month.strftime("%B %Y"),
+                   "as_at": month_end.isoformat()},
+        "target_source": "the back-office scorecards workbook",
+        "performance_score": round(total, 4) if _num(total) else None,
+        "scored_lines": sum(1 for p in perspectives for ln in p["lines"]
+                            if ln["score"] is not None),
+        "pending_lines": sum(1 for p in perspectives for ln in p["lines"]
+                             if ln["pending"]),
+        "scored_weight": round(scored, 4),
+        "unscored_weight": round(unscored, 4),
+        "perspectives": perspectives,
+        "months_loaded": months_loaded(record.sales_code),
+        "coverage_note": " ".join(notes),
+        "showing_other_month": (
+            "" if asked is None or asked.replace(day=1) == record.month else
+            f"Nothing is loaded for {asked:%B %Y}; this is "
+            f"{record.month:%B %Y}, the latest month on or before it."),
+        "how_scored": ("Computed from the back-office scorecards workbook's "
+                       "own formulas over the actuals template - the same "
+                       "cells the desk's macro fills and reads, so the score "
+                       "is the one the workbook gives."),
+    }

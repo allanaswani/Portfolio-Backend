@@ -1990,3 +1990,60 @@ class HrEmployeeListing(models.Model):
 
     def __str__(self):
         return f"{self.pf_number} {self.name} {self.as_of}"
+
+
+class BoWorkbookFile(models.Model):
+    """The two back-office workbooks, as read - see
+    :mod:`apps.staff_management.bo_workbook`.
+
+    Kept so either can be loaded on its own: a new month's actuals template
+    is computed against the scorecards workbook already here, and a revised
+    scorecards workbook against the template already here.
+    """
+
+    SCORECARDS = "scorecards"
+    ACTUALS = "actuals"
+
+    kind = models.CharField(max_length=20, unique=True)
+    file_name = models.CharField(max_length=255, blank=True, default="")
+    payload = models.JSONField(default=dict)
+    loaded_by = models.CharField(max_length=150, blank=True, default="")
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "bo_workbook_file"
+
+    def __str__(self):
+        return f"{self.kind} {self.file_name}"
+
+
+class BoScorecard(models.Model):
+    """One person's back-office card for one month, computed from the
+    workbook's own formulas - see :mod:`apps.staff_management.bo_workbook`."""
+
+    sales_code = models.CharField(max_length=40, db_index=True)
+    staff_pf = models.CharField(max_length=20, blank=True, default="")
+    staff_name = models.CharField(max_length=200, blank=True, default="")
+    #: The card sheet - TELLER_SCORECARD, BOM_SCORECARD, ...
+    sheet = models.CharField(max_length=40)
+    branch = models.CharField(max_length=100, blank=True, default="")
+    #: First day of the review month.
+    month = models.DateField(db_index=True)
+    card = models.JSONField(default=dict)
+    #: The card's J6, or None where the workbook's own total is an error.
+    total = models.FloatField(null=True, blank=True)
+    #: What the desk's macro wrote on Monthly_Summ for this month, when it
+    #: did. The score the desk sent.
+    recorded = models.FloatField(null=True, blank=True)
+    loaded_by = models.CharField(max_length=150, blank=True, default="")
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "bo_scorecard"
+        unique_together = [("sales_code", "month")]
+        ordering = ["month", "sales_code"]
+
+    def __str__(self):
+        return f"{self.sales_code} {self.month:%Y-%m} {self.sheet}"

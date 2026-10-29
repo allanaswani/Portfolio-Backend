@@ -3091,6 +3091,24 @@ def resolve_person(sales_code):
             branch="Head Office",
             roster="the Scheme scorecard workbook")
 
+    # 0b. the back-office scorecards workbook, for the same reason: its List
+    # is what the desk's macro walks, and it names a teller's branch as the
+    # desk does (Bob Waigwa is Kitengela there and Komarock on the DMC
+    # roster - and Kitengela's productivity target is the one he signed).
+    from . import bo_workbook
+
+    try:
+        with transaction.atomic():
+            bo = bo_workbook.stored_for(code)
+    except Exception:  # noqa: BLE001 - before migration 0063
+        bo = None
+    if bo is not None:
+        return Person(
+            sales_code=code, name=bo.staff_name,
+            role_code=bo_workbook.ROLE_CODES.get(bo.sheet, bo.sheet),
+            branch=bo.branch,
+            roster="the back-office scorecards workbook")
+
     # 1. the sales roster
     row = roster_row(code)
     if row is not None:
@@ -3628,7 +3646,23 @@ def build_card(sales_code, profile=None, as_at=None):
                               "Scorecards."}
         return scheme_cards.card_payload(record, asked=as_at)
 
-    mappings = list(ScRoleKpiMapping.objects.filter(role_code=role_code)
+    # The back-office cards likewise, for whoever the workbook's List holds:
+    # its own formulas over the actuals template, stored per month on load.
+    # Anyone the List does not name falls through to the live engine.
+    if person.roster == "the back-office scorecards workbook":
+        from . import bo_workbook
+
+        record = bo_workbook.stored_for(sales_code, as_at=as_at)
+        if record is None:
+            return {"has_card": False, "reason": "bo_month_not_loaded",
+                    "sales_code": sales_code,
+                    "detail": "No back-office card is loaded for this month "
+                              "or before it. Administration loads the "
+                              "back-office scorecards workbook and actuals "
+                              "template under Scorecards → Figures to load."}
+        return bo_workbook.card_payload(record, asked=as_at)
+
+    mappings =list(ScRoleKpiMapping.objects.filter(role_code=role_code)
                     .order_by("kpi_order"))
     if not mappings:
         return {"has_card": False, "reason": "role_not_configured",

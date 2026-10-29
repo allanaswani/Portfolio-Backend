@@ -229,15 +229,37 @@ class BoActualsUploadView(APIView):
         if upload is None:
             return Response({"file": "Choose the template first."},
                             status=400)
-        if not upload.name.lower().endswith((".xlsx", ".xlsm")):
+        if not upload.name.lower().endswith((".xlsx", ".xlsm", ".xlsb")):
             return Response(
                 {"file": f"{upload.name} is not an Excel workbook. The "
-                         f"back-office template is an .xlsx."}, status=400)
+                         f"back-office template is an .xlsx, the scorecards "
+                         f"workbook an .xlsb."}, status=400)
         if upload.size > self.MAX_BYTES:
             return Response(
                 {"file": f"That file is {upload.size / 1024 / 1024:.1f} MB; "
                          f"the limit is {self.MAX_BYTES // 1024 // 1024} MB."},
                 status=400)
+        apply = str(request.data.get("apply", "")).lower() in ("1", "true",
+                                                               "yes")
+        who = getattr(request.user, "username", "")
+
+        if upload.name.lower().endswith(".xlsb"):
+            return self._scorecards(upload, apply, who)
+
+        # The template feeds two things: the cards computed from the
+        # scorecards workbook's own formulas (every month, below), and the
+        # per-line figures the live engine reads for anyone the workbook's
+        # List does not hold (further down, as before).
+        from . import bo_workbook
+
+        try:
+            actuals_book = bo_workbook.read_actuals(upload)
+        except Exception as exc:  # noqa: BLE001
+            return Response({"file": f"That template could not be read: "
+                                     f"{exc}"}, status=400)
+        upload.seek(0)
+        cards = self._cards_report(bo_workbook.saved("scorecards"),
+                                   actuals_book)
 
         try:
             rows, report = bo_actuals.read_upload(upload)
@@ -256,10 +278,9 @@ class BoActualsUploadView(APIView):
         entries, planned = bo_actuals.plan(rows)
         report.update(planned)
 
-        if str(request.data.get("apply", "")).lower() not in ("1", "true",
-                                                              "yes"):
+        if not apply:
             return Response({
-                "applied": False, "report": report,
+                "applied": False, "report": report, "cards": cards,
                 "detail": (
                     f"Read {report['figures']:,} figure(s) for "
                     f"{report['people']} people, to "
@@ -269,14 +290,64 @@ class BoActualsUploadView(APIView):
                     f"to save."),
             })
 
-        written = bo_actuals.save(
-            entries, who=getattr(request.user, "username", ""))
+        written = bo_actuals.save(entries, who=who)
+        bo_workbook.save_file("actuals", actuals_book, upload.name, who)
+        book = bo_workbook.saved("scorecards")
+        if book is not None:
+            cards["stored"] = bo_workbook.rebuild(book, actuals_book, who)
         return Response({
             "applied": True, "report": report, "written": written,
-            "detail": (f"Saved {written:,} figure(s). They show on the cards "
-                       f"straight away - a card is computed when it is "
-                       f"opened."),
+            "cards": cards,
+            "detail": (f"Saved {written:,} figure(s)."
+                       + (f" {cards['stored']:,} back-office card-month(s) "
+                          f"computed from the scorecards workbook."
+                          if cards.get("stored") else
+                          " Load the back-office scorecards workbook (.xlsb) "
+                          "here too, and every card is computed from its own "
+                          "formulas.")),
         })
+
+    @staticmethod
+    def _cards_report(book, actuals_book):
+        from . import bo_workbook
+
+        if book is None or actuals_book is None:
+            return {"ready": False,
+                    "missing": "scorecards" if book is None else "actuals"}
+        report = bo_workbook.check(book, actuals_book)
+        report["ready"] = True
+        return report
+
+    def _scorecards(self, upload, apply, who):
+        """The scorecards .xlsb: the cards' own formulas, the List, Constants.
+        """
+        from . import bo_workbook
+
+        try:
+            book = bo_workbook.read_scorecards(upload)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return Response({"file": f"That workbook could not be read: "
+                                     f"{exc}"}, status=400)
+        actuals_book = bo_workbook.saved("actuals")
+        cards = self._cards_report(book, actuals_book)
+        if not apply:
+            return Response({
+                "applied": False, "cards": cards,
+                "detail": ("Read the back-office scorecards workbook. "
+                           "Nothing has been saved yet."
+                           + ("" if actuals_book is not None else
+                              " No actuals template is loaded yet - load "
+                              "2026_BO_Actual_Template.xlsx here as well."))})
+        bo_workbook.save_file("scorecards", book, upload.name, who)
+        if actuals_book is not None:
+            cards["stored"] = bo_workbook.rebuild(book, actuals_book, who)
+        return Response({
+            "applied": True, "cards": cards,
+            "detail": ("Saved the scorecards workbook."
+                       + (f" {cards['stored']:,} card-month(s) computed."
+                          if cards.get("stored") else
+                          " Load the actuals template next, and the cards "
+                          "are computed."))})
 
 
 @extend_schema(tags=[_TAG])

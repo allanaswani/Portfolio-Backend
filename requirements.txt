@@ -218,3 +218,6 @@ whitenoise==6.8.2
 # apps/staff_management/scorecard_ingest.py. Pure Python, read-only.
 pyxlsb==1.0.10
 xlrd==2.0.1
+# The back-office scorecards .xlsb: its FORMULAS, shared ones included - see
+# apps/staff_management/bo_workbook.py. pyxlsb above reads values only.
+pyxlsb2==0.0.9
