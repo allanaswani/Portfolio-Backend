@@ -13,6 +13,10 @@ Two sources, both already recorded:
 * Customer 360 - ``observability_external_usage_day``, the per-person daily
   roll-up Customer 360 pushes with its own ``push_usage`` job.
 
+Each person's branch is the one on their portfolio profile (Administration ->
+Users). Head office staff mostly have none, and are counted under
+"No branch on profile" rather than guessed at.
+
 When Customer 360 reported nothing for the day, the report says when it last
 reported, rather than printing zeros: a stopped push and a quiet day look the
 same as a number, and are not the same thing.
@@ -27,6 +31,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 TOP = 10
+NO_BRANCH = "No branch on profile"
 
 
 def _plain(text, limit=60):
@@ -49,6 +54,27 @@ def _names():
             for u in get_user_model().objects.all()}
 
 
+def _branches():
+    """username (lower) -> the branch on their profile."""
+    from apps.portfolio.models import Profile
+
+    return {u.lower(): (b or "").strip() or NO_BRANCH
+            for u, b in Profile.objects.values_list("user__username",
+                                                    "branch")}
+
+
+def _branch_table(rows):
+    """[(username, amount)] -> [(branch, people, amount)], busiest first."""
+    branches = _branches()
+    people, amount = defaultdict(set), Counter()
+    for username, value in rows:
+        branch = branches.get((username or "").lower(), NO_BRANCH)
+        people[branch].add((username or "").lower())
+        amount[branch] += value
+    return sorted(((b, len(people[b]), amount[b]) for b in people),
+                  key=lambda r: (-r[1], -r[2], r[0]))
+
+
 def portfolio_day(day):
     """The portfolio tool on one day → dict."""
     from django.contrib.auth import get_user_model
@@ -66,15 +92,19 @@ def portfolio_day(day):
                  .annotate(views=Count("id"),
                            users=Count("user", distinct=True))
                  .order_by("-views")[:TOP])
+    branches = _branches()
     return {
         "users": len(by_user),
         "accounts": get_user_model().objects.filter(is_active=True).count(),
         "views": sum(r["views"] for r in by_user),
         "top_users": [
             (" ".join(p for p in (r["user__first_name"], r["user__last_name"])
-                      if p).strip() or r["user__username"], r["views"])
+                      if p).strip() or r["user__username"], r["views"],
+             branches.get(r["user__username"].lower(), NO_BRANCH))
             for r in by_user[:TOP]],
         "top_areas": [(r["path"], r["users"], r["views"]) for r in areas],
+        "branches": _branch_table((r["user__username"], r["views"])
+                                  for r in by_user),
     }
 
 
@@ -84,6 +114,7 @@ def external_day(day):
 
     out = {}
     names = _names()
+    branches = _branches()
     sources = set(ExternalUsageDay.objects.values_list("source", flat=True))
     for source in sorted(sources):
         rows = list(ExternalUsageDay.objects.filter(source=source, day=day)
@@ -104,8 +135,11 @@ def external_day(day):
             "exports": sum(r.exports for r in rows),
             "minutes": sum(r.active_minutes for r in rows),
             "top_users": [(names.get(r.username.lower(), r.username),
-                           r.customer_views, r.searches, r.active_minutes)
+                           r.customer_views, r.searches, r.active_minutes,
+                           branches.get(r.username.lower(), NO_BRANCH))
                           for r in rows[:TOP]],
+            "branches": _branch_table((r.username, r.customer_views)
+                                      for r in rows),
             "top_features": features.most_common(TOP),
             "last_reported": last,
         }
@@ -134,6 +168,66 @@ def week(day):
     return days, {d: len(portfolio[d]) for d in days}, external
 
 
+def week_leaders(day):
+    """The 7 days ending ``day``: who used each system most, and where.
+
+    People are ranked by the days they came back, then by volume - somebody
+    in it every day matters more than one long afternoon.
+    """
+    from django.db.models import Count
+    from django.db.models.functions import TruncDate
+
+    from apps.analytics.models import UserActivityEvent
+    from apps.observability.models import ExternalUsageDay
+
+    first = day - datetime.timedelta(days=6)
+    start, _ = _bounds(first)
+    _, end = _bounds(day)
+    names, branches = _names(), _branches()
+    out = {}
+
+    per_day = (UserActivityEvent.objects
+               .filter(created_at__gte=start, created_at__lt=end)
+               .annotate(d=TruncDate("created_at"))
+               .values("user__username", "d").annotate(views=Count("id")))
+    days, volume = defaultdict(set), Counter()
+    for r in per_day:
+        days[r["user__username"]].add(r["d"])
+        volume[r["user__username"]] += r["views"]
+    out["Portfolio tool"] = days, volume
+
+    for source in sorted(set(ExternalUsageDay.objects
+                             .values_list("source", flat=True))):
+        days, volume = defaultdict(set), Counter()
+        for username, d, views in (ExternalUsageDay.objects
+                                   .filter(source=source, day__gte=first,
+                                           day__lte=day)
+                                   .values_list("username", "day",
+                                                "customer_views")):
+            days[username].add(d)
+            volume[username] += views
+        title = "Customer 360" if "360" in source else _plain(source, 30)
+        out[title] = days, volume
+
+    leaders = {}
+    for title, (days, volume) in out.items():
+        people = sorted(days, key=lambda u: (-len(days[u]), -volume[u], u))
+        leaders[title] = {
+            "people": [(names.get(u.lower(), u),
+                        branches.get(u.lower(), NO_BRANCH),
+                        len(days[u]), volume[u]) for u in people[:TOP]],
+            "branches": _branch_table((u, volume[u]) for u in days),
+        }
+    return leaders
+
+
+def _branch_lines(rows, unit):
+    lines = [f"  By branch                          people  {unit:>8}"]
+    lines += [f"    {_plain(branch, 32):32} {people:6}  {amount:8,}"
+              for branch, people, amount in rows]
+    return lines
+
+
 def build(day):
     p = portfolio_day(day)
     lines = [f"Daily usage - {day:%A %d %b %Y}", "=" * 46, ""]
@@ -148,10 +242,14 @@ def build(day):
         lines += ["", "  Most used areas            people  pages"]
         lines += [f"    {_plain(path, 26):26} {users:6}  {views:5}"
                   for path, users, views in p["top_areas"]]
+    if p["branches"]:
+        lines += [""] + _branch_lines(p["branches"], "pages")
     if p["top_users"]:
-        lines += ["", "  Most active people                 pages"]
-        lines += [f"    {_plain(name, 32):32} {views:5}"
-                  for name, views in p["top_users"]]
+        lines += ["", "  Most active people               branch"
+                      "                 pages"]
+        lines += [f"    {_plain(name, 28):28} {_plain(branch, 22):22} "
+                  f"{views:5}"
+                  for name, views, branch in p["top_users"]]
     lines.append("")
 
     external = external_day(day)
@@ -186,12 +284,15 @@ def build(day):
             lines += ["", "  Most used features"]
             lines += [f"    {_plain(name, 30):30} {count:6}"
                       for name, count in x["top_features"]]
+        if x["branches"]:
+            lines += [""] + _branch_lines(x["branches"], "profiles")
         if x["top_users"]:
-            lines += ["", "  Most active people          profiles  searches  "
-                          "minutes"]
-            lines += [f"    {_plain(name, 26):26} {views:8} {searches:9} "
-                      f"{minutes:8}"
-                      for name, views, searches, minutes in x["top_users"]]
+            lines += ["", "  Most active people       branch               "
+                          "profiles  searches  minutes"]
+            lines += [f"    {_plain(name, 22):22} {_plain(branch, 20):20} "
+                      f"{views:8} {searches:9} {minutes:8}"
+                      for name, views, searches, minutes, branch
+                      in x["top_users"]]
         lines.append("")
 
     days, portfolio, others = week(day)
@@ -204,6 +305,19 @@ def build(day):
         for source in sorted(others):
             row += f"  {others[source][d]:9}"
         lines.append(row)
+
+    for title, x in week_leaders(day).items():
+        unit = "pages" if title == "Portfolio tool" else "profiles"
+        lines += ["", f"LAST 7 DAYS - {title.upper()} - who uses it most"]
+        if not x["people"]:
+            lines.append("  Nobody in the last 7 days.")
+            continue
+        lines.append(f"  Person                   branch               "
+                     f"days  {unit:>8}")
+        lines += [f"    {_plain(name, 22):22} {_plain(branch, 20):20} "
+                  f"{active:4}  {amount:8,}"
+                  for name, branch, active, amount in x["people"]]
+        lines += [""] + _branch_lines(x["branches"][:TOP], unit)
     return "\n".join(lines) + "\n"
 
 

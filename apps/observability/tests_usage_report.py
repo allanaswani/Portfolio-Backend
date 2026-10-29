@@ -42,8 +42,32 @@ class UsageReportTests(TestCase):
         p = report.portfolio_day(DAY)
         self.assertEqual(p["users"], 2)
         self.assertEqual(p["views"], 3)
-        self.assertEqual(p["top_users"][0], ("Amy Kariuki", 2))
+        self.assertEqual(p["top_users"][0][:2], ("Amy Kariuki", 2))
         self.assertEqual(p["top_areas"][0], ("/rm-portfolio", 2, 2))
+
+    def test_usage_is_broken_down_by_branch(self):
+        from apps.portfolio.models import Profile
+
+        Profile.objects.filter(user=self.amy).update(branch="NYALI BRANCH")
+        p = report.portfolio_day(DAY)
+        self.assertEqual(p["top_users"][0][2], "NYALI BRANCH")
+        self.assertEqual(dict((b, (n, v)) for b, n, v in p["branches"]),
+                         {"NYALI BRANCH": (1, 2),
+                          report.NO_BRANCH: (1, 1)})
+        body = report.build(DAY)
+        self.assertIn("By branch", body)
+        self.assertIn("NYALI BRANCH", body)
+
+    def test_the_week_ranks_people_by_days_they_came_back(self):
+        # Ben: one page on each of 3 days; Amy: 2 pages on one day.
+        for back in (2, 3):
+            e = UserActivityEvent.objects.create(user=self.ben, path="/home")
+            UserActivityEvent.objects.filter(pk=e.pk).update(
+                created_at=at(10) - datetime.timedelta(days=back))
+        week = report.week_leaders(DAY)["Portfolio tool"]
+        self.assertEqual(week["people"][0][0], "Ben Otieno")
+        self.assertEqual(week["people"][0][2], 4)  # days, incl. day before
+        self.assertIn("who uses it most", report.build(DAY))
 
     def test_customer_360_is_reported_with_names(self):
         ExternalUsageDay.objects.create(
