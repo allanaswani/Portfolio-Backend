@@ -522,3 +522,67 @@ class HrReportUploadView(APIView):
         body["applied"] = True
         body["dates_held"] = [d.isoformat() for d in hr.snapshots(kind)]
         return Response(body, status=201)
+
+
+@extend_schema(tags=[_TAG])
+class CardLayoutUploadView(APIView):
+    """Card layouts from the sales or back-office scorecard workbook - which
+    lines a card has, their order, perspective, wording and weight, and the
+    role-wide targets.
+
+    Reads and reports every difference first; writes only with ``apply``, in
+    one transaction. See ``staff_management.card_layouts``.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    MAX_BYTES = 60 * 1024 * 1024
+
+    def post(self, request):
+        import os
+        import tempfile
+
+        from apps.staff_management import card_layouts as cl
+
+        if not may_load(request.user):
+            return Response({"detail": "Only an administrator can change the "
+                                       "card layouts."}, status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose the workbook first."}, status=400)
+        if not upload.name.lower().endswith(".xlsb"):
+            return Response({"file": f"{upload.name} is not a scorecard "
+                                     f"workbook (.xlsb)."}, status=400)
+        if upload.size > self.MAX_BYTES:
+            return Response(
+                {"file": f"That file is {upload.size / 1024 / 1024:.1f} MB; "
+                         f"the limit is {self.MAX_BYTES // 1024 // 1024} MB."},
+                status=400)
+
+        made = None
+        if hasattr(upload, "temporary_file_path"):
+            path = upload.temporary_file_path()
+        else:
+            handle, made = tempfile.mkstemp(suffix=".xlsb")
+            with os.fdopen(handle, "wb") as out:
+                for chunk in upload.chunks():
+                    out.write(chunk)
+            path = made
+        try:
+            kind, cards = cl.read(path)
+        except cl.LayoutError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        finally:
+            if made:
+                os.unlink(made)
+
+        plans = cl.plan(kind, cards)
+        body = {"workbook": kind, "summary": cl.summary(plans),
+                "cards": plans, "applied": False}
+        if str(request.data.get("apply", "")).lower() not in ("1", "true",
+                                                              "yes"):
+            return Response(body)
+        body["written"] = cl.apply(
+            plans, who=getattr(request.user, "username", ""))
+        body["applied"] = True
+        return Response(body, status=201)

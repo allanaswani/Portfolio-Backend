@@ -79,6 +79,11 @@ urlpatterns = [
     # Aruti's leave balance list or employee listing - a snapshot per date.
     path("manual-figures/hr-report/",
          workbook_views.HrReportUploadView.as_view()),
+    # Card layouts - lines, order, perspective, wording, weight - from the
+    # sales or back-office scorecard workbook, so a new year's template
+    # changes the cards by upload.
+    path("manual-figures/card-layouts/",
+         workbook_views.CardLayoutUploadView.as_view()),
     # People's OWN signed scorecards, many at a time. The master workbook
     # carries one card per role; everybody else's targets are on their own
     # file and exist nowhere else.
