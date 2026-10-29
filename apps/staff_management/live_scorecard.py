@@ -3095,7 +3095,7 @@ def resolve_person(sales_code):
     # is what the desk's macro walks, and it names a teller's branch as the
     # desk does (Bob Waigwa is Kitengela there and Komarock on the DMC
     # roster - and Kitengela's productivity target is the one he signed).
-    from . import bo_workbook
+    from . import workbook_cards as bo_workbook
 
     try:
         with transaction.atomic():
@@ -3650,7 +3650,7 @@ def build_card(sales_code, profile=None, as_at=None):
     # its own formulas over the actuals template, stored per month on load.
     # Anyone the List does not name falls through to the live engine.
     if person.roster == "the back-office scorecards workbook":
-        from . import bo_workbook
+        from . import workbook_cards as bo_workbook
 
         record = bo_workbook.stored_for(sales_code, as_at=as_at)
         if record is None:
@@ -3662,7 +3662,25 @@ def build_card(sales_code, profile=None, as_at=None):
                               "template under Scorecards → Figures to load."}
         return bo_workbook.card_payload(record, asked=as_at)
 
-    mappings =list(ScRoleKpiMapping.objects.filter(role_code=role_code)
+    # A sales month the desk has closed - its actuals template loaded - is the
+    # sales workbook's own card for that month: its formulas over the
+    # template, the score the desk's run gives. The month still open has no
+    # template yet, and is the live card below.
+    if as_at is not None:
+        from django.db import transaction
+
+        from . import workbook_cards
+
+        try:
+            with transaction.atomic():
+                closed = workbook_cards.stored_month(
+                    sales_code, as_at.replace(day=1), workbook_cards.SALES)
+        except Exception:  # noqa: BLE001 - before migration 0064
+            closed = None
+        if closed is not None:
+            return workbook_cards.card_payload(closed, asked=as_at)
+
+    mappings = list(ScRoleKpiMapping.objects.filter(role_code=role_code)
                     .order_by("kpi_order"))
     if not mappings:
         return {"has_card": False, "reason": "role_not_configured",

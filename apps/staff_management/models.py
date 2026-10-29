@@ -1994,7 +1994,7 @@ class HrEmployeeListing(models.Model):
 
 class BoWorkbookFile(models.Model):
     """The two back-office workbooks, as read - see
-    :mod:`apps.staff_management.bo_workbook`.
+    :mod:`apps.staff_management.workbook_cards`.
 
     Kept so either can be loaded on its own: a new month's actuals template
     is computed against the scorecards workbook already here, and a revised
@@ -2019,9 +2019,15 @@ class BoWorkbookFile(models.Model):
 
 
 class BoScorecard(models.Model):
-    """One person's back-office card for one month, computed from the
-    workbook's own formulas - see :mod:`apps.staff_management.bo_workbook`."""
+    """One person's card for one month, computed from a scorecards
+    workbook's own formulas - see :mod:`apps.staff_management.workbook_cards`.
 
+    Named for the back office, where it started; ``book`` says which
+    workbook - the back-office one or the sales one.
+    """
+
+    book = models.CharField(max_length=20, default="back_office",
+                            db_index=True)
     sales_code = models.CharField(max_length=40, db_index=True)
     staff_pf = models.CharField(max_length=20, blank=True, default="")
     staff_name = models.CharField(max_length=200, blank=True, default="")
@@ -2042,7 +2048,7 @@ class BoScorecard(models.Model):
     class Meta:
         app_label = "staff_management"
         db_table = "bo_scorecard"
-        unique_together = [("sales_code", "month")]
+        unique_together = [("book", "sales_code", "month")]
         ordering = ["month", "sales_code"]
 
     def __str__(self):

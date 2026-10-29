@@ -246,21 +246,41 @@ class BoActualsUploadView(APIView):
         if upload.name.lower().endswith(".xlsb"):
             return self._scorecards(upload, apply, who)
 
-        # The template feeds two things: the cards computed from the
-        # scorecards workbook's own formulas (every month, below), and the
-        # per-line figures the live engine reads for anyone the workbook's
-        # List does not hold (further down, as before).
-        from . import bo_workbook
+        # The actuals template. Which workbook's it is, its own sheets say.
+        from . import workbook_cards
 
         try:
-            actuals_book = bo_workbook.read_actuals(upload)
+            actuals_book = workbook_cards.read_actuals(upload)
         except Exception as exc:  # noqa: BLE001
             return Response({"file": f"That template could not be read: "
                                      f"{exc}"}, status=400)
         upload.seek(0)
-        cards = self._cards_report(bo_workbook.saved("scorecards"),
-                                   actuals_book)
+        kind = workbook_cards.actuals_book(actuals_book)
+        spec = workbook_cards.SPECS[kind]
+        cards = self._cards_report(workbook_cards.saved(spec.files[0]),
+                                   actuals_book, spec)
 
+        if kind == workbook_cards.SALES:
+            # The sales template: the sales workbook's cards, every closed
+            # month. (Its per-line figures for the live card still load on
+            # the sales actuals section, as before.)
+            if not apply:
+                return Response({"applied": False, "cards": cards,
+                                 "detail": "Read the sales actuals template. "
+                                           "Nothing has been saved yet."})
+            workbook_cards.save_file(spec.files[1], actuals_book, upload.name,
+                                     who)
+            book = workbook_cards.saved(spec.files[0])
+            if book is not None:
+                cards["stored"] = workbook_cards.rebuild(book, actuals_book,
+                                                         who)
+            return Response({"applied": True, "cards": cards,
+                             "detail": self._stored_detail(cards, spec)})
+
+        # The back-office template feeds two things: the cards computed from
+        # the scorecards workbook's own formulas (every month), and the
+        # per-line figures the live engine reads for anyone the workbook's
+        # List does not hold.
         try:
             rows, report = bo_actuals.read_upload(upload)
         except Exception as exc:  # noqa: BLE001 - the reason is the answer
@@ -291,63 +311,63 @@ class BoActualsUploadView(APIView):
             })
 
         written = bo_actuals.save(entries, who=who)
-        bo_workbook.save_file("actuals", actuals_book, upload.name, who)
-        book = bo_workbook.saved("scorecards")
+        workbook_cards.save_file(spec.files[1], actuals_book, upload.name, who)
+        book = workbook_cards.saved(spec.files[0])
         if book is not None:
-            cards["stored"] = bo_workbook.rebuild(book, actuals_book, who)
+            cards["stored"] = workbook_cards.rebuild(book, actuals_book, who)
         return Response({
             "applied": True, "report": report, "written": written,
             "cards": cards,
-            "detail": (f"Saved {written:,} figure(s)."
-                       + (f" {cards['stored']:,} back-office card-month(s) "
-                          f"computed from the scorecards workbook."
-                          if cards.get("stored") else
-                          " Load the back-office scorecards workbook (.xlsb) "
-                          "here too, and every card is computed from its own "
-                          "formulas.")),
+            "detail": f"Saved {written:,} figure(s). "
+                      + self._stored_detail(cards, spec),
         })
 
     @staticmethod
-    def _cards_report(book, actuals_book):
-        from . import bo_workbook
+    def _stored_detail(cards, spec):
+        if cards.get("stored"):
+            return (f"{cards['stored']:,} {spec.label} card-month(s) computed "
+                    f"from the workbook's own formulas.")
+        return (f"Load the {spec.label} "
+                + ("actuals template (.xlsx)" if cards.get("missing") ==
+                   "actuals" else "scorecards workbook (.xlsb)")
+                + " here too, and every card is computed from its formulas.")
+
+    @staticmethod
+    def _cards_report(book, actuals_book, spec):
+        from . import workbook_cards
 
         if book is None or actuals_book is None:
-            return {"ready": False,
+            return {"ready": False, "book": spec.book,
                     "missing": "scorecards" if book is None else "actuals"}
-        report = bo_workbook.check(book, actuals_book)
+        report = workbook_cards.check(book, actuals_book)
         report["ready"] = True
         return report
 
     def _scorecards(self, upload, apply, who):
-        """The scorecards .xlsb: the cards' own formulas, the List, Constants.
-        """
-        from . import bo_workbook
+        """A scorecards .xlsb: the cards' own formulas, the List, Constants.
+        Back office or sales - the workbook's own sheets say which."""
+        from . import workbook_cards
 
         try:
-            book = bo_workbook.read_scorecards(upload)
+            book = workbook_cards.read_scorecards(upload)
         except Exception as exc:  # noqa: BLE001 - the reason is the answer
             return Response({"file": f"That workbook could not be read: "
                                      f"{exc}"}, status=400)
-        actuals_book = bo_workbook.saved("actuals")
-        cards = self._cards_report(book, actuals_book)
+        spec = workbook_cards.spec_of(book)
+        actuals_book = workbook_cards.saved(spec.files[1])
+        cards = self._cards_report(book, actuals_book, spec)
         if not apply:
             return Response({
                 "applied": False, "cards": cards,
-                "detail": ("Read the back-office scorecards workbook. "
-                           "Nothing has been saved yet."
-                           + ("" if actuals_book is not None else
-                              " No actuals template is loaded yet - load "
-                              "2026_BO_Actual_Template.xlsx here as well."))})
-        bo_workbook.save_file("scorecards", book, upload.name, who)
+                "detail": (f"Read the {spec.label} scorecards workbook. "
+                           f"Nothing has been saved yet.")})
+        workbook_cards.save_file(spec.files[0], book, upload.name, who)
         if actuals_book is not None:
-            cards["stored"] = bo_workbook.rebuild(book, actuals_book, who)
+            cards["stored"] = workbook_cards.rebuild(book, actuals_book, who)
         return Response({
             "applied": True, "cards": cards,
-            "detail": ("Saved the scorecards workbook."
-                       + (f" {cards['stored']:,} card-month(s) computed."
-                          if cards.get("stored") else
-                          " Load the actuals template next, and the cards "
-                          "are computed."))})
+            "detail": (f"Saved the {spec.label} scorecards workbook. "
+                       + self._stored_detail(cards, spec))})
 
 
 @extend_schema(tags=[_TAG])

@@ -1,4 +1,19 @@
-"""The back-office scorecards, computed exactly as the desk's workbook does.
+"""Scorecards computed exactly as the desk's workbooks compute them.
+
+Two workbooks are built the same way - the back-office one and the sales
+one (``Portfolio Management - Q3 2026_scorecards.xlsb`` over
+``2026_Actual_Template.xlsx``) - and :data:`SPECS` holds the few places they
+differ: which cells the macro types (the sales macro fills C2 name, C3
+branch, E2 role and E3 the BBM, then reads K2), the List's columns, and where
+Monthly_Summ keeps what the macro recorded. Everything else is the
+workbook's own formulas, so what follows for the back office holds for both.
+
+Against the real files: back office September 108 of 108 exact; sales July
+72 of 79 and August 76 of 83 before a fix (Excel matches sheet names without
+case - the Commercial cards ask for "Trade_Finance_Income" and the template
+says "Trade_Finance_income"), 160 of 162 after it. Months before Q3 were run
+on the Q1/Q2 workbooks, so they differ - and a stored card shows what the
+macro recorded for them.
 
 Two files make a back-office card, and the desk keeps both:
 
@@ -87,19 +102,93 @@ TITLES = {
     "TL_RBO_SCORECARD": "Retail Back Office Team Leader",
 }
 
-#: The macro's summary sheets - what it last wrote for every person, every
-#: month. Read only to check this module against.
-SUMMARY_SHEETS = ("Monthly_Summ", "RBO_Monthly_Summ")
+#: The sales workbook's macro (explode_scores / Do_Monthly_Summary): List
+#: role → card sheet, and the platform role each is shown under.
+SALES_ROLE_SHEETS = {
+    "SME BBC": "Business_Banking", "SME RM": "Business_Banking",
+    "SME ARM": "Business_Banking",
+    "PB BBC": "Personal_Banking", "PB RM": "Personal_Banking",
+    "PB ARM": "Personal_Banking",
+    "Ultimate RM": "Ultimate_RM",
+    "SNR MGR ULTIMATE": "SNR_MGR_ULTIMATE",
+    "DIASPORA ARM": "Diaspora", "DIASPORA RM": "Diaspora",
+    "Mortgage Business ARM": "Mortgage_Business",
+    "Mortgage Business RM": "Mortgage_Business",
+    "COMMERCIAL RM": "Commercial",
+    "COMMERCIAL RM- TRADE": "Commercial_trade",
+    "HEAD OF COMMERCIAL": "HEAD_COMMERCIAL",
+}
+SALES_ROLE_CODES = {
+    "SME BBC": "sme_bbc", "SME RM": "sme_rm", "SME ARM": "sme_arm",
+    "PB BBC": "pb_bbc", "PB RM": "pb_rm", "PB ARM": "pb_arm",
+    "Ultimate RM": "ultimate_rm", "SNR MGR ULTIMATE": "snr_mgr_ultimate",
+    "DIASPORA ARM": "diaspora_arm", "DIASPORA RM": "diaspora_rm",
+    "Mortgage Business ARM": "mortgage_business_arm",
+    "Mortgage Business RM": "mortgage_business_rm",
+    "COMMERCIAL RM": "commercial_rm",
+    "COMMERCIAL RM- TRADE": "commercial_rm_trade",
+    "HEAD OF COMMERCIAL": "head_commercial",
+}
 
-#: Cells the macro types into a card before reading it, and the score it reads.
-NAME_CELL, BRANCH_CELL, SCORE_CELL = (1, 2), (3, 2), (5, 9)
-#: Constants!B1 is the VLOOKUP column into the template's C:R (Jan = 5), B2
-#: the months elapsed.
-MONTH_COLUMN_CELL, MONTH_COUNT_CELL = (0, 1), (1, 1)
+BACK_OFFICE, SALES = "back_office", "sales"
+
+
+class Spec:
+    """Where one workbook keeps things. Everything else is its formulas."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+SPECS = {
+    BACK_OFFICE: Spec(
+        book=BACK_OFFICE,
+        label="back-office",
+        marker="TELLER_SCORECARD",
+        role_sheets=ROLE_SHEETS,
+        # List: PF, sales code, name, role, branch
+        list_cols={"pf": 0, "code": 1, "name": 2, "role": 3, "branch": 4},
+        # The cells the macro types before it reads the score: C2, C4.
+        inputs={(1, 2): "name", (3, 2): "branch"},
+        score=(5, 9),                                 # J6
+        # Constants!B1 is the VLOOKUP column into the template's C:R
+        # (January = 5), B2 the months elapsed.
+        month_column=(0, 1), month_count=(1, 1), year=(4, 1),
+        header="Perspective", ends=("TOTAL SCORE",),
+        cols={"perspective": 1, "measure": 2, "initiative": 3, "weight": 4,
+              "prior": None, "growth": None, "fy": 5, "ytd": 6, "actual": 7,
+              "score": 8, "weighted": 9, "feed": 11},
+        # (sheet, header row, sales code column, January's column)
+        summaries=(("Monthly_Summ", 0, 1, 6), ("RBO_Monthly_Summ", 0, 1, 6)),
+        files=("scorecards", "actuals"),
+        source="the back-office scorecards workbook",
+    ),
+    SALES: Spec(
+        book=SALES,
+        label="sales",
+        marker="Business_Banking",
+        role_sheets=SALES_ROLE_SHEETS,
+        list_cols={"pf": None, "code": 0, "name": 1, "role": 2, "branch": 3,
+                   "bbm": 4},
+        # C2 name, C3 branch, E3 the BBM, E2 the role.
+        inputs={(1, 2): "name", (2, 2): "branch", (2, 4): "bbm",
+                (1, 4): "role"},
+        score=(1, 10),                                # K2
+        month_column=(4, 1), month_count=(5, 1), year=(0, 1),
+        header="KPI", ends=("Reviewee",),
+        cols={"perspective": 1, "measure": 2, "initiative": 3, "weight": 4,
+              "prior": 5, "growth": 6, "fy": 7, "ytd": 8, "actual": 9,
+              "score": 10, "weighted": 11, "feed": 12},
+        summaries=(("Monthly_Summ", 4, 0, 4),),
+        files=("sales_scorecards", "sales_actuals"),
+        source="the sales scorecards workbook",
+    ),
+}
+
 FIRST_MONTH_INDEX = 5
 
 
-class BoWorkbookError(Exception):
+class WorkbookError(Exception):
     """The file is not what it was said to be; the message says why."""
 
 
@@ -222,7 +311,7 @@ def _tokens(raw, row, col, workbook, ptgs, Formula):
         elif isinstance(t, ptgs.FuncPtg):
             entry = function_names.get(t.idx, ("#UNKNOWN",))
             if len(entry) < 2:
-                raise BoWorkbookError(f"function {entry[0]} with no fixed "
+                raise WorkbookError(f"function {entry[0]} with no fixed "
                                       f"argument count")
             out.append(["f", entry[0], entry[1]])
         elif isinstance(t, ptgs.FuncVarPtg):
@@ -244,7 +333,7 @@ def _tokens(raw, row, col, workbook, ptgs, Formula):
                 label = "#NAME"
             out.append(["name", label])
         else:
-            raise BoWorkbookError(f"formula element {name} is not supported")
+            raise WorkbookError(f"formula element {name} is not supported")
     return out
 
 
@@ -260,7 +349,7 @@ def _sheet_of(workbook, extern_idx):
     _link, first, last = workbook.resolve_extern_sheet_id(extern_idx)
     if first == last and first >= 0:
         return workbook.sheets[first].name
-    raise BoWorkbookError("a reference to another workbook")
+    raise WorkbookError("a reference to another workbook")
 
 
 def _read_sheet(workbook, name, with_formulas):
@@ -278,17 +367,25 @@ def _read_sheet(workbook, name, with_formulas):
             return r
 
     RecordReader._records[427] = _Raw  # BrtShrFmla - the shared formulas
+    RecordReader._records[426] = _Raw  # BrtArrFmla - the array formulas
 
     sheet = workbook.get_sheet_by_name(name)
     sheet._fp.seek(sheet._data_offset, os.SEEK_SET)
     cells, shared, row = {}, [], -1
+    arrays = set()
     for rectype, rec in RecordReader(sheet._fp):
         if rectype == rt.ROW_HDR:
             row = rec.r
-        elif rectype == 427:
+        elif rectype in (426, 427):
+            # The range, then (array formulas only) one flags byte, then the
+            # formula. Both are reached from their cells through a PtgExp.
             r1, r2, c1, c2 = struct.unpack_from("<iiii", rec.data, 0)
-            cce = struct.unpack_from("<i", rec.data, 16)[0]
-            shared.append(((r1, r2, c1, c2), rec.data[20:20 + cce]))
+            at = 17 if rectype == 426 else 16
+            cce = struct.unpack_from("<i", rec.data, at)[0]
+            shared.append(((r1, r2, c1, c2),
+                           rec.data[at + 4:at + 4 + cce]))
+            if rectype == 426:
+                arrays.add((r1, r2, c1, c2))
         elif rt.CELL_BLANK <= rectype <= rt.FMLA_ERROR and rec.c is not None:
             value = rec.v
             if rectype == rt.CELL_ISST and isinstance(value, int):
@@ -310,12 +407,18 @@ def _read_sheet(workbook, name, with_formulas):
             continue
         try:
             first = Formula.parse(raw)._tokens
+            array = False
             if first and isinstance(first[0], ptgs.ExpPtg):
-                raw = next((data for (a, b, x, y), data in shared
-                            if a <= r <= b and x <= c <= y), None)
-                if raw is None:
-                    raise BoWorkbookError("its shared formula is missing")
-            formulas[f"{r},{c}"] = _tokens(raw, r, c, workbook, ptgs, Formula)
+                found = next(((box, data) for box, data in shared
+                              if box[0] <= r <= box[1]
+                              and box[2] <= c <= box[3]), None)
+                if found is None:
+                    raise WorkbookError("its shared formula is missing")
+                array = found[0] in arrays
+                raw = found[1]
+            tokens = _tokens(raw, r, c, workbook, ptgs, Formula)
+            # An array formula ({=…}) evaluates its ranges whole.
+            formulas[f"{r},{c}"] = [["array"]] + tokens if array else tokens
         except Exception as exc:  # noqa: BLE001
             problems.append(f"{name}!{_a1(r, c)}: {exc}")
     return {"grid": grid, "f": formulas}, problems
@@ -345,22 +448,47 @@ def read_scorecards(stream):
             pass
 
 
-def _read_scorecards_path(path):
+def _open_xlsb(path):
+    """pyxlsb2's workbook, tolerant of defined names it cannot print.
+
+    It renders every defined name's formula on open, and one that points into
+    another workbook (the sales workbook has several) raises - taking the
+    whole file down with it. A name's text is never needed here.
+    """
+    import pyxlsb2.workbook as workbook_module
     from pyxlsb2 import open_workbook
+    from pyxlsb2.formula import Formula
+
+    class _Tolerant(Formula):
+        def stringify(self, workbook):
+            try:
+                return super().stringify(workbook)
+            except Exception:  # noqa: BLE001
+                return ""
+
+    workbook_module.Formula = _Tolerant
+    return open_workbook(path)
+
+
+def _read_scorecards_path(path):
+    open_workbook = _open_xlsb
 
     try:
         workbook = open_workbook(path)
     except Exception as exc:  # noqa: BLE001
-        raise BoWorkbookError(f"that is not an .xlsb workbook ({exc})")
+        raise WorkbookError(f"that is not an .xlsb workbook ({exc})")
     with workbook:
         names = [s.name for s in workbook.sheets]
-        if "List" not in names or "TELLER_SCORECARD" not in names:
-            raise BoWorkbookError(
-                "this is not the back-office scorecards workbook - it has no "
-                "List and no TELLER_SCORECARD sheet")
-        book = {"cards": {}, "tables": {}, "problems": []}
+        spec = next((s for s in SPECS.values()
+                     if "List" in names and s.marker in names), None)
+        if spec is None:
+            raise WorkbookError(
+                "this is neither scorecards workbook - it has no List with a "
+                "TELLER_SCORECARD (back office) or Business_Banking (sales) "
+                "sheet beside it")
+        book = {"book": spec.book, "cards": {}, "tables": {}, "problems": []}
         wanted = set()
-        for sheet in sorted(set(ROLE_SHEETS.values())):
+        for sheet in sorted(set(spec.role_sheets.values())):
             if sheet not in names:
                 book["problems"].append(f"{sheet} is not in the workbook")
                 continue
@@ -371,8 +499,9 @@ def _read_scorecards_path(path):
                 for t in tokens:
                     if t[0] in ("r", "a") and t[1]:
                         wanted.add(t[1])
-        for sheet in sorted((wanted | {"List", "Constants"} |
-                             set(SUMMARY_SHEETS)) - set(book["cards"])):
+        summaries = {s[0] for s in spec.summaries}
+        for sheet in sorted((wanted | {"List", "Constants"} | summaries)
+                            - set(book["cards"])):
             if sheet in names:
                 book["tables"][sheet] = _read_sheet(workbook, sheet,
                                                     False)[0]["grid"]
@@ -383,26 +512,45 @@ def _read_scorecards_path(path):
 # Reading the actuals template
 # ─────────────────────────────────────────────────────────────────────────
 
+#: The sales template's sheets that the back-office one does not have.
+SALES_TEMPLATE_SHEETS = {"Asset_Drawdown", "Deposit_Growth_Retail",
+                         "Asset_Growth", "Revenue_Contribution"}
+
+
 def read_actuals(stream):
-    """The actuals template → {sheet: grid}. Every sheet, every month."""
+    """The actuals template → {sheet: grid}. Every sheet, every month.
+
+    Every column too: the sales template keeps several blocks of twelve
+    months side by side on one sheet (C:R, W:AL, AQ:BF, CE:CT), and the
+    cards pick the block with INDIRECT.
+    """
     from openpyxl import load_workbook
 
     try:
         book = load_workbook(stream, data_only=True)
     except Exception as exc:  # noqa: BLE001
-        raise BoWorkbookError(f"that is not an .xlsx workbook ({exc})")
+        raise WorkbookError(f"that is not an .xlsx workbook ({exc})")
     out = {}
     for sheet in book.worksheets:
         grid = []
-        for row in sheet.iter_rows(max_col=26, values_only=True):
-            grid.append([_store_value(v) for v in row])
-        while grid and all(v in (None, "") for v in grid[-1]):
+        for row in sheet.iter_rows(values_only=True):
+            values = [_store_value(v) for v in row]
+            while values and values[-1] in (None, ""):
+                values.pop()
+            grid.append(values)
+        while grid and not grid[-1]:
             grid.pop()
         out[sheet.title] = grid
-    if not out.get("KYC") and not out.get("CASA"):
-        raise BoWorkbookError("this is not the back-office actuals template "
-                              "- it has no KYC or CASA sheet")
+    if not out.get("KYC") and not out.get("CASA") and not (
+            SALES_TEMPLATE_SHEETS & set(out)):
+        raise WorkbookError("this is not an actuals template - it has none "
+                              "of the KYC, CASA or Asset_Drawdown sheets")
     return out
+
+
+def actuals_book(actuals):
+    """Which workbook's template this is → SALES or BACK_OFFICE."""
+    return SALES if SALES_TEMPLATE_SHEETS & set(actuals) else BACK_OFFICE
 
 
 #: A month is in the template when it carries at least this share of the
@@ -438,20 +586,24 @@ def template_months(actuals):
 class Evaluator:
     """One card sheet, one person, one month."""
 
-    def __init__(self, book, actuals, sheet, name, branch, month):
-        self.book, self.actuals, self.sheet = book, actuals, sheet
-        self.card = book["cards"][sheet]
+    def __init__(self, book, actuals, holder, month):
+        self.spec = SPECS[book.get("book", BACK_OFFICE)]
+        self.book, self.actuals, self.sheet = book, actuals, holder.sheet
+        self.card = book["cards"][holder.sheet]
         self.month = month
-        self.inputs = {NAME_CELL: name, BRANCH_CELL: branch}
+        # What the macro types into the card before it reads the score.
+        self.inputs = {cell: getattr(holder, field)
+                       for cell, field in self.spec.inputs.items()}
         self.memo, self.busy = {}, set()
+        self.array = False
 
     # -- cells --------------------------------------------------------------
     def value(self, sheet, r, c):
         if sheet in (None, self.sheet):
             return self.cell(r, c)
-        if sheet == "Constants" and (r, c) == MONTH_COLUMN_CELL:
+        if sheet == "Constants" and (r, c) == self.spec.month_column:
             return float(self.month + FIRST_MONTH_INDEX - 1)
-        if sheet == "Constants" and (r, c) == MONTH_COUNT_CELL:
+        if sheet == "Constants" and (r, c) == self.spec.month_count:
             return float(self.month)
         grid = self.book["tables"].get(sheet)
         if grid is None:
@@ -470,14 +622,25 @@ class Evaluator:
         if key in self.busy:
             return REF  # a circular reference
         self.busy.add(key)
+        outer = self.array
         try:
-            result = self.run(tokens, r, c)
+            self.array = bool(tokens) and tokens[0] == ["array"]
+            result = self.run(tokens[1:] if self.array else tokens, r, c)
             if isinstance(result, Rng):
-                result = self.scalar(result, r, c)
+                result = (self.listed(result) if self.array
+                          else self.scalar(result, r, c))
+            if isinstance(result, list):
+                # A single-cell array formula shows its first element.
+                result = result[0] if result else VALUE
         finally:
             self.busy.discard(key)
+            self.array = outer
         self.memo[key] = result
         return result
+
+    def listed(self, rng):
+        """A range as a flat list - how an array formula sees it."""
+        return list(self.cells_of(rng))
 
     def scalar(self, rng, r, c):
         """Implicit intersection - a range used where one value is wanted."""
@@ -519,15 +682,11 @@ class Evaluator:
             elif kind == "name":
                 stack.append(("name", t[1]))
             elif kind == "u":
-                v = self.number(stack.pop(), r, c)
-                if isinstance(v, Err):
-                    stack.append(v)
-                elif t[1] == "-":
-                    stack.append(-v)
-                elif t[1] == "%":
-                    stack.append(v / 100.0)
+                operand = self.get(stack.pop(), r, c)
+                if isinstance(operand, list):
+                    stack.append([self.unary(t[1], v, r, c) for v in operand])
                 else:
-                    stack.append(v)
+                    stack.append(self.unary(t[1], operand, r, c))
             elif kind == "b":
                 right, left = stack.pop(), stack.pop()
                 stack.append(self.binary(t[1], left, right, r, c))
@@ -545,8 +704,22 @@ class Evaluator:
                                        args[1:], r, c))
         return stack[-1] if stack else None
 
+    def unary(self, op, v, r, c):
+        v = self.number(v, r, c)
+        if isinstance(v, Err):
+            return v
+        if op == "-":
+            return -v
+        if op == "%":
+            return v / 100.0
+        return v
+
     def get(self, v, r, c):
-        return self.scalar(v, r, c) if isinstance(v, Rng) else v
+        if not isinstance(v, Rng):
+            return v
+        if self.array and not (v.r1 == v.r2 and v.c1 == v.c2):
+            return self.listed(v)
+        return self.scalar(v, r, c)
 
     def number(self, v, r, c):
         v = self.get(v, r, c)
@@ -582,6 +755,21 @@ class Evaluator:
                            min(left.c1, right.c1), max(left.r2, right.r2),
                            max(left.c2, right.c2))
             return VALUE
+        if self.array:
+            left, right = self.get(left, r, c), self.get(right, r, c)
+            if isinstance(left, list) or isinstance(right, list):
+                # Element by element, a single value standing for every one.
+                size = max(len(x) for x in (left, right)
+                           if isinstance(x, list))
+                lefts = left if isinstance(left, list) else [left] * size
+                rights = right if isinstance(right, list) else [right] * size
+                if len(lefts) != len(rights):
+                    return [Err("#N/A")] * size
+                return [self.scalar_binary(op, a, b, r, c)
+                        for a, b in zip(lefts, rights)]
+        return self.scalar_binary(op, left, right, r, c)
+
+    def scalar_binary(self, op, left, right, r, c):
         if op == "&":
             a, b = self.text(left, r, c), self.text(right, r, c)
             if isinstance(a, Err):
@@ -647,8 +835,8 @@ class Evaluator:
         if fn in ("MIN", "MAX", "SUM", "AVERAGE", "COUNT"):
             numbers = []
             for a in args:
-                if isinstance(a, Rng):
-                    for v in self.cells_of(a):
+                if isinstance(a, (Rng, list)):
+                    for v in (self.cells_of(a) if isinstance(a, Rng) else a):
                         if isinstance(v, Err):
                             return v
                         if isinstance(v, (int, float)) and not isinstance(
@@ -726,15 +914,58 @@ class Evaluator:
             return float(c + 1)
         if fn == "ROW":
             if args and isinstance(args[0], Rng):
-                return float(args[0].r1 + 1)
+                rng = args[0]
+                if self.array and rng.r2 > rng.r1:
+                    return [float(i + 1) for i in range(rng.r1, rng.r2 + 1)]
+                return float(rng.r1 + 1)
             return float(r + 1)
+        if fn == "SUMIF":
+            return self.sumifs(args[2] if len(args) > 2 else args[0],
+                               [(args[0], args[1])], r, c)
+        if fn == "SUMIFS":
+            pairs = [(args[i], args[i + 1]) for i in range(1, len(args) - 1, 2)]
+            return self.sumifs(args[0], pairs, r, c)
         return NAME
+
+    def sumifs(self, total, pairs, r, c):
+        """SUMIF/SUMIFS over a sheet: the rows whose every criterion holds."""
+        if not isinstance(total, Rng):
+            return VALUE
+        tests = []
+        for rng, criterion in pairs:
+            if not isinstance(rng, Rng):
+                return VALUE
+            crit = self.get(criterion, r, c)
+            if isinstance(crit, Err):
+                return crit
+            tests.append((rng, _criterion(crit)))
+        grid = self._grid_of(total.sheet)
+        last = min(total.r2, len(grid) - 1)
+        out = 0.0
+        for offset in range(0, last - total.r1 + 1):
+            ok = True
+            for rng, test in tests:
+                v = self._grid_value(rng.sheet, rng.r1 + offset, rng.c1)
+                if not test(v):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            v = self._grid_value(total.sheet, total.r1 + offset, total.c1)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out += float(v)
+        return out
 
     def indirect(self, ref):
         """``[2026_BO_Actual_Template.xlsx]KYC!$c:$R`` → a range on the
-        template; anything else on this workbook."""
+        template; ``1:8`` → whole rows here; anything else on this
+        workbook."""
         if isinstance(ref, Err):
             return ref
+        rows = re.match(r"^\s*\$?(\d+):\$?(\d+)\s*$", ref)
+        if rows:
+            return Rng(None, int(rows.group(1)) - 1, 0,
+                       int(rows.group(2)) - 1, 16383)
         m = re.match(r"^\s*(?:\[[^\]]*\])?'?([^'!]+)'?!\$?([A-Za-z]+)\$?(\d*)"
                      r"(?::\$?([A-Za-z]+)\$?(\d*))?\s*$", ref)
         if not m:
@@ -746,10 +977,15 @@ class Evaluator:
         row1 = int(r1) - 1 if r1 else 0
         row2 = int(r2) - 1 if r2 else 1048575
         if external:
-            if sheet not in self.actuals:
+            # Excel matches sheet names without case: the Commercial card
+            # asks for "Trade_Finance_Income" and the template's sheet is
+            # "Trade_Finance_income".
+            sheet = _sheet_named(self.actuals, sheet)
+            if sheet is None:
                 return REF
             return Rng("@" + sheet, row1, col1, row2, col2)
-        return Rng(sheet, row1, col1, row2, col2)
+        return Rng(_sheet_named(self.book["tables"], sheet) or sheet, row1,
+                   col1, row2, col2)
 
     def vlookup(self, args, r, c):
         key = self.get(args[0], r, c)
@@ -878,6 +1114,34 @@ def _lookup_equal(key, value):
         return False
 
 
+def _sheet_named(sheets, name):
+    """The key in ``sheets`` Excel would take ``name`` to mean, or None."""
+    if name in sheets:
+        return name
+    lowered = name.lower()
+    return next((key for key in sheets if key.lower() == lowered), None)
+
+
+def _criterion(crit):
+    """A SUMIF criterion → a test. ``"Bob"`` is equal-ignoring-case,
+    ``">5"`` and friends compare, a number is numeric equality."""
+    if isinstance(crit, str):
+        m = re.match(r"^(<=|>=|<>|<|>|=)(.*)$", crit)
+        if m:
+            op, rest = m.groups()
+            try:
+                target = float(rest)
+            except ValueError:
+                target = rest
+            return lambda v: (v is not None and not isinstance(v, Err)
+                              and _compare(op, v, target) is True)
+        return lambda v: isinstance(v, str) and v.lower() == crit.lower()
+    if crit is None:
+        return lambda v: v in (None, "")
+    return lambda v: (isinstance(v, (int, float)) and not isinstance(v, bool)
+                      and float(v) == float(crit))
+
+
 def _round(fn, v, digits):
     factor = 10 ** digits
     x = v * factor
@@ -935,83 +1199,105 @@ def _to_serial(year, month, day):
 class Holder:
     """A List row: who, and which card."""
 
-    def __init__(self, row_index, row):
-        def at(i):
-            return row[i] if i < len(row) else None
+    def __init__(self, spec, row_index, row):
+        def at(field):
+            index = spec.list_cols.get(field)
+            if index is None:
+                return None
+            return row[index] if index < len(row) else None
 
+        self.book = spec.book
         self.row = row_index
-        pf = at(0)
+        pf = at("pf")
         self.pf = (str(int(pf)) if isinstance(pf, float) and pf == int(pf)
                    else str(pf or "").strip())
-        self.sales_code = str(at(1) or "").strip().upper()
-        self.name = at(2) if isinstance(at(2), str) else str(at(2) or "")
-        self.role = str(at(3) or "").strip()
-        self.branch = at(4)
-        self.sheet = ROLE_SHEETS.get(self.role)
+        self.sales_code = str(at("code") or "").strip().upper()
+        name = at("name")
+        self.name = name if isinstance(name, str) else str(name or "")
+        self.role = str(at("role") or "").strip()
+        self.branch = at("branch")
+        self.bbm = at("bbm")
+        self.sheet = spec.role_sheets.get(self.role)
+
+
+def spec_of(book):
+    return SPECS[book.get("book", BACK_OFFICE)]
 
 
 def holders(book):
+    spec = spec_of(book)
     grid = book["tables"].get("List", [])
     out = []
     for index, row in enumerate(grid[1:], start=1):
-        holder = Holder(index, row)
+        holder = Holder(spec, index, row)
         if holder.name and (holder.sales_code or holder.pf):
             out.append(holder)
     return out
 
 
-def _layout(card):
-    """Where the lines are: the header row says, and the TOTAL row ends them."""
+def _layout(spec, card):
+    """Where the lines are: the header row says, and the end marker (the
+    TOTAL row, or the signature block) ends them."""
     grid = card["grid"]
     header = next((i for i, row in enumerate(grid)
-                   if any(isinstance(v, str) and v.strip() == "Perspective"
+                   if any(isinstance(v, str) and v.strip() == spec.header
                           for v in row)), 7)
-    total = next((i for i, row in enumerate(grid)
-                  if i > header and any(isinstance(v, str) and
-                                        v.strip().upper().startswith("TOTAL SCORE")
-                                        for v in row)), len(grid))
-    return header, total
+    end = next((i for i, row in enumerate(grid)
+                if i > header and any(
+                    isinstance(v, str) and v.strip().upper().startswith(
+                        tuple(m.upper() for m in spec.ends))
+                    for v in row)), len(grid))
+    return header, end
 
 
 def compute(book, actuals, holder, month):
     """One person's card for one month → dict, as the workbook would show it."""
+    spec = spec_of(book)
     card = book["cards"][holder.sheet]
-    ev = Evaluator(book, actuals, holder.sheet, holder.name, holder.branch,
-                   month)
-    header, total_row = _layout(card)
+    ev = Evaluator(book, actuals, holder, month)
+    col = spec.cols
+    header, end = _layout(spec, card)
+
+    def at(r, field):
+        index = col.get(field)
+        return None if index is None else _out(ev.cell(r, index))
+
     lines, perspective = [], ""
-    for r in range(header + 1, total_row):
-        weight = ev.cell(r, 4)
-        measure = ev.cell(r, 2)
-        initiative = ev.cell(r, 3)
-        label = ev.cell(r, 1)
+    for r in range(header + 1, end):
+        weight = ev.cell(r, col["weight"])
+        measure = ev.cell(r, col["measure"])
+        initiative = ev.cell(r, col["initiative"])
+        label = ev.cell(r, col["perspective"])
         if isinstance(label, str) and label.strip():
             perspective = " ".join(label.split())
         if not isinstance(weight, (int, float)) or isinstance(weight, bool):
             continue
         if not (_txt(measure) or _txt(initiative)):
             continue  # the weights' own total row
-        feed = ev.cell(r, 11)
+        feed = ev.cell(r, col["feed"])
         lines.append({
             "row": r + 1,
             "perspective": perspective,
             "measure": _txt(measure),
             "initiative": _txt(initiative),
             "weight": float(weight),
-            "pm": _out(ev.cell(r, 5)),
-            "ytd_target": _out(ev.cell(r, 6)),
-            "actual": _out(ev.cell(r, 7)),
-            "score": _out(ev.cell(r, 8)),
-            "weighted": _out(ev.cell(r, 9)),
+            "prior": at(r, "prior"),
+            "growth": at(r, "growth"),
+            "pm": at(r, "fy"),
+            "ytd_target": at(r, "ytd"),
+            "actual": at(r, "actual"),
+            "score": at(r, "score"),
+            "weighted": at(r, "weighted"),
             "feed": _txt(feed),
             # A line whose actual is typed on the card (complaints,
             # compliments) rather than read off the template.
-            "typed": f"{r},7" not in card["f"],
-            "empty": _feed_empty(actuals, feed, holder.name, month),
+            "typed": f"{r},{col['actual']}" not in card["f"],
+            "empty": (_feed_empty(actuals, feed, holder.name, month)
+                      if spec.book == BACK_OFFICE else None),
         })
-    score = ev.cell(*SCORE_CELL)
+    score = ev.cell(*spec.score)
     return {"sheet": holder.sheet, "month": month, "lines": lines,
-            "total": _out(score)}
+            "role": holder.role, "total": _out(score)}
 
 
 def _txt(v):
@@ -1045,63 +1331,21 @@ def recorded_scores(book):
     Matched on the sales code column, not the row: the List has been
     re-ordered since some of these months were written.
     """
+    spec = spec_of(book)
     out = {}
-    for (_sheet, _i, code, month), score in summary_scores(book).items():
-        if code:
-            out[(code, month)] = score
-    return out
-
-
-def summary_scores(book):
-    """What the macro last wrote → {(List row, month): score}."""
-    out = {}
-    for sheet, first_list_row in (("Monthly_Summ", 1), ("RBO_Monthly_Summ",
-                                                        None)):
+    for sheet, header, code_col, first in spec.summaries:
         grid = book["tables"].get(sheet, [])
-        if not grid:
-            continue
-        for i, row in enumerate(grid[1:], start=1):
-            code = str(row[1] if len(row) > 1 else "").strip().upper()
+        for row in grid[header + 1:]:
+            code = str(row[code_col] if len(row) > code_col else ""
+                       ).strip().upper()
+            if not code:
+                continue
             for month in range(1, 13):
-                column = 6 + month - 1
+                column = first + month - 1
                 v = row[column] if column < len(row) else None
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    out[(sheet, i, code, month)] = float(v)
+                    out[(code, month)] = float(v)
     return out
-
-
-def compare_with_summary(book, actuals, months=None):
-    """Every person, every month the macro recorded, against this module.
-
-    → (matches, differences) where a difference is a dict. Monthly_Summ's row
-    n is the List's row n (the macro walks both together from row 2);
-    RBO_Monthly_Summ's row 2 is List row 112.
-    """
-    people = holders(book)
-    by_row = {h.row: h for h in people}
-    rbo_rows = sorted(h.row for h in people if h.role in ("RBO", "TL_RBO"))
-    matches, diffs = 0, []
-    for (sheet, i, code, month), recorded in summary_scores(book).items():
-        if months and month not in months:
-            continue
-        if sheet == "Monthly_Summ":
-            holder = by_row.get(i)
-        else:
-            holder = by_row.get(rbo_rows[i - 1]) if i - 1 < len(rbo_rows) \
-                else None
-        if holder is None or holder.sheet is None:
-            continue
-        if holder.role in ("RBO", "TL_RBO") and sheet == "Monthly_Summ":
-            continue
-        result = compute(book, actuals, holder, month)
-        total = result["total"]
-        if isinstance(total, (int, float)) and abs(total - recorded) < 1e-9:
-            matches += 1
-        else:
-            diffs.append({"name": holder.name, "role": holder.role,
-                          "month": month, "recorded": recorded,
-                          "computed": total})
-    return matches, diffs
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1114,7 +1358,7 @@ def _first_of(year, month):
 
 def book_year(book):
     grid = book["tables"].get("Constants", [])
-    year = _at(grid, 4, 1)
+    year = _at(grid, *spec_of(book).year)
     if isinstance(year, (int, float)) and 2000 < year < 2100:
         return int(year)
     return datetime.date.today().year
@@ -1143,7 +1387,7 @@ def store(results, year, recorded=None, loaded_by=""):
         for holder, month, card in results:
             total = card["total"]
             BoScorecard.objects.update_or_create(
-                sales_code=holder.sales_code or holder.pf,
+                book=holder.book, sales_code=holder.sales_code or holder.pf,
                 month=_first_of(year, month),
                 defaults={
                     "staff_pf": holder.pf, "staff_name": holder.name,
@@ -1177,10 +1421,11 @@ def check(book, actuals):
     The proof is the macro's own record: every month it wrote on
     Monthly_Summ is recomputed and compared, by sales code.
     """
+    spec = spec_of(book)
     months = template_months(actuals)
     people = [h for h in holders(book) if h.sheet in book["cards"]]
     recorded = recorded_scores(book)
-    by_month = {}
+    by_month, differ = {}, []
     for holder in people:
         for month in months:
             score = recorded.get((holder.sales_code, month))
@@ -1191,22 +1436,30 @@ def check(book, actuals):
             tally["recorded"] += 1
             if _num(total) and abs(total - score) < 1e-9:
                 tally["same"] += 1
+            else:
+                differ.append({"sales_code": holder.sales_code,
+                               "name": holder.name, "role": holder.role,
+                               "month": month, "recorded": score,
+                               "computed": total})
     roles = {}
     for holder in holders(book):
         roles[holder.role or "(blank)"] = roles.get(holder.role or "(blank)",
                                                     0) + 1
     return {
+        "book": spec.book,
         "year": book_year(book),
         "months": months,
         "people": len(people),
         "cards": sorted({h.sheet for h in people}),
         "roles_without_a_card": sorted(
-            r for r in roles if r not in ROLE_SHEETS and r != "(blank)"),
+            r for r in roles
+            if r not in spec.role_sheets and r != "(blank)"),
         "left": sum(1 for h in people
                     if str(h.branch or "").strip().lower() == "left"),
         "against_the_macro": [
             {"month": m, "recorded": t["recorded"], "same": t["same"]}
             for m, t in sorted(by_month.items())],
+        "differences": differ[:200],
         "problems": book.get("problems", []),
     }
 
@@ -1218,21 +1471,30 @@ def rebuild(book, actuals, loaded_by=""):
                  loaded_by=loaded_by)
 
 
-def stored_for(sales_code, as_at=None):
+def stored_for(sales_code, as_at=None, book=BACK_OFFICE):
     from .models import BoScorecard
 
     code = (sales_code or "").strip()
-    rows = BoScorecard.objects.filter(sales_code__iexact=code)
+    rows = BoScorecard.objects.filter(book=book, sales_code__iexact=code)
     if as_at is not None:
         rows = rows.filter(month__lte=as_at)
     return rows.order_by("-month").first()
 
 
-def months_loaded(sales_code):
+def stored_month(sales_code, month_start, book):
+    """The stored card for exactly this month, or None."""
+    from .models import BoScorecard
+
+    return BoScorecard.objects.filter(
+        book=book, sales_code__iexact=(sales_code or "").strip(),
+        month=month_start).first()
+
+
+def months_loaded(sales_code, book=BACK_OFFICE):
     from .models import BoScorecard
 
     return [m.strftime("%Y-%m") for m in BoScorecard.objects.filter(
-        sales_code__iexact=(sales_code or "").strip())
+        book=book, sales_code__iexact=(sales_code or "").strip())
         .order_by("month").values_list("month", flat=True)]
 
 
@@ -1246,7 +1508,9 @@ def _month_end(first):
 
 
 def card_payload(record, asked=None):
-    """A stored back-office card in the shape every card has."""
+    """A stored workbook card in the shape every card has."""
+    spec = SPECS.get(getattr(record, "book", BACK_OFFICE) or BACK_OFFICE,
+                     SPECS[BACK_OFFICE])
     data = record.card or {}
     perspectives, seen = [], {}
     scored = unscored = 0.0
@@ -1264,6 +1528,7 @@ def card_payload(record, asked=None):
             unscored += line["weight"]
         pm, ytd, actual = line.get("pm"), line.get("ytd_target"), \
             line.get("actual")
+        prior, growth = line.get("prior"), line.get("growth")
         error = next((v["e"] for v in (actual, score) if isinstance(v, dict)),
                      "")
         pending = ""
@@ -1288,10 +1553,10 @@ def card_payload(record, asked=None):
             "ytd_target": ytd if _num(ytd) else None,
             "annual_target": pm if _num(pm) else None,
             "target_text": pm if isinstance(pm, str) else "",
-            "prior_year": None,
-            "growth_target": None,
+            "prior_year": prior if _num(prior) else None,
+            "growth_target": growth if _num(growth) else None,
             "target_field": "",
-            "target_source": "the back-office scorecards workbook",
+            "target_source": spec.source,
             "full_year_target": pm == ytd,
             "ytd_actual": actual if _num(actual) else None,
             "warehouse_said": None,
@@ -1337,21 +1602,25 @@ def card_payload(record, asked=None):
     return {
         "has_card": True,
         "live": False,
-        "back_office_workbook": True,
+        "workbook_card": spec.book,
+        "back_office_workbook": spec.book == BACK_OFFICE,
         "staff": {
             "sales_code": record.sales_code,
             "name": record.staff_name,
-            "title": TITLES.get(sheet, sheet),
-            "role_code": ROLE_CODES.get(sheet, sheet),
+            "title": (TITLES.get(sheet, sheet) if spec.book == BACK_OFFICE
+                      else data.get("role") or sheet),
+            "role_code": (ROLE_CODES.get(sheet, sheet)
+                          if spec.book == BACK_OFFICE else
+                          SALES_ROLE_CODES.get(data.get("role", ""), sheet)),
             "branch": record.branch,
             "team_leader": "",
-            "roster": "the back-office scorecards workbook's List",
+            "roster": f"{spec.source}'s List",
             "started": None,
         },
         "book": {"customers": None, "note": ""},
         "period": {"label": record.month.strftime("%B %Y"),
                    "as_at": month_end.isoformat()},
-        "target_source": "the back-office scorecards workbook",
+        "target_source": spec.source,
         "performance_score": round(total, 4) if _num(total) else None,
         "scored_lines": sum(1 for p in perspectives for ln in p["lines"]
                             if ln["score"] is not None),
@@ -1360,14 +1629,14 @@ def card_payload(record, asked=None):
         "scored_weight": round(scored, 4),
         "unscored_weight": round(unscored, 4),
         "perspectives": perspectives,
-        "months_loaded": months_loaded(record.sales_code),
+        "months_loaded": months_loaded(record.sales_code, spec.book),
         "coverage_note": " ".join(notes),
         "showing_other_month": (
             "" if asked is None or asked.replace(day=1) == record.month else
             f"Nothing is loaded for {asked:%B %Y}; this is "
             f"{record.month:%B %Y}, the latest month on or before it."),
-        "how_scored": ("Computed from the back-office scorecards workbook's "
-                       "own formulas over the actuals template - the same "
-                       "cells the desk's macro fills and reads, so the score "
-                       "is the one the workbook gives."),
+        "how_scored": (f"Computed from {spec.source}'s own formulas over "
+                       f"the actuals template - the same cells the desk's "
+                       f"macro fills and reads, so the score is the one the "
+                       f"workbook gives."),
     }

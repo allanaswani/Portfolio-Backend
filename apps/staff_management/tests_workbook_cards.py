@@ -11,7 +11,7 @@ import datetime
 
 from django.test import TestCase
 
-from . import bo_workbook as bo
+from . import workbook_cards as bo
 
 CARD = "TELLER_SCORECARD"
 
@@ -195,3 +195,112 @@ class StoredCardTests(TestCase):
         card = build_card("BCK3783", as_at=datetime.date(2025, 12, 31))
         self.assertFalse(card["has_card"])
         self.assertEqual(card["reason"], "bo_month_not_loaded")
+
+
+def sales_book():
+    """A Business_Banking card of two lines, the sales workbook's way:
+    targets SUMIF'd off Summary Allocation by name, actuals by INDIRECT,
+    the score in K2. Rows are 0-based."""
+    sheet = "Business_Banking"
+    grid = [[None] * 16 for _ in range(12)]
+    grid[4][1] = "KPI"
+    grid[5][1] = "Weighted sales (100.0%)"
+    for r, measure, weight, feed in ((5, "New Customers", 0.6,
+                                      "New_Customers"),
+                                     (6, "Trade Finance", 0.4,
+                                      "Trade_Finance_Income")):
+        grid[r][2], grid[r][4], grid[r][12] = measure, weight, feed
+    grid[10][0] = "Reviewee Name:"
+    alloc = area(0, 2, 1048575, 2, "Summary Allocation")
+
+    def actual(r):
+        return [ref(1, 2), n("[2026_Actual_Template.xlsx]"), ref(r, 12),
+                ["b", "&"], n("!"), ["b", "&"], n("$c:$R"), ["b", "&"],
+                ["f", "INDIRECT", 1], ref(0, 13), n(0.0),
+                ["f", "VLOOKUP", 4]]
+
+    f = {
+        "0,13": [ref(4, 1, "Constants")],                       # N1
+        # H6 = SUMIF(alloc C, $C$2, alloc D)
+        "5,7": [alloc, ref(1, 2), area(0, 3, 1048575, 3,
+                                       "Summary Allocation"),
+                ["f", "SUMIF", 3]],
+        "6,7": [area(0, 4, 1048575, 4, "Summary Allocation"), alloc,
+                ref(1, 2), ["f", "SUMIFS", 3]],
+        # I = H/(12/months)
+        "5,8": [ref(5, 7), n(12.0), ref(5, 1, "Constants"), ["b", "/"],
+                ["b", "/"]],
+        # an array formula: SUM(2^ROW(INDIRECT("1:"&months))) - 2+4+8 = 14
+        "6,8": [["array"], n(2.0), n("1:"), ref(5, 1, "Constants"),
+                ["b", "&"], ["f", "INDIRECT", 1], ["f", "ROW", 1],
+                ["b", "^"], ["f", "SUM", 1]],
+        "5,9": actual(5), "6,9": actual(6),
+        **{f"{r},10": [ref(r, 9), ref(r, 8), ["b", "/"]] for r in (5, 6)},
+        **{f"{r},11": [ref(r, 10), ref(r, 4), ["b", "*"]] for r in (5, 6)},
+        "1,10": [area(5, 11, 6, 11), ["f", "SUM", 1]],          # K2
+    }
+    list_grid = [["sales_code", "name", "role", "branch", "BBM"],
+                 ["CM1", "Charles Muchiri", "SME RM", "Machakos", "Boss"]]
+    allocation = [["x", "y", "name", "new", "trade"],
+                  [None, None, "Charles Muchiri", 24.0, 70.0]]
+    summ = [[None]] * 4 + [["sales_code", "Name", "Role", "Branch"]
+                           + [None] * 12,
+                           ["CM1", "Charles Muchiri", "SME RM", "Machakos",
+                            0.25]]
+    return {"book": bo.SALES,
+            "cards": {sheet: {"grid": grid, "f": f}},
+            "tables": {"List": list_grid, "Summary Allocation": allocation,
+                       "Constants": [["Year", 2026.0], [None], [None],
+                                     [None], ["Month_column", 7.0],
+                                     ["Month_count", 3.0]],
+                       "Monthly_Summ": summ},
+            "problems": []}
+
+
+SALES_ACTUALS = template({
+    "New_Customers": {"Charles Muchiri": [2, 4, 6]},
+    # The card asks for "Trade_Finance_Income"; Excel ignores the case.
+    "Trade_Finance_income": {"Charles Muchiri": [5, 10, 14]},
+    "Asset_Drawdown": {},
+})
+
+
+class SalesWorkbookTests(TestCase):
+
+    def test_targets_actuals_and_the_array_formula(self):
+        book = sales_book()
+        holder = bo.holders(book)[0]
+        self.assertEqual(holder.sheet, "Business_Banking")
+        card = bo.compute(book, SALES_ACTUALS, holder, 3)
+        customers, trade = card["lines"]
+        self.assertEqual(customers["pm"], 24.0)          # SUMIF
+        self.assertEqual(customers["ytd_target"], 6.0)   # 24 / (12/3)
+        self.assertEqual(customers["actual"], 6)
+        self.assertEqual(trade["pm"], 70.0)              # SUMIFS
+        self.assertEqual(trade["ytd_target"], 14.0)      # 2+4+8
+        self.assertEqual(trade["actual"], 14)            # case-blind sheet
+        self.assertAlmostEqual(card["total"], 1.0)
+
+    def test_a_closed_month_is_the_workbook_card_and_an_open_one_is_not(self):
+        from .live_scorecard import build_card
+
+        book = sales_book()
+        self.assertEqual(bo.actuals_book(SALES_ACTUALS), bo.SALES)
+        stored = bo.rebuild(book, SALES_ACTUALS, loaded_by="test")
+        self.assertEqual(stored, 3)
+        march = bo.stored_month("CM1", datetime.date(2026, 3, 1), bo.SALES)
+        payload = bo.card_payload(march, asked=datetime.date(2026, 3, 31))
+        self.assertEqual(payload["workbook_card"], bo.SALES)
+        self.assertEqual(payload["staff"]["role_code"], "sme_rm")
+        self.assertEqual(payload["months_loaded"],
+                         ["2026-01", "2026-02", "2026-03"])
+        # January was recorded at 25% by the desk's run.
+        january = bo.stored_month("CM1", datetime.date(2026, 1, 1), bo.SALES)
+        self.assertEqual(january.recorded, 0.25)
+        self.assertIsNone(bo.stored_month("CM1", datetime.date(2026, 4, 1),
+                                          bo.SALES))
+        # Not on any roster here, so the open month has no live card - but
+        # it is not the workbook's either.
+        self.assertNotEqual(
+            build_card("CM1", as_at=datetime.date(2026, 4, 30)).get(
+                "workbook_card"), bo.SALES)
