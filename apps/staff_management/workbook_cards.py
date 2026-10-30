@@ -1717,6 +1717,19 @@ def waiting_on(sales_code):
     return None
 
 
+def _put_template(actuals, sheet, code, month, value):
+    """Write one person's figure for one month into a template copy → True
+    when their row was there."""
+    name = _sheet_named(actuals, sheet)
+    for row in (actuals.get(name) or [] if name else [])[1:]:
+        if len(row) > 1 and str(row[1] or "").strip().upper() == code.upper():
+            while len(row) < 6 + month:
+                row.append(None)
+            row[6 + month - 1] = value
+            return True
+    return False
+
+
 def live_card(sales_code, engine_card, as_at):
     """The month still open, scored by the workbook's own formulas over the
     figures the warehouse gives today → a card, or None.
@@ -1787,12 +1800,25 @@ def live_card(sales_code, engine_card, as_at):
         feeds_live = {_key(k): v for k, v in bb_live_feeds.proven().items()}
         reader = lambda feed: bb_live_feeds.live_value(  # noqa: E731
             feed, holder.branch, as_at)
+    live_rows, template_live = set(), None
     for wl in base["lines"]:
         if wl["typed"]:
             continue
         feed = feeds_live.get(_key(wl["feed"]))
         if feed is not None:
             value = reader(feed)
+            if value is not None and spec.book == BRANCH_BUSINESS:
+                # Into the template's cell for the month, not the card's:
+                # the card's own formula takes the 2025 base off a balance
+                # (deposits, loans), and writing over that cell would lose it.
+                if template_live is None:
+                    import copy
+
+                    template_live = copy.deepcopy(actuals)
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value)):
+                    live_rows.add(wl["row"])
+                continue
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
@@ -1809,11 +1835,12 @@ def live_card(sales_code, engine_card, as_at):
         found[wl["row"]] = match["line"]
         if _num(value):
             overrides[(wl["row"] - 1, actual_col)] = float(value)
-    card = compute(book, actuals, holder, month, overrides)
+    card = compute(book, template_live or actuals, holder, month, overrides)
 
     total, waiting = 0.0, 0
     for wl in card["lines"]:
-        live = (wl["row"] - 1, actual_col) in overrides
+        live = ((wl["row"] - 1, actual_col) in overrides
+                or wl["row"] in live_rows)
         if wl["typed"] or live:
             if _num(wl["weighted"]):
                 total += wl["weighted"]
