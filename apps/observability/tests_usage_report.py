@@ -104,3 +104,20 @@ class UsageReportTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["boss@hfgroup.co.ke"])
         self.assertIn("Daily usage - 28 Oct 2026", mail.outbox[0].subject)
+        self.assertTrue(mail.outbox[0].subject.startswith("[HFCB Portfolio]"))
+        html, kind = mail.outbox[0].alternatives[0]
+        self.assertEqual(kind, "text/html")
+        self.assertIn("HFCB", html)
+
+    def test_the_html_part_details_customer_360(self):
+        ExternalUsageDay.objects.create(
+            source="customer-360", day=DAY, username="amy.k",
+            customer_views=12, distinct_customers=9, searches=4,
+            active_minutes=35, sessions=2, features={"linked_parties": 7})
+        html = report.build_html(DAY)
+        self.assertIn("Customer 360 - the last 7 days", html)
+        self.assertIn("Linked parties", html)
+        self.assertIn("Amy Kariuki", html)
+        # Ben used the portfolio tool and not Customer 360.
+        self.assertIn("Used the portfolio tool but not Customer 360 (1)", html)
+        self.assertIn("Ben Otieno", html)

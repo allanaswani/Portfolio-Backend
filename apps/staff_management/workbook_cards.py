@@ -1332,8 +1332,14 @@ def compute(book, actuals, holder, month, overrides=None):
                       if spec.book == BACK_OFFICE else None),
         })
     score = ev.cell(*spec.score)
-    return {"sheet": holder.sheet, "month": month, "lines": lines,
-            "role": holder.role, "total": _out(score)}
+    out = {"sheet": holder.sheet, "month": month, "lines": lines,
+           "role": holder.role, "total": _out(score)}
+    if spec.book != BACK_OFFICE:
+        # E3 and E4 of the sales and branch cards: "Reports to:" (the BBM the
+        # macro types) and "Report to Title:", as the card itself shows them.
+        out["reports_to"] = _txt(ev.cell(2, 4))
+        out["report_to_title"] = _txt(ev.cell(3, 4))
+    return out
 
 
 def _txt(v):
@@ -1585,6 +1591,10 @@ def card_payload(record, asked=None):
             "kpi_code": (line.get("feed") or line["measure"]).lower(),
             "kpi_name": line["measure"] or line["initiative"],
             "measure_of_success": line["initiative"] or line["measure"],
+            # The KPI cell is blank because the workbook merges it with the
+            # line above - VIC Premium over its life and non-life lines. The
+            # download merges them the same way.
+            "continues_kpi": not line["measure"] and bool(line["initiative"]),
             "weight": line["weight"],
             "ytd_target": ytd if _num(ytd) else None,
             "annual_target": pm if _num(pm) else None,
@@ -1652,7 +1662,8 @@ def card_payload(record, asked=None):
                           or SALES_ROLE_CODES.get(data.get("role", ""),
                                                   sheet)),
             "branch": record.branch,
-            "team_leader": "",
+            "team_leader": data.get("reports_to") or "",
+            "report_to_title": data.get("report_to_title") or "",
             "roster": f"{spec.source}'s List",
             "started": None,
         },

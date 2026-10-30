@@ -37,7 +37,9 @@ ERROR_RATE_MIN_REQUESTS = 50
 # blip; three in a row is the service.
 PROBE_FAILURES_BEFORE_DOWN = 3
 
-SUBJECT_PREFIX = "[HF Portfolio]"
+# The bank is HFCB - the same prefix family as "[HFCB Design]" and "[HFCB
+# Service Desk]". "HF" alone is the old name.
+SUBJECT_PREFIX = "[HFCB Portfolio]"
 
 
 # ── State ────────────────────────────────────────────────────────────────────
@@ -77,8 +79,11 @@ def transition(key, state, detail=""):
 
 # ── Sending ──────────────────────────────────────────────────────────────────
 
-def send(kind, subject, body):
+def send(kind, subject, body, html=None):
     """Mail one alert to everybody subscribed to ``kind``.
+
+    ``html``, when given, goes as the HTML part; ``body`` stays the plain-text
+    part for clients that will not render it.
 
     Returns the number of recipients. Never raises: an alerting system that
     takes the cron job down with it when the mail server hiccups is worse than
@@ -94,6 +99,7 @@ def send(kind, subject, body):
             from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
             recipient_list=recipients,
             fail_silently=False,
+            html_message=html,
         )
     except Exception:  # noqa: BLE001
         import logging
