@@ -32,6 +32,21 @@ repo - not a reading of the tables of my own:
   report's own list (``bb_banca_products``), the branch through its
   ``mapping_for_branch``. The template keeps these side by side on one
   sheet, in 20-column blocks; ``block`` says which.
+* P&L provisions - ``loans_mom_ifrs_movement``, Finance's IFRS movement
+  book, which carries the branch: P&L charge less interest adjustment, the
+  measure the RM cards already use (see ``loan_loss``).
+* number and value of property sold - ``weighted_dashboard_manual_sales_table``
+  and ``hfdi_projects_inventory_sales_data``, de-duplicated on project + unit
+  as the RM cards do, each sale put on the seller's branch on the DMC roster.
+* new customers - ``customers.open_date`` by ``customers.branch``, and the
+  registration data's ``customer_open_date`` by ``current_branch``.
+* active customers - the registration data (``routine_registration_data.py``):
+  its 1/0 flag per customer per month, by ``current_branch``; one month, and
+  two months running as the RM cards count it.
+
+Where a table spells the branch its own way, :func:`_place` reads it, and the
+probe lists every name it could not place rather than dropping it quietly.
+
 * Rehani's loans - the desk's Rehani row fell 5.8bn from June to July and
   its 2025 base (13.64bn) has the same hole: Rehani's project finance book
   (5.84bn on the report) is left out of Rehani. Tried as its own
@@ -131,6 +146,15 @@ BANCA_ACCRUED = ("BRITAM HOLDINGS PLC",)
 #: The template's side-by-side tables are this many columns apart.
 BLOCK_WIDTH = 20
 
+#: Other spellings the tables use for a branch: the registration data's
+#: GILL HOUSE is Harambee Avenue, the policies' Rehani House is Rehani.
+PLACE_ALIAS = {"gillhouse": "harambeeave", "harambeeavenue": "harambeeave",
+               "sameer": "sameerbusinesspark", "rehanihouse": "rehani",
+               "thikaroadmall": "thikaroadmalltrm"}
+#: The property feeds: the same units in two shapes (see live_scorecard).
+PROPERTY_TABLES = ("weighted_dashboard_manual_sales_table",
+                   "hfdi_projects_inventory_sales_data")
+
 #: The template's spelling of a branch → the report's, where they differ
 #: (the three the first probe could not place).
 TEMPLATE_BRANCH = {"harambee": "harambeeave",
@@ -142,6 +166,143 @@ def branch_key(name):
     text = re.sub(r"\bbranch\b", "", str(name or "").lower())
     key = re.sub(r"[^a-z0-9]", "", text)
     return TEMPLATE_BRANCH.get(key, key)
+
+
+def _known():
+    return {branch_key(n) for n in BRANCH_OF_CODE.values()}
+
+
+#: Names a by-branch read could not place, for the probe to show.
+_unplaced = {}
+
+
+def _place(text, value=0.0):
+    """A branch as some table writes it (a name, or a brn_code) → the
+    branch key, or None - and an unplaced name is noted for the probe."""
+    raw = str(text if text is not None else "").strip()
+    if re.fullmatch(r"\d+(\.0+)?", raw):
+        name = BRANCH_OF_CODE.get(int(float(raw)))
+        key = branch_key(name) if name else None
+    else:
+        key = branch_key(raw)
+        key = PLACE_ALIAS.get(key, key)
+    if key in _known():
+        return key
+    _unplaced[raw] = _unplaced.get(raw, 0.0) + float(value or 0)
+    return None
+
+
+def _by_place(rows):
+    out = {}
+    for name, value in rows:
+        key = _place(name, value)
+        if key is not None:
+            out[key] = out.get(key, 0.0) + float(value or 0)
+    return out
+
+
+def _span(year, month, ytd):
+    """[start, end) of the month, or of the year up to the month's end."""
+    end = (datetime.date(year, month, 28)
+           + datetime.timedelta(days=4)).replace(day=1)
+    return (datetime.date(year, 1, 1) if ytd
+            else datetime.date(year, month, 1)), end
+
+
+def _ifrs(year, month, column, ytd, timeout_ms):
+    """loans_mom_ifrs_movement: P&L charge less interest adjustment."""
+    assert column in ("branch", "branch2")
+    start, end = _span(year, month, ytd)
+    return _by_place(_rows(f"""
+        SELECT {column},
+               SUM(COALESCE(pl_charge, 0) - COALESCE(int_adj, 0))
+        FROM loans_mom_ifrs_movement
+        WHERE eom_date >= %s AND eom_date < %s
+        GROUP BY 1""", [start, end], timeout_ms))
+
+
+def _property(year, month, measure, timeout_ms):
+    """Units sold this year to the month's end, one per project + unit,
+    on the seller's DMC-roster branch: a count, or their value."""
+    start, end = _span(year, month, True)
+    parts = [f"""
+        SELECT UPPER(TRIM(COALESCE(project_name, ''))) AS project,
+               UPPER(TRIM(COALESCE(unit_name, ''))) AS unit,
+               UPPER(TRIM(COALESCE(staff_name, ''))) AS seller,
+               unit_value, COALESCE(sale_month, booking_date) AS sold_on,
+               {i} AS feed, ROW_NUMBER() OVER () AS rn
+        FROM {t}""" for i, t in enumerate(PROPERTY_TABLES)]
+    total = "COUNT(*)" if measure == "volume" else \
+        "SUM(COALESCE(u.unit_value, 0))"
+    return _by_place(_rows(f"""
+        WITH everything AS ({' UNION ALL '.join(parts)}),
+        keyed AS (
+            SELECT *, CASE WHEN unit = '' THEN 'row:' || feed || ':' || rn
+                           ELSE 'unit:' || project || '|' || unit
+                      END AS dedupe
+            FROM everything),
+        one_per_unit AS (
+            SELECT DISTINCT ON (dedupe) seller, unit_value, sold_on
+            FROM keyed
+            ORDER BY dedupe, sold_on DESC NULLS LAST, feed),
+        roster AS (
+            SELECT UPPER(TRIM(staff_name)) AS seller,
+                   MIN(staff_branch) AS branch,
+                   COUNT(DISTINCT staff_branch) AS branches
+            FROM branch_employee_dmc_data
+            WHERE staff_name IS NOT NULL
+            GROUP BY 1)
+        SELECT CASE WHEN r.branches = 1 THEN r.branch
+                    ELSE 'seller not on the roster: ' || u.seller END,
+               {total}
+        FROM one_per_unit u
+        LEFT JOIN roster r ON r.seller = u.seller
+        WHERE u.sold_on >= %s AND u.sold_on < %s
+        GROUP BY 1""", [start, end], timeout_ms))
+
+
+def _new_customers(year, month, source, timeout_ms):
+    start, end = _span(year, month, True)
+    if source == "customers":
+        return _by_place(_rows("""
+            SELECT branch, COUNT(DISTINCT cust_id)
+            FROM customers
+            WHERE open_date >= %s AND open_date < %s
+            GROUP BY 1""", [start, end], timeout_ms))
+    from . import registration_activity as ra
+
+    table = ra.find_table()
+    key = ra.customer_key(table) if table else ""
+    if not key:
+        raise LookupError("the registration data is not on this database")
+    return _by_place(_rows(f"""
+        SELECT current_branch, COUNT(DISTINCT {key})
+        FROM {table}
+        WHERE customer_open_date >= %s AND customer_open_date < %s
+        GROUP BY 1""", [start, end], timeout_ms))
+
+
+def _active(year, month, both, timeout_ms):
+    """The registration data's activity flags for the month - alone, or
+    with the month before (two months running)."""
+    from . import registration_activity as ra
+
+    table = ra.find_table()
+    if not table:
+        raise LookupError("the registration data is not on this database")
+    columns = ra.month_columns(table, ra.PREFIX_ACTIVE)
+    this = datetime.date(year, month, 1)
+    before = (this - datetime.timedelta(days=1)).replace(day=1)
+    if this not in columns or (both and before not in columns):
+        raise LookupError(f"the registration data has no "
+                          f"{this:%b %Y} activity column yet")
+    test = f"{columns[this]} = 1"
+    if both:
+        test += f" AND {columns[before]} = 1"
+    return _by_place(_rows(f"""
+        SELECT current_branch, COUNT(*) FILTER (WHERE {test})
+        FROM {table}
+        GROUP BY 1""", [], timeout_ms))
 
 
 def _codes_of(branch):
@@ -311,9 +472,41 @@ DEFINITIONS = {
         ("non-VIC paid premiums YTD (bancassurance report)", "banca",
          {"part": "non_vic", "block": 4}),
     ],
+    "PL_Charge": [
+        ("P&L charge less int. adj., month, by branch (IFRS movement)",
+         "ifrs", {"column": "branch", "ytd": False}),
+        ("P&L charge less int. adj., YTD, by branch (IFRS movement)",
+         "ifrs", {"column": "branch", "ytd": True}),
+        ("P&L charge less int. adj., month, by branch2 (IFRS movement)",
+         "ifrs", {"column": "branch2", "ytd": False}),
+        ("P&L charge less int. adj., YTD, by branch2 (IFRS movement)",
+         "ifrs", {"column": "branch2", "ytd": True}),
+    ],
+    # Most branches sold no property: there nought is the desk's figure, so
+    # those branches are tested too, and must read nought.
+    "Plot_Sales_Volume": [
+        ("property units sold YTD, seller's roster branch (HFDI + CRM)",
+         "property", {"measure": "volume", "zeros": True}),
+    ],
+    "Plot_Sales_Value": [
+        ("property value sold YTD, seller's roster branch (HFDI + CRM)",
+         "property", {"measure": "value", "zeros": True}),
+    ],
+    "New_Customers": [
+        ("customers opened YTD by customers.branch", "customers",
+         {"source": "customers"}),
+        ("customers opened YTD by current_branch (registration data)",
+         "customers", {"source": "registration"}),
+    ],
+    "Active_Customers": [
+        ("active in the month (registration data)", "active",
+         {"both": False}),
+        ("active in the month and the one before (registration data)",
+         "active", {"both": True}),
+    ],
 }
 #: Kinds whose totals come keyed by branch, not by brn_code.
-BY_BRANCH = ("trade", "banca")
+BY_BRANCH = ("trade", "banca", "ifrs", "property", "customers", "active")
 
 
 def _sql(feed, year, month, live=False, today=None):
@@ -337,6 +530,14 @@ def _totals(feed, year, month, timeout_ms, live=False, today=None):
     if feed["kind"] == "banca":
         return _banca(year, month, feed["part"], timeout_ms,
                       as_at=today if live else None)
+    if feed["kind"] == "ifrs":
+        return _ifrs(year, month, feed["column"], feed["ytd"], timeout_ms)
+    if feed["kind"] == "property":
+        return _property(year, month, feed["measure"], timeout_ms)
+    if feed["kind"] == "customers":
+        return _new_customers(year, month, feed["source"], timeout_ms)
+    if feed["kind"] == "active":
+        return _active(year, month, feed["both"], timeout_ms)
     sql, params = _sql(feed, year, month, live=live, today=today)
     return {str(code): float(value or 0)
             for code, value in _rows(sql, params, timeout_ms)}
@@ -345,9 +546,12 @@ def _totals(feed, year, month, timeout_ms, live=False, today=None):
 def _branch_total(totals, branch, feed):
     if feed["kind"] in BY_BRANCH:
         key = branch_key(branch)
-        # A branch with no trade or policies this year has earned nought.
-        known = {branch_key(n) for n in BRANCH_OF_CODE.values()}
-        return totals.get(key, 0.0) if key in known else None
+        # Nothing read at all is a feed not loaded for the period, not a
+        # nil for every branch.
+        if not totals:
+            return None
+        # A branch absent from a feed that has rows earned nought there.
+        return totals.get(key, 0.0) if key in _known() else None
     codes = _codes_of(branch)
     if not codes or not any(c in totals for c in codes):
         return None
@@ -390,13 +594,16 @@ def probe(year, month, out=print):
         block = int(key.split("#")[1]) if "#" in key else 0
         targets = [(h, _desk(actuals, sheet, h.sales_code, month, block))
                    for h in people]
-        targets = [(h, t) for h, t in targets if t]
+        keep_zero = any(o.get("zeros") for _l, _k, o in definitions)
+        targets = [(h, t) for h, t in targets
+                   if t or (keep_zero and t is not None)]
         if not targets:
             out(f"  {key:24} the template has no {MONTHS[month - 1]} "
                 f"figure for any branch manager - skipped")
             continue
         for label, kind, options in definitions:
             feed = dict(options, sheet=sheet, kind=kind, label=label)
+            _unplaced.clear()
             try:
                 totals = _totals(feed, year, month, PROBE_TIMEOUT_MS)
             except Exception as exc:  # noqa: BLE001 - the reason is the answer
@@ -405,7 +612,8 @@ def probe(year, month, out=print):
             rows, hits = [], 0
             for h, t in targets:
                 got = _branch_total(totals, h.branch, feed)
-                ok = got is not None and abs(got - t) <= abs(t) * TOLERANCE
+                ok = got is not None and (
+                    abs(got - t) <= abs(t) * TOLERANCE if t else got == 0)
                 hits += ok
                 rows.append((str(h.branch), t, got, ok))
             share = hits / len(targets)
@@ -416,6 +624,11 @@ def probe(year, month, out=print):
                 out(f"      {'ok ' if ok else '   '}{branch:20} desk "
                     f"{desk:>20,.2f}   warehouse "
                     f"{'none' if got is None else format(got, '>20,.2f')}")
+            if _unplaced:
+                top = sorted(_unplaced.items(), key=lambda kv: -abs(kv[1]))
+                out(f"      not placed on a branch ({len(top)} name(s)): "
+                    + "; ".join(f"{n or '(blank)'} {v:,.0f}"
+                                for n, v in top[:12]))
             if share >= PASS_SHARE and (
                     key not in found or share > found[key]["match"]):
                 found[key] = dict(feed, match=share,
@@ -435,9 +648,11 @@ def live_value(feed, branch, as_at):
     """Today's branch figure on one proven feed, or None."""
     from django.core.cache import cache
 
-    key = (f"bb_live:{feed['sheet']}:{feed['kind']}:"
-           f"{int(bool(feed.get('retail')))}:{feed.get('part') or ''}:"
-           f"{'-'.join(map(str, feed.get('drop_pf_at') or ()))}:"
+    options = "-".join(
+        f"{k}{'_'.join(map(str, v)) if isinstance(v, list) else v}"
+        for k, v in sorted(feed.items())
+        if k not in ("sheet", "kind", "label", "match", "month"))
+    key = (f"bb_live:{feed['sheet']}:{feed['kind']}:{options}:"
            f"{branch_key(branch)}:{as_at.isoformat()}")
     hit = cache.get(key)
     if hit is not None:
