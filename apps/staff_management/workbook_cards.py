@@ -1734,6 +1734,26 @@ def _put_template(actuals, sheet, code, month, value, block=0):
     return False
 
 
+#: Template sheets that only grow through the year: counts and sums of what
+#: was sold, opened or disbursed. Balances, rates and charges are not here.
+ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
+                       "tradefinanceincome", "bancaassuranceincome",
+                       "newcustomers", "assetdrawdown", "traininghours"}
+
+
+def _get_template(actuals, sheet, code, month, block=0):
+    """One person's figure for one month on the template, or None."""
+    from .bb_live_feeds import BLOCK_WIDTH
+
+    o = block * BLOCK_WIDTH
+    name = _sheet_named(actuals, sheet)
+    for row in (actuals.get(name) or [] if name else [])[1:]:
+        if len(row) > o + 1 and \
+                str(row[o + 1] or "").strip().upper() == code.upper():
+            return row[o + 5 + month] if len(row) > o + 5 + month else None
+    return None
+
+
 def _carry_forward(actuals, sheet, code, month):
     """Put the desk's latest figure for this person into ``month`` on a
     template copy → the month it came from, or None.
@@ -1891,6 +1911,11 @@ def live_card(sales_code, engine_card, as_at):
                                              code, month)
             if by_sheet[k]:
                 carried[wl["row"]] = by_sheet[k]
+    # The desk's year to date per line, before anything live is put in.
+    desk = ({wl["row"]: wl["actual"] for wl in
+             compute(book, template_live, holder, month)["lines"]}
+            if carried else {})
+    prior = {}
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -1909,6 +1934,8 @@ def live_card(sales_code, engine_card, as_at):
                     import copy
 
                     template_live = copy.deepcopy(actuals)
+                prior[wl["row"]] = (wl["feed"], block, _get_template(
+                    template_live, wl["feed"], code, month, block))
                 if _put_template(template_live, wl["feed"], code, month,
                                  float(value), block):
                     live_rows.add(wl["row"])
@@ -1930,6 +1957,28 @@ def live_card(sales_code, engine_card, as_at):
         if _num(value):
             overrides[(wl["row"] - 1, actual_col)] = float(value)
     card = compute(book, template_live or actuals, holder, month, overrides)
+
+    # A year-to-date count or sum cannot fall below what the desk already
+    # recorded for the year. Where a live reader gives less - property put
+    # on nobody because the seller's name is spelt differently, a register
+    # not yet reloaded - the desk's figure stands.
+    dropped = []
+    for wl in card["lines"]:
+        r = wl["row"]
+        is_live = (r - 1, actual_col) in overrides or r in live_rows
+        if (is_live and r in carried
+                and _key(wl["feed"]) in ACCUMULATING_SHEETS
+                and _num(wl["actual"]) and _num(desk.get(r))
+                and wl["actual"] < desk[r]):
+            dropped.append(r)
+            overrides.pop((r - 1, actual_col), None)
+            if r in live_rows:
+                live_rows.discard(r)
+                sheet, block, old = prior[r]
+                _put_template(template_live, sheet, code, month, old, block)
+    if dropped:
+        card = compute(book, template_live or actuals, holder, month,
+                       overrides)
 
     total, waiting = 0.0, 0
     for wl in card["lines"]:
