@@ -1734,6 +1734,46 @@ def _put_template(actuals, sheet, code, month, value, block=0):
     return False
 
 
+def _carry_forward(actuals, sheet, code, month):
+    """Put the desk's latest figure for this person into ``month`` on a
+    template copy → the month it came from, or None.
+
+    The template is year to date (balances, YTD sums, rates), so the desk's
+    latest month IS the person's year to date - a line the warehouse has no
+    live figure for shows that and is scored, rather than reading nought
+    while the person may already have made the target. Every side-by-side
+    table of the sheet is carried, so each line finds its own. "Latest" is
+    the last month with any figure for anyone on that table: a formula's
+    nought in a month nobody has filled is not the desk's figure.
+    """
+    from .bb_live_feeds import BLOCK_WIDTH
+
+    name = _sheet_named(actuals, sheet)
+    rows = (actuals.get(name) or []) if name else []
+    if len(rows) < 2:
+        return None
+    width = max(len(r) for r in rows)
+    used = None
+    for o in range(0, width, BLOCK_WIDTH):
+        filled = [r for r in rows[1:] if len(r) > o + 1 and r[o + 1]]
+        mine = next((r for r in filled
+                     if str(r[o + 1]).strip().upper() == code.upper()), None)
+        if mine is None:
+            continue
+        latest = next((m for m in range(month, 0, -1)
+                       if any(len(r) > o + 5 + m and _num(r[o + 5 + m])
+                              and r[o + 5 + m] != 0 for r in filled)), None)
+        if latest is None:
+            continue
+        if latest < month:
+            while len(mine) < o + 6 + month:
+                mine.append(None)
+            mine[o + 5 + month] = (mine[o + 5 + latest]
+                                   if len(mine) > o + 5 + latest else None)
+        used = max(used or 0, latest)
+    return used
+
+
 def _line_blocks(book, actuals, holder, month, base, feeds_live):
     """{card row: block} for the lines on a sheet with more than one table
     proven: a marker is put in each block in turn, and the lines whose
@@ -1833,6 +1873,24 @@ def live_card(sales_code, engine_card, as_at):
             feed, holder.branch, as_at)
         blocks = _line_blocks(book, actuals, holder, month, base, feeds_live)
     live_rows, template_live = set(), None
+    # Every line starts from the desk's latest year-to-date figure; a live
+    # one then writes over it. The back office template keys its rows by
+    # name on some sheets, so it is not carried this way.
+    carried = {}
+    if spec.book != BACK_OFFICE:
+        import copy
+
+        template_live = copy.deepcopy(actuals)
+        by_sheet = {}
+        for wl in base["lines"]:
+            if wl["typed"] or not wl["feed"]:
+                continue
+            k = _key(wl["feed"])
+            if k not in by_sheet:
+                by_sheet[k] = _carry_forward(template_live, wl["feed"],
+                                             code, month)
+            if by_sheet[k]:
+                carried[wl["row"]] = by_sheet[k]
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -1881,6 +1939,11 @@ def live_card(sales_code, engine_card, as_at):
             if _num(wl["weighted"]):
                 total += wl["weighted"]
             continue
+        if wl["row"] in carried and _num(wl["actual"]):
+            wl["carried"] = carried[wl["row"]]
+            if _num(wl["weighted"]):
+                total += wl["weighted"]
+            continue
         waiting += 1
         engine = found.get(wl["row"]) or {}
         wl["actual"] = wl["score"] = wl["weighted"] = None
@@ -1902,6 +1965,14 @@ def live_card(sales_code, engine_card, as_at):
                 ln["pending"] = wl["waiting"]
                 ln["pending_label"] = "Waiting for data"
                 ln["as_at"] = ""
+            elif wl.get("carried"):
+                # Every template sheet is year to date except turnaround
+                # time, which is the month's own rate.
+                kind = ("latest month" if "tat" in _key(wl["feed"])
+                        else "year to date")
+                ln["as_at"] = (
+                    f"{kind}, the desk's latest figure "
+                    f"({datetime.date(as_at.year, wl['carried'], 1):%b %Y})")
             else:
                 ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
     payload.update({
