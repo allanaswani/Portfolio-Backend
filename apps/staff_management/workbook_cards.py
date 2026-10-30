@@ -1736,9 +1736,14 @@ def _put_template(actuals, sheet, code, month, value, block=0):
 
 #: Template sheets that only grow through the year: counts and sums of what
 #: was sold, opened or disbursed. Balances, rates and charges are not here.
+#: Checked on both templates: on these, the desk's own monthly figures
+#: never fall for 93-100% of people. The back office's VIC and HFCB
+#: properties sheets are the same measures under that template's names.
 ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
                        "tradefinanceincome", "bancaassuranceincome",
-                       "newcustomers", "assetdrawdown", "traininghours"}
+                       "newcustomers", "assetdrawdown", "traininghours",
+                       "vic", "viclife", "vicnonlife",
+                       "hfcbpropertiesvalue", "hfcbpropertiesvolume"}
 
 
 def _get_template(actuals, sheet, code, month, block=0):
@@ -1754,44 +1759,78 @@ def _get_template(actuals, sheet, code, month, block=0):
     return None
 
 
-def _carry_forward(actuals, sheet, code, month):
-    """Put the desk's latest figure for this person into ``month`` on a
-    template copy → the month it came from, or None.
+def _carry_forward(actuals, sheet, month):
+    """Put the desk's latest month into ``month`` for EVERY row of a sheet
+    on a template copy → the month it came from, or None.
 
     The template is year to date (balances, YTD sums, rates), so the desk's
-    latest month IS the person's year to date - a line the warehouse has no
-    live figure for shows that and is scored, rather than reading nought
-    while the person may already have made the target. Every side-by-side
-    table of the sheet is carried, so each line finds its own. "Latest" is
-    the last month with any figure for anyone on that table: a formula's
-    nought in a month nobody has filled is not the desk's figure.
+    latest month IS each person's year to date - a line the warehouse has
+    no live figure for shows that and is scored, rather than reading nought
+    while the person may already have made the target.
+
+    Every row, not one person's: the card's own formula (INDIRECT +
+    VLOOKUP) then finds the person exactly as Excel does - by sales code on
+    one sheet, by AD username or name on another, as the back office
+    template mixes them. Every side-by-side table of the sheet is carried,
+    so each line finds its own. "Latest" is the last month with any figure
+    for anyone on that table; the months after it are blank or a formula's
+    nought for everyone, so nothing the desk entered is overwritten.
     """
     from .bb_live_feeds import BLOCK_WIDTH
 
     name = _sheet_named(actuals, sheet)
     rows = (actuals.get(name) or []) if name else []
     if len(rows) < 2:
-        return None
+        return None, {}
     width = max(len(r) for r in rows)
-    used = None
+    used, months = None, {}
     for o in range(0, width, BLOCK_WIDTH):
-        filled = [r for r in rows[1:] if len(r) > o + 1 and r[o + 1]]
-        mine = next((r for r in filled
-                     if str(r[o + 1]).strip().upper() == code.upper()), None)
-        if mine is None:
-            continue
+        people = [r for r in rows[1:]
+                  if any(len(r) > o + i and r[o + i] not in (None, "")
+                         for i in (0, 1, 2))]
+        # The desk's latest month is read off the rows it keys (column B):
+        # rows without a key - the RBBMs on Branch_Audit - come pre-filled
+        # with a figure for all twelve months.
+        keyed = [r for r in people if len(r) > o + 1 and r[o + 1]]
         latest = next((m for m in range(month, 0, -1)
                        if any(len(r) > o + 5 + m and _num(r[o + 5 + m])
-                              and r[o + 5 + m] != 0 for r in filled)), None)
+                              and r[o + 5 + m] != 0 for r in keyed)), None)
+        if latest is None:
+            # Nought for everyone (no operation losses, say) is still the
+            # desk's figure: the last month it entered anything.
+            latest = next((m for m in range(month, 0, -1)
+                           if any(len(r) > o + 5 + m and _num(r[o + 5 + m])
+                                  for r in keyed)), None)
         if latest is None:
             continue
         if latest < month:
-            while len(mine) < o + 6 + month:
-                mine.append(None)
-            mine[o + 5 + month] = (mine[o + 5 + latest]
-                                   if len(mine) > o + 5 + latest else None)
+            growing = _key(sheet) in ACCUMULATING_SHEETS
+            for r in people:
+                while len(r) < o + 6 + month:
+                    r.append(None)
+                # Each person's own latest: blank in the desk's latest month
+                # means the desk did not fill them that month, so their last
+                # entered month stands; on a sheet that only grows, a nought
+                # after a figure is a formula over blanks, not a fall.
+                value, own = None, None
+                for m in range(latest, 0, -1):
+                    v = r[o + 5 + m]
+                    if not _num(v):
+                        continue
+                    if v == 0 and growing and any(
+                            _num(r[o + 5 + e]) and r[o + 5 + e] != 0
+                            for e in range(1, m)):
+                        continue
+                    value, own = v, m
+                    break
+                r[o + 5 + month] = value
+                if own:
+                    for i in (0, 1, 2):
+                        ident = str(r[o + i] or "").strip().upper()
+                        if ident:
+                            months[ident] = max(months.get(ident, 0), own)
         used = max(used or 0, latest)
-    return used
+    return used, months
 
 
 def _line_blocks(book, actuals, holder, month, base, feeds_live):
@@ -1894,23 +1933,26 @@ def live_card(sales_code, engine_card, as_at):
         blocks = _line_blocks(book, actuals, holder, month, base, feeds_live)
     live_rows, template_live = set(), None
     # Every line starts from the desk's latest year-to-date figure; a live
-    # one then writes over it. The back office template keys its rows by
-    # name on some sheets, so it is not carried this way.
-    carried = {}
-    if spec.book != BACK_OFFICE:
-        import copy
+    # one then writes over it. All three books.
+    import copy
 
-        template_live = copy.deepcopy(actuals)
-        by_sheet = {}
-        for wl in base["lines"]:
-            if wl["typed"] or not wl["feed"]:
-                continue
-            k = _key(wl["feed"])
-            if k not in by_sheet:
-                by_sheet[k] = _carry_forward(template_live, wl["feed"],
-                                             code, month)
-            if by_sheet[k]:
-                carried[wl["row"]] = by_sheet[k]
+    carried = {}
+    template_live = copy.deepcopy(actuals)
+    by_sheet = {}
+    for wl in base["lines"]:
+        if wl["typed"] or not wl["feed"]:
+            continue
+        k = _key(wl["feed"])
+        if k not in by_sheet:
+            by_sheet[k] = _carry_forward(template_live, wl["feed"], month)
+        latest, months = by_sheet[k]
+        if latest:
+            # The month the person's own figure is from, for the label.
+            own = next((months[i] for i in (
+                code.upper(), str(holder.name or "").strip().upper(),
+                str(holder.pf or "").strip().upper()) if i and i in months),
+                None)
+            carried[wl["row"]] = own or latest
     # The desk's year to date per line, before anything live is put in.
     desk = ({wl["row"]: wl["actual"] for wl in
              compute(book, template_live, holder, month)["lines"]}
