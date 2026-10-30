@@ -56,8 +56,14 @@ probe lists every name it could not place rather than dropping it quietly.
 
 Each is still proven before it is used: :func:`probe` compares it, branch by
 branch, with the branch managers' rows for a month the desk has closed, and
-only a definition giving the desk's figure for :data:`PASS_SHARE` of the
-branches is stored.
+a definition is stored when :data:`PASS_SHARE` of the branches are within
+:data:`TOLERANCE` of the desk, or the typical (median) branch is within
+:data:`MEDIAN_LIMIT`. The second test is there because the tables move after
+the desk takes its month: trade and policy uploads replace the whole year,
+so late entries and premiums paid since land in months already closed. The
+rule is still the report's; only the data has moved. A rule that is wrong
+is off at every branch, and the median catches that (property read nought
+where the desk had sales - median 100% off - and stays out).
 
     manage.py bo_feed_probe --month 2026-08 --branches
 """
@@ -67,10 +73,12 @@ from __future__ import annotations
 import datetime
 import re
 
-PASS_SHARE = 0.9
-#: Relative: a branch's balance is billions, so a cent-level match is the
-#: wrong test; 0.5% still tells one definition from another.
-TOLERANCE = 0.005
+#: Set with the business, 30 Oct 2026: the reports move by the minute, so a
+#: closed month's figure is matched within 2% at 70% of branches.
+PASS_SHARE = 0.7
+TOLERANCE = 0.02
+#: ... or the median branch within 10%.
+MEDIAN_LIMIT = 0.10
 PROBE_TIMEOUT_MS = 600_000
 LIVE_TIMEOUT_MS = 60_000
 STORE_KIND = "bb_live_feeds"
@@ -644,9 +652,21 @@ def probe(year, month, out=print):
                 hits += ok
                 rows.append((str(h.branch), t, got, ok))
             share = hits / len(targets)
-            verdict = "LIVE" if share >= PASS_SHARE else "not good enough"
+            # How far off the typical branch is; a branch the warehouse has
+            # nothing for counts as wholly off.
+            errors = sorted(
+                (1.0 if got is None else abs(got - t) / abs(t))
+                for _b, t, got, _ok in rows if t)
+            median = (errors[len(errors) // 2] if len(errors) % 2 else
+                      (errors[len(errors) // 2 - 1]
+                       + errors[len(errors) // 2]) / 2) if errors else None
+            passes = share >= PASS_SHARE or (
+                median is not None and median <= MEDIAN_LIMIT)
+            verdict = "LIVE" if passes else "not good enough"
             out(f"  {key:24} {share:6.1%} of {len(targets):3} branches "
-                f"match - {label}  -> {verdict}")
+                f"within {TOLERANCE:.0%}, median branch "
+                f"{'n/a' if median is None else format(median, '.1%')} off"
+                f" - {label}  -> {verdict}")
             for branch, desk, got, ok in rows:
                 out(f"      {'ok ' if ok else '   '}{branch:20} desk "
                     f"{desk:>20,.2f}   warehouse "
@@ -656,10 +676,15 @@ def probe(year, month, out=print):
                 out(f"      not placed on a branch ({len(top)} name(s)): "
                     + "; ".join(f"{n or '(blank)'} {v:,.0f}"
                                 for n, v in top[:12]))
-            if share >= PASS_SHARE and (
-                    key not in found or share > found[key]["match"]):
-                found[key] = dict(feed, match=share,
-                                    month=f"{year}-{month:02d}")
+            # The best passing definition for the sheet: most branches
+            # within tolerance, then the smallest median miss.
+            rank = (share, -(median if median is not None else 1.0))
+            if passes and (key not in found or rank > found[key]["rank"]):
+                found[key] = dict(feed, match=share, median=median,
+                                  rank=rank, month=f"{year}-{month:02d}")
+
+    for feed in found.values():
+        feed.pop("rank", None)
 
     stored = {k: v for k, v in (saved(STORE_KIND) or {}).items()
               if k in DEFINITIONS}
@@ -678,7 +703,7 @@ def live_value(feed, branch, as_at):
     options = "-".join(
         f"{k}{'_'.join(map(str, v)) if isinstance(v, list) else v}"
         for k, v in sorted(feed.items())
-        if k not in ("sheet", "kind", "label", "match", "month"))
+        if k not in ("sheet", "kind", "label", "match", "month", "median"))
     key = (f"bb_live:{feed['sheet']}:{feed['kind']}:{options}:"
            f"{branch_key(branch)}:{as_at.isoformat()}")
     hit = cache.get(key)
