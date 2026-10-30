@@ -1717,17 +1717,45 @@ def waiting_on(sales_code):
     return None
 
 
-def _put_template(actuals, sheet, code, month, value):
+def _put_template(actuals, sheet, code, month, value, block=0):
     """Write one person's figure for one month into a template copy → True
-    when their row was there."""
+    when their row was there. ``block`` is which of a sheet's side-by-side
+    tables (20 columns apart) - the bancassurance sheet keeps three."""
+    from .bb_live_feeds import BLOCK_WIDTH
+
+    o = block * BLOCK_WIDTH
     name = _sheet_named(actuals, sheet)
     for row in (actuals.get(name) or [] if name else [])[1:]:
-        if len(row) > 1 and str(row[1] or "").strip().upper() == code.upper():
-            while len(row) < 6 + month:
+        if len(row) > o + 1 and                 str(row[o + 1] or "").strip().upper() == code.upper():
+            while len(row) < o + 6 + month:
                 row.append(None)
-            row[6 + month - 1] = value
+            row[o + 6 + month - 1] = value
             return True
     return False
+
+
+def _line_blocks(book, actuals, holder, month, base, feeds_live):
+    """{card row: block} for the lines on a sheet with more than one table
+    proven: a marker is put in each block in turn, and the lines whose
+    actual moves are the ones reading it. Exact, where guessing the block
+    from a line's label would not be."""
+    import copy
+
+    out = {}
+    for wl in base["lines"]:
+        blocks = feeds_live.get(_key(wl["feed"])) or {}
+        if set(blocks) == {0} or wl["row"] in out:
+            continue
+        for b in blocks:
+            trial = copy.deepcopy(actuals)
+            if not _put_template(trial, wl["feed"], holder.sales_code, month,
+                                 987654321.0, b):
+                continue
+            moved = compute(book, trial, holder, month)
+            for before, after in zip(base["lines"], moved["lines"]):
+                if before["actual"] != after["actual"]:
+                    out[after["row"]] = b
+    return out
 
 
 def live_card(sales_code, engine_card, as_at):
@@ -1797,14 +1825,22 @@ def live_card(sales_code, engine_card, as_at):
     elif spec.book == BRANCH_BUSINESS:
         from . import bb_live_feeds
 
-        feeds_live = {_key(k): v for k, v in bb_live_feeds.proven().items()}
+        # sheet → {block: feed}: one sheet can hold several proven tables.
+        for k, v in bb_live_feeds.proven().items():
+            feeds_live.setdefault(_key(k.split("#")[0]), {})[
+                int(v.get("block") or 0)] = v
         reader = lambda feed: bb_live_feeds.live_value(  # noqa: E731
             feed, holder.branch, as_at)
+        blocks = _line_blocks(book, actuals, holder, month, base, feeds_live)
     live_rows, template_live = set(), None
     for wl in base["lines"]:
         if wl["typed"]:
             continue
         feed = feeds_live.get(_key(wl["feed"]))
+        if feed is not None and spec.book == BRANCH_BUSINESS:
+            only_first = set(feed) == {0}
+            block = 0 if only_first else blocks.get(wl["row"])
+            feed = feed.get(block) if block is not None else None
         if feed is not None:
             value = reader(feed)
             if value is not None and spec.book == BRANCH_BUSINESS:
@@ -1816,7 +1852,7 @@ def live_card(sales_code, engine_card, as_at):
 
                     template_live = copy.deepcopy(actuals)
                 if _put_template(template_live, wl["feed"], code, month,
-                                 float(value)):
+                                 float(value), block):
                     live_rows.add(wl["row"])
                 continue
             if value is not None:
