@@ -38,11 +38,13 @@ repo - not a reading of the tables of my own:
 * number and value of property sold - ``weighted_dashboard_manual_sales_table``
   and ``hfdi_projects_inventory_sales_data``, de-duplicated on project + unit
   as the RM cards do, each sale put on the seller's branch on the DMC roster.
-* new customers - ``customers.open_date`` by ``customers.branch``, and the
-  registration data's ``customer_open_date`` by ``current_branch``.
-* active customers - the registration data (``routine_registration_data.py``):
-  its 1/0 flag per customer per month, by ``current_branch``; one month, and
-  two months running as the RM cards count it.
+* new customers - ``customers.open_date`` by ``customers.branch``: all of
+  them, and only the registration report's segments and balance set.
+* active customers - ``sc_customer_monthly_activity`` (transaction_diary, a
+  row per customer per month), on the branch portfolio's book
+  (``hf_customer.branch``) or ``customers.branch``; one month, and two
+  months running as the RM cards count it. The registration data is an
+  emailed report, not a table - there is nothing of that name to read.
 
 Where a table spells the branch its own way, :func:`_place` reads it, and the
 probe lists every name it could not place rather than dropping it quietly.
@@ -261,48 +263,69 @@ def _property(year, month, measure, timeout_ms):
         GROUP BY 1""", [start, end], timeout_ms))
 
 
+#: routine_registration_data.py's customer segments it keeps (pb, sme).
+REPORT_SEGMENTS = ("MASS", "PRIVATE", "STANDARD", "LARGE ENTERPRISES",
+                   "MEDIUM ENTERPRISES", "SMALL ENTERPRISES")
+
+
 def _new_customers(year, month, source, timeout_ms):
+    """Customers opened this year to the month's end, by customers.branch -
+    all of them, or only the registration report's set (its pb/sme segments,
+    and customers with a balance row on daily_balance_movement)."""
     start, end = _span(year, month, True)
-    if source == "customers":
-        return _by_place(_rows("""
-            SELECT branch, COUNT(DISTINCT cust_id)
-            FROM customers
-            WHERE open_date >= %s AND open_date < %s
-            GROUP BY 1""", [start, end], timeout_ms))
-    from . import registration_activity as ra
-
-    table = ra.find_table()
-    key = ra.customer_key(table) if table else ""
-    if not key:
-        raise LookupError("the registration data is not on this database")
+    extra, params = "", [start, end]
+    if source == "report":
+        extra = """
+              AND trim(segment) = ANY(%s)
+              AND cust_id IN (SELECT cust_cif FROM daily_balance_movement)"""
+        params.append(list(REPORT_SEGMENTS))
     return _by_place(_rows(f"""
-        SELECT current_branch, COUNT(DISTINCT {key})
-        FROM {table}
-        WHERE customer_open_date >= %s AND customer_open_date < %s
-        GROUP BY 1""", [start, end], timeout_ms))
+        SELECT branch, COUNT(DISTINCT cust_id)
+        FROM customers
+        WHERE open_date >= %s AND open_date < %s{extra}
+        GROUP BY 1""", params, timeout_ms))
 
 
-def _active(year, month, both, timeout_ms):
-    """The registration data's activity flags for the month - alone, or
-    with the month before (two months running)."""
-    from . import registration_activity as ra
+#: Where each book puts a customer: the branch portfolio's (hf_customer),
+#: or the core customer record's.
+ACTIVE_BOOKS = {
+    "hf_customer": "SELECT cust_id::bigint AS cust_id, branch FROM hf_customer "
+                   "WHERE cust_id IS NOT NULL",
+    "customers": "SELECT cust_id::bigint AS cust_id, branch FROM customers "
+                 "WHERE cust_id IS NOT NULL",
+}
 
-    table = ra.find_table()
-    if not table:
-        raise LookupError("the registration data is not on this database")
-    columns = ra.month_columns(table, ra.PREFIX_ACTIVE)
+
+def _active(year, month, both, book, timeout_ms):
+    """Customers who transacted in the month - alone, or in the month before
+    as well - by branch. Read off ``sc_customer_monthly_activity``, the
+    monthly mirror ``load_activity_from_transactions`` builds from
+    transaction_diary (the branch portfolio's activity screen reads the
+    same history through ``customer_last_transaction``)."""
     this = datetime.date(year, month, 1)
     before = (this - datetime.timedelta(days=1)).replace(day=1)
-    if this not in columns or (both and before not in columns):
-        raise LookupError(f"the registration data has no "
-                          f"{this:%b %Y} activity column yet")
-    test = f"{columns[this]} = 1"
-    if both:
-        test += f" AND {columns[before]} = 1"
+    loaded = {m for (m,) in _rows("""
+        SELECT DISTINCT month FROM sc_customer_monthly_activity
+        WHERE month IN (%s, %s)""", [this, before], timeout_ms)}
+    if this not in loaded or (both and before not in loaded):
+        raise LookupError(
+            f"sc_customer_monthly_activity has no "
+            f"{(before if this in loaded else this):%b %Y} rows - run "
+            f"manage.py load_activity_from_transactions")
+    pair = ("""
+        JOIN sc_customer_monthly_activity p
+          ON p.cust_id = a.cust_id AND p.month = %s AND p.active"""
+            if both else "")
+    params = [before] if both else []
     return _by_place(_rows(f"""
-        SELECT current_branch, COUNT(*) FILTER (WHERE {test})
-        FROM {table}
-        GROUP BY 1""", [], timeout_ms))
+        WITH book AS (SELECT DISTINCT ON (cust_id) cust_id, branch
+                      FROM ({ACTIVE_BOOKS[book]}) b
+                      ORDER BY cust_id, branch)
+        SELECT book.branch, COUNT(DISTINCT a.cust_id)
+        FROM sc_customer_monthly_activity a{pair}
+        JOIN book ON book.cust_id = a.cust_id
+        WHERE a.month = %s AND a.active
+        GROUP BY 1""", params + [this], timeout_ms))
 
 
 def _codes_of(branch):
@@ -495,14 +518,18 @@ DEFINITIONS = {
     "New_Customers": [
         ("customers opened YTD by customers.branch", "customers",
          {"source": "customers"}),
-        ("customers opened YTD by current_branch (registration data)",
-         "customers", {"source": "registration"}),
+        ("customers opened YTD by customers.branch, registration report's "
+         "segments and balance set", "customers", {"source": "report"}),
     ],
     "Active_Customers": [
-        ("active in the month (registration data)", "active",
-         {"both": False}),
-        ("active in the month and the one before (registration data)",
-         "active", {"both": True}),
+        ("transacted in the month, hf_customer branch (branch portfolio "
+         "book)", "active", {"both": False, "book": "hf_customer"}),
+        ("transacted in the month and the one before, hf_customer branch",
+         "active", {"both": True, "book": "hf_customer"}),
+        ("transacted in the month, customers.branch", "active",
+         {"both": False, "book": "customers"}),
+        ("transacted in the month and the one before, customers.branch",
+         "active", {"both": True, "book": "customers"}),
     ],
 }
 #: Kinds whose totals come keyed by branch, not by brn_code.
@@ -537,7 +564,7 @@ def _totals(feed, year, month, timeout_ms, live=False, today=None):
     if feed["kind"] == "customers":
         return _new_customers(year, month, feed["source"], timeout_ms)
     if feed["kind"] == "active":
-        return _active(year, month, feed["both"], timeout_ms)
+        return _active(year, month, feed["both"], feed["book"], timeout_ms)
     sql, params = _sql(feed, year, month, live=live, today=today)
     return {str(code): float(value or 0)
             for code, value in _rows(sql, params, timeout_ms)}
