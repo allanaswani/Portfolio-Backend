@@ -1961,6 +1961,10 @@ def live_card(sales_code, engine_card, as_at):
     for wl in base["lines"]:
         if wl["typed"]:
             continue
+        if carried.get(wl["row"]) == month:
+            # The desk has this person's figure for this very month - the
+            # figure that is signed. Nothing live replaces it.
+            continue
         feed = feeds_live.get(_key(wl["feed"]))
         if feed is not None and spec.book == BRANCH_BUSINESS:
             only_first = set(feed) == {0}
@@ -1985,7 +1989,13 @@ def live_card(sales_code, engine_card, as_at):
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
-        if spec.book == BRANCH_BUSINESS:
+        if spec.book == BRANCH_BUSINESS or wl["row"] in carried:
+            # The RM card's own readers are not the desk's definitions (its
+            # "non-life" is every non-life policy, not VIC non-life; its
+            # active count is not the template's) and were never proven
+            # against the desk's figures. Where the desk has a figure, the
+            # desk's year to date stands; they only fill a line the desk
+            # has nothing at all for.
             continue
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)
