@@ -189,6 +189,25 @@ class StoredCardTests(TestCase):
         self.assertEqual(card["performance_score"], 0.5)
         self.assertIn("recorded 50.0%", card["coverage_note"])
 
+    def test_the_desks_september_figure_meets_septembers_target(self):
+        """October is open and the desk's latest is September: each line
+        shows September's year to date against September's target, not
+        ten months of target."""
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        lines = [ln for p in card["perspectives"] for ln in p["lines"]]
+        opening, training = lines[0], lines[1]
+        # 4 a month × 9 = 36, not 40; 48 a year × 9/12 = 36, not 40.
+        self.assertEqual((opening["ytd_target"], opening["ytd_actual"]),
+                         (36.0, 26))
+        self.assertAlmostEqual(opening["score"], 26 / 36)
+        self.assertEqual((training["ytd_target"], training["ytd_actual"]),
+                         (36.0, 40))
+        self.assertIn("(Sep 2026)", opening["as_at"])
+        self.assertAlmostEqual(card["performance_score"],
+                               round(0.5 * 26 / 36 + 0.3 + 0.24, 4))
+
     def test_a_month_before_any_card_says_so(self):
         from .live_scorecard import build_card
 

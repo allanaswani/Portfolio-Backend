@@ -2043,6 +2043,26 @@ def live_card(sales_code, engine_card, as_at):
         card = compute(book, template_live or actuals, holder, month,
                        overrides)
 
+    # A line carrying the desk's year to date from an earlier month is
+    # scored against that month's target: September's actual measured
+    # against ten months of target reads a month short. The workbook's own
+    # formulas, run for the month the figure is from, give the target,
+    # score and weighted score the desk itself would have shown.
+    by_month = {}
+    for wl in card["lines"]:
+        r = wl["row"]
+        then = carried.get(r)
+        if (wl["typed"] or not then or then >= month
+                or (r - 1, actual_col) in overrides or r in live_rows):
+            continue
+        if then not in by_month:
+            by_month[then] = {w["row"]: w for w in compute(
+                book, template_live or actuals, holder, then)["lines"]}
+        earlier = by_month[then].get(r)
+        if earlier is not None:
+            for field in ("ytd_target", "actual", "score", "weighted"):
+                wl[field] = earlier[field]
+
     total, waiting = 0.0, 0
     for wl in card["lines"]:
         live = ((wl["row"] - 1, actual_col) in overrides
