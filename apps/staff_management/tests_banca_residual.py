@@ -113,3 +113,41 @@ class TheLineIsNoLongerPendingTests(TestCase):
 
         self.assertNotIn("bancassurance_premiums", MANUAL_ACTUALS)
         self.assertNotIn("other_bancassurance_premiums", MANUAL_ACTUALS)
+
+
+class VicOnlyTests(TestCase):
+    """The RM VIC lines count Britam and Britam Life only, as the desk's
+    bancassurance report does - not every premium on the book."""
+
+    def _policy(self, r_number, product, underwriter, paid, code,
+                insured="A CUSTOMER"):
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO insurance_policies "
+                "(r_number, product, underwriter, insured, paid, premiums, "
+                " code, year, month, starting_date, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+                [r_number, product, underwriter, insured, paid, paid, code,
+                 "2026", "Aug", datetime.date(2026, 8, 1)])
+
+    def test_only_britam_is_vic_and_life_splits_from_non_life(self):
+        from .bb_live_feeds import vic_by_seller
+
+        self._policy("R1", "WHOLE LIFE", "Britam Life", 100_000, "AKL3116")
+        self._policy("R2", "Fire Material Damage", "Britam", 40_000,
+                     "AKL 3116")                       # the report drops spaces
+        self._policy("R3", "Private Comprehensive", "Jubilee", 900_000,
+                     "AKL3116")                        # not VIC
+        self._policy("R4", "Fire Material Damage", "APA", 70_000,
+                     "AKL3116")                        # VIC product, not Britam
+        self._policy("R5", "WHOLE LIFE", "Britam Life", 5_000, "AKL3116",
+                     insured="Hf Bancassurance Intermediary Ltd")  # excluded
+        got = vic_by_seller(2026, 9, 60_000)["AKL3116"]
+        self.assertEqual(got, {"vic_life": 100_000.0,
+                               "vic_non_life": 40_000.0})
+
+    def test_the_vic_lines_read_the_vic_figures(self):
+        for code, key in (("commercial_vic_premiums", "vic_total"),
+                          ("vic_premium", "vic_life"),
+                          ("group_synergies_20_0", "vic_non_life")):
+            self.assertEqual(SOURCES[code].actual_key, key)

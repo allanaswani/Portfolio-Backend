@@ -406,10 +406,13 @@ def _trade(year, month, timeout_ms):
     return out
 
 
-def _banca(year, month, part, timeout_ms, as_at=None):
-    """bancassurance_report.py: paid premiums of one kind, policies started
-    this year up to ``month``, by branch key. ``as_at`` is the report date
-    the accrued policies are spread to (the month's end when None)."""
+def _banca_policies(year, month, timeout_ms, as_at=None):
+    """bancassurance_report.py's policies → (branch, code, part, value):
+    paid premiums, policies started this year up to ``month``, each with
+    its kind - "vic_life", "vic_non_life", "non_vic" or None. ``as_at`` is
+    the report date the accrued policies are spread to (the month's end
+    when None). ``code`` is the seller's code as the report keys it: the
+    policy's code with its spaces taken out."""
     from .bb_banca_products import PRODUCTS
 
     rows = _rows("""
@@ -418,7 +421,8 @@ def _banca(year, month, part, timeout_ms, as_at=None):
                 PARTITION BY CONCAT(r_number, starting_date)
                 ORDER BY r_number, starting_date DESC) AS rn
             FROM insurance_policies)
-        SELECT branch, product, underwriter, insured, starting_date, paid
+        SELECT branch, product, underwriter, insured, starting_date, paid,
+               code
         FROM cte
         WHERE rn = 1 AND year = %s""", [str(year)], timeout_ms)
     if as_at is None:
@@ -427,13 +431,9 @@ def _banca(year, month, part, timeout_ms, as_at=None):
         days = (as_at.replace(day=28) + datetime.timedelta(days=4)
                 ).replace(day=1) - datetime.timedelta(days=1)
         report_month, fraction = as_at.month, as_at.day / days.day
-    out = {}
-    for branch, product, underwriter, insured, started, paid in rows:
+    for branch, product, underwriter, insured, started, paid, code in rows:
         if not isinstance(started, datetime.date) or started.year != year \
                 or started.month > month or insured in BANCA_EXCLUDED:
-            continue
-        name = BANCA_BRANCH.get(str(branch).strip() if branch else branch)
-        if name is None:
             continue
         vic, life = PRODUCTS.get(product, (None, None))
         if underwriter == "BRITAM":
@@ -442,19 +442,44 @@ def _banca(year, month, part, timeout_ms, as_at=None):
             vic = "vic"
         elif vic == "vic":
             vic = "non-vic"
-        if not ((part == "vic_life" and vic == "vic" and life == "life")
-                or (part == "vic_non_life" and vic == "vic"
-                    and life == "non-life")
-                or (part == "non_vic" and vic == "non-vic")):
-            continue
+        part = ("vic_life" if vic == "vic" and life == "life" else
+                "vic_non_life" if vic == "vic" and life == "non-life" else
+                "non_vic" if vic == "non-vic" else None)
         value = float(int(float(paid or 0)))
         if insured in BANCA_ACCRUED:
             start = started.month
             value = (0.0 if report_month < start else
                      value / (12 - start + 1)
                      * (report_month - start + fraction))
+        seller = str(code).replace(" ", "").upper() if code else ""
+        yield branch, seller, part, value
+
+
+def _banca(year, month, part, timeout_ms, as_at=None):
+    """bancassurance_report.py: paid premiums of one kind, by branch key."""
+    out = {}
+    for branch, _code, kind, value in _banca_policies(year, month, timeout_ms,
+                                                      as_at):
+        if kind != part:
+            continue
+        name = BANCA_BRANCH.get(str(branch).strip() if branch else branch)
+        if name is None:
+            continue
         key = branch_key(name)
         out[key] = out.get(key, 0.0) + value
+    return out
+
+
+def vic_by_seller(year, month, timeout_ms, as_at=None):
+    """bancassurance_report.py's VIC premiums per seller → {sales code:
+    {"vic_life": x, "vic_non_life": y}}: the RMs_and_BBCs_VIC tables, which
+    the report keys by the policy's code matched to the sales code."""
+    out = {}
+    for _branch, code, kind, value in _banca_policies(year, month, timeout_ms,
+                                                      as_at):
+        if kind in ("vic_life", "vic_non_life") and code:
+            row = out.setdefault(code, {"vic_life": 0.0, "vic_non_life": 0.0})
+            row[kind] += value
     return out
 
 

@@ -338,18 +338,19 @@ _register(
 # target_banca_life / target_banca_non_life — and premium_types_mapping
 # classifies each product with life_policy_check = "life". So the life /
 # non-life axis is the one both sides can express, and it is the one used.
+# Both read VIC only (Britam, Britam Life), as the desk's VIC tables do.
 _register(
     ["business_banking_vic_premiums", "personal_banking_vic_premiums",
      "vic_premium"],
-    Source(target_field="target_banca_life", actual_key="banca_life"))
+    Source(target_field="target_banca_life", actual_key="vic_life"))
 _register(
     ["group_synergies_20_0", "group_synergies_25_0",
      "commercial_trade_group_synergies_23_0",
      "personal_banking_group_synergies_23_0"],
-    Source(target_field="target_banca_non_life", actual_key="banca_non_life"))
+    Source(target_field="target_banca_non_life", actual_key="vic_non_life"))
 _register(
     ["commercial_vic_premiums"],
-    Source(target_field="target_banca_value", actual_key="banca_total"))
+    Source(target_field="target_banca_value", actual_key="vic_total"))
 
 # "Renewals and other banca products" — the RESIDUAL of the book, and that
 # is what makes it safe to count.
@@ -2205,6 +2206,37 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     attempt(("banca_total", "banca_life", "banca_non_life", "banca_other"),
             premiums)
+
+    # ── VIC premiums ──────────────────────────────────────────────────────
+    # The desk's VIC lines are bancassurance_report.py's RMs_and_BBCs_VIC
+    # tables: Britam and Britam Life only, paid premiums, the policies
+    # de-duplicated and the Britam Holdings ones spread over the year - the
+    # rules the branch cards' proven feed already follows. Every premium on
+    # the book (banca_*) read 15,293,137.18 for Abed Lelgo's September
+    # against the desk's 6,806,352.
+    def vic():
+        from django.core.cache import cache
+
+        from . import bb_live_feeds
+
+        upto = as_at or today
+        key = f"vic_by_seller:{upto.isoformat()}"
+        sellers = cache.get(key)
+        if sellers is None:
+            sellers = bb_live_feeds.vic_by_seller(
+                upto.year, upto.month, 120_000, as_at=upto)
+            cache.set(key, sellers, 3600)
+        row = sellers.get(sales_code.strip().replace(" ", "").upper(),
+                          {"vic_life": 0.0, "vic_non_life": 0.0})
+        label = f"VIC (Britam) paid premiums, as at {upto.day} {upto:%b %Y}"
+        return {
+            "vic_life": _figure(row["vic_life"], upto, label),
+            "vic_non_life": _figure(row["vic_non_life"], upto, label),
+            "vic_total": _figure(row["vic_life"] + row["vic_non_life"], upto,
+                                 label),
+        }
+
+    attempt(("vic_life", "vic_non_life", "vic_total"), vic)
 
     # ── Trade finance ─────────────────────────────────────────────────────
     def trade():
