@@ -324,11 +324,11 @@ class SalesWorkbookTests(TestCase):
             build_card("CM1", as_at=datetime.date(2026, 4, 30)).get(
                 "workbook_card"), bo.SALES)
 
-    def test_a_proven_line_reads_live_and_the_rest_keep_the_desk(self):
-        """April is open. New Customers has been proven against a closed
-        month, so the warehouse's 9 is read against April's target; Trade
-        Finance has not, so it keeps the desk's March figure against
-        March's target."""
+    def test_the_open_month_reads_the_warehouse_on_every_rm_line(self):
+        """April is open. Both lines read the warehouse against April's
+        targets - no template is waited for. New Customers was found to
+        give the desk's figures, so it carries no note; Trade Finance was
+        found to differ, and its card says so."""
         from . import sales_live_feeds
         from .scorecard_automation.models import ScKpi
 
@@ -346,29 +346,43 @@ class SalesWorkbookTests(TestCase):
              "ytd_actual": 9.0},
             {"kpi_code": "tf", "kpi_name": "Trade Finance",
              "ytd_actual": 99.0}]}]}
-        april = datetime.date(2026, 4, 30)
-
-        # Nothing proven: both lines are the desk's March figures.
-        card = bo.live_card("CM1", engine, april)
-        customers, trade = [ln for p in card["perspectives"]
-                            for ln in p["lines"]]
-        self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
-                         (6.0, 6))
-        self.assertIn("(Mar 2026)", customers["as_at"])
-
         bo.save_file(sales_live_feeds.STORE_KIND, {
-            "newcustomers|newcustomers": {"name": "New Customers"}})
-        card = bo.live_card("CM1", engine, april)
+            "newcustomers|newcustomers": {
+                "name": "New Customers", "match": 0.95, "live": True,
+                "month": "2026-03"},
+            "tradefinanceincome|tradefinance": {
+                "name": "Trade Finance", "match": 0.5, "live": False,
+                "month": "2026-03"}})
+
+        card = bo.live_card("CM1", engine, datetime.date(2026, 4, 30))
         customers, trade = [ln for p in card["perspectives"]
                             for ln in p["lines"]]
         # 24 a year, four months: 8; the warehouse's 9.
         self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
                          (8.0, 9.0))
-        self.assertIn("live", customers["as_at"])
-        # Not proven: the desk's 14 against March's 14, never the 99.
-        self.assertEqual((trade["ytd_target"], trade["ytd_actual"]),
-                         (14.0, 14))
-        self.assertIn("(Mar 2026)", trade["as_at"])
+        self.assertEqual(customers["as_at"], "live, as at 30 Apr 2026")
+        self.assertEqual(trade["ytd_actual"], 99.0)
+        self.assertIn("differs from the desk's (matched 50% of RMs for "
+                      "Mar 2026)", trade["as_at"])
+
+    def test_a_line_the_warehouse_has_nothing_for_keeps_the_desk(self):
+        from .scorecard_automation.models import ScKpi
+
+        book = sales_book()
+        bo.rebuild(book, SALES_ACTUALS, loaded_by="test")
+        bo.save_file("sales_scorecards", book)
+        bo.save_file("sales_actuals", SALES_ACTUALS)
+        ScKpi.objects.create(kpi_code="nc", kpi_name="New Customers",
+                             score_cap=1.2, actuals_sheet="New_Customers")
+        engine = {"perspectives": [{"lines": [
+            {"kpi_code": "nc", "kpi_name": "New Customers",
+             "ytd_actual": None}]}]}
+        card = bo.live_card("CM1", engine, datetime.date(2026, 4, 30))
+        customers = card["perspectives"][0]["lines"][0]
+        # The desk's March 6 against March's target 6, said so.
+        self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
+                         (6.0, 6))
+        self.assertIn("(Mar 2026)", customers["as_at"])
 
     def test_the_probe_compares_the_desk_with_the_warehouse(self):
         from . import sales_live_feeds

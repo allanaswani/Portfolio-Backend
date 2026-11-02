@@ -2005,13 +2005,14 @@ def live_card(sales_code, engine_card, as_at):
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
         if spec.book == BRANCH_BUSINESS or (
-                wl["row"] in carried
-                and sales_live_feeds.line_key(wl) not in sales_proven):
-            # The RM card's own readers are not all the desk's definitions
-            # (its "non-life" is every non-life policy, not VIC non-life).
-            # Where the desk has a figure, its year to date stands - unless
-            # sales_feed_probe has shown, on a closed month, that the
-            # warehouse gives the desk's figures on this line.
+                wl["row"] in carried and spec.book != SALES):
+            # Back office: where the desk has a figure, its year to date
+            # stands unless bo_feed_probe proved the feed (read above).
+            # RM cards read the warehouse on every line it has a figure for
+            # - the month is live, not waiting on a template - and a line
+            # whose warehouse reading sales_feed_probe found to differ from
+            # the desk's says so on the card. Only a line the warehouse has
+            # nothing for keeps the desk's latest figure.
             continue
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)
@@ -2112,6 +2113,10 @@ def live_card(sales_code, engine_card, as_at):
                     f"({datetime.date(as_at.year, wl['carried'], 1):%b %Y})")
             else:
                 ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
+                if spec.book == SALES:
+                    note = sales_live_feeds.note(sales_proven, wl)
+                    if note:
+                        ln["as_at"] += f" - {note}"
     payload.update({
         "live": True,
         "pending_lines": waiting,

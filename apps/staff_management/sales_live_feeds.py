@@ -10,11 +10,11 @@ month waits for the next template.
 :func:`probe` settles it line by line. For a month the desk has closed it
 reads every RM's card twice: the workbook's actual over the desk's template,
 and the engine's figure from the warehouse alone (no loaded figure, see
-``_engine_card(warehouse_only=True)``). A line on which the warehouse gives
-the desk's figure for at least :data:`PASS_SHARE` of the RMs is stored as
-proven; the live card then reads it from the warehouse in the open month.
-A line that does not match stays on the desk's figure, and the report says
-by how much and for whom.
+``_engine_card(warehouse_only=True)``). Every line's result is stored. The
+open month reads the warehouse on every RM line it has a figure for; a
+line on which the warehouse gave the desk's figure for fewer than
+:data:`PASS_SHARE` of the RMs says so on the card, and the report says by
+how much and for whom - the list of definitions still to port.
 
 Run on the host (the warehouse is there):
 
@@ -122,7 +122,7 @@ def probe(year, month, out=print):
         if n % 25 == 0:
             out(f"  ... {n} of {len(people)}")
 
-    found, tested = {}, set()
+    results = {}
     for key, entry in sorted(seen.items(), key=lambda kv: kv[1]["name"]):
         # Only a figure that is not nought is proof: a line nought for
         # nearly everybody would otherwise "match" a warehouse that has
@@ -131,13 +131,13 @@ def probe(year, month, out=print):
         label = f"{entry['name'][:38]:38} [{entry['sheet']}]"
         if len(rows) < MIN_PEOPLE:
             out(f"  {label}  only {len(rows)} RM(s) with a desk figure - "
-                f"not enough to prove; stays on the desk's figure")
+                f"not enough to compare")
             continue
-        tested.add(key)
         hits = [r for r in rows if _num(r[2]) and same(r[1], r[2])]
         none = sum(1 for r in rows if not _num(r[2]))
         share = len(hits) / len(rows)
-        verdict = "LIVE" if share >= PASS_SHARE else "stays on the desk"
+        verdict = ("same as the desk" if share >= PASS_SHARE
+                   else "differs from the desk")
         out(f"  {label} {share:6.1%} of {len(rows):3} match"
             f"{f', {none} with no warehouse figure' if none else ''}"
             f"  -> {verdict}")
@@ -148,20 +148,20 @@ def probe(year, month, out=print):
                 said = (f"{warehouse:,.2f}" if _num(warehouse)
                         else "nothing")
                 out(f"      {who}: desk {desk:,.2f}, warehouse {said}")
-        else:
-            found[key] = {"name": entry["name"], "sheet": entry["sheet"],
-                          "match": share, "people": len(rows),
-                          "month": f"{year}-{month:02d}"}
+        results[key] = {"name": entry["name"], "sheet": entry["sheet"],
+                        "match": share, "people": len(rows),
+                        "live": share >= PASS_SHARE,
+                        "month": f"{year}-{month:02d}"}
 
-    # A line proven before and failing now is switched off again.
-    stored = {k: v for k, v in (saved(STORE_KIND) or {}).items()
-              if k not in tested}
-    stored.update(found)
+    stored = saved(STORE_KIND) or {}
+    stored.update(results)
     save_file(STORE_KIND, stored, f"probe {year}-{month:02d}", "probe")
-    out(f"{len(found)} line(s) now read live on the RM cards. Lines marked "
-        f"'stays on the desk' keep the desk's latest figure until the "
-        f"warehouse gives the desk's numbers.")
-    return found
+    proven_now = sorted(v["name"] for v in results.values() if v["live"])
+    out(f"{len(proven_now)} line(s) give the desk's own figures: "
+        f"{', '.join(proven_now) or 'none'}. Every RM line reads the "
+        f"warehouse live; the others say on the card that the warehouse "
+        f"counts them differently from the desk.")
+    return results
 
 
 def explain(year, month, who, out=print):
@@ -194,6 +194,21 @@ def explain(year, month, who, out=print):
 
 
 def proven():
+    """Every line the probe has compared → its result."""
     from .workbook_cards import saved
 
     return saved(STORE_KIND) or {}
+
+
+def note(results, wl):
+    """What a live RM line's card should say about its figure: nothing
+    where the warehouse gave the desk's own figures on a closed month,
+    otherwise how far apart they were, or that nobody has compared them."""
+    found = results.get(line_key(wl))
+    if found is None:
+        return "warehouse figure, not yet compared with the desk's"
+    if found.get("live", True):
+        return ""
+    when = datetime.date(*map(int, found["month"].split("-")), 1)
+    return (f"warehouse definition, differs from the desk's (matched "
+            f"{found['match']:.0%} of RMs for {when:%b %Y})")
