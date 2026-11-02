@@ -365,6 +365,28 @@ class SalesWorkbookTests(TestCase):
         self.assertIn("differs from the desk's (matched 50% of RMs for "
                       "Mar 2026)", trade["as_at"])
 
+    def test_a_loss_goes_into_the_card_in_the_templates_sign(self):
+        """PL_Charge stores a loan loss as a negative; the engine reads the
+        charge as a positive. The card's formula reads the template's sign,
+        so a positive charge scored as beating a negative target."""
+        from .scorecard_automation.models import ScKpi
+
+        book = sales_book()
+        bo.rebuild(book, SALES_ACTUALS, loaded_by="test")
+        bo.save_file("sales_scorecards", book)
+        bo.save_file("sales_actuals", SALES_ACTUALS)
+        ScKpi.objects.create(kpi_code="tf", kpi_name="Trade Finance",
+                             score_cap=1.2, negate=True,
+                             actuals_sheet="Trade_Finance_Income")
+        # The fixture's sheet only grows, so the flipped figure must be above
+        # the desk's 14 to be read: -20 from the engine is +20 on the card.
+        engine = {"perspectives": [{"lines": [
+            {"kpi_code": "tf", "kpi_name": "Trade Finance",
+             "ytd_actual": -20.0}]}]}
+        card = bo.live_card("CM1", engine, datetime.date(2026, 4, 30))
+        trade = [ln for p in card["perspectives"] for ln in p["lines"]][1]
+        self.assertEqual(trade["ytd_actual"], 20.0)
+
     def test_a_line_the_warehouse_has_nothing_for_keeps_the_desk(self):
         from .scorecard_automation.models import ScKpi
 

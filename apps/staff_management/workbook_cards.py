@@ -1907,11 +1907,16 @@ def live_card(sales_code, engine_card, as_at):
     # template sheet that line reads - which is what the workbook names too.
     live_lines = [ln for p in (engine_card or {}).get("perspectives", [])
                   for ln in p["lines"]]
-    feeds = dict(ScKpi.objects.filter(
+    kpis = {k: (sheet, negate) for k, sheet, negate in ScKpi.objects.filter(
         kpi_code__in=[ln["kpi_code"] for ln in live_lines])
-        .values_list("kpi_code", "actuals_sheet"))
-    pool = [{"feed": _key(feeds.get(ln["kpi_code"]) or ""),
-             "name": _key(ln.get("kpi_name")), "line": ln}
+        .values_list("kpi_code", "actuals_sheet", "negate")}
+    pool = [{"feed": _key((kpis.get(ln["kpi_code"]) or ("", False))[0] or ""),
+             "name": _key(ln.get("kpi_name")), "line": ln,
+             # The template stores this line the other way round (PL_Charge
+             # holds a loan loss as a negative; the engine reads the charge
+             # as a positive), and the card's formula reads the template's
+             # sign: +653,403 against a target of -1,150,476 scored 120%.
+             "negate": bool((kpis.get(ln["kpi_code"]) or ("", False))[1])}
             for ln in live_lines]
 
     # Pass one with the template's own figures for the month, so the rows
@@ -2022,6 +2027,8 @@ def live_card(sales_code, engine_card, as_at):
             continue
         pool.remove(match)
         value = match["line"].get("ytd_actual")
+        if match["negate"] and _num(value):
+            value = -value
         found[wl["row"]] = match["line"]
         if _num(value):
             overrides[(wl["row"] - 1, actual_col)] = float(value)

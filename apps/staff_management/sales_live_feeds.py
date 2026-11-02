@@ -62,11 +62,13 @@ def _pairs(sales_code, book, actuals, holder, month, as_at):
     if not engine.get("has_card"):
         return []
     lines = [ln for p in engine.get("perspectives", []) for ln in p["lines"]]
-    feeds = dict(ScKpi.objects.filter(
+    kpis = {k: (sheet, negate) for k, sheet, negate in ScKpi.objects.filter(
         kpi_code__in=[ln["kpi_code"] for ln in lines])
-        .values_list("kpi_code", "actuals_sheet"))
-    pool = [{"feed": _key(feeds.get(ln["kpi_code"]) or ""),
-             "name": _key(ln.get("kpi_name")), "line": ln} for ln in lines]
+        .values_list("kpi_code", "actuals_sheet", "negate")}
+    pool = [{"feed": _key((kpis.get(ln["kpi_code"]) or ("", False))[0] or ""),
+             "name": _key(ln.get("kpi_name")), "line": ln,
+             "negate": bool((kpis.get(ln["kpi_code"]) or ("", False))[1])}
+            for ln in lines]
     out = []
     for wl in compute(book, actuals, holder, month)["lines"]:
         if wl["typed"] or not wl["feed"]:
@@ -78,6 +80,9 @@ def _pairs(sales_code, book, actuals, holder, month, as_at):
         if match is not None:
             pool.remove(match)
         value = match["line"].get("ytd_actual") if match else None
+        # Compared in the template's own sign, as live_card writes it.
+        if match and match["negate"] and isinstance(value, (int, float)):
+            value = -value
         out.append((wl, wl["actual"], value))
     return out
 
@@ -132,6 +137,9 @@ def probe(year, month, out=print):
         if len(rows) < MIN_PEOPLE:
             out(f"  {label}  only {len(rows)} RM(s) with a desk figure - "
                 f"not enough to compare")
+            results[key] = {"name": entry["name"], "sheet": entry["sheet"],
+                            "people": len(rows), "live": False, "few": True,
+                            "month": f"{year}-{month:02d}"}
             continue
         hits = [r for r in rows if _num(r[2]) and same(r[1], r[2])]
         none = sum(1 for r in rows if not _num(r[2]))
@@ -156,7 +164,8 @@ def probe(year, month, out=print):
     stored = saved(STORE_KIND) or {}
     stored.update(results)
     save_file(STORE_KIND, stored, f"probe {year}-{month:02d}", "probe")
-    proven_now = sorted(v["name"] for v in results.values() if v["live"])
+    proven_now = sorted(v["name"] for v in results.values()
+                        if v["live"])
     out(f"{len(proven_now)} line(s) give the desk's own figures: "
         f"{', '.join(proven_now) or 'none'}. Every RM line reads the "
         f"warehouse live; the others say on the card that the warehouse "
@@ -209,6 +218,9 @@ def note(results, wl):
         return "warehouse figure, not yet compared with the desk's"
     if found.get("live", True):
         return ""
+    if found.get("few"):
+        return ("warehouse figure - too few RMs carry this line to compare "
+                "it with the desk's")
     when = datetime.date(*map(int, found["month"].split("-")), 1)
     return (f"warehouse definition, differs from the desk's (matched "
             f"{found['match']:.0%} of RMs for {when:%b %Y})")
