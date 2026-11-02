@@ -3650,8 +3650,12 @@ def build_card(sales_code, profile=None, as_at=None):
     return card
 
 
-def _engine_card(sales_code, profile=None, as_at=None):
+def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
     """The whole card for one RM.
+
+    ``warehouse_only`` leaves out every loaded figure, so each line shows
+    only what the warehouse itself read - what sales_live_feeds compares
+    with the desk's template to decide which lines may run live.
 
     ``as_at`` is the month END the card is for - 30 September for a
     September card. Omitted, the card is the live one and reads the last
@@ -3725,8 +3729,9 @@ def _engine_card(sales_code, profile=None, as_at=None):
     # A sales month the desk has closed - its actuals template loaded - is the
     # sales workbook's own card for that month: its formulas over the
     # template, the score the desk's run gives. The month still open has no
-    # template yet, and is the live card below.
-    if as_at is not None:
+    # template yet, and is the live card below. Asked for the warehouse alone,
+    # a closed month is computed like an open one, so it can be compared.
+    if as_at is not None and not warehouse_only:
         from django.db import transaction
 
         from . import workbook_cards
@@ -3833,6 +3838,8 @@ def _engine_card(sales_code, profile=None, as_at=None):
 
     from_a_signed_card = set()
     try:
+        if warehouse_only:
+            raise LookupError("loaded figures left out")
         with transaction.atomic():
             for row in ScEmployeePerformanceActual.objects.filter(
                     sales_code__iexact=sales_code.strip(),

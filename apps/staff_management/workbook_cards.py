@@ -1942,6 +1942,10 @@ def live_card(sales_code, engine_card, as_at):
         reader = lambda feed: bb_live_feeds.live_value(  # noqa: E731
             feed, holder.branch, as_at)
         blocks = _line_blocks(book, actuals, holder, month, base, feeds_live)
+    from . import sales_live_feeds
+
+    # RM lines proven against a closed month read the warehouse.
+    sales_proven = sales_live_feeds.proven() if spec.book == SALES else {}
     live_rows, template_live = set(), None
     # Every line starts from the desk's latest year-to-date figure; a live
     # one then writes over it. All three books.
@@ -2000,13 +2004,14 @@ def live_card(sales_code, engine_card, as_at):
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
-        if spec.book == BRANCH_BUSINESS or wl["row"] in carried:
-            # The RM card's own readers are not the desk's definitions (its
-            # "non-life" is every non-life policy, not VIC non-life; its
-            # active count is not the template's) and were never proven
-            # against the desk's figures. Where the desk has a figure, the
-            # desk's year to date stands; they only fill a line the desk
-            # has nothing at all for.
+        if spec.book == BRANCH_BUSINESS or (
+                wl["row"] in carried
+                and sales_live_feeds.line_key(wl) not in sales_proven):
+            # The RM card's own readers are not all the desk's definitions
+            # (its "non-life" is every non-life policy, not VIC non-life).
+            # Where the desk has a figure, its year to date stands - unless
+            # sales_feed_probe has shown, on a closed month, that the
+            # warehouse gives the desk's figures on this line.
             continue
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)

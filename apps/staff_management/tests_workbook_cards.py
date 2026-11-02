@@ -323,3 +323,57 @@ class SalesWorkbookTests(TestCase):
         self.assertNotEqual(
             build_card("CM1", as_at=datetime.date(2026, 4, 30)).get(
                 "workbook_card"), bo.SALES)
+
+    def test_a_proven_line_reads_live_and_the_rest_keep_the_desk(self):
+        """April is open. New Customers has been proven against a closed
+        month, so the warehouse's 9 is read against April's target; Trade
+        Finance has not, so it keeps the desk's March figure against
+        March's target."""
+        from . import sales_live_feeds
+        from .scorecard_automation.models import ScKpi
+
+        book = sales_book()
+        bo.rebuild(book, SALES_ACTUALS, loaded_by="test")
+        bo.save_file("sales_scorecards", book)
+        bo.save_file("sales_actuals", SALES_ACTUALS)
+        for code, name, sheet in (("nc", "New Customers", "New_Customers"),
+                                  ("tf", "Trade Finance",
+                                   "Trade_Finance_Income")):
+            ScKpi.objects.create(kpi_code=code, kpi_name=name,
+                                 score_cap=1.2, actuals_sheet=sheet)
+        engine = {"perspectives": [{"lines": [
+            {"kpi_code": "nc", "kpi_name": "New Customers",
+             "ytd_actual": 9.0},
+            {"kpi_code": "tf", "kpi_name": "Trade Finance",
+             "ytd_actual": 99.0}]}]}
+        april = datetime.date(2026, 4, 30)
+
+        # Nothing proven: both lines are the desk's March figures.
+        card = bo.live_card("CM1", engine, april)
+        customers, trade = [ln for p in card["perspectives"]
+                            for ln in p["lines"]]
+        self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
+                         (6.0, 6))
+        self.assertIn("(Mar 2026)", customers["as_at"])
+
+        bo.save_file(sales_live_feeds.STORE_KIND, {
+            "newcustomers|newcustomers": {"name": "New Customers"}})
+        card = bo.live_card("CM1", engine, april)
+        customers, trade = [ln for p in card["perspectives"]
+                            for ln in p["lines"]]
+        # 24 a year, four months: 8; the warehouse's 9.
+        self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
+                         (8.0, 9.0))
+        self.assertIn("live", customers["as_at"])
+        # Not proven: the desk's 14 against March's 14, never the 99.
+        self.assertEqual((trade["ytd_target"], trade["ytd_actual"]),
+                         (14.0, 14))
+        self.assertIn("(Mar 2026)", trade["as_at"])
+
+    def test_the_probe_compares_the_desk_with_the_warehouse(self):
+        from . import sales_live_feeds
+
+        self.assertTrue(sales_live_feeds.same(1_000_000.0, 1_000_400.0))
+        self.assertFalse(sales_live_feeds.same(1_000_000.0, 1_002_000.0))
+        self.assertTrue(sales_live_feeds.same(0.9167, 0.91667))
+        self.assertFalse(sales_live_feeds.same(6.0, 5.0))
