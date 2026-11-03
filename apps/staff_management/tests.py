@@ -152,6 +152,28 @@ class LegacyStaffManagementEndpointTests(TestCase):
         from .serializers import DrawdownDailySerializer
         self.assertIs(DrawdownCsvUploadView.serializer_class, DrawdownDailySerializer)
 
+    def test_only_administration_may_delete_a_drawdown(self):
+        """A deleted drawdown cannot be brought back, so DELETE is refused to
+        anyone outside Administration - before any row is looked up. Reading
+        and editing keep the plain sign-in they always had."""
+        from rest_framework.permissions import IsAuthenticated
+
+        from core.permissions import IsAdministrationUser
+
+        from .legacy_views import DrawdownDailyDetailView
+
+        r = self.client.delete("/staff_management/drawdown-daily/15343/")
+        self.assertEqual(r.status_code, 403, r.content)
+
+        def gates(method):
+            view = DrawdownDailyDetailView()
+            view.request = type("R", (), {"method": method})()
+            return [type(p) for p in view.get_permissions()]
+
+        self.assertEqual(gates("DELETE"), [IsAuthenticated, IsAdministrationUser])
+        self.assertEqual(gates("GET"), [IsAuthenticated])
+        self.assertEqual(gates("PUT"), [IsAuthenticated])
+
     def test_sales_people_csv_upload(self):
         csv_content = b"sales_code,sales_person,branch,role,team_leader\nT01,John,Nairobi,Telesales,Lead A\n"
         upload = SimpleUploadedFile("ts.csv", csv_content, content_type="text/csv")

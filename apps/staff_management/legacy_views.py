@@ -214,6 +214,27 @@ class DrawdownDailyDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = DrawdownDailySerializer
     queryset = DrawdownDaily.objects.all()
 
+    def get_permissions(self):
+        # A deleted drawdown cannot be brought back (drawdown_daily keeps no
+        # history), so only Administration - the menu this page sits in - may
+        # delete. Reading and editing are as they were.
+        if self.request.method == "DELETE":
+            from core.permissions import IsAdministrationUser
+
+            return [IsAuthenticated(), IsAdministrationUser()]
+        return super().get_permissions()
+
+    def perform_destroy(self, instance):
+        import logging
+
+        # The row as it stood, so a delete can be traced and re-keyed if it
+        # was a mistake.
+        logging.getLogger(__name__).warning(
+            "drawdown_daily %s deleted by %s: %s", instance.pk,
+            self.request.user.get_username(),
+            DrawdownDailySerializer(instance).data)
+        instance.delete()
+
 
 # ── Insurance policies (managed) ──────────────────────────────────────────────
 
