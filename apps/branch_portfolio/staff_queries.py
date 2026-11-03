@@ -43,9 +43,19 @@ _OVERLAY_TABLE = "employee_roster_overlay"
 
 # Matches a branch by NAME (suffix-insensitive, so "HEAD OFFICE" == "HEAD OFFICE
 # BRANCH") OR by any of its numeric codes.
+#
+# Identifier columns are compared as normalised TEXT. These are ``managed = False``
+# mirrors that the ETL drops and recreates, and the same column has come back as
+# integer, numeric (``12345.00000``) or varchar. A typed comparison then fails the
+# whole page with "operator does not exist: character varying = integer"
+# (2026-11-03, staff/list and staff/departments). As text every spelling matches.
+def _id_text(col):
+    return r"NULLIF(regexp_replace(btrim((" + col + r")::text), '\.0+$', ''), '')"
+
+
 _BRANCH_PREDICATE = (
     r"(regexp_replace(upper(btrim(staff_branch)), '\s+BRANCH$', '') = %s"
-    r" OR brn_code = ANY(%s))"
+    r" OR " + _id_text("brn_code") + r" = ANY(%s::text[]))"
 )
 
 # Both DMC tables spell the exit flag differently — `exit` on the final table,
@@ -97,7 +107,8 @@ _HR_SELECT_ABSENT = """
     NULL::text AS gender, NULL::int AS service_years,
     NULL::timestamp AS date_of_employment, 0 AS hr_exited"""
 
-_HR_JOIN = "\nLEFT JOIN  hr ON hr.staff_id = s.staff_pf_number"
+_HR_JOIN = ("\nLEFT JOIN  hr ON " + _id_text("hr.staff_id")
+            + " = " + _id_text("s.staff_pf_number"))
 
 _OVERLAY_SELECT = """
     o.standard_department AS overlay_department,
@@ -107,7 +118,8 @@ _OVERLAY_SELECT_ABSENT = """
     NULL::text AS overlay_department,
     NULL::text AS overlay_role"""
 
-_OVERLAY_JOIN = "\nLEFT JOIN  employee_roster_overlay o ON o.staff_id = s.staff_pf_number::text"
+_OVERLAY_JOIN = ("\nLEFT JOIN  employee_roster_overlay o ON " + _id_text("o.staff_id")
+                 + " = " + _id_text("s.staff_pf_number"))
 
 
 def _table_exists(name):
@@ -165,7 +177,8 @@ def branch_staff(branch_name, codes, all_branches=False):
     (blank name AND no codes) returns nothing rather than the whole company.
     """
     key = normalize_branch(branch_name)
-    code_list = [int(c) for c in (codes or [])]
+    # Text, to match _id_text(brn_code); int() first so "042" and 42 agree.
+    code_list = [str(int(c)) for c in (codes or [])]
 
     if all_branches:
         predicate, params = "TRUE", []
