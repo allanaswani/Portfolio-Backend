@@ -1,8 +1,8 @@
 """Correct profiles that carry another person's sales code.
 
     manage.py fix_sales_codes                      # lists every change, saves nothing
-    manage.py fix_sales_codes --apply --csv /data/apps/datascience/sales_codes_before.csv
-    manage.py fix_sales_codes --restore /data/apps/datascience/sales_codes_before.csv
+    manage.py fix_sales_codes --apply --csv /app/etl_requests/sales_codes_before.csv
+    manage.py fix_sales_codes --restore /app/etl_requests/sales_codes_before.csv
 
 The right code is looked up from the account's own address and login on the Branch
 Managers page, the Sales Staff page, the HR roster and the reporting lines, and from
@@ -16,6 +16,8 @@ Each account comes out as one of:
 
 An account in the Strategy group is never listed, since they carry codes on purpose.
 Profile has no change history, so --apply needs --csv: that file is the way back.
+Keep it under /app/etl_requests, the folder mounted from the host, or it is lost
+when the container is recreated.
 """
 
 import csv
