@@ -224,6 +224,8 @@ ROLE_TO_TIER = {
     "cx": ROLE_MANAGER,
     # Gated on the group NAME, not the tier - this only decides the badge.
     "audit": ROLE_MANAGER,
+    # Officer is the default for any account, so this raises nobody's tier.
+    "usage_report_excluded": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).
