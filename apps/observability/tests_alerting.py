@@ -140,11 +140,18 @@ class ServiceProbeTests(APITestCase):
         self.assertIn("RECOVERED", sent[0][1])
         self.assertEqual(alerts.check_services(), [])
 
-    def test_up_but_slow_is_reported_as_slow_not_down(self):
+    def test_up_but_slow_mails_nobody(self):
+        """It is answering, so nothing needs doing. The state is still kept."""
         self._probe(True, duration=5000)
-        sent = alerts.check_services()
-        self.assertEqual(len(sent), 1)
-        self.assertIn("slowly", sent[0][1])
+        self.assertEqual(alerts.check_services(), [])
+        self.assertEqual(AlertState.objects.get(
+            key=f"service:{self.service.slug}").state, "slow")
+
+    def test_coming_back_from_slow_mails_nobody(self):
+        self._probe(True, duration=5000)
+        alerts.check_services()
+        self._probe(True, duration=10)
+        self.assertEqual(alerts.check_services(), [])
 
     def test_a_service_with_no_url_is_not_probed_or_alerted(self):
         """Seeded without a URL on purpose; it must not report as down."""
@@ -174,11 +181,49 @@ class ErrorRateTests(APITestCase):
         self._requests(3, 2)
         self.assertEqual(alerts.check_error_rate(), [])
 
-    def test_a_high_rate_with_real_traffic_is(self):
+    def test_one_high_reading_mails_nobody(self):
+        """It may be gone by the next check."""
         self._requests(100, 20)
+        self.assertEqual(alerts.check_error_rate(), [])
+
+    def test_a_second_high_reading_says_what_to_do(self):
+        self._requests(100, 20)
+        alerts.check_error_rate()
         sent = alerts.check_error_rate()
         self.assertEqual(len(sent), 1)
-        self.assertIn("Error rate", sent[0][1])
+        self.assertIn("ACTION NEEDED", sent[0][1])
+        body = sent[0][2]
+        for heading in ("What happened:", "Impact:", "What the system did:",
+                        "What you need to do:", "Failing most:"):
+            self.assertIn(heading, body)
+
+    def test_a_burst_that_clears_by_itself_mails_nobody(self):
+        """"Server errors are back to 2.15%" - about a problem nobody was told
+        of, asking nothing of them."""
+        self._requests(100, 20)
+        alerts.check_error_rate()
+        RequestMetric.objects.all().delete()
+        self._requests(100, 1)
+        self.assertEqual(alerts.check_error_rate(), [])
+
+    def test_only_a_mailed_problem_is_closed_by_a_mail(self):
+        self._requests(100, 20)
+        alerts.check_error_rate()
+        alerts.check_error_rate()
+        RequestMetric.objects.all().delete()
+        self._requests(100, 1)
+        sent = alerts.check_error_rate()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Resolved", sent[0][1])
+
+    def test_only_the_last_15_minutes_count(self):
+        """The hour's figure went on reporting a problem long after it stopped."""
+        self._requests(100, 20)
+        RequestMetric.objects.update(
+            created_at=timezone.now() - timedelta(minutes=40))
+        self._requests(100, 0)
+        alerts.check_error_rate()
+        self.assertEqual(alerts.check_error_rate(), [])
 
     def test_a_healthy_rate_does_not_alert(self):
         self._requests(100, 0)
@@ -186,6 +231,7 @@ class ErrorRateTests(APITestCase):
 
     def test_it_does_not_repeat_while_it_stays_high(self):
         self._requests(100, 20)
+        alerts.check_error_rate()
         alerts.check_error_rate()
         self.assertEqual(alerts.check_error_rate(), [])
 
@@ -432,8 +478,18 @@ class DigestTests(APITestCase):
         call_command("send_daily_digest")
         self.assertEqual(len(mail.outbox), 1)
         body = mail.outbox[0].body
-        self.assertIn("APPLICATION", body)
+        self.assertIn("Please find attached", body)
         self.assertIn("not measured", body)
+        name, _content, kind = mail.outbox[0].attachments[0]
+        self.assertTrue(name.endswith(".xlsx"))
+        self.assertIn("spreadsheetml", kind)
+
+    def test_sensitive_change_subscribers_get_it_too(self):
+        AlertRecipient.objects.create(
+            email="audit@hf.test", downtime=False, data_health=False,
+            sensitive_change=True)
+        call_command("send_daily_digest")
+        self.assertEqual(mail.outbox[0].to, ["audit@hf.test"])
 
     def test_a_dry_run_sends_nothing(self):
         AlertRecipient.objects.create(email="boss@hf.test", daily_digest=True)

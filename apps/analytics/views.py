@@ -16,6 +16,7 @@ from django.utils import timezone
 from apps.portfolio.models import HfCustomer, Loans, Accounts
 from apps.gceo_dashboard.models import EmployeeTable
 from apps.authentication.views import IsAdministrator
+from .exclusions import EXCLUDED_GROUP, excluded_user_ids
 from .models import AnalyticsSnapshot, UserActivityEvent
 from .serializers import AnalyticsSnapshotSerializer
 
@@ -113,6 +114,11 @@ class StaffSummaryView(APIView):
 # Collapse deep/parametrised routes to the section that matters, so
 # "/bm-portfolio/customers" and "/mortgages/leads/42" roll up into their area
 # instead of scattering into hundreds of near-unique paths.
+def _counted_events():
+    """Usage events the figures count: everyone but the Strategy team."""
+    return UserActivityEvent.objects.exclude(user_id__in=excluded_user_ids())
+
+
 def _normalise_path(path: str) -> str:
     path = (path or "").strip()
     if not path:
@@ -155,7 +161,7 @@ class ActivityLastLoginsView(APIView):
     def get(self, request):
         User = get_user_model()
         users = (
-            User.objects.all()
+            User.objects.exclude(groups__name=EXCLUDED_GROUP)
             .annotate(last_activity=Max("activity_events__created_at"))
             .prefetch_related("groups")
             .order_by("-last_login")
@@ -195,7 +201,7 @@ class ActivityTopPagesView(APIView):
             days = 30
         since = timezone.now() - timedelta(days=days)
         rows = (
-            UserActivityEvent.objects.filter(created_at__gte=since)
+            _counted_events().filter(created_at__gte=since)
             .values("path")
             .annotate(events=Count("id"), users=Count("user", distinct=True), last_seen=Max("created_at"))
             .order_by("-events")[:100]
@@ -222,7 +228,7 @@ class ActivitySummaryView(APIView):
         today = now.date()
         d7 = now - timedelta(days=7)
         d14 = now - timedelta(days=14)
-        qs = UserActivityEvent.objects.all()
+        qs = _counted_events()
         trend = (
             qs.filter(created_at__gte=d14)
             .annotate(day=TruncDate("created_at"))
@@ -246,7 +252,7 @@ class ActivityRecentView(APIView):
 
     def get(self, request):
         events = (
-            UserActivityEvent.objects.select_related("user").order_by("-created_at")[:100]
+            _counted_events().select_related("user").order_by("-created_at")[:100]
         )
         return Response([
             {

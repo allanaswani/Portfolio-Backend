@@ -576,6 +576,106 @@ class MyCardEndpointTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.data, {"holds_card": False})
 
+    def test_the_home_tile_stays_hidden_for_a_role_with_no_card(self):
+        """On a roster, in a role the cards do not cover: the tile would only
+        lead to a page saying so."""
+        from unittest import mock
+
+        from apps.staff_management.live_scorecard import Person
+
+        with mock.patch("apps.staff_management.live_scorecard.resolve_person",
+                        return_value=Person(sales_code="XX1", name="X",
+                                            role_code="", branch="",
+                                            roster="your HR record")):
+            response = self.client.get(self.URL + "holder/")
+        self.assertEqual(response.data, {"holds_card": False})
+
+
+class ScorecardReachTests(TestCase):
+    """Who on a workbook can open their card, whichever module they have."""
+
+    def _run(self, *args):
+        import io
+        from unittest import mock
+
+        from django.core.management import call_command
+
+        people = [{"book": "Scheme", "code": "GO3528", "name": "George Ochieng",
+                   "role": "SCHEMES_RM", "pf": ""},
+                  {"book": "Back office", "code": "AB1", "name": "Ann Bett",
+                   "role": "Teller", "pf": "777"}]
+        out = io.StringIO()
+        with mock.patch("apps.staff_management.management.commands."
+                        "scorecard_reach.workbook_people",
+                        return_value=(people, ["Sales"])):
+            call_command("scorecard_reach", *args, stdout=out)
+        return out.getvalue()
+
+    def test_a_person_nobody_logs_in_as_is_named(self):
+        text = self._run()
+        self.assertIn("NO LOGIN", text)
+        self.assertIn("GO3528", text)
+        self.assertIn("NOT LOADED", text)
+        self.assertIn("Sales", text)
+
+    def test_a_profile_code_opens_the_card(self):
+        from django.contrib.auth.models import User
+
+        from apps.portfolio.models import Profile
+
+        user = User.objects.create_user("george.o")
+        Profile.objects.filter(user=user).update(sales_code="GO3528")
+        with self._as_card_holder():
+            self.assertRegex(self._run(), r"OK\s+GO3528")
+
+    def _as_card_holder(self):
+        from unittest import mock
+
+        from apps.staff_management.live_scorecard import Person
+
+        return mock.patch(
+            "apps.staff_management.live_scorecard.resolve_person",
+            return_value=Person(sales_code="GO3528", name="George Ochieng",
+                                role_code="scheme_rm", branch="Head Office",
+                                roster="the Scheme scorecard workbook"))
+
+    def _hr_row(self):
+        import datetime
+
+        from apps.staff_management.models import StaffEmployeeData
+
+        StaffEmployeeData.objects.create(
+            staff_pf_number=777, staff_name="Ann Bett",
+            staff_email="ann.bett@hfcb.co.ke", department="x", staff_unit="x",
+            staff_org_unit="x", job_title="x",
+            employment_date=datetime.date(2020, 1, 1),
+            employee_category="back_office")
+
+    def test_only_an_exact_pf_proves_an_account(self):
+        from django.contrib.auth.models import User
+
+        from apps.portfolio.models import Profile
+
+        self._hr_row()
+        user = User.objects.create_user("ann.bett")
+        text = self._run()
+        self.assertRegex(text, r"OTHER CODE\s+AB1")
+        self.assertFalse(Profile.objects.filter(user=user,
+                                                sales_code="AB1").exists())
+
+    def test_link_writes_only_the_proven_one(self):
+        from django.contrib.auth.models import User
+
+        from apps.portfolio.models import Profile
+
+        self._hr_row()
+        user = User.objects.create_user("ann.bett")
+        # Same name as George's, with nothing exact to prove it.
+        stranger = User.objects.create_user("george.ochieng")
+        self._run("--link")
+        self.assertEqual(Profile.objects.get(user=user).sales_code, "AB1")
+        self.assertFalse(Profile.objects.get(user=stranger).sales_code)
+
 
 class TellerOnTheDmcRosterTests(TestCase):
     """JWR3503: a teller on the branch DMC roster, NOT among the 41 the

@@ -27,13 +27,16 @@
 # Probe the other systems (Customer 360) from outside.
 */2 * * * * docker exec hf-backend python manage.py probe_services
 
-# Decide whether anything changed enough to be worth an email.
-# --sensitive-minutes MUST match this interval, or edits in the gap are
-# either seen twice or never seen at all.
+# Mail only what needs a person, with what to do. Sensitive changes are in the
+# morning report; --sensitive-minutes is accepted but no longer used.
 */10 * * * * docker exec hf-backend python manage.py run_alert_checks --sensitive-minutes 10
 
-# One summary a day, including on the days when nothing broke.
+# The morning reports: a short note with an Excel workbook attached.
 0 7 * * * docker exec hf-backend python manage.py send_daily_digest
+0 7 * * * docker exec hf-backend python manage.py send_usage_report
+
+# Database host only: keeps /data from filling, and says when it cannot.
+*/10 * * * * /data/apps/datascience/portfolio_tool_v2/Portfolio-Backend/deploy/host/disk_guard.sh >> /var/log/hfcb_disk_guard.log 2>&1
 
 # ── Service desk ─────────────────────────────────────────────────────────────
 

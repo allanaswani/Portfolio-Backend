@@ -33,20 +33,19 @@ class ExternalCheckAlertTests(APITestCase):
 
     def test_a_failing_check_is_mailed_in_its_own_words(self):
         _report()
-        sent = [a for a in alerts.check_data_health() if "LAN access" in a[1]]
+        sent = [a for a in alerts.check_data_health() if "LAN access" in a[2]]
         self.assertEqual(len(sent), 1)
         kind, subject, body = sent[0]
         self.assertEqual(kind, "data_health")
-        self.assertEqual(subject, "Customer 360: LAN access (proxy hosts) (Deployment) is error")
+        self.assertIn("Customer 360: LAN access (proxy hosts) (Deployment) is error", body)
         self.assertIn("missing 172.17.0.1", body)
         self.assertIn("Reported by Customer 360", body)
-        self.assertNotIn("ETL", body)
 
     def test_it_is_mailed_once_while_it_persists(self):
         _report()
         alerts.check_data_health()
         cache.clear()
-        self.assertEqual([a for a in alerts.check_data_health() if "LAN access" in a[1]], [])
+        self.assertEqual([a for a in alerts.check_data_health() if "LAN access" in a[2]], [])
 
     def test_a_local_table_of_the_same_name_does_not_share_its_state(self):
         _report(table="build", status="error", label="Backend build (Deployment)", error="x")
@@ -68,7 +67,7 @@ class SilentReporterTests(APITestCase):
         self._age(health.EXTERNAL_STALE_MINUTES + 30)
         sent = alerts.check_external_reports()
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0][1], "Customer 360 has stopped reporting its health")
+        self.assertEqual(sent[0][1], "ACTION NEEDED: Customer 360 has stopped reporting its health")
         self.assertIn("push_monitoring", sent[0][2])
 
     def test_it_is_not_repeated_while_quiet(self):
@@ -83,7 +82,7 @@ class SilentReporterTests(APITestCase):
         alerts.check_external_reports()
         self._age(5)
         sent = alerts.check_external_reports()
-        self.assertEqual([s[1] for s in sent], ["Customer 360 is reporting its health again"])
+        self.assertEqual([s[1] for s in sent], ["Resolved: Customer 360 is reporting its health again"])
 
     def test_a_fresh_reporter_is_not_news(self):
         _report(status="ok", error="")
@@ -93,4 +92,4 @@ class SilentReporterTests(APITestCase):
         _report(status="ok", error="")
         self._age(health.EXTERNAL_STALE_MINUTES + 30)
         subjects = [d["subject"] for d in alerts.run_all()]
-        self.assertIn("Customer 360 has stopped reporting its health", subjects)
+        self.assertIn("ACTION NEEDED: Customer 360 has stopped reporting its health", subjects)

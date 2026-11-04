@@ -3,12 +3,11 @@
     */10 * * * * docker exec hf-backend python manage.py run_alert_checks
 
 Every check reduces to a state for a key, and mail goes out only when that
-state CHANGES — see ``apps.observability.alerts``. Running this every ten
-minutes therefore does not produce an email every ten minutes; it produces one
-when something breaks, and one when it comes back.
+state CHANGES and somebody has something to do - see
+``apps.observability.alerts``.
 
-``--sensitive-minutes`` must match the schedule, or sensitive changes are
-either missed or reported twice. It defaults to 10 for a ten-minute cron.
+The database is tried first. When it refuses, nothing else here can run, and
+``apps.observability.outage`` tells people without it.
 """
 
 from django.core.management.base import BaseCommand
@@ -22,7 +21,8 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--sensitive-minutes", type=int, default=10,
-            help="Look this far back for sensitive changes. Match the cron interval.",
+            help="Not used: sensitive changes are now in the daily digest. "
+                 "Accepted so the existing cron line keeps working.",
         )
         parser.add_argument(
             "--dry-run", action="store_true",
@@ -30,13 +30,27 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        from django.db import OperationalError, connection
+
+        from apps.observability import outage
+
+        try:
+            connection.ensure_connection()
+        except OperationalError as exc:
+            sent = outage.database_refused(exc)
+            self.stdout.write(
+                f"the database refused: {sent or 'not mailing yet'}")
+            return
+        sent = outage.database_answered(
+            alerts.AlertRecipient.for_kind(alerts.AlertRecipient.KIND_DOWNTIME))
+        if sent:
+            self.stdout.write(sent)
+
         if options["dry_run"]:
             pending = []
             pending += alerts.check_services()
             pending += alerts.check_error_rate()
             pending += alerts.check_data_health()
-            pending += alerts.check_sensitive_changes(
-                minutes=options["sensitive_minutes"])
             if not pending:
                 self.stdout.write("[dry-run] nothing to send")
                 return

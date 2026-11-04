@@ -1,27 +1,37 @@
-"""Deciding when something is worth an email, and sending it.
+"""Deciding when something needs a person, and telling them what to do.
 
-The hard part of alerting is not sending mail — it is not sending it. An alert
-that arrives every five minutes while a table stays empty is an alert people
-filter into a folder, and then the one that mattered is in that folder too.
+The rule is that **a mail means somebody has to act**. An alert people learn to
+ignore is worse than none, because the one that mattered goes unread with it.
 
-So every check here reduces to a **state** for a **key**, and mail goes out only
-when that state CHANGES. "The warehouse feed went empty" is news; "the warehouse
-feed is still empty" is not. Recovery is news too, which is why a check that
-clears is mailed once as well — otherwise nobody ever learns it is over.
+* Every immediate mail says what happened, what it affects, what the system
+  already did, and exactly what to do next - see :func:`incident`.
+* Whatever cleared by itself, or needs no decision, goes to the morning digest
+  instead: a slow response, a burst of errors that stopped, a table that came
+  back, deletions and role changes.
+* A "resolved" mail goes only to close something that was mailed. "Server errors
+  are back to 2.15%" told the reader about a problem they had never been told
+  of, and asked nothing of them.
 
-Four kinds, each with its own recipient list (:class:`AlertRecipient`):
+Every check still reduces to a **state** for a **key**, and mails only when that
+state CHANGES, so a persisting problem mails once.
 
-* ``downtime``          — this app or a monitored service stopped answering,
-                          or server errors crossed a threshold.
-* ``data_health``       — a warehouse table went missing, empty, or newly stale.
-* ``sensitive_change``  — a deletion, a role change, a rate change.
+The kinds, each with its own recipient list (:class:`AlertRecipient`):
+
+* ``downtime``          — a monitored service is down, or server errors have
+                          stayed high across two checks.
+* ``data_health``       — warehouse tables newly missing, empty or stale, in one
+                          mail, or the warehouse refusing connections.
+* ``sensitive_change``  — deletions and sensitive edits, in the daily digest.
 * ``daily_digest``      — one summary a day, sent regardless of state.
+
+The database being down is :mod:`apps.observability.outage`, since none of this
+can read its recipients then.
 """
 
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
 from django.utils import timezone
 
@@ -32,6 +42,12 @@ from .models import AlertRecipient, AlertState, MonitoredService, ServiceProbe
 # failures out of three requests at 3am is not an outage.
 ERROR_RATE_PERCENT = 5.0
 ERROR_RATE_MIN_REQUESTS = 50
+# The last 15 minutes, not the last hour: an hour's figure goes on reporting a
+# problem for most of an hour after it has stopped.
+ERROR_RATE_WINDOW_HOURS = 0.25
+# Automatically-fixed problems waiting for the digest are AlertState rows under
+# this prefix. See manage.py host_alert.
+SELF_FIXED_PREFIX = "selffixed:"
 
 # Consecutive failed probes before a service is called down. One timeout is a
 # blip; three in a row is the service.
@@ -77,30 +93,69 @@ def transition(key, state, detail=""):
         return True
 
 
+def previous_state(key):
+    """The state ``key`` is in now, or None if it has never been looked at."""
+    return AlertState.objects.filter(key=key).values_list("state", flat=True).first()
+
+
+# ── Writing ──────────────────────────────────────────────────────────────────
+
+def incident(what, impact, done, action, evidence=""):
+    """An alert's body: the same four questions in the same order, every time,
+    so the reader can tell at a glance whether it is theirs to do."""
+    parts = [f"What happened:\n{what}", f"Impact:\n{impact}",
+             f"What the system did:\n{done}",
+             f"What you need to do:\n{action}"]
+    if evidence:
+        parts.append(f"Details:\n{evidence}")
+    return "\n\n".join(p.strip() for p in parts) + "\n"
+
+
+def as_html(body):
+    """Plain alert text as the mail client shows it. A line ending in a colon
+    that opens a paragraph is that paragraph's heading."""
+    import html as html_module
+
+    paragraphs = []
+    for block in body.strip().split("\n\n"):
+        lines = [html_module.escape(line) for line in block.split("\n")]
+        if len(lines) > 1 and lines[0].endswith(":"):
+            lines[0] = f"<b>{lines[0]}</b>"
+        paragraphs.append(f'<p style="margin:0 0 14px">{"<br/>".join(lines)}</p>')
+    return ('<!DOCTYPE html><html><body style="font-family:Calibri,Arial,'
+            f'sans-serif;font-size:14px;color:#1F2D33">{"".join(paragraphs)}'
+            '</body></html>')
+
+
 # ── Sending ──────────────────────────────────────────────────────────────────
 
-def send(kind, subject, body, html=None):
-    """Mail one alert to everybody subscribed to ``kind``.
+def send(kind, subject, body, html=None, attachments=()):
+    """Mail one alert to everybody subscribed to ``kind``, which may be a list
+    of kinds whose subscribers all get it, each once.
 
-    ``html``, when given, goes as the HTML part; ``body`` stays the plain-text
-    part for clients that will not render it.
+    ``body`` is the plain-text part. ``html`` is the part a mail client shows,
+    made from ``body`` when not given. ``attachments`` is
+    ``[(filename, bytes, mimetype)]``.
 
     Returns the number of recipients. Never raises: an alerting system that
     takes the cron job down with it when the mail server hiccups is worse than
     one that misses a message.
     """
-    recipients = AlertRecipient.for_kind(kind)
+    kinds = [kind] if isinstance(kind, str) else list(kind)
+    recipients = sorted({a for k in kinds for a in AlertRecipient.for_kind(k)})
     if not recipients:
         return 0
     try:
-        send_mail(
+        message = EmailMultiAlternatives(
             subject=f"{SUBJECT_PREFIX} {subject}",
-            message=body,
+            body=body,
             from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=recipients,
-            fail_silently=False,
-            html_message=html,
+            to=recipients,
         )
+        message.attach_alternative(html or as_html(body), "text/html")
+        for filename, content, mimetype in attachments:
+            message.attach(filename, content, mimetype)
+        message.send(fail_silently=False)
     except Exception:  # noqa: BLE001
         import logging
 
@@ -126,32 +181,59 @@ def check_services():
         if len(recent) >= PROBE_FAILURES_BEFORE_DOWN and not any(p.ok for p in recent):
             latest = recent[0]
             reason = latest.error or f"HTTP {latest.status_code}"
-            detail = (
-                f"{service.name} has failed its last {len(recent)} checks.\n"
-                f"URL: {service.health_url}\n"
-                f"Last result: {reason}\n"
+            detail = incident(
+                f"{service.name} has failed its last {len(recent)} checks, two "
+                f"minutes apart.",
+                f"People cannot use {service.name}.",
+                "Only checked. It keeps checking and will tell you when it "
+                "answers again.",
+                f"Open {service.health_url} to confirm, then look at that "
+                f"service's container on its host: docker ps, and docker logs "
+                f"on the one that is stopped or restarting.",
+                f"Last result: {reason}",
             )
             if transition(key, "down", detail):
-                sent.append(("downtime", f"{service.name} is DOWN", detail))
+                sent.append(("downtime", f"ACTION NEEDED: {service.name} is DOWN",
+                             detail))
         elif recent[0].ok and recent[0].duration_ms > service.slow_ms:
-            detail = (
-                f"{service.name} answered in {recent[0].duration_ms} ms, over its "
-                f"{service.slow_ms} ms threshold.\nURL: {service.health_url}\n"
-            )
-            if transition(key, "slow", detail):
-                sent.append(("downtime", f"{service.name} is responding slowly", detail))
+            # Slow but answering asks nothing of anybody.
+            transition(key, "slow",
+                       f"{service.name} answered in {recent[0].duration_ms} ms, "
+                       f"over its {service.slow_ms} ms threshold.")
         elif recent[0].ok:
-            if transition(key, "ok", f"{service.name} is answering normally."):
+            was = previous_state(key)
+            if transition(key, "ok", f"{service.name} is answering normally.") \
+                    and was == "down":
                 sent.append((
-                    "downtime", f"{service.name} has RECOVERED",
+                    "downtime", f"Resolved: {service.name} has RECOVERED",
                     f"{service.name} is answering normally again "
-                    f"({recent[0].duration_ms} ms).\n",
+                    f"({recent[0].duration_ms} ms). Nothing further is needed.\n",
                 ))
     return sent
 
 
-def check_error_rate(hours=1):
-    """Server errors over the last hour, once there is enough traffic to judge."""
+def failing_endpoints(hours, limit=5):
+    """The paths behind the errors → [(method path, errors)], most first."""
+    from django.db.models import Count
+
+    from .metrics import METRIC_DB, window
+    from .models import RequestMetric
+
+    since, until = window(hours)
+    rows = (RequestMetric.objects.using(METRIC_DB)
+            .filter(created_at__gte=since, created_at__lte=until, is_error=True)
+            .values("method", "path").annotate(n=Count("id")).order_by("-n")[:limit])
+    return [(f"{r['method']} {r['path']}", r["n"]) for r in rows]
+
+
+def check_error_rate(hours=ERROR_RATE_WINDOW_HOURS):
+    """Server errors NOW, once there is enough traffic to judge.
+
+    A first high reading is held back, because a burst can be gone by the next
+    check ten minutes later and need nobody. Two in a row is a problem that is
+    not fixing itself, and that mail names the failing pages and what to run. A
+    burst that clears before then is in the digest and mails nobody.
+    """
     from . import metrics
 
     data = metrics.overview(hours=hours)
@@ -164,16 +246,35 @@ def check_error_rate(hours=1):
         return []
 
     key = "error_rate"
+    minutes = round(hours * 60)
+    was = previous_state(key)
     if rate >= ERROR_RATE_PERCENT:
-        detail = (
-            f"{rate}% of the last {requests} requests failed with a server error "
-            f"({data['errors']} of them), over the last {hours}h.\n"
+        if was not in ("rising", "high"):
+            transition(key, "rising", f"{rate}% of {requests} requests in the "
+                                      f"last {minutes} minutes failed.")
+            return []
+        endpoints = failing_endpoints(hours)
+        detail = incident(
+            f"{rate}% of the last {requests} requests failed with a server "
+            f"error ({data['errors']} of them in {minutes} minutes), and it has "
+            f"not cleared since the last check.",
+            "People are seeing errors on the pages listed below.",
+            "Only checked. Errors like this do not clear until their cause is "
+            "fixed. It will tell you when they stop.",
+            "On the host, read what is failing:\n"
+            "docker logs --since 30m hf-backend 2>&1 | grep -E "
+            "'Error|Traceback' | tail -40\n"
+            "If it says connection refused, it is the database: "
+            "systemctl status postgresql-12, and df -h /data.",
+            "Failing most:\n" + "\n".join(f"{n}  {path}" for path, n in endpoints),
         )
         if transition(key, "high", detail):
-            return [("downtime", f"Error rate is {rate}%", detail)]
-    elif transition(key, "ok", f"Error rate back to {rate}%."):
-        return [("downtime", "Error rate has recovered",
-                 f"Server errors are back to {rate}% of {requests} requests.\n")]
+            return [("downtime", f"ACTION NEEDED: {rate}% of requests are failing",
+                     detail)]
+    elif transition(key, "ok", f"Error rate back to {rate}%.") and was == "high":
+        return [("downtime", "Resolved: server errors have stopped",
+                 f"Server errors are down to {rate}% of the last {requests} "
+                 f"requests. Nothing further is needed.\n")]
     return []
 
 
@@ -215,15 +316,19 @@ def check_data_health():
         )
         if transition("database:warehouse", "unreachable", detail):
             sent.append(("data_health",
-                         "The warehouse database is refusing connections", detail))
+                         "ACTION NEEDED: the warehouse database is refusing "
+                         "connections", detail))
         return sent
 
+    was_down = previous_state("database:warehouse") == "unreachable"
     if transition("database:warehouse", "ok",
-                  "The warehouse is answering again."):
-        sent.append(("data_health", "The warehouse database is reachable again",
+                  "The warehouse is answering again.") and was_down:
+        sent.append(("data_health",
+                     "Resolved: the warehouse database is reachable again",
                      "Connections are being accepted and the data-health scan is "
-                     "running normally again.\n"))
+                     "running normally again. Nothing further is needed.\n"))
 
+    newly_broken = []
     for row in rows:
         key = (f"table:{row['source']}:{row['table']}" if row.get("external")
                else f"table:{row['table']}")
@@ -246,7 +351,7 @@ def check_data_health():
                     + f"\nReported by {system} itself. Its admin Data health page "
                       "has the full picture.\n"
                 )
-                subject = f"{system}: {row['label']} is {status}"
+                line = f"{system}: {row['label']} is {status}"
             else:
                 detail = (
                     f"Table: {row['table']} ({row['label']}, {row['app_label']})\n"
@@ -258,22 +363,29 @@ def check_data_health():
                       "it has stopped. The pages that read it will render zeros "
                       "rather than an error.\n"
                 )
-                subject = f"{row['table']} is {status}"
+                line = f"{row['table']} is {status}"
             if transition(key, status, detail):
-                sent.append(("data_health", subject, detail))
+                newly_broken.append((line, detail))
         elif status in ("ok", "warning"):
-            if transition(key, "ok", f"{row['table']} is loading normally."):
-                sent.append((
-                    "data_health",
-                    f"{row['table']} has RECOVERED",
-                    f"{row['table']} is loading again — {_rows_text(row['rows'])} rows, last "
-                    f"refreshed {row['last_seen']}.\n",
-                ))
+            # A table coming back needs nobody; it stops appearing in the digest.
+            transition(key, "ok", f"{row['table']} is loading normally.")
+
+    # One mail for one run, however many tables: an ETL that stops takes several
+    # with it, and that is one thing to fix, not several mails to read.
+    if len(newly_broken) == 1:
+        sent.append(("data_health", f"ACTION NEEDED: {newly_broken[0][0]}",
+                     newly_broken[0][1]))
+    elif newly_broken:
+        details = "\n".join(f"-- {line} --\n{detail}"
+                            for line, detail in newly_broken)
+        sent.append(("data_health",
+                     f"ACTION NEEDED: {len(newly_broken)} data feeds need attention",
+                     details))
     return sent
 
 
-# Which changes are worth waking somebody for. Everything else is in the audit
-# trail already; a mail per edit would be unreadable and so unread.
+# Which changes the daily digest lists. Everything else is in the audit trail
+# already; a list of every edit would be unreadable and so unread.
 SENSITIVE_MODELS = {
     "dsrsalescode": "DSR seller code",
     "tradetariff": "Trade tariff rate",
@@ -355,10 +467,16 @@ def check_external_reports():
                 "  docker exec c360-backend python manage.py push_monitoring\n"
             )
             if transition(key, "silent", detail):
-                sent.append(("data_health", f"{name} has stopped reporting its health", detail))
-        elif transition(key, "ok", f"{name} is reporting normally."):
-            sent.append(("data_health", f"{name} is reporting its health again",
-                         f"{name} reported at {latest:%Y-%m-%d %H:%M}.\n"))
+                sent.append(("data_health",
+                             f"ACTION NEEDED: {name} has stopped reporting its health",
+                             detail))
+        else:
+            was = previous_state(key)
+            if transition(key, "ok", f"{name} is reporting normally.") and was == "silent":
+                sent.append(("data_health",
+                             f"Resolved: {name} is reporting its health again",
+                             f"{name} reported at {latest:%Y-%m-%d %H:%M}. Nothing "
+                             f"further is needed.\n"))
     return sent
 
 
@@ -369,7 +487,9 @@ def run_all(sensitive_minutes=10):
     alerts += check_error_rate()
     alerts += check_data_health()
     alerts += check_external_reports()
-    alerts += check_sensitive_changes(minutes=sensitive_minutes)
+    # Deletions and role changes are in the daily digest, which also goes to the
+    # sensitive-change subscribers: they ask nothing of anybody the moment they
+    # happen. ``sensitive_minutes`` stays so the existing cron line still works.
 
     delivered = []
     for kind, subject, body in alerts:

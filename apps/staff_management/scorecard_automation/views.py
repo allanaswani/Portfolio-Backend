@@ -794,7 +794,9 @@ class ScorecardHolderView(APIView):
         profile = Profile.objects.filter(user_id=request.user.id).first()
         code, _how = resolve_sales_code_for_user(request.user, profile)
         person = resolve_person(code) if code else None
-        if person is None:
+        # A roster row with no card role is somebody the cards do not cover:
+        # offering them "My Scorecard" only leads to a page saying so.
+        if person is None or not person.role_code:
             return Response({"holds_card": False})
         return Response({
             "holds_card": True,
