@@ -122,6 +122,10 @@ urlpatterns = [
     path("my-team/", views.MyTeamView.as_view()),
     path("role-titles/", views.RoleTitlesView.as_view()),
     path("reporting-lines/", views.ReportingLinesView.as_view()),
+    # Fixing codes and reaching cards from the browser.
+    path("code-review/", views.SalesCodeReviewView.as_view()),
+    path("code-review/undo/", views.SalesCodeUndoView.as_view()),
+    path("card-reach/", views.CardReachView.as_view()),
 
     # Automation actions
     path("missing_actuals/refresh/", views.RefreshMissingActualsView.as_view()),

@@ -371,3 +371,33 @@ class UserMetaChoicesView(APIView):
             "branches": [value for value, _label in BRANCH_CHOICES],
             "segments": [value for value, _label in SEGMENT_CHOICES],
         })
+
+
+@extend_schema(tags=["Admin — Users"])
+class AccessMatrixView(APIView):
+    """Who has access and what each role opens; ``?download=1`` for the Excel report.
+
+    Narrower than the Users screen: ``is_staff`` is widely held, and this is the whole
+    staff list in one file. Every download is logged with who took it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.authentication import access_matrix as am
+        from django.http import HttpResponse
+
+        user = request.user
+        if not (user.is_superuser or user.groups.filter(name="staff_mgt").exists()):
+            return Response({"detail": "Only a superuser or Administration can open this."},
+                            status=status.HTTP_403_FORBIDDEN)
+        rows = am.user_rows()
+        if request.query_params.get("download"):
+            from apps.observability.report_xlsx import XLSX_MIME
+
+            logger.warning("access matrix downloaded by %s", user.username)
+            response = HttpResponse(am.workbook(rows), content_type=XLSX_MIME)
+            response["Content-Disposition"] = 'attachment; filename="Access_Matrix.xlsx"'
+            return response
+        return Response({"note": am.COVERAGE_NOTE, "summary": am.summary(rows),
+                         "roles": am.role_rows(rows), "users": rows})

@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .token_serializers import EnrichedTokenObtainPairSerializer
 from .views import (
-    ChangePasswordView, LogoutAPIView, GenerateOTPView, VerifyOTPView,
+    AccessMatrixView, ChangePasswordView, LogoutAPIView, GenerateOTPView, VerifyOTPView,
     AdminUserListCreateView, AdminUserDetailView, AdminSetPasswordView, RoleListView,
     UserMetaChoicesView,
 )
@@ -29,4 +29,5 @@ urlpatterns = [
     path("users/<int:pk>/set-password/", AdminSetPasswordView.as_view(), name="admin_user_set_password"),
     path("roles/", RoleListView.as_view(), name="admin_role_list"),
     path("user-meta/", UserMetaChoicesView.as_view(), name="admin_user_meta"),
+    path("access-matrix/", AccessMatrixView.as_view(), name="access_matrix"),
 ]

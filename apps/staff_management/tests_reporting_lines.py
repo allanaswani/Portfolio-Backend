@@ -389,6 +389,153 @@ class FixSalesCodesTests(TestCase):
         self.assertEqual(resolve_sales_code_for_user(user)[0], "RG4072")
 
 
+class ReviewScreenTests(TestCase):
+    def setUp(self):
+        from apps.portfolio.models import Profile
+        from apps.staff_management.models import (
+            BoScorecard, BranchEmployeeDmcData, BranchFinalEmployeeDmcData)
+
+        self.Profile = Profile
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Anna Amasinde", sales_code="AA3104", staff_role="SME HEAD",
+            staff_email="Anna.Amasinde@hfcb.co.ke")
+        # The page misspells it; the stored card has it right.
+        BranchFinalEmployeeDmcData.objects.create(
+            staff_name="Clement Gitau", sales_code="CKG1784", staff_role="BBM",
+            staff_email="Clement.Gitau@hfcb.co.ke", active=1)
+        import datetime
+
+        field = {f.name for f in BoScorecard._meta.get_fields()}
+        values = {"book": "branch_business", "sales_code": "CGK1784",
+                  "month": datetime.date(2026, 9, 30), "staff_name": "BM Nyeri", "sheet": "BM"}
+        BoScorecard.objects.create(**{k: v for k, v in values.items() if k in field})
+        self.user = User.objects.create_user("clement.gitau", email="Clement.Gitau@hfcb.co.ke")
+        Profile.objects.filter(user=self.user).update(sales_code="AA3104")
+        self.admin = User.objects.create_superuser("root.admin", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _code(self):
+        return self.Profile.objects.get(user=self.user).sales_code
+
+    def test_it_proposes_the_workbooks_spelling_not_the_pages_typo(self):
+        row = self.client.get(SC + "code-review/").json()["rows"][0]
+        self.assertEqual((row["verdict"], row["proposed"]), ("CHANGE", "CGK1784"))
+        self.assertIn("misspells", row["evidence"])
+
+    def test_a_different_person_with_the_same_digits_is_not_taken_for_a_typo(self):
+        from apps.staff_management.management.commands.fix_sales_codes import (
+            spelling_with_a_card)
+
+        self.assertEqual(spelling_with_a_card("LMN1452", {"NJK1452"}), "LMN1452")
+        self.assertEqual(spelling_with_a_card("CKG1784", {"CGK1784"}), "CGK1784")
+
+    def _save(self, new_code, expected="AA3104"):
+        return self.client.post(SC + "code-review/", {"changes": [{
+            "username": "clement.gitau", "expected": expected, "new_code": new_code}]},
+            format="json").json()
+
+    def test_save_then_undo(self):
+        self.assertEqual(self._save("CGK1784")["saved"], 1)
+        self.assertEqual(self._code(), "CGK1784")
+        change = self.client.get(SC + "code-review/").json()["changes"][0]
+        self.assertEqual(self.client.post(SC + "code-review/undo/", {"id": change["id"]},
+                                          format="json").status_code, 200)
+        self.assertEqual(self._code(), "AA3104")
+
+    def test_a_card_named_for_a_post_opens_for_its_holder(self):
+        from apps.staff_management.live_scorecard import resolve_sales_code_for_user
+
+        self._save("CGK1784")
+        profile = self.Profile.objects.get(user=self.user)
+        self.assertEqual(resolve_sales_code_for_user(self.user, profile)[0], "CGK1784")
+
+    def test_a_stale_screen_cannot_overwrite(self):
+        self.Profile.objects.filter(user=self.user).update(sales_code="ZZ1")
+        self.assertEqual(self._save("CGK1784")["saved"], 0)
+        self.assertEqual(self._code(), "ZZ1")
+
+    def test_nobody_can_be_given_another_persons_code_here(self):
+        self.assertEqual(self._save("AA3104", expected="AA3104")["saved"], 0)
+
+    def test_a_code_can_be_removed(self):
+        self.assertEqual(self._save("")["saved"], 1)
+        self.assertEqual(self._code(), "")
+
+    def test_only_an_administrator(self):
+        self.client.force_authenticate(User.objects.create_user("some.one"))
+        self.assertEqual(self.client.get(SC + "code-review/").status_code, 403)
+        self.assertEqual(self.client.get(SC + "card-reach/").status_code, 403)
+
+    def test_an_account_is_made_only_for_an_address_that_fits_the_name(self):
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Roy Gitonga", sales_code="RG4072", staff_role="Mortgage Business ARM",
+            staff_email="Roy.Gitonga@hfcb.co.ke")
+        bad = self.client.post(SC + "card-reach/", {"code": "RG4072", "email": "a.person@hfcb.co.ke"},
+                               format="json")
+        self.assertEqual(bad.status_code, 400)
+        made = self.client.post(SC + "card-reach/", {"code": "RG4072", "email": "Roy.Gitonga@hfcb.co.ke"},
+                                format="json")
+        self.assertEqual(made.status_code, 201)
+        user = User.objects.get(username="roy.gitonga")
+        self.assertEqual(self.Profile.objects.get(user=user).sales_code, "RG4072")
+        self.assertFalse(user.has_usable_password())
+        self.assertEqual(user.groups.count(), 0)
+        again = self.client.post(SC + "card-reach/", {"code": "RG4072", "email": "Roy.Gitonga@hfcb.co.ke"},
+                                 format="json")
+        self.assertEqual(again.status_code, 409)
+
+    def test_the_page_typo_does_not_lose_the_zone_line(self):
+        line = lines._line("CGK1784", "BM Nyeri", "BBM", "zone", "Zone A", "Jerusha Igombo",
+                           "jerusha.igombo@hfcb.co.ke", "samuel.kibiti@hfcb.co.ke")
+        got = lines.use_branch_manager_page([line])[0]
+        self.assertEqual(got["person_name"], "Clement Gitau")
+        self.assertEqual(got["person_email"], "clement.gitau@hfcb.co.ke")
+
+
+class AccessMatrixTests(TestCase):
+    URL = "/auth/access-matrix/"
+
+    def setUp(self):
+        self.client = APIClient()
+        self.root = User.objects.create_superuser("root.admin", password="x")
+        self.officer = User.objects.create_user("some.one", email="some.one@hfcb.co.ke")
+        Group.objects.get_or_create(name="portfolio_mgt")[0].user_set.add(self.officer)
+
+    def test_a_staff_flag_alone_is_not_enough(self):
+        flagged = User.objects.create_user("staff.flag", is_staff=True)
+        self.client.force_authenticate(flagged)
+        self.assertEqual(self.client.get(self.URL).status_code, 403)
+
+    def test_administration_can_read_it(self):
+        admin = User.objects.create_user("staff.mgt")
+        Group.objects.get_or_create(name="staff_mgt")[0].user_set.add(admin)
+        self.client.force_authenticate(admin)
+        self.assertEqual(self.client.get(self.URL).status_code, 200)
+
+    def test_it_lists_people_roles_and_counts(self):
+        self.client.force_authenticate(self.root)
+        data = self.client.get(self.URL).json()
+        row = next(u for u in data["users"] if u["username"] == "some.one")
+        self.assertEqual(row["roles"], ["portfolio_mgt"])
+        self.assertEqual(data["summary"]["superusers"], 1)
+        role = next(r for r in data["roles"] if r["role"] == "portfolio_mgt")
+        self.assertEqual(role["active_accounts"], 1)
+
+    def test_the_download_is_a_workbook_and_claims_no_approval(self):
+        import openpyxl
+
+        self.client.force_authenticate(self.root)
+        response = self.client.get(self.URL + "?download=1")
+        book = openpyxl.load_workbook(io.BytesIO(response.content))
+        self.assertEqual(book.sheetnames, ["Summary", "Access Matrix", "User Listing",
+                                           "Privileged Accounts", "For Review"])
+        sheet = book["User Listing"]
+        self.assertIn("Approval is not recorded", str(sheet["A1"].value))
+
+
 class RoleTitleTests(TestCase):
     def test_every_arm_is_offered(self):
         client = APIClient()

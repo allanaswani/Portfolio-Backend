@@ -301,8 +301,17 @@ def use_branch_manager_page(lines):
     out = []
     for line in lines:
         line = dict(line)
-        if line["line_kind"] == "zone" and line["person_code"] in by_code:
-            row = by_code[line["person_code"]]
+        if line["line_kind"] == "zone":
+            # The page can misspell a code the workbook has right (CKG1784, CGK1784).
+            # Same first letter and same digits is the same manager.
+            code = line["person_code"]
+            digits = re.sub(r"\D", "", code)
+            near = [c for c in by_code if c[:1] == code[:1] and digits
+                    and re.sub(r"\D", "", c) == digits]
+            row = by_code.get(code) or (by_code[near[0]] if len(near) == 1 else None)
+        else:
+            row = None
+        if row is not None:
             line["person_name"] = _text(row.staff_name) or line["person_name"]
             line["person_email"] = _text(row.staff_email).lower() or line["person_email"]
         unclear = (line["manager_name"].upper().startswith("BM ")

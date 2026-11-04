@@ -3323,6 +3323,10 @@ def name_fits_account(user, name):
 
 def _name_is_on_account(user, name):
     """The check itself, with nobody exempt. See :func:`name_fits_account`."""
+    # "BM Nyeri" on a workbook is a post, not a person, so it says nothing about
+    # whose account this is. Clement Gitau holds that card.
+    if str(name or "").strip().upper().startswith("BM "):
+        return True
     words = _words(name)
     login = re.findall(r"[a-z]+", str(getattr(user, "username", "") or "").lower())
     if not words or len(login) < 2:

@@ -1899,7 +1899,198 @@ class ReportingLinesView(APIView):
                             status=400)
         apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
         kinds = sorted({line["line_kind"] for line in found})
+        lines.save(lines.lines_from_rosters(), "rosters", apply=apply)
         counts = lines.save(found, source, apply=apply,
                             kinds=kinds if source == "upload" else None)
         return Response({"applied": apply, "source": source, "kinds": kinds,
                          "lines": len(found), **counts})
+
+
+def _review_rows():
+    from apps.staff_management.management.commands.fix_sales_codes import plan
+
+    rows = []
+    for profile, person, verdict, proposed, evidence in plan():
+        user = profile.user
+        rows.append({
+            "username": user.username,
+            "name": user.get_full_name(),
+            "email": user.email,
+            "roles": sorted(user.groups.values_list("name", flat=True)),
+            "branch": profile.branch or "",
+            "segment": profile.segment or "",
+            "last_login": user.last_login,
+            "current_code": (profile.sales_code or "").strip(),
+            "current_holder": person.name,
+            "verdict": verdict,
+            "proposed": proposed,
+            "evidence": evidence,
+        })
+    return rows
+
+
+@extend_schema(tags=[_TAG])
+class SalesCodeReviewView(APIView):
+    """Accounts carrying another person's code, and the buttons that correct them.
+
+    A change is refused if the code has moved since the screen was read, or if the new
+    code belongs to somebody with another name. Each one is kept for Undo.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.models import ScSalesCodeChange
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can open this."}, status=403)
+        return Response({
+            "rows": _review_rows(),
+            "changes": [{
+                "id": c.id, "username": c.username, "old_code": c.old_code,
+                "new_code": c.new_code, "changed_by": c.changed_by,
+                "changed_at": c.changed_at, "undone": bool(c.undone_at),
+            } for c in ScSalesCodeChange.objects.all()[:100]],
+        })
+
+    def post(self, request):
+        from django.contrib.auth.models import User
+
+        from apps.portfolio.models import Profile
+        from apps.staff_management.live_scorecard import is_someone_elses_card
+        from apps.staff_management.models import ScSalesCodeChange
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can change this."}, status=403)
+        changes = request.data.get("changes")
+        if not isinstance(changes, list) or not changes or len(changes) > 200:
+            return Response({"detail": "Send between 1 and 200 changes."}, status=400)
+
+        saved, refused = 0, []
+        for change in changes:
+            username = str((change or {}).get("username") or "")
+            expected = str((change or {}).get("expected") or "").strip()
+            new_code = str((change or {}).get("new_code") or "").strip().upper()
+            user = User.objects.filter(username=username).first()
+            profile = Profile.objects.filter(user=user).first() if user else None
+            if profile is None:
+                refused.append(f"{username}: no such account")
+            elif (profile.sales_code or "").strip() != expected:
+                refused.append(f"{username}: the code has changed since this page loaded")
+            elif new_code and is_someone_elses_card(user, new_code):
+                refused.append(f"{username}: {new_code} belongs to somebody else")
+            else:
+                Profile.objects.filter(pk=profile.pk).update(sales_code=new_code)
+                ScSalesCodeChange.objects.create(
+                    username=username, old_code=expected, new_code=new_code,
+                    changed_by=request.user.username)
+                saved += 1
+        detail = f"Saved {saved}."
+        if refused:
+            detail += " Not saved: " + "; ".join(refused[:10]) + "."
+        detail += " They should sign out and back in for Customer 360 to follow."
+        return Response({"saved": saved, "refused": refused, "detail": detail})
+
+
+@extend_schema(tags=[_TAG])
+class SalesCodeUndoView(APIView):
+    """Put one change back, unless the code has been changed again since."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.utils import timezone
+
+        from apps.portfolio.models import Profile
+        from apps.staff_management.models import ScSalesCodeChange
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can change this."}, status=403)
+        change = ScSalesCodeChange.objects.filter(
+            pk=request.data.get("id"), undone_at__isnull=True).first()
+        if change is None:
+            return Response({"detail": "That change was not found, or is already undone."}, status=404)
+        profile = Profile.objects.filter(user__username=change.username).first()
+        if profile is None or (profile.sales_code or "").strip() != change.new_code:
+            return Response({"detail": f"{change.username}'s code has changed again, "
+                                       f"so this was left alone."}, status=409)
+        Profile.objects.filter(pk=profile.pk).update(sales_code=change.old_code)
+        change.undone_at = timezone.now()
+        change.save(update_fields=["undone_at"])
+        return Response({"detail": f"{change.username} is back on "
+                                   f"{change.old_code or 'no code'}."})
+
+
+@extend_schema(tags=[_TAG])
+class CardReachView(APIView):
+    """Who on a workbook no login reaches, and an account for one of them.
+
+    One person at a time, and only for a code on a roster whose name fits the address,
+    because the new account carries that code. The account has no roles and no
+    password; the portfolio's account signal mails its welcome message.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        import re
+
+        from apps.staff_management.management.commands.scorecard_reach import (
+            _where_listed, logins_by_code, workbook_people)
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can open this."}, status=403)
+        people, missing = workbook_people()
+        reached, _code_of = logins_by_code()
+        out = []
+        for person in people:
+            if reached.get(person["code"]):
+                continue
+            note = _where_listed(person)
+            found = re.search(r"[\w.+-]+@[\w.-]+", note)
+            out.append({"code": person["code"], "name": person["name"],
+                        "book": person["book"], "role": person["role"],
+                        "note": note, "email": found.group(0) if found else ""})
+        detail = f"{len(people) - len(out)} of {len(people)} can open their card."
+        if missing:
+            detail += f" Not loaded, so not checked: {', '.join(missing)}."
+        return Response({"people": out, "detail": detail})
+
+    def post(self, request):
+        import re
+
+        from django.contrib.auth.models import User
+
+        from apps.portfolio.models import Profile
+        from apps.staff_management.live_scorecard import resolve_person
+        from apps.staff_management.models import ScSalesCodeChange
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can do this."}, status=403)
+        code = str(request.data.get("code") or "").strip().upper()
+        email = str(request.data.get("email") or "").strip()
+        username = email.split("@")[0].lower()
+        person = resolve_person(code) if code else None
+        if person is None:
+            return Response({"detail": f"{code or 'That code'} is on no roster."}, status=400)
+        if not re.fullmatch(r"[\w.+-]+@(hfcb|hfgroup)\.co\.ke", email, re.I):
+            return Response({"detail": f"{email or 'That'} is not a bank address."}, status=400)
+        wanted = set(re.findall(r"[a-z]+", username))
+        if not wanted or not wanted & set(re.findall(r"[a-z]+", str(person.name).lower())):
+            return Response({"detail": f"{email} does not look like {person.name}'s address, "
+                                       f"so no account was made."}, status=400)
+        if User.objects.filter(username__iexact=username).exists() or \
+                User.objects.filter(email__iexact=email).exists():
+            return Response({"detail": f"{username} already has an account. Set its code "
+                                       f"on Users & Roles."}, status=409)
+        words = str(person.name).split()
+        user = User.objects.create_user(
+            username=username, email=email,
+            first_name=words[0] if words else "",
+            last_name=" ".join(words[1:])[:150])
+        Profile.objects.filter(user=user).update(sales_code=code)
+        ScSalesCodeChange.objects.create(
+            username=username, old_code="", new_code=code,
+            changed_by=request.user.username)
+        return Response({"detail": f"Created {username} with {code}. Add any module roles "
+                                   f"on Users & Roles."}, status=201)

@@ -2091,3 +2091,23 @@ class ScReportingLine(models.Model):
 
     def __str__(self):
         return f"{self.person_code} -> {self.manager_name} ({self.line_kind})"
+
+
+class ScSalesCodeChange(models.Model):
+    """A sales code corrected on the review screen. ``Profile`` keeps no history of
+    its own, and this is what the Undo button reads."""
+
+    username = models.CharField(max_length=150, db_index=True)
+    old_code = models.CharField(max_length=60, blank=True, default="")
+    new_code = models.CharField(max_length=60, blank=True, default="")
+    changed_by = models.CharField(max_length=150, blank=True, default="")
+    changed_at = models.DateTimeField(auto_now_add=True)
+    undone_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = True
+        db_table = "sc_sales_code_changes"
+        ordering = ["-changed_at"]
+
+    def __str__(self):
+        return f"{self.username}: {self.old_code} -> {self.new_code}"

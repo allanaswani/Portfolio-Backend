@@ -21,6 +21,7 @@ when the container is recreated.
 """
 
 import csv
+import re
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -81,6 +82,38 @@ def codes_for(user):
     return found
 
 
+def spelling_with_a_card(code, stored=None):
+    """A roster's code, or the one with a card that it is plainly a misspelling of.
+
+    The Branch Managers page has CKG1784 where the workbook and the actuals template
+    have CGK1784. Same first letter and same digits, and only one of them has a card:
+    that is the same person. The first letter must match, because PF numbers can
+    collide: LMN1452 and NJK1452 are two people.
+    """
+    from apps.staff_management.models import BoScorecard, SchemeScorecard
+
+    if stored is None:
+        stored = {str(c).strip().upper() for c in
+                  BoScorecard.objects.values_list("sales_code", flat=True).distinct()}
+        stored |= {str(c).strip().upper() for c in
+                   SchemeScorecard.objects.values_list("sales_code", flat=True).distinct()}
+    if code in stored:
+        return code
+    digits = re.sub(r"\D", "", code)
+    near = {c for c in stored if digits and re.sub(r"\D", "", c) == digits and c[:1] == code[:1]}
+    return near.pop() if len(near) == 1 else code
+
+
+def settled_codes(user):
+    """codes_for, with misspellings folded into the code that holds the card."""
+    found = {}
+    for code, where in codes_for(user).items():
+        right = spelling_with_a_card(code)
+        note = where if right == code else f"{where}, which misspells it as {code}"
+        found.setdefault(right, note)
+    return found
+
+
 def plan():
     """[(profile, current code, whose it is, verdict, new code, where found)]."""
     from apps.staff_management.management.commands.scorecard_reach import (
@@ -88,7 +121,7 @@ def plan():
 
     rows = []
     for profile, person in mismatched_profiles():
-        found = codes_for(profile.user)
+        found = settled_codes(profile.user)
         if len(found) == 1:
             code, where = next(iter(found.items()))
             rows.append((profile, person, "CHANGE", code, where))
