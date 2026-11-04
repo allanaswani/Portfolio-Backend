@@ -279,6 +279,116 @@ class BranchManagerPageTests(TestCase):
         self.assertEqual(resolve_sales_code_for_user(user)[0], "NJK1452")
 
 
+class FixSalesCodesTests(TestCase):
+    """charles.munuve carrying Anna Amasinde's AA3104, from the Users screen."""
+
+    def setUp(self):
+        from apps.portfolio.models import Profile
+        from apps.staff_management.models import (
+            BranchEmployeeDmcData, BranchFinalEmployeeDmcData)
+
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Anna Amasinde", sales_code="AA3104", staff_role="SME HEAD",
+            staff_email="Anna.Amasinde@hfcb.co.ke")
+        BranchFinalEmployeeDmcData.objects.create(
+            staff_name="Charles Munuve", sales_code="CM3010", staff_role="BBM",
+            staff_email="Charles.Munuve@hfcb.co.ke", active=1)
+        self.user = User.objects.create_user(
+            "charles.munuve", email="Charles.Munuve@hfcb.co.ke")
+        Profile.objects.filter(user=self.user).update(sales_code="AA3104")
+        self.Profile = Profile
+
+    def _code(self, user=None):
+        return self.Profile.objects.get(user=user or self.user).sales_code
+
+    def _run(self, *args):
+        out = io.StringIO()
+        from django.core.management import call_command
+
+        call_command("fix_sales_codes", *args, stdout=out)
+        return out.getvalue()
+
+    def test_it_lists_the_change_and_saves_nothing(self):
+        text = self._run()
+        self.assertIn("CM3010", text)
+        self.assertIn("Nothing saved", text)
+        self.assertEqual(self._code(), "AA3104")
+
+    def test_apply_needs_the_file_that_is_the_way_back(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._run("--apply")
+
+    def test_apply_corrects_it_and_restore_puts_it_back(self):
+        import os
+        import tempfile
+
+        handle, path = tempfile.mkstemp(suffix=".csv")
+        os.close(handle)
+        try:
+            self._run("--apply", "--csv", path)
+            self.assertEqual(self._code(), "CM3010")
+            self._run("--restore", path)
+            self.assertEqual(self._code(), "AA3104")
+        finally:
+            os.unlink(path)
+
+    def test_a_correction_sends_no_mail(self):
+        import os
+        import tempfile
+
+        from django.core import mail
+
+        # Creating the account in setUp sends its own welcome mail.
+        mail.outbox.clear()
+        handle, path = tempfile.mkstemp(suffix=".csv")
+        os.close(handle)
+        try:
+            self._run("--apply", "--csv", path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(self._code(), "CM3010")
+        self.assertEqual(mail.outbox, [])
+
+    def test_strategy_is_left_alone(self):
+        from apps.analytics.exclusions import EXCLUDED_GROUP
+
+        Group.objects.get_or_create(name=EXCLUDED_GROUP)[0].user_set.add(self.user)
+        self.assertEqual(self._run().count("charles.munuve"), 0)
+
+    def test_nobody_with_no_code_of_their_own_is_given_one(self):
+        user = User.objects.create_user("juddy.wambita", email="juddy.wambita@hfcb.co.ke")
+        self.Profile.objects.filter(user=user).update(sales_code="AA3104")
+        text = self._run()
+        self.assertIn("NO CODE: 1", text)
+        self.assertEqual(self._code(user), "AA3104")
+
+    def test_records_that_disagree_are_left_for_a_person(self):
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Charles Munuve", sales_code="CM9999", staff_role="SME RM",
+            staff_email="Charles.Munuve@hfcb.co.ke")
+        self.assertIn("SEVERAL: 1", self._run())
+
+    def test_the_code_being_replaced_is_never_the_answer(self):
+        from apps.staff_management.management.commands.fix_sales_codes import codes_for
+
+        self.assertEqual(list(codes_for(self.user)), ["CM3010"])
+
+    def test_a_duplicate_roster_row_does_not_lose_the_person(self):
+        from apps.staff_management.live_scorecard import resolve_sales_code_for_user
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        for code in ("RG4072", ""):
+            BranchEmployeeDmcData.objects.create(
+                staff_name="Roy Gitonga", sales_code=code, staff_role="Mortgage Business ARM",
+                staff_email="Roy.Gitonga@hfcb.co.ke")
+        user = User.objects.create_user("roy.gitonga", email="Roy.Gitonga@hfcb.co.ke")
+        self.assertEqual(resolve_sales_code_for_user(user)[0], "RG4072")
+
+
 class RoleTitleTests(TestCase):
     def test_every_arm_is_offered(self):
         client = APIClient()

@@ -3501,9 +3501,14 @@ def resolve_sales_code_for_user(user, profile=None):
     try:
         with transaction.atomic():
             for queryset in roster:
-                row = one(queryset)
-                if row is not None:
-                    offer(row.sales_code, "the sales roster")
+                # By code, not by row. The old uploader left the same person on
+                # several rows, one of them often with a blank code, and counting
+                # rows gave up on somebody the roster plainly identifies.
+                codes = {str(code).strip().upper() for code in
+                         queryset.values_list("sales_code", flat=True)[:20]
+                         if str(code or "").strip()}
+                if len(codes) == 1:
+                    offer(codes.pop(), "the sales roster")
     except Exception:  # noqa: BLE001 - a roster missing here must not stop the rest
         pass
 

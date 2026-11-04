@@ -91,11 +91,28 @@ def proven_account(pf, accounts_by_local):
     return found[0] if len(found) == 1 else None
 
 
+def mismatched_profiles():
+    """Active accounts whose profile code belongs to somebody with another name →
+    [(profile, person)]. The Strategy group is left out, as they do it on purpose."""
+    from apps.portfolio.models import Profile
+    from apps.staff_management.live_scorecard import name_fits_account, resolve_person
+
+    found = []
+    for profile in (Profile.objects.select_related("user")
+                    .filter(user__is_active=True)
+                    .exclude(sales_code__isnull=True).exclude(sales_code="")):
+        person = resolve_person(profile.sales_code.strip())
+        if person is not None and not name_fits_account(profile.user, person.name):
+            found.append((profile, person))
+    return found
+
+
 def _where_listed(person):
     """Which roster holds this person, and the address to make an account with.
     "No login" is about accounts: the person may well be on the Sales Staff page."""
     from apps.staff_management.models import (
-        BranchEmployeeDmcData, BranchFinalEmployeeDmcData, StaffEmployeeData)
+        BranchEmployeeDmcData, BranchFinalEmployeeDmcData, ScReportingLine,
+        StaffEmployeeData)
 
     manager = BranchFinalEmployeeDmcData.objects.filter(
         sales_code__iexact=person["code"]).first()
@@ -111,6 +128,11 @@ def _where_listed(person):
     hr = StaffEmployeeData.objects.filter(sales_code__iexact=person["code"]).first()
     if hr is not None:
         return f"HR roster: {hr.staff_email or 'no address'}"
+    # The workbooks' own Lists hold an address for the Scheme team and others.
+    line = (ScReportingLine.objects.filter(person_code__iexact=person["code"], active=True)
+            .exclude(person_email="").first())
+    if line is not None:
+        return f"Workbook List: {line.person_email}"
     return "on no roster"
 
 
@@ -128,26 +150,16 @@ class Command(BaseCommand):
     def _mismatched(self):
         """Accounts whose profile code belongs to somebody with another name.
 
-        The card no longer follows such a code, but the rest of the system still
-        does: the RM pages and Customer 360 scope on Profile.sales_code. Whether
-        one is deliberate is for Administration to say, so this only lists them.
+        The card no longer follows such a code, but the RM pages and Customer 360's
+        My Book still do. ``fix_sales_codes`` corrects them.
         """
-        from apps.portfolio.models import Profile
-        from apps.staff_management.live_scorecard import (
-            name_fits_account, resolve_person)
-
         write = self.stdout.write
-        found = 0
-        for profile in (Profile.objects.select_related("user")
-                        .filter(user__is_active=True)
-                        .exclude(sales_code__isnull=True).exclude(sales_code="")):
-            person = resolve_person(profile.sales_code.strip())
-            if person is not None and not name_fits_account(profile.user, person.name):
-                found += 1
-                write(f"  {profile.user.username:28} carries "
-                      f"{profile.sales_code.strip():10} which is {person.name} "
-                      f"({person.roster})")
-        write(f"  {found} account(s).")
+        found = mismatched_profiles()
+        for profile, person in found:
+            write(f"  {profile.user.username:28} carries "
+                  f"{profile.sales_code.strip():10} which is {person.name} "
+                  f"({person.roster})")
+        write(f"  {len(found)} account(s).")
 
     def handle(self, *args, **options):
         from apps.portfolio.models import Profile
