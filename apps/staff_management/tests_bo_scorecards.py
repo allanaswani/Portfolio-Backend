@@ -591,6 +591,105 @@ class MyCardEndpointTests(TestCase):
         self.assertEqual(response.data, {"holds_card": False})
 
 
+class WhoseCardIsItTests(TestCase):
+    """Found on production, 4 Nov 2026: 9 accounts carried another code, and 22
+    held a PF number or nothing where the sales code goes."""
+
+    def _card(self, code, name, book="branch_business", pf=""):
+        import datetime
+
+        from apps.staff_management.models import BoScorecard
+
+        BoScorecard.objects.create(book=book, sales_code=code, staff_name=name,
+                                   staff_pf=pf, sheet="BM_Scorecard",
+                                   month=datetime.date(2026, 9, 1), card={})
+
+    def _resolve(self, username, sales_code=""):
+        from django.contrib.auth.models import User
+
+        from apps.portfolio.models import Profile
+        from apps.staff_management.live_scorecard import resolve_sales_code_for_user
+
+        user = User.objects.create_user(username)
+        Profile.objects.filter(user=user).update(sales_code=sales_code)
+        return resolve_sales_code_for_user(user, Profile.objects.get(user=user))[0]
+
+    def _lilian(self):
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Lilian Biwott", sales_code="LJB1656",
+            staff_role="COMMERCIAL RM")
+
+    def test_another_persons_code_does_not_open_their_card(self):
+        self._lilian()
+        self.assertEqual(self._resolve("silas.abudho", "LJB1656"), "")
+
+    def test_a_login_that_names_nobody_keeps_the_code_on_its_profile(self):
+        """"fj" cannot be judged, and must not lose their own card for it."""
+        self._lilian()
+        self.assertEqual(self._resolve("lb", "LJB1656"), "LJB1656")
+
+    def test_it_opens_their_own_instead(self):
+        self._lilian()
+        self._card("SOA3923", "Silas Abudho")
+        self.assertEqual(self._resolve("silas.abudho", "LJB1656"), "SOA3923")
+
+    def test_a_pf_number_on_the_profile_finds_the_card_by_name(self):
+        self._card("SAA1331", "Sylvia Ayiedza", book="back_office")
+        self.assertEqual(self._resolve("sylvia.ayiedza", "1331"), "SAA1331")
+
+    def test_a_blank_profile_finds_the_card_by_name(self):
+        self._card("CMM3703", "Calvin Muchiri")
+        self.assertEqual(self._resolve("calvin.muchiri"), "CMM3703")
+
+    def test_middle_names_on_the_workbook_do_not_matter(self):
+        self._card("LM3280", "Lynet Priscillar Mutwa", book="back_office")
+        self.assertEqual(self._resolve("lynet.mutwa"), "LM3280")
+
+    def test_a_shared_first_name_is_not_a_match(self):
+        self._card("SOA3923", "Silas Abudho")
+        self.assertEqual(self._resolve("silas.otieno"), "")
+
+    def test_two_cards_on_one_name_are_settled_only_by_the_pf(self):
+        self._card("NJK1425", "Nelly Jebiwott Kibet", book="back_office")
+        self._card("NJK1452", "Nelly Kibet")
+        self.assertEqual(self._resolve("nelly.kibet", "1425"), "NJK1425")
+
+    def test_two_cards_on_one_name_with_no_pf_open_neither(self):
+        self._card("NJK1425", "Nelly Jebiwott Kibet", book="back_office")
+        self._card("NJK1452", "Nelly Kibet")
+        self.assertEqual(self._resolve("nelly.kibet"), "")
+
+    def test_the_sales_staff_page_identifies_someone_by_their_address(self):
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        self._card("RG4072", "Roy Gitonga", book="sales")
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Roy Gitonga", sales_code="RG4072",
+            staff_email="r.gitonga@hfcb.co.ke")
+        from django.contrib.auth.models import User
+
+        from apps.staff_management.live_scorecard import resolve_sales_code_for_user
+
+        user = User.objects.create_user("rgit", email="R.Gitonga@hfcb.co.ke",
+                                        first_name="Roy", last_name="Gitonga")
+        self.assertEqual(resolve_sales_code_for_user(user)[0], "RG4072")
+
+    def test_the_sales_staff_page_identifies_someone_by_a_pf_on_their_profile(self):
+        from apps.staff_management.models import BranchEmployeeDmcData
+
+        self._card("RG4072", "Roy Gitonga", book="sales")
+        BranchEmployeeDmcData.objects.create(
+            staff_name="Roy Gitonga", sales_code="RG4072", staff_pf_number=4072)
+        self.assertEqual(self._resolve("roy.g", "4072"), "RG4072")
+
+    def test_a_name_that_varies_by_surname_keeps_its_card(self):
+        """HR has Stacy Mwenda where the address says stacy.kendi."""
+        self._card("SM1", "Stacy Mwenda", book="sales")
+        self.assertEqual(self._resolve("stacy.kendi", "SM1"), "SM1")
+
+
 class ScorecardReachTests(TestCase):
     """Who on a workbook can open their card, whichever module they have."""
 

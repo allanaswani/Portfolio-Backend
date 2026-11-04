@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import re
 from dataclasses import dataclass
 
 #: What the DMC roster calls a role -> the seeded ScRole.role_code. Matched on
@@ -3267,6 +3268,73 @@ _SELF_LOOKUPS = (
 )
 
 
+def _words(text):
+    return set(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def _account_words(user):
+    """Every word that names this account's holder."""
+    return (_words(getattr(user, "username", ""))
+            | _words(getattr(user, "first_name", ""))
+            | _words(getattr(user, "last_name", "")))
+
+
+def name_fits_account(user, name):
+    """Could a card's name belong to this account?
+
+    One shared word is enough, because names vary across the bank's records: HR
+    has Stacy Mwenda where the address says stacy.kendi. It cannot prove who
+    somebody is. It only catches the case that matters: silas.abudho's profile
+    carrying LJB1656, Lilian Biwott's code, which opened her card for him.
+
+    Only a firstname.lastname login can be judged. A login like "fj" or a PF
+    number says nothing about its owner's name, so it is not held against them:
+    locking somebody out of their own card would be the opposite mistake.
+    """
+    words = _words(name)
+    login = re.findall(r"[a-z]+", str(getattr(user, "username", "") or "").lower())
+    if not words or len(login) < 2:
+        return True
+    return bool(words & _account_words(user))
+
+
+def _workbook_code_for(user, profile=None):
+    """The code of the one workbook person this account's name is → code or "".
+
+    The workbooks name the card holders, and many have an account named
+    firstname.lastname whose profile is blank or holds their PF number in place
+    of a sales code. Every word of that name must be in the workbook's name. If
+    that leaves more than one code, the one whose digits are the profile's PF
+    number wins, and otherwise none does: guessing here shows somebody another
+    person's card.
+    """
+    from django.db import transaction
+
+    from .models import BoScorecard, SchemeScorecard
+
+    wanted = _words(getattr(user, "username", ""))
+    if len(wanted) < 2:
+        wanted = (_words(getattr(user, "first_name", ""))
+                  | _words(getattr(user, "last_name", "")))
+    if len(wanted) < 2:
+        return ""
+    try:
+        with transaction.atomic():
+            rows = set(BoScorecard.objects.values_list("sales_code", "staff_name")
+                       .distinct())
+            rows |= set(SchemeScorecard.objects
+                        .values_list("sales_code", "staff_name").distinct())
+    except Exception:  # noqa: BLE001 - before the migrations that make them
+        return ""
+    codes = {code.strip().upper() for code, name in rows
+             if wanted <= _words(name)}
+    if len(codes) > 1:
+        held = str(getattr(profile, "sales_code", "") or "").strip()
+        codes = {c for c in codes
+                 if held.isdigit() and re.sub(r"\D", "", c) == held}
+    return codes.pop() if len(codes) == 1 else ""
+
+
 def resolve_sales_code_for_user(user, profile=None):
     """Which card belongs to the person signed in - ``(sales_code, how)``.
 
@@ -3317,8 +3385,16 @@ def resolve_sales_code_for_user(user, profile=None):
         if code and not any(code.upper() == c.upper() for c, _h in candidates):
             candidates.append((code, how))
 
-    if profile is not None:
-        offer(getattr(profile, "sales_code", ""), _SELF_LOOKUPS[0])
+    def rejected(code):
+        """A code whose card names somebody else - see name_fits_account."""
+        person = resolve_person(code)
+        return person is not None and not name_fits_account(user, person.name)
+
+    profile_code = str(getattr(profile, "sales_code", "") or "").strip()
+    if profile_code and not rejected(profile_code):
+        offer(profile_code, _SELF_LOOKUPS[0])
+    if not candidates or resolve_person(candidates[0][0]) is None:
+        offer(_workbook_code_for(user, profile), "your name on a scorecard workbook")
 
     username = (getattr(user, "username", "") or "").strip()
     email = (getattr(user, "email", "") or "").strip()
@@ -3361,6 +3437,34 @@ def resolve_sales_code_for_user(user, profile=None):
         attempts.append(
             (StaffEmployeeData.objects.filter(
                 staff_name__iexact=full_name, is_active=True), _SELF_LOOKUPS[6]))
+
+    # The sales roster - Administration's Sales Staff page. It carries the PF
+    # number, the address and the sales code on one row, and was never asked,
+    # so somebody on that page could still be told nothing identifies them.
+    from django.db import transaction
+
+    from .models import BranchEmployeeDmcData
+
+    roster = []
+    if email:
+        roster.append(BranchEmployeeDmcData.objects.filter(staff_email__iexact=email))
+    if username:
+        roster.append(BranchEmployeeDmcData.objects.filter(
+            staff_email__istartswith=f"{username}@"))
+    if profile_code.isdigit():
+        roster.append(BranchEmployeeDmcData.objects.filter(
+            staff_pf_number=int(profile_code)))
+    if username.isdigit():
+        roster.append(BranchEmployeeDmcData.objects.filter(
+            staff_pf_number=int(username)))
+    try:
+        with transaction.atomic():
+            for queryset in roster:
+                row = one(queryset)
+                if row is not None:
+                    offer(row.sales_code, "the sales roster")
+    except Exception:  # noqa: BLE001 - a roster missing here must not stop the rest
+        pass
 
     for queryset, how in attempts:
         staff = one(queryset)

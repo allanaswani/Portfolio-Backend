@@ -4,6 +4,7 @@
     manage.py scorecard_reach --only-broken
     manage.py scorecard_reach --csv /tmp/reach.csv
     manage.py scorecard_reach --link         # fix the ones that can be proven
+    manage.py scorecard_reach --mismatched   # profiles carrying another person's code
 
 A card is for the person a workbook's List names. They reach it from their own
 login, through the same ``resolve_sales_code_for_user`` the page uses, whichever
@@ -90,17 +91,64 @@ def proven_account(pf, accounts_by_local):
     return found[0] if len(found) == 1 else None
 
 
+def _where_listed(person):
+    """Which roster holds this person, and the address to make an account with.
+    "No login" is about accounts: the person may well be on the Sales Staff page."""
+    from apps.staff_management.models import BranchEmployeeDmcData, StaffEmployeeData
+
+    row = BranchEmployeeDmcData.objects.filter(
+        sales_code__iexact=person["code"]).first()
+    if row is None and str(person["pf"] or "").isdigit():
+        row = BranchEmployeeDmcData.objects.filter(
+            staff_pf_number=int(person["pf"])).first()
+    if row is not None:
+        return f"Sales Staff page: {row.staff_email or 'no address'}"
+    hr = StaffEmployeeData.objects.filter(sales_code__iexact=person["code"]).first()
+    if hr is not None:
+        return f"HR roster: {hr.staff_email or 'no address'}"
+    return "on no roster"
+
+
 class Command(BaseCommand):
     help = "Check every person on a scorecard workbook can open their card."
 
     def add_arguments(self, parser):
         parser.add_argument("--only-broken", action="store_true")
         parser.add_argument("--csv", default="")
+        parser.add_argument("--mismatched", action="store_true",
+                            help="List profiles carrying another person's code.")
         parser.add_argument("--link", action="store_true",
                             help="Set the sales code on accounts proven by PF.")
 
+    def _mismatched(self):
+        """Accounts whose profile code belongs to somebody with another name.
+
+        The card no longer follows such a code, but the rest of the system still
+        does: the RM pages and Customer 360 scope on Profile.sales_code. Whether
+        one is deliberate is for Administration to say, so this only lists them.
+        """
+        from apps.portfolio.models import Profile
+        from apps.staff_management.live_scorecard import (
+            name_fits_account, resolve_person)
+
+        write = self.stdout.write
+        found = 0
+        for profile in (Profile.objects.select_related("user")
+                        .filter(user__is_active=True)
+                        .exclude(sales_code__isnull=True).exclude(sales_code="")):
+            person = resolve_person(profile.sales_code.strip())
+            if person is not None and not name_fits_account(profile.user, person.name):
+                found += 1
+                write(f"  {profile.user.username:28} carries "
+                      f"{profile.sales_code.strip():10} which is {person.name} "
+                      f"({person.roster})")
+        write(f"  {found} account(s).")
+
     def handle(self, *args, **options):
         from apps.portfolio.models import Profile
+
+        if options["mismatched"]:
+            return self._mismatched()
 
         people, missing = workbook_people()
         reached, code_of = logins_by_code()
@@ -127,7 +175,7 @@ class Command(BaseCommand):
                         user=proven, defaults={"sales_code": person["code"]})
                     note += " - linked"
             else:
-                verdict, note = "NO LOGIN", ""
+                verdict, note = "NO LOGIN", _where_listed(person)
             rows.append({**person, "verdict": verdict, "note": note})
 
         write = self.stdout.write
