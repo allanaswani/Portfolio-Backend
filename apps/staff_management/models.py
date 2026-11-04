@@ -2053,3 +2053,41 @@ class BoScorecard(models.Model):
 
     def __str__(self):
         return f"{self.sales_code} {self.month:%Y-%m} {self.sheet}"
+
+
+class ScReportingLine(models.Model):
+    """One person's line to one manager. See :mod:`.reporting_lines`.
+
+    ``line_kind`` is open text (branch, segment, zone, department, dsr, roster,
+    sector) so that a new kind of structure is new rows and not a release.
+    """
+
+    person_code = models.CharField(max_length=40, db_index=True)
+    person_name = models.CharField(max_length=200, blank=True, default="")
+    person_email = models.CharField(max_length=200, blank=True, default="")
+    role_title = models.CharField(max_length=120, blank=True, default="")
+    line_kind = models.CharField(max_length=40, db_index=True)
+    unit_code = models.CharField(max_length=40, blank=True, default="")
+    unit_name = models.CharField(max_length=160, blank=True, default="")
+    manager_name = models.CharField(max_length=200, blank=True, default="")
+    manager_email = models.CharField(max_length=200, blank=True, default="",
+                                     db_index=True)
+    manager_code = models.CharField(max_length=40, blank=True, default="")
+    source = models.CharField(max_length=40, db_index=True)
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    # These lines decide who may open whose card, so changes are kept.
+    history = HistoricalRecords()
+
+    class Meta:
+        managed = True
+        db_table = "sc_reporting_lines"
+        ordering = ["line_kind", "unit_name", "person_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "person_code", "line_kind", "manager_name"],
+                name="uniq_reporting_line"),
+        ]
+
+    def __str__(self):
+        return f"{self.person_code} -> {self.manager_name} ({self.line_kind})"

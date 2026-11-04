@@ -52,7 +52,7 @@ of `:9000`, and THAT layer is dropping the JSON body.
    - Returns 400 → the issue is deeper in Django; paste the body.
 
 ## Standing constraints (do not violate)
-- OLD SECRET_KEY `&ontpif1mpz8jjn+n0^79h9-&_!w)gibw%-6)!!dbn&kqj(m%1` must NOT be reused.
+- The old project's SECRET_KEY must NOT be reused. It is in this file's git history, so treat it as exposed.
 - `.env` gitignored; secrets never committed; new SECRET_KEY generated on server only.
 - Never plain `migrate` on shared prod DB; back up before migrating live prod DB.
 - Exposed ANTHROPIC_API_KEY must be rotated (new key only in /etc/hf/prod.env).

@@ -45,4 +45,8 @@ class EnrichedTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        return embed_identity_claims(token, user)
+        token = embed_identity_claims(token, user)
+        # The password alone. See core/authentication.py; verify-otp/ issues the
+        # pair that says the second factor was passed.
+        token["mfa"] = False
+        return token

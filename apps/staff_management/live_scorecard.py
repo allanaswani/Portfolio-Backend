@@ -2970,6 +2970,13 @@ BO_TITLE_ALIASES = {
     "rbo": "bo_rbo",
     "team leader: account opening (retail back office)": "bo_tl_rbo",
     "team leader - retail back office": "bo_tl_rbo",
+    # As the back-office workbook's List sheet writes them. The cards themselves
+    # are the same ones the long titles above lead to.
+    "cso_ub": "bo_cso_ub",
+    "csm_db": "bo_csm_diaspora",
+    "cash_center": "bo_cash_centre_teller",
+    "cash_centre": "bo_cash_centre_teller",
+    "tl_rbo": "bo_tl_rbo",
 }
 
 
@@ -3004,7 +3011,20 @@ def card_role_for(title):
     roster" while the teller card sat configured. Use this wherever a role
     title is turned into a card.
     """
-    return role_code_for(title) or bo_role_for(title)
+    return role_code_for(title) or bo_role_for(title) or _configured_role(title)
+
+
+def _configured_role(title):
+    """A card set up after this code was written: its name on ``sc_roles`` is its
+    title. This is what lets a new team get a card with no release. Exact match
+    only, and only asked when the titles above found nothing."""
+    from .scorecard_automation.models import ScRole
+
+    text = " ".join(str(title or "").split())
+    if not text:
+        return None
+    return (ScRole.objects.filter(role_name__iexact=text)
+            .values_list("role_code", flat=True).first())
 
 
 def started_in_role(sales_code, year=None):
@@ -3298,11 +3318,26 @@ def name_fits_account(user, name):
 
     if user.groups.filter(name=EXCLUDED_GROUP).exists():
         return True
+    return _name_is_on_account(user, name)
+
+
+def _name_is_on_account(user, name):
+    """The check itself, with nobody exempt. See :func:`name_fits_account`."""
     words = _words(name)
     login = re.findall(r"[a-z]+", str(getattr(user, "username", "") or "").lower())
     if not words or len(login) < 2:
         return True
     return bool(words & _account_words(user))
+
+
+def is_someone_elses_card(user, sales_code):
+    """Is this code on the account for checking, rather than the account's own?
+
+    The Strategy team may open such a card to verify the data, but a signature or a
+    mail from them would say the holder did it, so signing and sending ask this.
+    """
+    person = resolve_person(sales_code) if sales_code else None
+    return person is not None and not _name_is_on_account(user, person.name)
 
 
 def _workbook_code_for(user, profile=None):
@@ -3450,20 +3485,19 @@ def resolve_sales_code_for_user(user, profile=None):
     # so somebody on that page could still be told nothing identifies them.
     from django.db import transaction
 
-    from .models import BranchEmployeeDmcData
+    from .models import BranchEmployeeDmcData, BranchFinalEmployeeDmcData
 
     roster = []
-    if email:
-        roster.append(BranchEmployeeDmcData.objects.filter(staff_email__iexact=email))
-    if username:
-        roster.append(BranchEmployeeDmcData.objects.filter(
-            staff_email__istartswith=f"{username}@"))
-    if profile_code.isdigit():
-        roster.append(BranchEmployeeDmcData.objects.filter(
-            staff_pf_number=int(profile_code)))
-    if username.isdigit():
-        roster.append(BranchEmployeeDmcData.objects.filter(
-            staff_pf_number=int(username)))
+    # The Sales Staff page, then the Branch Managers page.
+    for model in (BranchEmployeeDmcData, BranchFinalEmployeeDmcData):
+        if email:
+            roster.append(model.objects.filter(staff_email__iexact=email))
+        if username:
+            roster.append(model.objects.filter(staff_email__istartswith=f"{username}@"))
+        if profile_code.isdigit():
+            roster.append(model.objects.filter(staff_pf_number=int(profile_code)))
+        if username.isdigit():
+            roster.append(model.objects.filter(staff_pf_number=int(username)))
     try:
         with transaction.atomic():
             for queryset in roster:

@@ -646,6 +646,8 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 @extend_schema(tags=["Portfolio — Profile"])
 class UserProfileView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
+    # The sign-in page reads the address to send the code to before the code is in.
+    allow_unverified_token = True
     serializer_class = UserSerializer
 
     def get_object(self):

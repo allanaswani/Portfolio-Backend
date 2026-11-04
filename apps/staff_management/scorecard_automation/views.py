@@ -666,9 +666,12 @@ class ScorecardCardView(APIView):
                 signed["signoff_period"] = period
                 signed["matched_by"] = how
                 signed["month"] = month.isoformat() if month else None
+                signed["someone_elses_card"] = _is_someone_elses(
+                    request.user, sales_code)
                 return Response(signed)
             live["matched_by"] = how
             live["month"] = month.isoformat() if month else None
+            live["someone_elses_card"] = _is_someone_elses(request.user, sales_code)
             return Response(live)
 
         rows = list(ScEmployeeMonthlyPerformance.objects
@@ -837,6 +840,23 @@ def _own_sales_code_and_how(request):
     return resolve_sales_code_for_user(request.user, profile)
 
 
+def _is_someone_elses(user, sales_code):
+    from apps.staff_management.live_scorecard import is_someone_elses_card
+
+    return is_someone_elses_card(user, sales_code)
+
+
+def _refuse_if_someone_elses(request, sales_code, doing):
+    """A signature or a mail says the holder did it, so it cannot come from an
+    account that only carries their code for checking. → a 403 response or None."""
+    if not _is_someone_elses(request.user, sales_code):
+        return None
+    return Response(
+        {"detail": f"This card belongs to the person named on it. You can check "
+                   f"it, but only they can {doing} it."},
+        status=status.HTTP_403_FORBIDDEN)
+
+
 def _signoff_payload(signoff):
     if signoff is None:
         return None
@@ -899,6 +919,9 @@ class ScorecardSignView(APIView):
                     {"detail": "Your profile has no sales code, so there is no "
                                "card to sign."},
                     status=status.HTTP_400_BAD_REQUEST)
+            refused = _refuse_if_someone_elses(request, sales_code, "sign")
+            if refused is not None:
+                return refused
         else:
             sales_code = str(request.data.get("sales_code") or "").strip()
             if not sales_code:
@@ -911,10 +934,14 @@ class ScorecardSignView(APIView):
             # nobody can counter-sign anything.
             from apps.staff_management.live_scorecard import team_leader_of
 
+            from apps.staff_management.reporting_lines import is_direct_report
+
             named = team_leader_of(row).strip().lower()
-            # A manager signs the people the roster says are theirs. Anyone
-            # else counter-signing would make the second signature worthless.
-            if not request.user.is_superuser and named != signer.lower():
+            # A manager signs the people the roster or a workbook's reporting
+            # lines say are theirs. Anyone else counter-signing would make the
+            # second signature worthless.
+            if (not request.user.is_superuser and named != signer.lower()
+                    and not is_direct_report(request.user, sales_code)):
                 return Response(
                     {"detail": f"{sales_code} is not on your team, so you "
                                f"cannot counter-sign their card."},
@@ -995,6 +1022,9 @@ class ScorecardUnsignView(APIView):
                 {"detail": "Your profile has no sales code, so there is no "
                            "signature to withdraw."},
                 status=status.HTTP_400_BAD_REQUEST)
+        refused = _refuse_if_someone_elses(request, sales_code, "withdraw")
+        if refused is not None:
+            return refused
 
         period = str(request.data.get("period") or period_for()).strip()
         signoff = ScorecardSignoff.objects.filter(
@@ -1146,6 +1176,10 @@ class ScorecardSendView(APIView):
                 {"detail": "Your profile has no sales code, so there is no "
                            "card to send."},
                 status=status.HTTP_400_BAD_REQUEST)
+        if sales_code == own and request.method == "POST":
+            refused = _refuse_if_someone_elses(request, sales_code, "send")
+            if refused is not None:
+                return None, None, None, None, refused
 
         period = str(request.query_params.get("period")
                      or request.data.get("period") or period_for()).strip()
@@ -1745,15 +1779,16 @@ class ScorecardForPersonView(APIView):
 
     def get(self, request):
         from apps.staff_management.live_scorecard import build_card
-
-        if not _may_set_figures(request.user):
-            return Response(
-                {"detail": "Only an administrator can open somebody else's "
-                           "card."}, status=403)
+        from apps.staff_management.reporting_lines import is_in_team
 
         code = str(request.query_params.get("sales_code") or "").strip()
         if not code:
             return Response({"detail": "sales_code is required."}, status=400)
+        if not (_may_set_figures(request.user)
+                or is_in_team(request.user, code)):
+            return Response(
+                {"detail": "You can open the cards of the people who report to "
+                           "you. This one is not on your team."}, status=403)
         try:
             # Administration can look at a past month too, the same way
             # the person can download it.
@@ -1766,3 +1801,105 @@ class ScorecardForPersonView(APIView):
                 {"has_card": False, "reason": "live_failed",
                  "sales_code": code,
                  "detail": f"That card could not be computed: {exc}"})
+
+
+@extend_schema(tags=[_TAG])
+class MyTeamView(APIView):
+    """The people under the signed-in manager, at every level, whichever line
+    (branch, segment, zone, department, sector) they reach them by."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.reporting_lines import team_for
+
+        people = team_for(request.user)
+        return Response({
+            "people": people,
+            "count": len(people),
+            "direct": sum(1 for p in people if p["depth"] == 1),
+        })
+
+
+@extend_schema(tags=[_TAG])
+class RoleTitlesView(APIView):
+    """Every title a person can be given, for the role dropdowns."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management.reporting_lines import role_titles
+
+        return Response({"titles": role_titles()})
+
+
+@extend_schema(tags=[_TAG])
+class ReportingLinesView(APIView):
+    """See and load reporting lines.
+
+    GET lists them, narrowed by ``kind``, ``unit`` or ``q``. POST takes a scorecard
+    workbook, or a sheet with sales_code, line_kind and manager_name columns, which
+    is how a new structure such as sectors comes in. As with the other loads, the
+    first call only reports and a second call carrying ``apply`` saves.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    MAX_BYTES = 40 * 1024 * 1024
+
+    def get(self, request):
+        from django.db.models import Q
+
+        from apps.staff_management.models import ScReportingLine
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can read this."},
+                            status=403)
+        rows = ScReportingLine.objects.filter(active=True)
+        kind = str(request.query_params.get("kind") or "").strip().lower()
+        unit = str(request.query_params.get("unit") or "").strip()
+        needle = str(request.query_params.get("q") or "").strip()
+        if kind:
+            rows = rows.filter(line_kind=kind)
+        if unit:
+            rows = rows.filter(Q(unit_name__iexact=unit) | Q(unit_code__iexact=unit))
+        if needle:
+            rows = rows.filter(Q(person_name__icontains=needle)
+                               | Q(person_code__icontains=needle)
+                               | Q(manager_name__icontains=needle))
+        return Response({
+            "count": rows.count(),
+            "kinds": sorted(set(ScReportingLine.objects.filter(active=True)
+                                .values_list("line_kind", flat=True))),
+            "lines": list(rows.values(
+                "person_code", "person_name", "role_title", "line_kind",
+                "unit_code", "unit_name", "manager_name", "manager_email",
+                "source")[:2000]),
+        })
+
+    def post(self, request):
+        from apps.staff_management import reporting_lines as lines
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can load this."},
+                            status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose the file first."}, status=400)
+        if upload.size > self.MAX_BYTES:
+            return Response({"file": "That file is larger than 40 MB."}, status=400)
+        try:
+            source, found = lines.lines_from_rows(lines.read_rows(upload))
+            found = lines.use_branch_manager_page(found)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return Response({"file": f"That file could not be read: {exc}"},
+                            status=400)
+        if not found:
+            return Response({"file": "That file holds no reporting lines."},
+                            status=400)
+        apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        kinds = sorted({line["line_kind"] for line in found})
+        counts = lines.save(found, source, apply=apply,
+                            kinds=kinds if source == "upload" else None)
+        return Response({"applied": apply, "source": source, "kinds": kinds,
+                         "lines": len(found), **counts})

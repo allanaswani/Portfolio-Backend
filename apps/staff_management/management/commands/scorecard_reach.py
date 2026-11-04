@@ -94,8 +94,13 @@ def proven_account(pf, accounts_by_local):
 def _where_listed(person):
     """Which roster holds this person, and the address to make an account with.
     "No login" is about accounts: the person may well be on the Sales Staff page."""
-    from apps.staff_management.models import BranchEmployeeDmcData, StaffEmployeeData
+    from apps.staff_management.models import (
+        BranchEmployeeDmcData, BranchFinalEmployeeDmcData, StaffEmployeeData)
 
+    manager = BranchFinalEmployeeDmcData.objects.filter(
+        sales_code__iexact=person["code"]).first()
+    if manager is not None:
+        return f"Branch Managers page: {manager.staff_email or 'no address'}"
     row = BranchEmployeeDmcData.objects.filter(
         sales_code__iexact=person["code"]).first()
     if row is None and str(person["pf"] or "").isdigit():

@@ -30,6 +30,8 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+import hmac
+
 from apps.portfolio.models import OTP
 from apps.portfolio.serializers import ChangePasswordSerializer, LogoutSerializer
 
@@ -54,6 +56,11 @@ class ChangePasswordView(generics.UpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         user = self.get_object()
+        # The URL names the account, so without this anybody signed in could guess
+        # at a colleague's current password here, with no limit on attempts.
+        if user.pk != request.user.pk and not request.user.is_superuser:
+            return Response({"detail": "You can only change your own password."},
+                            status=status.HTTP_403_FORBIDDEN)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -74,6 +81,7 @@ class ChangePasswordView(generics.UpdateAPIView):
 @extend_schema(tags=["Authentication"])
 class LogoutAPIView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
+    allow_unverified_token = True
     serializer_class = LogoutSerializer
 
     def post(self, request):
@@ -90,6 +98,7 @@ class LogoutAPIView(generics.GenericAPIView):
 @extend_schema(tags=["Authentication"])
 class GenerateOTPView(APIView):
     permission_classes = [IsAuthenticated]
+    allow_unverified_token = True
     throttle_classes = [OTPRequestThrottle]
 
     def post(self, request):
@@ -123,6 +132,7 @@ class GenerateOTPView(APIView):
 @extend_schema(tags=["Authentication"])
 class VerifyOTPView(APIView):
     permission_classes = [IsAuthenticated]
+    allow_unverified_token = True
     throttle_classes = [OTPVerifyThrottle]
 
     def post(self, request):
@@ -135,12 +145,31 @@ class VerifyOTPView(APIView):
             return Response({"detail": "No OTP found."}, status=status.HTTP_400_BAD_REQUEST)
 
         otp_obj = qs.first()
-        if otp_obj.otp != otp_code:
+        if not hmac.compare_digest(str(otp_obj.otp), str(otp_code)):
             return Response({"detail": "Invalid OTP."}, status=status.HTTP_400_BAD_REQUEST)
         if otp_obj.is_expired():
             return Response({"detail": "OTP has expired."}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({"detail": "OTP verified successfully."}, status=status.HTTP_200_OK)
+        # A code works once.
+        OTP.objects.filter(user=request.user).delete()
+
+        # The pair that says the second factor was passed. The one from the password
+        # alone is retired, so it cannot be refreshed into use later.
+        from apps.authentication.token_serializers import embed_identity_claims
+
+        old = request.data.get("refresh")
+        if old:
+            try:
+                RefreshToken(old).blacklist()
+            except Exception:  # noqa: BLE001 - it may have expired, which is fine
+                pass
+        refresh = embed_identity_claims(RefreshToken.for_user(request.user), request.user)
+        refresh["mfa"] = True
+        return Response({
+            "detail": "OTP verified successfully.",
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        }, status=status.HTTP_200_OK)
 
 
 def password_reset_token_created(sender, instance, reset_password_token, *args, **kwargs):

@@ -117,6 +117,11 @@ urlpatterns = [
     path("cards/", views.ScorecardCatalogueView.as_view()),
     path("roster/", views.ScorecardRosterView.as_view()),
     path("card-for/", views.ScorecardForPersonView.as_view()),
+    # Reporting lines: who is on your team, what a person's title can be, and the
+    # table itself. See apps/staff_management/reporting_lines.py.
+    path("my-team/", views.MyTeamView.as_view()),
+    path("role-titles/", views.RoleTitlesView.as_view()),
+    path("reporting-lines/", views.ReportingLinesView.as_view()),
 
     # Automation actions
     path("missing_actuals/refresh/", views.RefreshMissingActualsView.as_view()),

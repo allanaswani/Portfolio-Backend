@@ -253,7 +253,9 @@ REST_FRAMEWORK = {
         # JWT is the app's auth. BasicAuthentication was dropped — it added an
         # extra credential-checking surface the SPA never uses. SessionAuth stays
         # only for the browsable API / Django admin.
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # JWT, plus: a token from the password alone opens only the OTP step once
+        # LOGIN_MFA_ENFORCED is on. See core/authentication.py.
+        "core.authentication.SecondFactorJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -282,10 +284,17 @@ REST_FRAMEWORK = {
         "anon": env("ANON_THROTTLE_RATE", default="300/hour"),
         "otp_request": "50/hour",
         "otp_verify": env("OTP_VERIFY_THROTTLE_RATE", default="10/hour"),
+        # Per account named at sign-in, whichever address it comes from.
+        "login_account": env("LOGIN_ACCOUNT_THROTTLE_RATE", default="20/hour"),
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "PAGE_SIZE": 10,
 }
+
+# Off until the frontend that swaps tokens at verify-otp/ is live on BOTH hosts:
+# the earlier frontend would be signed out straight after its code. Then set
+# LOGIN_MFA_ENFORCED=1 in /etc/hf/prod.env and recreate the container.
+LOGIN_MFA_ENFORCED = env.bool("LOGIN_MFA_ENFORCED", default=False)
 
 # Simple JWT — mirrors old backend settings
 SIMPLE_JWT = {
@@ -316,6 +325,8 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Full backend API for HF Group portfolio management and analytics",
     "VERSION": "2.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # The list of every endpoint is not for the public.
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.IsAdminUser"],
 }
 
 # CORS — mirrors old backend
