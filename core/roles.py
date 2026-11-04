@@ -128,8 +128,9 @@ NEW_ROLES = (
     # administrator can put the audit team on their own screen rather than
     # filing the figures for them.
     "audit",
-    # Left out of the usage reports - see apps/analytics/exclusions.py. It
-    # grants nothing; it only decides whose clicks the figures count.
+    # The Strategy team. Left out of the usage reports (see
+    # apps/analytics/exclusions.py), and may carry another person's sales code
+    # to check the data as they see it. It opens no module.
     "usage_report_excluded",
 )
 
@@ -152,8 +153,8 @@ NEW_ROLE_DESCRIPTIONS = {
           "scorecards read (contactability and satisfaction).",
     "audit": "Internal Audit — files the branch audit score and "
              "implementation rate the scorecards read.",
-    "usage_report_excluded": "Usage reports — left out of the usage figures "
-                             "(the Strategy team). Grants no access.",
+    "usage_report_excluded": "Strategy team — left out of the usage figures, and "
+                             "may carry another person's sales code to check data.",
     # Wording mirrors c360/roles.py::C360_ROLE_DESCRIPTIONS.
     "c360_management": "Customer 360 — management / analytics (whole-book Level 1).",
     "c360_rm": "Customer 360 — relationship manager (own book).",

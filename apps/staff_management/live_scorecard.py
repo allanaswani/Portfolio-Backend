@@ -3290,7 +3290,14 @@ def name_fits_account(user, name):
     Only a firstname.lastname login can be judged. A login like "fj" or a PF
     number says nothing about its owner's name, so it is not held against them:
     locking somebody out of their own card would be the opposite mistake.
+
+    The Strategy team is exempt. They put other people's sales codes on their
+    own profiles on purpose, to check the data as that person sees it.
     """
+    from apps.analytics.exclusions import EXCLUDED_GROUP
+
+    if user.groups.filter(name=EXCLUDED_GROUP).exists():
+        return True
     words = _words(name)
     login = re.findall(r"[a-z]+", str(getattr(user, "username", "") or "").lower())
     if not words or len(login) < 2:

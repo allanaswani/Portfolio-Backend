@@ -625,6 +625,22 @@ class WhoseCardIsItTests(TestCase):
         self._lilian()
         self.assertEqual(self._resolve("silas.abudho", "LJB1656"), "")
 
+    def test_strategy_may_open_the_card_they_are_checking(self):
+        """They carry other people's codes on purpose, to verify the data."""
+        from django.contrib.auth.models import Group, User
+
+        from apps.analytics.exclusions import EXCLUDED_GROUP
+        from apps.portfolio.models import Profile
+        from apps.staff_management.live_scorecard import resolve_sales_code_for_user
+
+        self._lilian()
+        user = User.objects.create_user("washingtone.amolo")
+        Group.objects.get_or_create(name=EXCLUDED_GROUP)[0].user_set.add(user)
+        Profile.objects.filter(user=user).update(sales_code="LJB1656")
+        self.assertEqual(
+            resolve_sales_code_for_user(user, Profile.objects.get(user=user))[0],
+            "LJB1656")
+
     def test_a_login_that_names_nobody_keeps_the_code_on_its_profile(self):
         """"fj" cannot be judged, and must not lose their own card for it."""
         self._lilian()
