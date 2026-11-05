@@ -100,3 +100,27 @@ Review month on both: **June 2026** (`K5 = 6` on every card, `Constants!B2 = 6`)
 
 FID, reconciliation accuracy, call-back timeliness, scheme statements,
 empanelment and sign-ups are desk returns: loaded, not measured.
+
+## Can these lines read live? Tested 5 Nov 2026
+
+Against the two workbooks above and the lake. The server proof is under Scorecards, Live feeds.
+
+- **Disbursements.** The extract rebuilds the desk's pivot exactly (June: Dennis 45,968,900;
+  George 40,300,946; Kipkirui 80,872,903). `ABBVR` decides `SCHEME RM` with no conflicts in 949
+  rows, but `ABBVR` is the desk's own column and is in no ETL or lake table.
+  - `rpt_ceo_drawdowns` is incomplete: for Dennis in January, 8 of the desk's 16 commercial rows
+    are absent, worth 18,162,427, which is the whole gap (32.36m against 14.2m). Rows it does
+    hold agree exactly on amount and rate. `drawdown_daily` still needs testing on the server.
+  - **New customers are the limit.** With a mapping learned only from earlier months, customer
+    and employer code find 71-76% of a month's commercial money; adding employer name, 74-83%;
+    even `ABBVR` itself, 80-93%. New schemes draw every month and only the desk knows their RM.
+    The proof requires 95%, so expect this line to stay on the desk's figure. Below that an
+    RM would be shown short by up to a third.
+- **Deposit growth.** The desk's figure is a typed list: George's June 87,746,490 is
+  50,000,000 + 49,125,000 - 11,378,510. The portfolio pivot says 206,067,834. Reading the
+  warehouse would change the definition, not make it live.
+- **NPL and PAR.** A June grade list by scheme. `rpt_loanbook_portfolio_listing` holds today only,
+  so June cannot be reproduced from it. The month-end tables were not tested.
+- **The rest.** Sign-ups, reconciliation, FID, audit, call-backs and NPS are desk returns.
+
+The actuals workbook is complete only for June, so most lines have one month to prove against.

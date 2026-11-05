@@ -3897,7 +3897,8 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                               "been loaded yet. Administration loads the "
                               "Scheme template and actuals workbook under "
                               "Scorecards."}
-        return scheme_cards.card_payload(record, asked=as_at)
+        live = scheme_cards.live_payload(record, as_at or datetime.date.today())
+        return live or scheme_cards.card_payload(record, asked=as_at)
 
     # The back-office cards likewise, for whoever the workbook's List holds:
     # its own formulas over the actuals template, stored per month on load.

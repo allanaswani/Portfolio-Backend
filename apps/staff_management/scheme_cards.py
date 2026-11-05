@@ -882,6 +882,73 @@ def card_payload(record, asked=None):
     }
 
 
+def live_payload(record, as_at):
+    """The newest stored card with proven lines read to ``as_at`` → a payload, or
+    None if nothing is proven. Every other line stays the desk's, against the target
+    of its own month, and says so."""
+    import copy
+    import datetime
+
+    from . import scheme_live_feeds as feeds
+
+    proven = {k for k, v in feeds.proven().items() if v.get("live")}
+    if (not proven or as_at.year != record.month.year
+            or as_at.replace(day=1) <= record.month or record.sheet not in CARDS):
+        return None
+    lines_by_kpi = {line.kpi: line for line in CARDS[record.sheet].lines}
+    data = copy.deepcopy(record.card or {})
+    total = record.total
+    read = {}
+    for line in data.get("lines", []):
+        kpi = line["kpi"]
+        if kpi not in proven or kpi not in lines_by_kpi:
+            continue
+        value = feeds.live_value(kpi, record.staff_name, as_at)
+        # A year-to-date sum cannot fall below what the desk has recorded.
+        if value is None or (_num(line["actual"]) and value < line["actual"]):
+            continue
+        spec = lines_by_kpi[kpi]
+        full, ytd = _ytd_target(spec, as_at.month, record.joined)
+        score = _score(spec.score, value, ytd)
+        weighted = score * spec.weight
+        if spec.counted and _num(total) and _num(line.get("weighted")):
+            total += weighted - line["weighted"]
+        line.update(fy_target=full, ytd_target=ytd, actual=value, score=score,
+                    weighted=weighted, empty=False)
+        read[kpi] = line
+    if not read:
+        return None
+
+    stored = type("Stored", (), {})()
+    stored.card, stored.total, stored.month = data, total, record.month
+    stored.sheet, stored.sales_code = record.sheet, record.sales_code
+    stored.staff_name = record.staff_name
+    payload = card_payload(stored)
+    end = as_at.isoformat()
+    desk_month = f"{record.month:%B %Y}"
+    for perspective in payload["perspectives"]:
+        for ln in perspective["lines"]:
+            if ln["kpi_code"] in read:
+                ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
+                ln["as_at_date"] = end
+            elif not ln["pending"]:
+                ln["as_at"] = f"the desk's latest figure ({record.month:%b %Y})"
+    shown = sum(1 for ln in data["lines"])
+    payload.update({
+        "live": True,
+        "live_lines": len(read),
+        "period": {"label": f"{as_at:%B %Y}", "as_at": end},
+        "months_loaded": sorted({*payload["months_loaded"],
+                                 f"{as_at.year}-{as_at.month:02d}"}),
+        "how_scored": (
+            f"{len(read)} of {shown} lines read today's figures. The others show the "
+            f"desk's latest figure ({desk_month}). Disbursements count a customer new "
+            f"since the desk's last list only if their employer code belongs to one "
+            f"scheme RM. Otherwise this is scored as the desk's Scheme workbook scores it."),
+    })
+    return payload
+
+
 def _coverage_note(lines, month):
     looked_up = [ln for ln in lines if "empty" in ln]
     empty = sum(1 for ln in looked_up if ln["empty"])

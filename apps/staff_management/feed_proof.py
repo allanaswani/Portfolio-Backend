@@ -11,7 +11,7 @@ import datetime
 import threading
 
 STATUS_KIND = "feed_proof_status"
-BOOKS = ("back_office", "sales", "branch_managers")
+BOOKS = ("back_office", "sales", "branch_managers", "scheme")
 #: A run silent this long died with its worker, so another may start.
 STALE_AFTER = datetime.timedelta(hours=1)
 #: How often a running proof reports that it is still going.
@@ -66,6 +66,10 @@ def _run_book(book, year, month, out):
         from . import bb_live_feeds
 
         bb_live_feeds.probe(year, month, out=out)
+    elif book == "scheme":
+        from . import scheme_live_feeds
+
+        scheme_live_feeds.probe(year, month, out=out)
     else:
         raise ValueError(f"unknown book {book}")
 
@@ -117,11 +121,12 @@ def start(book, year, month, by=""):
 
 def summary():
     """What is proven for each workbook now, for the screen."""
-    from . import bb_live_feeds, bo_live_feeds, sales_live_feeds
+    from . import bb_live_feeds, bo_live_feeds, sales_live_feeds, scheme_live_feeds
 
     def engine_rows(stored):
         return [{"line": v.get("name"), "sheet": v.get("sheet"), "match": v.get("match"),
-                 "people": v.get("people"), "month": v.get("month"), "live": bool(v.get("live"))}
+                 "people": v.get("people"), "month": v.get("month"), "live": bool(v.get("live")),
+                 "how": v.get("how")}
                 for v in sorted(stored.values(), key=lambda x: str(x.get("name")))]
 
     transaction_feeds = [
@@ -131,6 +136,7 @@ def summary():
     return {
         "back_office": transaction_feeds + engine_rows(bo_live_feeds.engine_proven()),
         "sales": engine_rows(sales_live_feeds.proven()),
+        "scheme": engine_rows(scheme_live_feeds.proven()),
         "branch_managers": [
             {"line": key, "sheet": feed.get("sheet"), "match": feed.get("match"),
              "month": feed.get("month"), "live": True, "how": feed.get("label")}

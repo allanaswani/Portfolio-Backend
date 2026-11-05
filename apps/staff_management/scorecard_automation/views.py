@@ -360,6 +360,10 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
             sc.store(cards, datetime.date(year, m, 1), loaded_by=who)
             for m, cards in by_month.items())
         body["applied"] = True
+        # The desk's drawdown list: what the live disbursement proof places by.
+        from apps.staff_management import scheme_live_feeds
+
+        body["drawdown_list_rows"] = scheme_live_feeds.capture(actuals, who)
         return Response(body, status=201)
 
 
