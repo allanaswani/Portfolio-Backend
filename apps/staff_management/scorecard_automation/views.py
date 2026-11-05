@@ -2094,3 +2094,37 @@ class CardReachView(APIView):
             changed_by=request.user.username)
         return Response({"detail": f"Created {username} with {code}. Add any module roles "
                                    f"on Users & Roles."}, status=201)
+
+
+@extend_schema(tags=[_TAG])
+class FeedProofView(APIView):
+    """Which scorecard lines read live, and the button that proves more of them."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management import feed_proof
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can open this."}, status=403)
+        return Response({"status": feed_proof.status(), "summary": feed_proof.summary()})
+
+    def post(self, request):
+        from apps.staff_management import feed_proof
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can run this."}, status=403)
+        book = str(request.data.get("book") or "")
+        if book not in feed_proof.BOOKS:
+            return Response({"detail": "Choose a workbook."}, status=400)
+        try:
+            year, month = (int(p) for p in str(request.data.get("month")).split("-"))
+            datetime_ok = 1 <= month <= 12 and 2000 < year < 2100
+        except (TypeError, ValueError):
+            datetime_ok = False
+        if not datetime_ok:
+            return Response({"detail": "Choose a closed month."}, status=400)
+        if not feed_proof.start(book, year, month, by=request.user.username):
+            return Response({"detail": "A run is already going. Wait for it to finish."},
+                            status=409)
+        return Response({"detail": "Started."}, status=202)

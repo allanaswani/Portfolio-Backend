@@ -1,10 +1,20 @@
 """Back-office figures read live from the warehouse - only once proven.
 
 The back-office actuals template has a sheet per measure and a row per
-teller. Nothing in the ETL repo builds those sheets: the desk assembles them,
-and how it counts a teller's KYC updates or funded accounts is written down
-nowhere. What the warehouse does have is every transaction with the user who
-posted it (``transaction_diary.trx_usr``), its code and its date.
+person. Nothing in the ETL repo builds those sheets: the desk assembles them.
+What the warehouse does have is every transaction with the user who posted it
+(``transaction_diary.trx_usr``, which is the sales code), its code and its date.
+
+Three things can prove a sheet, and each is compared with the desk's figures:
+
+* a count of one transaction code, or a ratio such as transactions per day
+  worked or reversals per transaction, for everybody or for one role, since
+  the same sheet can mean different things on a teller's and a BOM's card;
+* the branch figures the branch managers' cards already read, because on twelve
+  sheets everybody in a branch carries one figure (PL_Charge, TAT and others);
+* the live engine's own reading of the line, stored separately
+  (:data:`ENGINE_STORE_KIND`, by ``sales_live_feeds.probe``). It leaves loaded
+  figures out, so it cannot pass by matching the desk's own upload.
 
 So nothing here assumes a definition. :func:`probe` takes a month the desk
 has already closed, counts each teller's transactions every way that is
@@ -34,6 +44,35 @@ TOLERANCE = 0.01
 PROBE_TIMEOUT_MS = 600_000
 LIVE_TIMEOUT_MS = 20_000
 STORE_KIND = "bo_live_feeds"
+ENGINE_STORE_KIND = "bo_engine_feeds"
+#: How close a ratio must be: a hundredth, or half a percent of a larger figure.
+RELATIVE = 0.005
+MIN_PEOPLE = 5
+MIN_DISTINCT = 3
+
+#: Each counted per person per month. Column names are the ones the ETLs use.
+_ORIGINAL = "coalesce(reverse_flag, 'Original') = 'Original'"
+_CHARGES = ("'EXCISE DUTY', 'COMMISSION ON TRANSACTION AMOUNT', "
+            "'CHARGES ON TRANSACTION AMOUNT'")
+MEASURES = {
+    "rows": "count(*)",
+    "original": f"count(*) FILTER (WHERE {_ORIGINAL})",
+    "posted": ("count(*) FILTER (WHERE lower(reversed_trx_flag) = 'posted' "
+               f"AND {_ORIGINAL})"),
+    "refs": "count(DISTINCT transaction_ref)",
+    "original_refs": f"count(DISTINCT transaction_ref) FILTER (WHERE {_ORIGINAL})",
+    "no_charges": (f"count(*) FILTER (WHERE {_ORIGINAL} AND coalesce(justific_name, '') "
+                   f"NOT IN ({_CHARGES}))"),
+    "reversed": f"count(*) FILTER (WHERE NOT ({_ORIGINAL}))",
+    "days": "count(DISTINCT trx_date::date)",
+}
+#: (numerator, denominator, what it is called). "weekdays" is the calendar's.
+RATIOS = [(n, d, f"{n} per {'day worked' if d == 'days' else 'weekday'}")
+          for n in ("rows", "original", "posted", "refs", "original_refs", "no_charges")
+          for d in ("days", "weekdays")] + [
+    ("reversed", "rows", "reversed share of all transactions"),
+    ("reversed", "original", "reversals per original transaction"),
+]
 
 
 def _month_bounds(year, month):
@@ -81,6 +120,126 @@ def _cumulative(actuals, sheet):
         if vals:
             series.append(vals)
     return is_cumulative(series)
+
+
+def _weekdays(first, end):
+    """Monday to Friday from ``first`` up to, not including, ``end``."""
+    return sum(1 for n in range((end - first).days)
+               if (first + datetime.timedelta(days=n)).weekday() < 5)
+
+
+def _ratio(values, num, den, weekdays):
+    """One person's ratio from their measures → a number or None."""
+    bottom = weekdays if den == "weekdays" else values.get(den)
+    return values.get(num, 0) / bottom if bottom else None
+
+
+def _close(desk, got):
+    """The same figure? Half a percent of it, or a hundredth where that is more -
+    except on a small rate, where a flat hundredth would pass nearly anything."""
+    if got is None:
+        return False
+    size = abs(desk)
+    return abs(desk - got) <= max(RELATIVE * size, min(TOLERANCE, 0.02 * size))
+
+
+def _varied(values):
+    """Enough different figures to prove anything: a count that happens to be 1
+    for everybody also "matches" a sheet where everybody has 1."""
+    return len({round(v, 4) for v in values}) >= MIN_DISTINCT
+
+
+def _measures(first, end, timeout_ms, user=None):
+    """{user: {measure: value}} for a span of the diary."""
+    names = list(MEASURES)
+    select = ", ".join(f"{MEASURES[n]} AS {n}" for n in names)
+    who = "AND upper(trim(trx_usr)) = %s" if user else ""
+    rows = _rows(f"""SELECT upper(trim(trx_usr)), {select} FROM transaction_diary
+                     WHERE trx_date >= %s AND trx_date < %s {who} GROUP BY 1""",
+                 [first, end] + ([user] if user else []), timeout_ms)
+    return {r[0]: dict(zip(names, r[1:])) for r in rows}
+
+
+def best_ratio(people, measures, weekdays):
+    """The ratio matching most of ``people`` [(code, desk)] → (share, ratio) or None."""
+    best = None
+    for num, den, label in RATIOS:
+        hits = sum(1 for code, desk in people if code in measures
+                   and _close(desk, _ratio(measures[code], num, den, weekdays)))
+        share = hits / len(people) if people else 0
+        if hits and (best is None or share > best[0]):
+            best = (share, {"kind": "ratio", "num": num, "den": den, "label": label})
+    return best
+
+
+def _branch_candidates():
+    """(label, feed) for every branch reading the branch managers' cards use."""
+    from .bb_live_feeds import DEFINITIONS
+
+    for key, definitions in DEFINITIONS.items():
+        for label, kind, options in definitions:
+            yield key.split("#")[0], label, dict(options, kind=kind, label=label)
+
+
+def _prove_branch_sheets(actuals, holders_, year, month, out):
+    """Sheets where everybody in a branch has one figure, against the branch
+    managers' readers → {sheet: feed}."""
+    from . import bb_live_feeds
+
+    found = {}
+    wanted = {}
+    for sheet, label, feed in _branch_candidates():
+        wanted.setdefault(sheet, []).append((label, feed))
+    for sheet, options in sorted(wanted.items()):
+        desk = _template_values(actuals, sheet, month)
+        targets = {}
+        for h in holders_:
+            value = desk.get(str(h.name).strip().lower())
+            if value and value[0]:
+                targets.setdefault(str(h.branch), value[0])
+        if len(targets) < MIN_PEOPLE or not _varied(targets.values()):
+            continue
+        best = None
+        for label, feed in options:
+            feed = dict(feed, sheet=sheet)
+            try:
+                totals = bb_live_feeds._totals(feed, year, month, PROBE_TIMEOUT_MS)
+            except Exception as exc:  # noqa: BLE001 - the reason is the answer
+                out(f"  {sheet:28} {label}: could not be read - {exc}")
+                continue
+            hits = sum(1 for branch, value in targets.items()
+                       if _close(value, bb_live_feeds._branch_total(totals, branch, feed)))
+            share = hits / len(targets)
+            if best is None or share > best[0]:
+                best = (share, feed)
+        if best is None:
+            continue
+        verdict = "LIVE" if best[0] >= PASS_SHARE else "not good enough"
+        out(f"  {sheet:28} {best[0]:6.1%} of {len(targets):3} branches match - "
+            f"{best[1]['label']} -> {verdict}")
+        if best[0] >= PASS_SHARE:
+            found[sheet] = {"kind": "bb_branch", "feed": best[1], "sheet": sheet,
+                            "match": best[0], "people": len(targets),
+                            "month": f"{year}-{month:02d}", "cumulative": False}
+    return found
+
+
+def describe(feed):
+    """A proven feed in words, for the screen."""
+    roles = f" ({', '.join(feed['roles'])})" if feed.get("roles") else ""
+    if feed.get("kind") == "ratio":
+        return f"{feed.get('label')}{roles}"
+    if feed.get("kind") == "bb_branch":
+        return f"branch figure: {(feed.get('feed') or {}).get('label')}"
+    if feed.get("kind") == "per_day_worked":
+        return "transactions per day worked"
+    return f"count of {feed.get('name')}, {feed.get('rows')} rows{roles}"
+
+
+def engine_proven():
+    from .workbook_cards import saved
+
+    return saved(ENGINE_STORE_KIND) or {}
 
 
 def _identifiers(book):
@@ -135,10 +294,46 @@ def probe(year, month, out=print):
     for user, code, name, n_all, n_orig in by_code:
         counts.setdefault(code, {})[user] = (n_all, n_orig, name)
 
+    from .workbook_cards import holders
+
+    everybody = [h for h in holders(book) if h.sales_code]
+    role_of = {str(h.name).strip().lower(): str(h.role or "") for h in everybody}
+    weekdays = _weekdays(first, nxt)
+    try:
+        measures = _measures(first, nxt, PROBE_TIMEOUT_MS)
+    except Exception as exc:  # noqa: BLE001 - counts below still run
+        out(f"The ratios could not be read: {exc}")
+        measures = {}
+
     found = {}
     for sheet in sorted(actuals):
         desk = _template_values(actuals, sheet, month)
         cumulative = _cumulative(actuals, sheet)
+
+        # Ratios, for everybody and then one role at a time. A ratio is the
+        # month's own figure, so it is compared with the sheet as it stands.
+        def desk_people(role=None):
+            return [(c, desk[n][0]) for n, c in on_diary.items()
+                    if n in desk and desk[n][0]
+                    and (role is None or role_of.get(n) == role)]
+
+        ratio_best = None
+        for role in [None] + sorted({role_of.get(n) for n in on_diary if role_of.get(n)}):
+            group = desk_people(role)
+            if len(group) < MIN_PEOPLE or not _varied(v for _, v in group):
+                continue
+            hit = best_ratio(group, measures, weekdays)
+            if hit and (ratio_best is None or hit[0] > ratio_best[0]):
+                ratio_best = (hit[0], dict(hit[1], roles=[role] if role else None),
+                              len(group))
+        if ratio_best and ratio_best[0] >= PASS_SHARE:
+            feed = dict(ratio_best[1], sheet=sheet, match=ratio_best[0],
+                        people=ratio_best[2], cumulative=False,
+                        month=f"{year}-{month:02d}")
+            out(f"  {sheet:28} {feed['match']:6.1%} of {feed['people']:3} people match"
+                f" - {describe(feed)} -> LIVE")
+            found[sheet] = feed
+            continue
 
         def target(name):
             now, before = desk[name]
@@ -150,7 +345,7 @@ def probe(year, month, out=print):
         people = [(n, c) for n, c in on_diary.items()
                   if n in desk and desk[n][0] is not None
                   and abs(target(n)) > TOLERANCE]
-        if len(people) < 5:
+        if len(people) < MIN_PEOPLE or not _varied(target(n) for n, _ in people):
             continue
 
         best = None
@@ -189,9 +384,14 @@ def probe(year, month, out=print):
         if best["match"] >= PASS_SHARE:
             found[sheet] = best
 
-    stored = saved(STORE_KIND) or {}
-    stored.update(found)
-    save_file(STORE_KIND, stored, f"probe {year}-{month:02d}", "probe")
+    found.update({sheet: feed for sheet, feed in _prove_branch_sheets(
+        actuals, everybody, year, month, out).items() if sheet not in found})
+
+    # This run replaces the last: a sheet that no longer matches stops being live.
+    dropped = sorted(set(saved(STORE_KIND) or {}) - set(found))
+    save_file(STORE_KIND, found, f"probe {year}-{month:02d}", "probe")
+    if dropped:
+        out(f"No longer matching, back to the desk's figure: {', '.join(dropped)}.")
     out(f"{len(found)} sheet(s) now read live: "
         f"{', '.join(sorted(found)) or 'none'}. Sheets not listed have no "
         f"warehouse count that gives the desk's figures; they stay on the "
@@ -257,10 +457,14 @@ def explain(year, month, who, out=print):
             f"({n_orig} original)")
 
 
-def live_value(feed, sales_code, as_at):
+def live_value(feed, sales_code, as_at, branch=None):
     """The live figure for one person on one proven feed, or None."""
     from django.core.cache import cache
 
+    if feed.get("kind") == "bb_branch":
+        from . import bb_live_feeds
+
+        return bb_live_feeds.live_value(feed["feed"], branch, as_at)
     code = (sales_code or "").strip().upper()
     key = f"bo_live:{feed['sheet']}:{code}:{as_at.isoformat()}"
     hit = cache.get(key)
@@ -269,7 +473,11 @@ def live_value(feed, sales_code, as_at):
     first, nxt = _month_bounds(as_at.year, as_at.month)
     end = min(nxt, as_at + datetime.timedelta(days=1))
     try:
-        if feed["kind"] == "per_day_worked":
+        if feed["kind"] == "ratio":
+            values = _measures(first, end, LIVE_TIMEOUT_MS, code).get(code)
+            value = (_ratio(values, feed["num"], feed["den"], _weekdays(first, end))
+                     if values else None)
+        elif feed["kind"] == "per_day_worked":
             row = _rows("""SELECT count(*), count(DISTINCT trx_date::date)
                            FROM transaction_diary
                            WHERE upper(trim(trx_usr)) = %s

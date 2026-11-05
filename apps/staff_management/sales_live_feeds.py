@@ -94,20 +94,21 @@ def _people(book):
             if h.sheet in book["cards"] and h.sales_code]
 
 
-def probe(year, month, out=print):
-    """Find which RM card lines the warehouse reproduces → {key: proof}
-    stored, and a report printed through ``out``."""
+def probe(year, month, out=print, book=None, store=STORE_KIND):
+    """Find which card lines the warehouse reproduces → {key: proof}
+    stored, and a report printed through ``out``. The sales workbook unless
+    ``book`` names another, whose proofs then go under ``store``."""
     from .workbook_cards import SALES, SPECS, _month_end, _num, save_file, saved
 
-    spec = SPECS[SALES]
+    spec = SPECS[book or SALES]
     book, actuals = saved(spec.files[0]), saved(spec.files[1])
     if book is None or actuals is None:
-        out("Load the sales scorecards workbook and actuals template first - "
+        out("Load the scorecards workbook and actuals template first - "
             "the probe compares against them.")
         return {}
     as_at = _month_end(datetime.date(year, month, 1))
     people = _people(book)
-    out(f"Comparing {len(people)} RM cards for {as_at:%B %Y}: the desk's "
+    out(f"Comparing {len(people)} cards for {as_at:%B %Y}: the desk's "
         f"template against the warehouse alone ...")
 
     seen = {}  # key -> {"name", "sheet", "rows": [(who, desk, warehouse)]}
@@ -161,15 +162,13 @@ def probe(year, month, out=print):
                         "live": share >= PASS_SHARE,
                         "month": f"{year}-{month:02d}"}
 
-    stored = saved(STORE_KIND) or {}
+    stored = saved(store) or {}
     stored.update(results)
-    save_file(STORE_KIND, stored, f"probe {year}-{month:02d}", "probe")
+    save_file(store, stored, f"probe {year}-{month:02d}", "probe")
     proven_now = sorted(v["name"] for v in results.values()
                         if v["live"])
     out(f"{len(proven_now)} line(s) give the desk's own figures: "
-        f"{', '.join(proven_now) or 'none'}. Every RM line reads the "
-        f"warehouse live; the others say on the card that the warehouse "
-        f"counts them differently from the desk.")
+        f"{', '.join(proven_now) or 'none'}.")
     return results
 
 

@@ -208,6 +208,70 @@ class StoredCardTests(TestCase):
         self.assertAlmostEqual(card["performance_score"],
                                round(0.5 * 26 / 36 + 0.3 + 0.24, 4))
 
+    def _open_month_with_a_proven_feed(self, **feed):
+        from unittest.mock import patch
+
+        from . import bo_live_feeds
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        bo.save_file(bo_live_feeds.STORE_KIND, {"CASA": dict({
+            "kind": "code_count", "sheet": "CASA", "codes": ["1"], "rows": "all",
+            "cumulative": True, "month": "2026-09"}, **feed)})
+        with patch.object(bo_live_feeds, "live_value", return_value=30.0):
+            return bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+
+    def test_only_a_proven_line_reads_live_and_the_card_says_how_many(self):
+        card = self._open_month_with_a_proven_feed()
+        opening, training, _ = [ln for p in card["perspectives"] for ln in p["lines"]]
+        # October's own target (4 x 10), and the card's formula read the figure.
+        self.assertEqual((opening["ytd_target"], opening["ytd_actual"]), (40.0, 30.0))
+        self.assertAlmostEqual(opening["score"], 30 / 40)
+        self.assertEqual(opening["as_at"], "live, as at 31 Oct 2026")
+        self.assertIn("(Sep 2026)", training["as_at"])
+        self.assertEqual(card["live_lines"], 1)
+        self.assertIn("1 of 3 lines read today's figures", card["how_scored"])
+        self.assertIn("2 show the desk's latest figure (up to September 2026)",
+                      card["how_scored"])
+
+    def test_nothing_proven_says_so_rather_than_calling_the_card_live(self):
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertEqual(card["live_lines"], 0)
+        self.assertIn("0 of 3 lines read today's figures", card["how_scored"])
+
+    def test_a_feed_proven_for_another_role_leaves_this_person_on_the_desk(self):
+        card = self._open_month_with_a_proven_feed(roles=["BOM"])
+        opening = card["perspectives"][0]["lines"][0]
+        self.assertEqual(opening["ytd_actual"], 26)
+        self.assertIn("(Sep 2026)", opening["as_at"])
+        self.assertEqual(card["live_lines"], 0)
+
+    def test_a_figure_the_cards_formula_does_not_find_is_not_called_live(self):
+        from unittest.mock import patch
+
+        with patch.object(bo, "_put_template", return_value=True):
+            card = self._open_month_with_a_proven_feed()
+        opening = card["perspectives"][0]["lines"][0]
+        self.assertEqual(opening["ytd_actual"], 26)
+        self.assertIn("(Sep 2026)", opening["as_at"])
+        self.assertEqual(card["live_lines"], 0)
+
+    def test_a_person_is_found_by_code_first_and_then_by_name(self):
+        grids = template({"CASA": {"Bob Waigwa": [1], "New Joiner": [2]}})
+        grids["CASA"][2][1] = "BCK3783"
+        # Code wins over a name on someone else's row.
+        self.assertEqual(bo._template_row(grids, "CASA", "BCK3783", 0, "Bob Waigwa")[2],
+                         "New Joiner")
+        self.assertEqual(bo._template_row(grids, "CASA", "NOPE", 0, "bob waigwa")[2],
+                         "Bob Waigwa")
+        self.assertIsNone(bo._template_row(grids, "CASA", "NOPE"))
+
+    def test_a_feed_proven_for_this_role_reads_live(self):
+        card = self._open_month_with_a_proven_feed(roles=["Teller"])
+        self.assertEqual(card["perspectives"][0]["lines"][0]["ytd_actual"], 30.0)
+
     def test_a_month_before_any_card_says_so(self):
         from .live_scorecard import build_card
 
@@ -413,3 +477,231 @@ class SalesWorkbookTests(TestCase):
         self.assertFalse(sales_live_feeds.same(1_000_000.0, 1_002_000.0))
         self.assertTrue(sales_live_feeds.same(0.9167, 0.91667))
         self.assertFalse(sales_live_feeds.same(6.0, 5.0))
+
+
+class BackOfficeProofTests(TestCase):
+    """A back-office line goes live only by reproducing the desk's figures."""
+
+    MEASURES = {"A1": {"rows": 430, "original": 430, "reversed": 4, "days": 10},
+                "A2": {"rows": 200, "original": 200, "reversed": 1, "days": 5},
+                "A3": {"rows": 330, "original": 330, "reversed": 3, "days": 11}}
+
+    def test_transactions_per_day_worked_is_found(self):
+        from . import bo_live_feeds as f
+
+        desk = [("A1", 43.0), ("A2", 40.0), ("A3", 30.0)]
+        share, ratio = f.best_ratio(desk, self.MEASURES, 21)
+        self.assertEqual((share, ratio["num"], ratio["den"]), (1.0, "rows", "days"))
+
+    def test_an_error_rate_is_found(self):
+        from . import bo_live_feeds as f
+
+        self.assertAlmostEqual(f._ratio(self.MEASURES["A1"], "reversed", "rows", 21), 4 / 430)
+
+    def test_figures_nothing_explains_are_not_proven(self):
+        from . import bo_live_feeds as f
+
+        self.assertIsNone(f.best_ratio([("A1", 7777.0), ("A2", 8888.0)], self.MEASURES, 21))
+
+    def test_a_person_with_no_days_gives_no_figure_rather_than_nought(self):
+        from . import bo_live_feeds as f
+
+        self.assertIsNone(f._ratio({"rows": 5, "days": 0}, "rows", "days", 21))
+
+    def test_weekdays_leave_out_the_weekend(self):
+        import datetime as dt
+
+        from . import bo_live_feeds as f
+
+        self.assertEqual(f._weekdays(dt.date(2026, 8, 1), dt.date(2026, 9, 1)), 21)
+
+    def test_a_branch_feed_is_read_by_branch(self):
+        from unittest.mock import patch
+
+        from . import bb_live_feeds, bo_live_feeds as f
+
+        feed = {"kind": "bb_branch", "feed": {"kind": "ifrs", "sheet": "PL_Charge"}}
+        with patch.object(bb_live_feeds, "live_value", return_value=12.0) as read:
+            self.assertEqual(f.live_value(feed, "A1", None, branch="Meru"), 12.0)
+        read.assert_called_once_with(feed["feed"], "Meru", None)
+
+    def test_a_small_rate_must_really_be_close(self):
+        from . import bo_live_feeds as f
+
+        self.assertFalse(f._close(0.003, 0.012))
+        self.assertTrue(f._close(0.003, 0.00301))
+        self.assertTrue(f._close(43.0, 43.1))
+        self.assertFalse(f._close(43.0, 44.0))
+        self.assertFalse(f._close(5.0, None))
+
+    def test_everybody_having_the_same_figure_proves_nothing(self):
+        from . import bo_live_feeds as f
+
+        self.assertFalse(f._varied([1.0, 1.0, 1.0, 1.0, 1.0]))
+        self.assertTrue(f._varied([1.0, 2.0, 3.0]))
+
+    def test_every_feed_can_be_described_in_words(self):
+        from . import bo_live_feeds as f
+
+        self.assertIn("day worked", f.describe({"kind": "ratio", "label": "rows per day worked"}))
+        self.assertIn("(Teller)", f.describe({"kind": "ratio", "label": "x", "roles": ["Teller"]}))
+        self.assertIn("branch figure", f.describe({"kind": "bb_branch", "feed": {"label": "IFRS"}}))
+
+
+class WholeBackOfficeProofTests(TestCase):
+    """The whole proof, start to finish, over a diary of six tellers."""
+
+    PEOPLE = {"AA1": ("Ann One", "Meru", 100, 10), "BB2": ("Ben Two", "Thika", 200, 8),
+              "CC3": ("Cy Three", "Nyeri", 300, 12), "DD4": ("Di Four", "Embu", 110, 11),
+              "EE5": ("Ed Five", "Kisii", 90, 6), "FF6": ("Flo Six", "Nakuru", 400, 20)}
+
+    def setUp(self):
+        from . import bo_live_feeds
+
+        self.f = bo_live_feeds
+        grids = book()
+        grids["tables"]["List"] = grids["tables"]["List"][:1] + [
+            [float(i), code, who[0], "Teller", who[1]] + [None] * 9 + [0.0]
+            for i, (code, who) in enumerate(self.PEOPLE.items())]
+        self.book = grids
+
+    def _load(self, productivity):
+        rows = {who[0]: [0] * 7 + [value] for who, value in productivity}
+        charge = {who[0]: [0] * 7 + [float(n + 1) * 1000]
+                  for n, who in enumerate(self.PEOPLE.values())}
+        bo.save_file("scorecards", self.book)
+        bo.save_file("actuals", template({"Trx_Productivity": rows, "PL_Charge": charge}))
+
+    def _diary(self, sql, params, timeout_ms):
+        if "trx_code, max(trx_name)" in sql:
+            return [(c, "T1", "TELLER", w[2], w[2]) for c, w in self.PEOPLE.items()]
+        if "transaction_ref" in sql:
+            names = list(self.f.MEASURES)
+            out = []
+            for c, w in self.PEOPLE.items():
+                values = dict.fromkeys(names, w[2])
+                values.update(days=w[3], reversed=1)
+                out.append((c, *[values[n] for n in names]))
+            return out
+        return [(c, w[3], w[2]) for c, w in self.PEOPLE.items()]
+
+    def _prove(self, **patches):
+        from unittest.mock import patch
+
+        from . import bb_live_feeds
+
+        log = []
+        totals = patches.get("totals", {})
+        with (patch.object(self.f, "_rows", side_effect=self._diary)), \
+                patch.object(bb_live_feeds, "_totals", return_value=totals), \
+                patch.object(bb_live_feeds, "_branch_total",
+                             side_effect=lambda t, branch, feed: t.get(branch)):
+            found = self.f.probe(2026, 8, out=log.append)
+        return found, log
+
+    def test_a_sheet_that_matches_goes_live_and_one_that_stops_is_dropped(self):
+        self._load([(w, w[2] / w[3]) for w in self.PEOPLE.values()])
+        found, _ = self._prove()
+        feed = found["Trx_Productivity"]
+        self.assertEqual((feed["kind"], feed["den"], feed["match"]), ("ratio", "days", 1.0))
+        self.assertIn("Trx_Productivity", self.f.proven())
+
+        # The next month's desk figures no longer follow the diary.
+        self._load([(w, 1000.0 + n) for n, w in enumerate(self.PEOPLE.values())])
+        found, log = self._prove()
+        self.assertNotIn("Trx_Productivity", found)
+        self.assertNotIn("Trx_Productivity", self.f.proven())
+        self.assertTrue(any("back to the desk's figure: Trx_Productivity" in x for x in log))
+
+    def test_a_branch_sheet_can_go_live_from_the_branch_managers_reading(self):
+        self._load([(w, 1000.0 + n) for n, w in enumerate(self.PEOPLE.values())])
+        totals = {w[1]: float(n + 1) * 1000 for n, w in enumerate(self.PEOPLE.values())}
+        found, _ = self._prove(totals=totals)
+        feed = found["PL_Charge"]
+        self.assertEqual((feed["kind"], feed["match"]), ("bb_branch", 1.0))
+        self.assertEqual(feed["feed"]["sheet"], "PL_Charge")
+
+    def test_nothing_is_proven_when_nothing_matches(self):
+        self._load([(w, 1000.0 + n) for n, w in enumerate(self.PEOPLE.values())])
+        found, _ = self._prove()
+        self.assertEqual(found, {})
+
+
+class FeedProofScreenTests(TestCase):
+    URL = "/staff_management/scorecard-automation/feed-proof/"
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        self.client = APIClient()
+        self.client.force_authenticate(User.objects.create_superuser("root.admin", password="x"))
+
+    def test_nobody_else_may_open_or_run_it(self):
+        from django.contrib.auth.models import User
+
+        self.client.force_authenticate(User.objects.create_user("some.one"))
+        self.assertEqual(self.client.get(self.URL).status_code, 403)
+        self.assertEqual(self.client.post(self.URL, {"book": "sales", "month": "2026-08"},
+                                          format="json").status_code, 403)
+
+    def test_a_bad_request_is_refused(self):
+        for body in ({"book": "x", "month": "2026-08"}, {"book": "sales", "month": "soon"},
+                     {"book": "sales", "month": "2026-13"}):
+            self.assertEqual(self.client.post(self.URL, body, format="json").status_code, 400)
+
+    def test_a_run_records_what_happened_even_when_it_fails(self):
+        from unittest.mock import patch
+
+        from . import feed_proof
+
+        with patch.object(feed_proof, "_run_book", side_effect=RuntimeError("no warehouse")):
+            state = feed_proof.run("sales", 2026, 8, "root.admin")
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("no warehouse", state["log"][-1])
+        self.assertEqual(feed_proof.status()["state"], "failed")
+
+    def test_only_one_run_at_a_time(self):
+        from unittest.mock import patch
+
+        from . import feed_proof
+
+        with patch.object(feed_proof, "status", return_value={
+                "state": "running", "started_at": feed_proof._now().isoformat()}):
+            self.assertFalse(feed_proof.start("sales", 2026, 8))
+            self.assertEqual(self.client.post(self.URL, {"book": "sales", "month": "2026-08"},
+                                              format="json").status_code, 409)
+
+    def test_a_run_that_died_does_not_block_the_next(self):
+        import datetime as dt
+
+        from . import feed_proof
+
+        old = (feed_proof._now() - dt.timedelta(hours=4)).isoformat()
+        self.assertFalse(feed_proof._is_running({"state": "running", "started_at": old}))
+
+    def test_the_screen_says_when_a_run_died(self):
+        import datetime as dt
+
+        from . import feed_proof
+        from .workbook_cards import save_file
+
+        old = (feed_proof._now() - dt.timedelta(hours=2)).isoformat()
+        save_file(feed_proof.STATUS_KIND, {"state": "running", "started_at": old,
+                                           "updated_at": old, "log": []})
+        state = self.client.get(self.URL).json()["status"]
+        self.assertEqual(state["state"], "stopped")
+        self.assertIn("Run it again", state["log"][-1])
+
+    def test_a_second_press_is_refused_once_a_run_has_started(self):
+        from unittest.mock import patch
+
+        from . import feed_proof
+
+        with patch.object(feed_proof.threading, "Thread"):
+            self.assertTrue(feed_proof.start("sales", 2026, 8, "root.admin"))
+            self.assertFalse(feed_proof.start("sales", 2026, 8, "root.admin"))
+
+    def test_the_screen_shows_nothing_proven_yet(self):
+        data = self.client.get(self.URL).json()
+        self.assertEqual(data["summary"]["back_office"], [])

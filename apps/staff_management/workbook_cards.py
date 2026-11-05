@@ -1728,21 +1728,38 @@ def waiting_on(sales_code):
     return None
 
 
-def _put_template(actuals, sheet, code, month, value, block=0):
+def _template_row(actuals, sheet, code, block=0, person=None):
+    """One person's row on a template sheet, or None: by sales code, then by
+    name where given, as the back-office template keys some sheets one way
+    and some the other."""
+    from .bb_live_feeds import BLOCK_WIDTH
+
+    o = block * BLOCK_WIDTH
+    name = _sheet_named(actuals, sheet)
+    rows = (actuals.get(name) or [] if name else [])[1:]
+    wanted = [(o + 1, code)] + ([(o + 2, person)] if person else [])
+    for column, value in wanted:
+        for row in rows:
+            if len(row) > column and str(row[column] or "").strip().upper() == \
+                    str(value).strip().upper():
+                return row
+    return None
+
+
+def _put_template(actuals, sheet, code, month, value, block=0, person=None):
     """Write one person's figure for one month into a template copy → True
     when their row was there. ``block`` is which of a sheet's side-by-side
     tables (20 columns apart) - the bancassurance sheet keeps three."""
     from .bb_live_feeds import BLOCK_WIDTH
 
     o = block * BLOCK_WIDTH
-    name = _sheet_named(actuals, sheet)
-    for row in (actuals.get(name) or [] if name else [])[1:]:
-        if len(row) > o + 1 and                 str(row[o + 1] or "").strip().upper() == code.upper():
-            while len(row) < o + 6 + month:
-                row.append(None)
-            row[o + 6 + month - 1] = value
-            return True
-    return False
+    row = _template_row(actuals, sheet, code, block, person)
+    if row is None:
+        return False
+    while len(row) < o + 6 + month:
+        row.append(None)
+    row[o + 6 + month - 1] = value
+    return True
 
 
 #: Template sheets that only grow through the year: counts and sums of what
@@ -1757,17 +1774,15 @@ ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
                        "hfcbpropertiesvalue", "hfcbpropertiesvolume"}
 
 
-def _get_template(actuals, sheet, code, month, block=0):
+def _get_template(actuals, sheet, code, month, block=0, person=None):
     """One person's figure for one month on the template, or None."""
     from .bb_live_feeds import BLOCK_WIDTH
 
     o = block * BLOCK_WIDTH
-    name = _sheet_named(actuals, sheet)
-    for row in (actuals.get(name) or [] if name else [])[1:]:
-        if len(row) > o + 1 and \
-                str(row[o + 1] or "").strip().upper() == code.upper():
-            return row[o + 5 + month] if len(row) > o + 5 + month else None
-    return None
+    row = _template_row(actuals, sheet, code, block, person)
+    if row is None:
+        return None
+    return row[o + 5 + month] if len(row) > o + 5 + month else None
 
 
 def _carry_forward(actuals, sheet, month):
@@ -1935,8 +1950,10 @@ def live_card(sales_code, engine_card, as_at):
     if spec.book == BACK_OFFICE:
         from . import bo_live_feeds
 
-        feeds_live = {_key(k): v for k, v in bo_live_feeds.proven().items()}
-        reader = lambda feed: bo_live_feeds.live_value(feed, code, as_at)  # noqa: E731
+        feeds_live = {_key(k): v for k, v in bo_live_feeds.proven().items()
+                      if not v.get("roles") or str(holder.role or "") in v["roles"]}
+        reader = lambda feed: bo_live_feeds.live_value(  # noqa: E731
+            feed, code, as_at, branch=holder.branch)
     elif spec.book == BRANCH_BUSINESS:
         from . import bb_live_feeds
 
@@ -1951,7 +1968,17 @@ def live_card(sales_code, engine_card, as_at):
 
     # RM lines proven against a closed month read the warehouse.
     sales_proven = sales_live_feeds.proven() if spec.book == SALES else {}
+    # Back-office lines the engine has been shown to read as the desk does.
+    bo_engine = set()
+    if spec.book == BACK_OFFICE:
+        from . import bo_live_feeds
+
+        bo_engine = {k for k, v in bo_live_feeds.engine_proven().items()
+                     if v.get("live")}
     live_rows, template_live = set(), None
+    # The back office finds some people by name; what was written, to check.
+    person = holder.name if spec.book == BACK_OFFICE else None
+    written = {}
     # Every line starts from the desk's latest year-to-date figure; a live
     # one then writes over it. All three books.
     import copy
@@ -1986,31 +2013,35 @@ def live_card(sales_code, engine_card, as_at):
             # figure that is signed. Nothing live replaces it.
             continue
         feed = feeds_live.get(_key(wl["feed"]))
+        block = 0
         if feed is not None and spec.book == BRANCH_BUSINESS:
             only_first = set(feed) == {0}
             block = 0 if only_first else blocks.get(wl["row"])
             feed = feed.get(block) if block is not None else None
         if feed is not None:
             value = reader(feed)
-            if value is not None and spec.book == BRANCH_BUSINESS:
+            if value is not None and spec.book in (BRANCH_BUSINESS, BACK_OFFICE):
                 # Into the template's cell for the month, not the card's:
                 # the card's own formula takes the 2025 base off a balance
                 # (deposits, loans), and writing over that cell would lose it.
+                # The template's cell is also what the proof compared.
                 if template_live is None:
                     import copy
 
                     template_live = copy.deepcopy(actuals)
                 prior[wl["row"]] = (wl["feed"], block, _get_template(
-                    template_live, wl["feed"], code, month, block))
+                    template_live, wl["feed"], code, month, block, person))
                 if _put_template(template_live, wl["feed"], code, month,
-                                 float(value), block):
+                                 float(value), block, person):
                     live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
                 continue
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
         if spec.book == BRANCH_BUSINESS or (
-                wl["row"] in carried and spec.book != SALES):
+                wl["row"] in carried and spec.book != SALES
+                and sales_live_feeds.line_key(wl) not in bo_engine):
             # Back office: where the desk has a figure, its year to date
             # stands unless bo_feed_probe proved the feed (read above).
             # RM cards read the warehouse on every line it has a figure for
@@ -2042,16 +2073,21 @@ def live_card(sales_code, engine_card, as_at):
     for wl in card["lines"]:
         r = wl["row"]
         is_live = (r - 1, actual_col) in overrides or r in live_rows
-        if (is_live and r in carried
-                and _key(wl["feed"]) in ACCUMULATING_SHEETS
-                and _num(wl["actual"]) and _num(desk.get(r))
-                and wl["actual"] < desk[r]):
+        shrank = (is_live and r in carried
+                  and _key(wl["feed"]) in ACCUMULATING_SHEETS
+                  and _num(wl["actual"]) and _num(desk.get(r))
+                  and wl["actual"] < desk[r])
+        # A back-office line is live only if the card's own formula found the
+        # figure: never a "live" label on the desk's number.
+        unread = (spec.book == BACK_OFFICE and r in written and not (
+            _num(wl["actual"]) and abs(wl["actual"] - written[r]) < 1e-6))
+        if shrank or unread:
             dropped.append(r)
             overrides.pop((r - 1, actual_col), None)
             if r in live_rows:
                 live_rows.discard(r)
                 sheet, block, old = prior[r]
-                _put_template(template_live, sheet, code, month, old, block)
+                _put_template(template_live, sheet, code, month, old, block, person)
     if dropped:
         card = compute(book, template_live or actuals, holder, month,
                        overrides)
@@ -2124,8 +2160,17 @@ def live_card(sales_code, engine_card, as_at):
                     note = sales_live_feeds.note(sales_proven, wl)
                     if note:
                         ln["as_at"] += f" - {note}"
+    read_now = [w for w in card["lines"]
+                if not w.get("carried") and not w.get("waiting") and not w["typed"]]
+    desk_months = sorted({w["carried"] for w in card["lines"] if w.get("carried")})
+    read_from = len(card["lines"]) - sum(1 for w in card["lines"] if w["typed"])
+    desk_note = (f" {sum(1 for w in card['lines'] if w.get('carried'))} show the desk's "
+                 f"latest figure (up to "
+                 f"{datetime.date(as_at.year, desk_months[-1], 1):%B %Y})."
+                 if desk_months else "")
     payload.update({
         "live": True,
+        "live_lines": len(read_now),
         "pending_lines": waiting,
         "scored_lines": len(card["lines"]) - waiting,
         # Every month of the year to now: stored where the desk closed it,
@@ -2136,8 +2181,8 @@ def live_card(sales_code, engine_card, as_at):
             "" if not waiting else
             f"{waiting} line(s) have no live figure yet and are not counted; "
             f"they fill in as the warehouse has them."),
-        "how_scored": (f"Live: today's warehouse figures, scored by "
-                       f"{spec.source}'s own targets, caps and weights. "
-                       f"Closed months show the card the desk sent."),
+        "how_scored": (f"{len(read_now)} of {read_from} lines read today's figures."
+                       f"{desk_note} All are scored by {spec.source}'s own targets, "
+                       f"caps and weights. Closed months show the card the desk sent."),
     })
     return payload
