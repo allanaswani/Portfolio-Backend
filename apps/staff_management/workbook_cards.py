@@ -1953,7 +1953,7 @@ def live_card(sales_code, engine_card, as_at):
         feeds_live = {_key(k): v for k, v in bo_live_feeds.proven().items()
                       if not v.get("roles") or str(holder.role or "") in v["roles"]}
         reader = lambda feed: bo_live_feeds.live_value(  # noqa: E731
-            feed, code, as_at, branch=holder.branch)
+            feed, code, as_at, branch=holder.branch, name=holder.name)
     elif spec.book == BRANCH_BUSINESS:
         from . import bb_live_feeds
 
@@ -2154,6 +2154,9 @@ def live_card(sales_code, engine_card, as_at):
                 ln["as_at"] = (
                     f"{kind}, the desk's latest figure "
                     f"({datetime.date(as_at.year, wl['carried'], 1):%b %Y})")
+            elif wl["typed"]:
+                # Part of the card itself: nothing read it from anywhere.
+                ln["as_at"] = "typed on the desk's card"
             else:
                 ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
                 if spec.book == SALES:

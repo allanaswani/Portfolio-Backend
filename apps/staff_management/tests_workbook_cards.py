@@ -248,6 +248,21 @@ class StoredCardTests(TestCase):
         self.assertIn("(Sep 2026)", opening["as_at"])
         self.assertEqual(card["live_lines"], 0)
 
+    def test_a_proven_trail_figure_reaches_the_card_by_name_too(self):
+        from unittest.mock import patch
+
+        from . import bo_live_feeds
+
+        with patch.object(bo_live_feeds, "_iapply_live", return_value=30.0) as read:
+            bo.save_file("scorecards", book())
+            bo.save_file("actuals", ACTUALS)
+            bo.save_file(bo_live_feeds.STORE_KIND, {"CASA": {
+                "kind": "iapply", "sheet": "CASA", "measure": "apps_per_day", "span": "month",
+                "identity": "code", "cumulative": False, "month": "2026-09"}})
+            card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertEqual(card["perspectives"][0]["lines"][0]["ytd_actual"], 30.0)
+        self.assertEqual(read.call_args.args[2], "Bob Waigwa")
+
     def test_a_figure_the_cards_formula_does_not_find_is_not_called_live(self):
         from unittest.mock import patch
 
@@ -546,6 +561,106 @@ class BackOfficeProofTests(TestCase):
         self.assertIn("day worked", f.describe({"kind": "ratio", "label": "rows per day worked"}))
         self.assertIn("(Teller)", f.describe({"kind": "ratio", "label": "x", "roles": ["Teller"]}))
         self.assertIn("branch figure", f.describe({"kind": "bb_branch", "feed": {"label": "IFRS"}}))
+
+
+class AccountOpeningTrailProofTests(TestCase):
+    """RBO lines measure who actioned a step, as the accounts-TAT report does."""
+
+    def _months(self, **month):
+        from . import bo_live_feeds as f
+
+        return {8: {**dict.fromkeys(f.IAPPLY_FIELDS, 0.0), **month}}
+
+    def test_each_measure_is_the_reports_arithmetic(self):
+        from . import bo_live_feeds as f
+
+        m = self._months(apps=90, actions=300, days=10, returned=9, pb_time=20, pb_steps=10,
+                         bb_time=9, bb_steps=3)
+        read = lambda name: f.iapply_value(m, name, "month", 8, None, 2026)  # noqa: E731
+        self.assertEqual(read("tat_pb"), 2.0)
+        self.assertEqual(read("tat_bb"), 3.0)
+        self.assertEqual(read("apps_per_day"), 9.0)
+        self.assertEqual(read("returned_of_apps"), 0.1)
+        self.assertEqual(read("apps_per_weekday"), 90 / 21)
+
+    def test_a_running_average_counts_from_the_sheets_first_month(self):
+        from . import bo_live_feeds as f
+
+        m = {5: {"pb_time": 100.0, "pb_steps": 1.0}, 6: {"pb_time": 4.0, "pb_steps": 2.0},
+             7: {"pb_time": 2.0, "pb_steps": 2.0}}
+        self.assertEqual(f.iapply_value(m, "tat_pb", "running", 7, 6, 2026), 1.5)
+        self.assertEqual(f.iapply_value(m, "tat_pb", "month", 7, 6, 2026), 1.0)
+        self.assertEqual(f.iapply_value(m, "tat_pb", "ytd", 7, 6, 2026), 106 / 5)
+
+    def _people(self):
+        names = {"ann one": "AA1", "ben two": "BB2", "cy three": "CC3", "di four": "DD4",
+                 "ed five": "EE5", "flo six": "FF6"}
+        by_user = {c: {7: {"pb_time": 2.0 * (n + 1), "pb_steps": 2.0},
+                       8: {"pb_time": 6.0 * (n + 1), "pb_steps": 2.0}}
+                   for n, c in enumerate(names.values())}
+        return names, by_user
+
+    def test_the_right_definition_is_found_and_checked_on_the_month_before(self):
+        from . import bo_live_feeds as f
+
+        names, by_user = self._people()
+        desk = {n: 3.0 * (i + 1) for i, n in enumerate(names)}
+        prior = {n: 1.0 * (i + 1) for i, n in enumerate(names)}
+        share, feed, seen = f.prove_iapply(desk, prior, list(names.items()), by_user, 2026, 8, 7)
+        self.assertEqual((share, seen), (1.0, 6))
+        self.assertEqual((feed["measure"], feed["span"], feed["identity"]),
+                         ("tat_pb", "month", "code"))
+
+    def test_a_match_that_fails_the_month_before_is_not_a_match(self):
+        from . import bo_live_feeds as f
+
+        names, by_user = self._people()
+        desk = {n: 3.0 * (i + 1) for i, n in enumerate(names)}
+        prior = {n: 77.0 for n in names}
+        found = f.prove_iapply(desk, prior, list(names.items()), by_user, 2026, 8, 7)
+        self.assertIsNone(found)
+
+    def test_a_sign_in_name_is_tried_when_the_code_finds_nobody(self):
+        from . import bo_live_feeds as f
+
+        self.assertEqual(f._iapply_key("BN4018", "Brian Njenga", "username"), "BRIAN.NJENGA")
+        names, by_user = self._people()
+        renamed = {f._iapply_key("", n, "username"): by_user[c] for n, c in names.items()}
+        desk = {n: 3.0 * (i + 1) for i, n in enumerate(names)}
+        _, feed, _ = f.prove_iapply(desk, {}, list(names.items()), renamed, 2026, 8, 7)
+        self.assertEqual(feed["identity"], "username")
+
+    def test_the_query_runs_on_the_real_engine(self):
+        """The table's shape, as accounts_tat.py names it: text dates, mixed ids."""
+        from django.db import connection
+
+        from . import bo_live_feeds as f
+
+        if connection.vendor != "postgresql":
+            self.skipTest("the trail query is PostgreSQL")
+        with connection.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS iapply_accounts_tat")
+            cur.execute("DROP TABLE IF EXISTS customers")
+            cur.execute('''CREATE TABLE iapply_accounts_tat ("ApplicationId" varchar(40),
+                "Customerid" varchar(40), "CreationDate" varchar(40),
+                "ActionDate" timestamp, "StatusTo" varchar(80),
+                "ActionUser" varchar(40), "ActionUserName" varchar(80))''')
+            cur.execute("CREATE TABLE customers (cust_id bigint, segment varchar(60))")
+            cur.execute("INSERT INTO customers VALUES (1, 'MASS'), (2, 'SMALL ENTERPRISES')")
+            for row in (
+                    ("A", "1", "2026-08-01 08:00:00", "2026-08-02 08:00:00", "RBO", "bn4018", "Brian Njenga"),
+                    ("A", "1", "2026-08-01 08:00:00", "2026-08-05 08:00:00", "Stored", "BN4018", "Brian Njenga"),
+                    ("B", "C-2", "bad date", "2026-08-03 08:00:00", "RBO", "BN4018", "Returned to CSO"),
+                    ("C", "2", "2026-08-01 08:00:00", "2026-08-04 08:00:00", "RBO", "BN4018", "Brian Njenga")):
+                cur.execute('''INSERT INTO iapply_accounts_tat ("ApplicationId", "Customerid",
+                    "CreationDate", "ActionDate", "StatusTo", "ActionUser", "ActionUserName")
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)''', row)
+        out = f._iapply_by_user(f._iapply_rows(2026, datetime.date(2026, 9, 1), 30000))
+        got = out["BN4018"][8]
+        self.assertEqual((got["apps"], got["actions"], got["returned"]), (3.0, 4.0, 1.0))
+        # A's first step is one day; its closing step counts for nothing.
+        self.assertEqual((got["pb_time"], got["pb_steps"]), (1.0, 1.0))
+        self.assertEqual((got["bb_time"], got["bb_steps"]), (3.0, 1.0))
 
 
 class WholeBackOfficeProofTests(TestCase):

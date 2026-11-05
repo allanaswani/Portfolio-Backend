@@ -172,6 +172,154 @@ def best_ratio(people, measures, weekdays):
     return best
 
 
+#: Per person per month off iapply_accounts_tat, which is what accounts_tat.py
+#: reads for its "ActionUser" and "Returns by user" sheets. The person who actioned
+#: a step is ActionUser, not SellerCode. Step time and its zeroing on a closing
+#: status are the ETL's calculate_tat; the segments are its CASE.
+IAPPLY_TERMINAL = ("stored", "cancel", "reject", "decline", "archive", "complete",
+                   "stored archived - cancelled", "stored archived - approved",
+                   "stored archived - declined", "stored archived cancelled",
+                   "stored archived approved")
+IAPPLY_FIELDS = ("apps", "actions", "days", "returned", "pb_time", "pb_steps",
+                 "bb_time", "bb_steps")
+IAPPLY_MEASURES = {
+    "tat_pb": "average days per step, personal banking",
+    "tat_bb": "average days per step, business banking",
+    "apps_per_day": "applications actioned per day worked",
+    "actions_per_day": "steps actioned per day worked",
+    "apps_per_weekday": "applications actioned per weekday",
+    "returned_of_apps": "applications returned, share of those actioned",
+    "returned_of_actions": "applications returned, share of steps actioned",
+}
+IAPPLY_SPANS = {"month": "the month", "running": "since the sheet's first month",
+                "ytd": "the year to date"}
+#: The one read has to scan the trail; its result is kept for everybody.
+IAPPLY_LIVE_TIMEOUT_MS = 60_000
+
+
+def _iapply_rows(year, end, timeout_ms):
+    """[(user, month, *IAPPLY_FIELDS)] for the year up to ``end``."""
+    good = "'^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
+    closing = ", ".join(f"'{s}'" for s in IAPPLY_TERMINAL)
+    counted = f"s.tat > 0 AND NOT (s.status IN ({closing}) OR split_part(s.who, ' ', 1) IN ({closing}))"
+    return _rows(f"""
+        WITH trail AS (
+            SELECT upper(trim(i."ActionUser"::text)) AS usr, i."ApplicationId" AS app,
+                   lower(trim(coalesce(i."ActionUserName"::text, ''))) AS who,
+                   lower(trim(coalesce(i."StatusTo"::text, ''))) AS status,
+                   NULLIF(regexp_replace(i."Customerid"::text, '\\D', '', 'g'), '')::bigint AS cust,
+                   CASE WHEN i."ActionDate"::text ~ {good}
+                        THEN i."ActionDate"::text::timestamp END AS acted,
+                   CASE WHEN i."CreationDate"::text ~ {good}
+                        THEN i."CreationDate"::text::timestamp END AS created
+            FROM iapply_accounts_tat i
+        ), steps AS (
+            SELECT t.*, EXTRACT(EPOCH FROM t.acted - COALESCE(
+                       LAG(t.acted) OVER (PARTITION BY t.app ORDER BY t.acted), t.created)
+                   ) / 86400.0 AS tat
+            FROM trail t WHERE t.acted IS NOT NULL
+        ), named AS (
+            SELECT s.*, CASE
+                     WHEN c.segment IN ('MEDIUM ENTERPRISES', 'SMALL ENTERPRISES') THEN 'bb'
+                     WHEN c.segment IN ('MASS', 'STANDARD', 'PRIVATE', 'VIRTUAL') THEN 'pb'
+                     WHEN c.segment IN ('ULTIMATE', 'LARGE ENTERPRISES', 'PROJECT FINANCE',
+                                        'INTERNAL ACCOUNTS', 'INSTITUTIONAL BANKING',
+                                        'DIASPORA PERSONAL BANKING', 'DIASPORA ULTIMATE BANKING',
+                                        'DIASPORA BUSINESS BANKING', 'DIASPORA',
+                                        'NON RESIDENT KENYANS') THEN 'other'
+                     ELSE 'pb' END AS seg
+            FROM steps s LEFT JOIN customers c ON c.cust_id = s.cust
+        )
+        SELECT s.usr, EXTRACT(MONTH FROM s.acted)::int,
+               count(DISTINCT s.app), count(*), count(DISTINCT s.acted::date),
+               count(DISTINCT s.app) FILTER (WHERE s.who LIKE '%%return%%'),
+               coalesce(sum(s.tat) FILTER (WHERE s.seg = 'pb' AND {counted}), 0),
+               count(*) FILTER (WHERE s.seg = 'pb' AND {counted}),
+               coalesce(sum(s.tat) FILTER (WHERE s.seg = 'bb' AND {counted}), 0),
+               count(*) FILTER (WHERE s.seg = 'bb' AND {counted})
+        FROM named s
+        WHERE s.acted >= %s AND s.acted < %s AND coalesce(s.usr, '') <> ''
+        GROUP BY 1, 2""", [datetime.date(year, 1, 1), end], timeout_ms)
+
+
+def _iapply_by_user(rows):
+    """→ {user: {month: {field: value}}}"""
+    out = {}
+    for user, month, *values in rows:
+        out.setdefault(user, {})[int(month)] = {
+            k: float(v or 0) for k, v in zip(IAPPLY_FIELDS, values)}
+    return out
+
+
+def iapply_value(months, measure, span, month, start_month, year, end=None):
+    """One person's figure → a number, or None where nothing was actioned."""
+    first = {"month": month, "running": start_month or month, "ytd": 1}[span]
+    t = dict.fromkeys(IAPPLY_FIELDS, 0.0)
+    for m in range(first, month + 1):
+        for k, v in months.get(m, {}).items():
+            t[k] += v
+    if measure == "apps_per_weekday":
+        stop = end or (datetime.date(year, month, 28)
+                       + datetime.timedelta(days=4)).replace(day=1)
+        days = _weekdays(datetime.date(year, first, 1), stop)
+        return t["apps"] / days if days else None
+    top, bottom = {
+        "tat_pb": ("pb_time", "pb_steps"), "tat_bb": ("bb_time", "bb_steps"),
+        "apps_per_day": ("apps", "days"), "actions_per_day": ("actions", "days"),
+        "returned_of_apps": ("returned", "apps"),
+        "returned_of_actions": ("returned", "actions"),
+    }[measure]
+    return t[top] / t[bottom] if t[bottom] else None
+
+
+def _iapply_key(holder_code, name, identity):
+    if identity == "code":
+        return str(holder_code or "").strip().upper()
+    return ".".join(str(name or "").strip().upper().split()[:2])
+
+
+def _first_filled(actuals, sheet):
+    """The sheet's first month with any figure."""
+    for month in range(1, 13):
+        for row in (actuals.get(sheet) or [])[1:]:
+            v = row[5 + month] if len(row) > 5 + month else None
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v:
+                return month
+    return None
+
+
+def prove_iapply(desk, prior, people, by_user, year, month, start_month):
+    """The definition matching most of ``people`` [(name, code)] → (share, feed, n) or None.
+
+    ``desk`` and ``prior`` are {name: figure} for the month and the one before it.
+    Where the person has a prior-month figure the definition must match that too.
+    """
+    best = None
+    group = [(n, c, desk[n]) for n, c in people if desk.get(n)]
+    if len(group) < MIN_PEOPLE or not _varied(v for _, _, v in group):
+        return None
+    for identity in ("code", "username"):
+        for measure in IAPPLY_MEASURES:
+            for span in IAPPLY_SPANS:
+                hits = 0
+                for name, code, value in group:
+                    months = by_user.get(_iapply_key(code, name, identity))
+                    if not months or not _close(value, iapply_value(
+                            months, measure, span, month, start_month, year)):
+                        continue
+                    before = prior.get(name)
+                    if before and month > 1 and not _close(before, iapply_value(
+                            months, measure, span, month - 1, start_month, year)):
+                        continue
+                    hits += 1
+                share = hits / len(group)
+                if hits and (best is None or share > best[0]):
+                    best = (share, {"kind": "iapply", "measure": measure, "span": span,
+                                    "identity": identity, "start_month": start_month},
+                            len(group))
+    return best
+
+
 def _branch_candidates():
     """(label, feed) for every branch reading the branch managers' cards use."""
     from .bb_live_feeds import DEFINITIONS
@@ -229,6 +377,9 @@ def describe(feed):
     roles = f" ({', '.join(feed['roles'])})" if feed.get("roles") else ""
     if feed.get("kind") == "ratio":
         return f"{feed.get('label')}{roles}"
+    if feed.get("kind") == "iapply":
+        return (f"{IAPPLY_MEASURES[feed['measure']]}, {IAPPLY_SPANS[feed['span']]}, "
+                f"from the account-opening trail{roles}")
     if feed.get("kind") == "bb_branch":
         return f"branch figure: {(feed.get('feed') or {}).get('label')}"
     if feed.get("kind") == "per_day_worked":
@@ -304,6 +455,18 @@ def probe(year, month, out=print):
     except Exception as exc:  # noqa: BLE001 - counts below still run
         out(f"The ratios could not be read: {exc}")
         measures = {}
+    out("Reading the account-opening trail (iapply_accounts_tat) ...")
+    try:
+        by_user = _iapply_by_user(_iapply_rows(year, nxt, PROBE_TIMEOUT_MS))
+    except Exception as exc:  # noqa: BLE001 - the other tests still run
+        out(f"The account-opening trail could not be read: {exc}")
+        by_user = {}
+    if by_user:
+        known = sum(1 for n, c in who.items() if _iapply_key(c, n, "code") in by_user
+                    or _iapply_key(c, n, "username") in by_user)
+        out(f"{known} of {len(who)} people on the back-office List action applications "
+            f"under their code or sign-in name. A sample of what ActionUser holds: "
+            f"{', '.join(sorted(by_user)[:8])}")
 
     found = {}
     for sheet in sorted(actuals):
@@ -334,6 +497,31 @@ def probe(year, month, out=print):
                 f" - {describe(feed)} -> LIVE")
             found[sheet] = feed
             continue
+
+        # The account-opening trail, for everybody and then one role at a time.
+        if by_user:
+            before = _template_values(actuals, sheet, month - 1) if month > 1 else {}
+            flat = {n: v[0] for n, v in desk.items() if v[0]}
+            prior = {n: v[0] for n, v in before.items() if v[0]}
+            everyone = list(who.items())
+            trail_best = None
+            for role in [None] + sorted({r for r in role_of.values() if r}):
+                group = [(n, c) for n, c in everyone
+                         if role is None or role_of.get(n) == role]
+                hit = prove_iapply(flat, prior, group, by_user, year, month,
+                                   _first_filled(actuals, sheet))
+                if hit and (trail_best is None or hit[0] > trail_best[0]):
+                    trail_best = (hit[0], dict(hit[1], roles=[role] if role else None), hit[2])
+            if trail_best:
+                feed = dict(trail_best[1], sheet=sheet, match=trail_best[0],
+                            people=trail_best[2], cumulative=False,
+                            month=f"{year}-{month:02d}")
+                passed = feed["match"] >= PASS_SHARE
+                out(f"  {sheet:28} {feed['match']:6.1%} of {feed['people']:3} people match - "
+                    f"{describe(feed)} -> {'LIVE' if passed else 'not good enough'}")
+                if passed:
+                    found[sheet] = feed
+                    continue
 
         def target(name):
             now, before = desk[name]
@@ -457,7 +645,26 @@ def explain(year, month, who, out=print):
             f"({n_orig} original)")
 
 
-def live_value(feed, sales_code, as_at, branch=None):
+def _iapply_live(feed, sales_code, name, as_at):
+    from django.core.cache import cache
+
+    key = f"bo_iapply:{as_at.isoformat()}"
+    by_user = cache.get(key)
+    end = as_at + datetime.timedelta(days=1)
+    if by_user is None:
+        try:
+            by_user = _iapply_by_user(_iapply_rows(as_at.year, end, IAPPLY_LIVE_TIMEOUT_MS))
+        except Exception:  # noqa: BLE001 - a slow read leaves the desk's figure
+            return None
+        cache.set(key, by_user, 6 * 3600)
+    months = by_user.get(_iapply_key(sales_code, name, feed["identity"]))
+    if not months:
+        return None
+    return iapply_value(months, feed["measure"], feed["span"], as_at.month,
+                        feed.get("start_month"), as_at.year, end)
+
+
+def live_value(feed, sales_code, as_at, branch=None, name=None):
     """The live figure for one person on one proven feed, or None."""
     from django.core.cache import cache
 
@@ -465,6 +672,8 @@ def live_value(feed, sales_code, as_at, branch=None):
         from . import bb_live_feeds
 
         return bb_live_feeds.live_value(feed["feed"], branch, as_at)
+    if feed.get("kind") == "iapply":
+        return _iapply_live(feed, sales_code, name, as_at)
     code = (sales_code or "").strip().upper()
     key = f"bo_live:{feed['sheet']}:{code}:{as_at.isoformat()}"
     hit = cache.get(key)
