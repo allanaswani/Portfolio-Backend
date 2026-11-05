@@ -108,6 +108,8 @@ class CardFromTheSystemTests(TestCase):
         card = build_card("FJ4145")
         self.assertFalse(card["has_card"])
         self.assertEqual(card["reason"], "role_has_no_card")
+        self.assertEqual(card["role_on_roster"], "Branch Manager")
+        self.assertIn('"Branch Manager"', card["detail"])
 
     def test_the_roster_alone_produces_a_card(self):
         """The seeded role mappings supply the lines and weights; the DMC row

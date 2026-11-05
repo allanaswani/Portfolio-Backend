@@ -3873,10 +3873,14 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                           "the branch DMC roster, the back-office roster, or "
                           "your HR record. Administration maintains those."}
     if not person.role_code:
+        held = str(getattr(person.dmc_row, "staff_role", "") or "").strip()
+        listed = f'"{held}"' if held else "with no role"
         return {"has_card": False, "reason": "role_has_no_card",
                 "sales_code": sales_code,
-                "detail": f"There is no scorecard for your role on "
-                          f"{person.roster}. The cards cover the RM, ARM and "
+                "role_on_roster": held,
+                "detail": f"{person.name or sales_code} is on {person.roster} "
+                          f"{listed}, and no scorecard is set up for that. "
+                          f"The cards cover the RM, ARM and "
                           f"BBC roles on the sales side, and the branch "
                           f"operations, customer service, teller and back "
                           f"office roles."}
