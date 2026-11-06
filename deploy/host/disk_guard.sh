@@ -70,6 +70,10 @@ if [ "$percent" -ge "$DISK_WARN_PERCENT" ]; then
         wal=$(du -sh "$DATA_MOUNT"/db_data/pgsql/12/data/data/pg_wal 2>/dev/null)
         databases=$(cd / && sudo -n -u postgres psql -At -c \
             "SELECT pg_size_pretty(pg_database_size(datname)) || '  ' || datname FROM pg_database WHERE NOT datistemplate ORDER BY pg_database_size(datname) DESC" 2>/dev/null)
+        # /data can fill and empty again with the tables unchanged: a big load or
+        # sort. So the mail also says what was running and the temp files it held.
+        temp=$(du -sh "$DATA_MOUNT"/db_data/pgsql/12/data/data/base/pgsql_tmp 2>/dev/null)
+        running=$(cd / && sudo -n -u postgres psql -At -c             "SELECT date_trunc('second', now() - query_start) || '  ' || coalesce(usename, '') || '  ' || coalesce(datname, '') || '  ' || left(regexp_replace(query, '\s+', ' ', 'g'), 100) FROM pg_stat_activity WHERE state <> 'idle' AND backend_type = 'client backend' AND pid <> pg_backend_pid() AND now() - query_start > interval '5 minutes' ORDER BY query_start LIMIT 10" 2>/dev/null)
         tables=$(cd / && sudo -n -u postgres psql -d "$WAREHOUSE_DB" -At -c \
             "SELECT pg_size_pretty(pg_total_relation_size(c.oid)) || '  ' || n.nspname || '.' || c.relname || '  dead rows: ' || coalesce(s.n_dead_tup, 0) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid WHERE c.relkind IN ('r', 'm') AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 15" 2>/dev/null)
         body="What happened:
@@ -89,6 +93,12 @@ $big
 
 WAL:
 $wal
+
+Temporary files:
+${temp:-none}
+
+Running for over 5 minutes:
+${running:-nothing}
 
 The databases:
 ${databases:-could not be read}
