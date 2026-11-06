@@ -62,13 +62,13 @@ probe lists every name it could not place rather than dropping it quietly.
 Each is still proven before it is used: :func:`probe` compares it, branch by
 branch, with the branch managers' rows for a month the desk has closed, and
 a definition is stored when :data:`PASS_SHARE` of the branches are within
-:data:`TOLERANCE` of the desk, or the typical (median) branch is within
-:data:`MEDIAN_LIMIT`. The second test is there because the tables move after
+:data:`TOLERANCE` of the desk. Nothing else passes (decided 6 Nov 2026): the
+median is reported, because it shows how far off a line is, but a line near the
+desk on the median only keeps the desk's figure. The tables do move after
 the desk takes its month: trade and policy uploads replace the whole year,
 so late entries and premiums paid since land in months already closed. The
 rule is still the report's; only the data has moved. A rule that is wrong
-is off at every branch, and the median catches that (property read nought
-where the desk had sales - median 100% off - and stays out).
+is off at every branch (property read nought where the desk had sales).
 
     manage.py bo_feed_probe --month 2026-08 --branches
 """
@@ -82,8 +82,6 @@ import re
 #: closed month's figure is matched within 2% at 70% of branches.
 PASS_SHARE = 0.7
 TOLERANCE = 0.02
-#: ... or the median branch within 10%.
-MEDIAN_LIMIT = 0.10
 PROBE_TIMEOUT_MS = 600_000
 LIVE_TIMEOUT_MS = 60_000
 STORE_KIND = "bb_live_feeds"
@@ -732,8 +730,7 @@ def probe(year, month, out=print):
             median = (errors[len(errors) // 2] if len(errors) % 2 else
                       (errors[len(errors) // 2 - 1]
                        + errors[len(errors) // 2]) / 2) if errors else None
-            passes = share >= PASS_SHARE or (
-                median is not None and median <= MEDIAN_LIMIT)
+            passes = share >= PASS_SHARE
             verdict = "LIVE" if passes else "not good enough"
             out(f"  {key:24} {share:6.1%} of {len(targets):3} branches "
                 f"within {TOLERANCE:.0%}, median branch "
@@ -800,6 +797,9 @@ def live_value(feed, branch, as_at):
 
 
 def proven():
+    """Lines that met the test. A result stored when the median alone could pass
+    stops counting here, without waiting for the proof to be run again."""
     from .workbook_cards import saved
 
-    return saved(STORE_KIND) or {}
+    return {k: v for k, v in (saved(STORE_KIND) or {}).items()
+            if (v.get("match") or 0) >= PASS_SHARE}

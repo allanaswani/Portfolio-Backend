@@ -2,6 +2,8 @@ from django.db import connection
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
+from django.db.models import Max
+from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -344,12 +346,21 @@ class FeedbackCustomersNotContactedView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        contacted = set(
-            Feedback.objects.filter(sales_code=profile.sales_code)
-            .values_list("cust_id", flat=True).distinct()
-        )
+        # "Not contacted" is this year, as the Engagement report counts it: a
+        # customer last called in 2025 is not contacted yet in 2026.
+        this_year = timezone.localdate().replace(month=1, day=1)
+        # A warehouse copy of this table can hold the date as a timestamp.
+        last_seen = {
+            cust_id: last.date() if hasattr(last, "date") else last
+            for cust_id, last in Feedback.objects.filter(sales_code=profile.sales_code)
+            .values("cust_id").annotate(last=Max("date"))
+            .values_list("cust_id", "last")
+        }
         qs = svc.customers(profile.sales_code)
-        not_contacted = [c for c in qs if c.cust_id not in contacted]
+        not_contacted = [
+            c for c in qs
+            if not last_seen.get(c.cust_id) or last_seen[c.cust_id] < this_year
+        ]
         rows = HfCustomerSerializer(not_contacted, many=True).data
 
         # The page renders an "RM Allocation" column, and HfCustomer carries no
@@ -362,14 +373,14 @@ class FeedbackCustomersNotContactedView(APIView):
             .filter(sales_code=profile.sales_code)
             .values_list("rm_name", flat=True).first()
         ) or ""
-        for row in rows:
+        for customer, row in zip(not_contacted, rows):
             row["rm_allocation"] = rm_name
             row["sales_code"] = profile.sales_code
-            # These customers have no feedback entry — that is what puts them on
-            # this list. Saying so is the honest answer; a dash reads as missing
-            # data rather than as the point of the list.
-            row["last_contact_date"] = None
-            row["never_contacted"] = True
+            # The earlier contact where there is one; otherwise say "never",
+            # because a dash reads as missing data.
+            last = last_seen.get(customer.cust_id)
+            row["last_contact_date"] = last.isoformat() if last else None
+            row["never_contacted"] = last is None
         return Response(rows)
 
 

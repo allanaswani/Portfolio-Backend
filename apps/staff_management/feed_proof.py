@@ -141,8 +141,7 @@ def start(book, year, month, by=""):
 
 
 def _branch_how(feed):
-    """How a branch feed reads, and how close it came: a low share of exact matches can
-    still pass on the typical branch being close, and the screen must say so."""
+    """How a branch feed reads, and how close the typical branch came."""
     median = feed.get("median")
     gap = "" if median is None else f" Typical branch {median:.1%} off the desk."
     return f"{feed.get('label')}.{gap}"

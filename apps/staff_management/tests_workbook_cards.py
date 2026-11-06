@@ -403,11 +403,10 @@ class SalesWorkbookTests(TestCase):
             build_card("CM1", as_at=datetime.date(2026, 4, 30)).get(
                 "workbook_card"), bo.SALES)
 
-    def test_the_open_month_reads_the_warehouse_on_every_rm_line(self):
-        """April is open. Both lines read the warehouse against April's
-        targets - no template is waited for. New Customers was found to
-        give the desk's figures, so it carries no note; Trade Finance was
-        found to differ, and its card says so."""
+    def test_only_a_proven_rm_line_reads_the_warehouse(self):
+        """April is open. New Customers was found to give the desk's figures,
+        so it reads the warehouse against April's targets; Trade Finance was
+        found to differ, so the desk's latest figure stands."""
         from . import sales_live_feeds
         from .scorecard_automation.models import ScKpi
 
@@ -440,9 +439,9 @@ class SalesWorkbookTests(TestCase):
         self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
                          (8.0, 9.0))
         self.assertEqual(customers["as_at"], "live, as at 30 Apr 2026")
-        self.assertEqual(trade["ytd_actual"], 99.0)
-        self.assertIn("differs from the desk's (matched 50% of RMs for "
-                      "Mar 2026)", trade["as_at"])
+        # 50% matched: the desk's 14 stands, not the warehouse's 99, and the card says so.
+        self.assertEqual(trade["ytd_actual"], 14)
+        self.assertIn("the desk's latest figure", trade["as_at"])
 
     def test_a_loss_goes_into_the_card_in_the_templates_sign(self):
         """PL_Charge stores a loan loss as a negative; the engine reads the
@@ -462,6 +461,10 @@ class SalesWorkbookTests(TestCase):
         engine = {"perspectives": [{"lines": [
             {"kpi_code": "tf", "kpi_name": "Trade Finance",
              "ytd_actual": -20.0}]}]}
+        from . import sales_live_feeds
+
+        bo.save_file(sales_live_feeds.STORE_KIND, {"tradefinanceincome|tradefinance": {
+            "name": "Trade Finance", "match": 0.95, "live": True, "month": "2026-03"}})
         card = bo.live_card("CM1", engine, datetime.date(2026, 4, 30))
         trade = [ln for p in card["perspectives"] for ln in p["lines"]][1]
         self.assertEqual(trade["ytd_actual"], 20.0)
@@ -952,9 +955,26 @@ class BranchProofTests(TestCase):
     def test_a_month_not_filled_in_leaves_what_was_proven(self):
         from . import bb_live_feeds as f
 
-        bo.save_file(f.STORE_KIND, {"Plot_Sales_Volume": {"kind": "property", "sheet": "x"}})
+        bo.save_file(f.STORE_KIND, {"Plot_Sales_Volume": {"kind": "property", "sheet": "x", "match": 0.9}})
         self._prove([0.0] * 5, [0.0] * 5)
         self.assertIn("Plot_Sales_Volume", f.proven())
+
+    def test_close_on_the_median_alone_is_not_enough(self):
+        """Every branch 5% off: the median is well inside the old 10%, none within 2%."""
+        from . import bb_live_feeds as f
+
+        found, log = self._prove([100.0, 200.0, 300.0], [105.0, 210.0, 315.0])
+        self.assertEqual(found, {})
+        self.assertNotIn("Plot_Sales_Volume", f.proven())
+        self.assertTrue(any("median branch 5.0% off" in x and "not good enough" in x for x in log))
+
+    def test_a_result_that_passed_on_the_median_stops_counting_at_once(self):
+        from . import bb_live_feeds as f
+
+        bo.save_file(f.STORE_KIND, {
+            "Active_Customers": {"kind": "active", "sheet": "x", "match": 0.59, "median": 0.019},
+            "Deposit_Growth": {"kind": "deposits", "sheet": "y", "match": 1.0, "median": 0.0}})
+        self.assertEqual(list(f.proven()), ["Deposit_Growth"])
 
 
 class FeedProofScreenTests(TestCase):

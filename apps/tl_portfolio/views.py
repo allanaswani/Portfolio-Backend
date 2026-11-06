@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework import generics
 from drf_spectacular.utils import extend_schema
 from django.db.models import Sum, Count, Q
+from django.utils import timezone
 from django.db import connection
 from django.shortcuts import get_object_or_404
 
@@ -557,7 +558,10 @@ class TlContactabilityView(APIView):
         profile = _get_profile(request.user)
         total_cust = HfCustomer.objects.filter(segment_q(_segment(profile))).count()
         rm_codes = Profile.objects.filter(segment=_segment(profile)).values_list("sales_code", flat=True)
-        contacted = Feedback.objects.filter(sales_code__in=rm_codes).values("cust_id").distinct().count()
+        # This year, as the RM's own list and the Engagement report count it.
+        contacted = (Feedback.objects
+                     .filter(sales_code__in=rm_codes, date__year=timezone.localdate().year)
+                     .values("cust_id").distinct().count())
         not_contacted = max(0, total_cust - contacted)
         # `allocation` + `percent_contacted` (a fraction) match the field names the
         # frontend reads; the original keys are kept for back-compat.

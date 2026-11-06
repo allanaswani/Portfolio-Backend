@@ -1975,6 +1975,8 @@ def live_card(sales_code, engine_card, as_at):
 
         bo_engine = {k for k, v in bo_live_feeds.engine_proven().items()
                      if v.get("live")}
+    elif spec.book == SALES:
+        bo_engine = {k for k, v in sales_proven.items() if v.get("live")}
     live_rows, template_live = set(), None
     # The back office finds some people by name; what was written, to check.
     person = holder.name if spec.book == BACK_OFFICE else None
@@ -2040,15 +2042,13 @@ def live_card(sales_code, engine_card, as_at):
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
         if spec.book == BRANCH_BUSINESS or (
-                wl["row"] in carried and spec.book != SALES
+                wl["row"] in carried
                 and sales_live_feeds.line_key(wl) not in bo_engine):
-            # Back office: where the desk has a figure, its year to date
-            # stands unless bo_feed_probe proved the feed (read above).
-            # RM cards read the warehouse on every line it has a figure for
-            # - the month is live, not waiting on a template - and a line
-            # whose warehouse reading sales_feed_probe found to differ from
-            # the desk's says so on the card. Only a line the warehouse has
-            # nothing for keeps the desk's latest figure.
+            # Where the desk has a figure, its year to date stands unless the
+            # warehouse was proven to give the desk's figures on that line
+            # (decided 6 Nov 2026, for RM cards too: Income Contribution read
+            # 349.9m against the desk's 96.7m). A person the desk has no figure
+            # for still sees the warehouse's, and the card says it is unproven.
             continue
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)

@@ -10,11 +10,11 @@ month waits for the next template.
 :func:`probe` settles it line by line. For a month the desk has closed it
 reads every RM's card twice: the workbook's actual over the desk's template,
 and the engine's figure from the warehouse alone (no loaded figure, see
-``_engine_card(warehouse_only=True)``). Every line's result is stored. The
-open month reads the warehouse on every RM line it has a figure for; a
-line on which the warehouse gave the desk's figure for fewer than
-:data:`PASS_SHARE` of the RMs says so on the card, and the report says by
-how much and for whom - the list of definitions still to port.
+``_engine_card(warehouse_only=True)``). Every line's result is stored. A line
+on which the warehouse gave the desk's figure for :data:`PASS_SHARE` of the RMs
+reads the warehouse; on any other the desk's latest figure stands, with its
+month (decided 6 Nov 2026), and the report says by how much and for whom - the
+list of definitions still to port.
 
 Run on the host (the warehouse is there):
 
