@@ -2061,7 +2061,9 @@ def live_card(sales_code, engine_card, as_at):
         if match["negate"] and _num(value):
             value = -value
         found[wl["row"]] = match["line"]
-        if _num(value):
+        # A warehouse nought where the desk has a figure is a reader that found nothing,
+        # not a result: Digital Adoption read 0 against the desk's 585.
+        if _num(value) and not (value == 0 and _num(desk.get(wl["row"])) and desk[wl["row"]]):
             overrides[(wl["row"] - 1, actual_col)] = float(value)
     card = compute(book, template_live or actuals, holder, month, overrides)
 

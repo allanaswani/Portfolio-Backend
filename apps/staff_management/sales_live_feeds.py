@@ -160,6 +160,7 @@ def probe(year, month, out=print, book=None, store=STORE_KIND):
         results[key] = {"name": entry["name"], "sheet": entry["sheet"],
                         "match": share, "people": len(rows),
                         "live": share >= PASS_SHARE,
+                        "warehouse_read": True,
                         "month": f"{year}-{month:02d}"}
 
     # "Too few to compare" is no result, so it never replaces one.

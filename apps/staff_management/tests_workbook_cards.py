@@ -742,6 +742,35 @@ class WholeBackOfficeProofTests(TestCase):
         self.assertEqual(found, {})
 
 
+class TheProofMustNotCompareTheDeskWithItselfTests(TestCase):
+    def setUp(self):
+        self.assertEqual(bo.rebuild(book(), ACTUALS, loaded_by="test"), 2 * 9)
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+
+    def test_a_closed_month_asked_for_the_warehouse_is_not_the_stored_card(self):
+        from .live_scorecard import _engine_card
+
+        as_at = datetime.date(2026, 9, 30)
+        self.assertIn("workbook_card", _engine_card("BCK3783", as_at=as_at))
+        self.assertNotIn("workbook_card",
+                         _engine_card("BCK3783", as_at=as_at, warehouse_only=True))
+
+    def test_an_old_result_from_the_desk_against_itself_is_not_live(self):
+        from . import bo_live_feeds as f
+
+        bo.save_file(f.ENGINE_STORE_KIND, {"casa|accountopening": {
+            "name": "Account Opening", "match": 1.0, "live": True}})
+        self.assertFalse(f.engine_proven()["casa|accountopening"]["live"])
+
+    def test_a_real_result_stays_live(self):
+        from . import bo_live_feeds as f
+
+        bo.save_file(f.ENGINE_STORE_KIND, {"casa|accountopening": {
+            "name": "Account Opening", "match": 1.0, "live": True, "warehouse_read": True}})
+        self.assertTrue(f.engine_proven()["casa|accountopening"]["live"])
+
+
 class BranchProofTests(TestCase):
     """The branch proof, over a template and a warehouse of its own."""
 

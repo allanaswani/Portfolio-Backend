@@ -388,9 +388,13 @@ def describe(feed):
 
 
 def engine_proven():
+    """Lines the engine has been compared on. Results from before the engine really
+    read the warehouse for these people compared the desk with itself, so a line
+    without ``warehouse_read`` is not proof of anything."""
     from .workbook_cards import saved
 
-    return saved(ENGINE_STORE_KIND) or {}
+    return {key: dict(value, live=bool(value.get("live") and value.get("warehouse_read")))
+            for key, value in (saved(ENGINE_STORE_KIND) or {}).items()}
 
 
 def _identifiers(book):

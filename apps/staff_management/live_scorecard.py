@@ -3909,7 +3909,10 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
     # Anyone the List does not name falls through to the live engine.
     # A month the desk has closed is the card it sent; the month still open
     # is computed below and scored by the workbook in build_card.
-    if person.roster == "the back-office scorecards workbook" and as_at:
+    # Asked for the warehouse alone, it must not answer with that card: the proof then
+    # compares the desk with itself, and every line "matches" (6 Nov 2026: 23 lines).
+    if (person.roster == "the back-office scorecards workbook" and as_at
+            and not warehouse_only):
         from . import workbook_cards as bo_workbook
 
         record = bo_workbook.stored_month(sales_code, as_at.replace(day=1),
