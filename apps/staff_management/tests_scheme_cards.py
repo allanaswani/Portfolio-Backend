@@ -342,3 +342,47 @@ class SchemeLiveProofTests(TestCase):
                             "scheme_commercial_disbursement", 300.0, "GO3528")
         save_file(f.STORE_KIND, {"scheme_commercial_disbursement": {"live": True}})
         self.assertIsNone(sc.live_payload(record, datetime.date(2026, 6, 30)))
+
+
+class MonthsWithNothingInThemTests(TestCase):
+    """A stored month the desk gave no figures must not hide the real card."""
+
+    def _card(self, month, signups, total):
+        from .models import SchemeScorecard
+
+        lines = [{"kpi": "scheme_revenue", "perspective": "Scheme Business", "description": "r",
+                  "weight": 0.05, "fy_target": 1, "ytd_target": 1, "actual": 235903623.28,
+                  "score": 0.67, "weighted": 0.03, "counted": False, "note": ""},
+                 {"kpi": "scheme_sign_ups", "perspective": "Sales", "description": "s",
+                  "weight": 0.1, "fy_target": 45, "ytd_target": 33, "actual": signups,
+                  "score": 0.0, "weighted": 0.0, "counted": True, "note": ""}]
+        return SchemeScorecard.objects.create(
+            sales_code="NN3533", month=datetime.date(2026, month, 1),
+            staff_name="Nicodemus Ngila", sheet="HOD_SCHEMES", joined=0,
+            card={"lines": lines}, total=total)
+
+    def setUp(self):
+        self.june = self._card(6, 19.0, 0.5675717)
+        self.september = self._card(9, 0.0, 0.1814538)
+
+    def test_a_month_with_only_the_typed_revenue_has_no_desk_figures(self):
+        self.assertFalse(sc.has_desk_figures(self.september))
+        self.assertTrue(sc.has_desk_figures(self.june))
+
+    def test_the_real_june_card_shows_instead(self):
+        self.assertEqual(sc.stored_for("NN3533").month, datetime.date(2026, 6, 1))
+        record = sc.stored_for("NN3533", as_at=datetime.date(2026, 10, 31))
+        self.assertAlmostEqual(record.total, 0.5675717)
+
+    def test_the_card_says_which_month_it_is(self):
+        asked = datetime.date(2026, 10, 31)
+        card = sc.card_payload(sc.stored_for("NN3533", as_at=asked), asked=asked)
+        self.assertEqual(card["period"]["label"], "June 2026")
+        self.assertIn("this is June 2026", card["showing_other_month"])
+
+    def test_the_month_picker_leaves_it_out(self):
+        self.assertEqual(sc.months_loaded("NN3533"), ["2026-06"])
+
+    def test_nothing_real_says_nothing_is_loaded(self):
+        self.june.delete()
+        self.assertIsNone(sc.stored_for("NN3533"))

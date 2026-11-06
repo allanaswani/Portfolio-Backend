@@ -749,8 +749,24 @@ def store(cards, month_start, loaded_by=""):
     return len(cards)
 
 
+def has_desk_figures(record):
+    """Did the desk's actuals workbook give this stored card anything?
+
+    September cards were stored before such a month was refused: every lookup read
+    an empty cell as 0, and PAR, NPL and audit pass on a blank. They are still in the
+    table and were hiding the real June card. Only looked-up lines count, because
+    the revenue line is typed from a sheet that runs ahead of the others.
+    """
+    card = CARDS.get(record.sheet)
+    if card is None:
+        return True
+    looked_up = {line.kpi for line in card.lines if line.actual[0] == "lookup"}
+    return any(line.get("kpi") in looked_up and _num(line.get("actual")) and line["actual"]
+               for line in (record.card or {}).get("lines", []))
+
+
 def stored_for(sales_code, as_at=None):
-    """The newest stored card on or before ``as_at`` → SchemeScorecard or
+    """The newest real stored card on or before ``as_at`` → SchemeScorecard or
     None."""
     from .models import SchemeScorecard
 
@@ -758,16 +774,16 @@ def stored_for(sales_code, as_at=None):
         sales_code__iexact=(sales_code or "").strip())
     if as_at is not None:
         rows = rows.filter(month__lte=as_at)
-    return rows.order_by("-month").first()
+    return next((r for r in rows.order_by("-month") if has_desk_figures(r)), None)
 
 
 def months_loaded(sales_code):
     """The months a person's Scheme card is stored for → ["2026-01", ...]."""
     from .models import SchemeScorecard
 
-    return [m.strftime("%Y-%m") for m in SchemeScorecard.objects.filter(
-        sales_code__iexact=(sales_code or "").strip())
-        .order_by("month").values_list("month", flat=True)]
+    return [r.month.strftime("%Y-%m") for r in SchemeScorecard.objects.filter(
+        sales_code__iexact=(sales_code or "").strip()).order_by("month")
+        if has_desk_figures(r)]
 
 
 def card_payload(record, asked=None):
