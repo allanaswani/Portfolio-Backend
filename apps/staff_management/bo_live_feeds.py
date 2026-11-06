@@ -34,6 +34,7 @@ Run on the host (the warehouse is there):
 from __future__ import annotations
 
 import datetime
+import re
 
 #: The share of tellers whose figure a definition must reproduce exactly.
 PASS_SHARE = 0.9
@@ -278,6 +279,27 @@ def _iapply_key(holder_code, name, identity):
     return ".".join(str(name or "").strip().upper().split()[:2])
 
 
+def _login_guesses(name):
+    """The sign-ins a name could have: one name's initial and another name whole.
+    The trail writes EGITITI, TNOORDINE, JKURIA (server output, 6 Nov 2026)."""
+    parts = re.findall(r"[A-Z]+", str(name or "").upper())
+    return {a[0] + b for i, a in enumerate(parts) for j, b in enumerate(parts)
+            if i != j and len(b) > 1}
+
+
+def login_map(names, by_user):
+    """{name: sign-in} for people the trail names beyond doubt. Someone with two
+    possible sign-ins, or a sign-in two people could hold, is left out: their
+    figures must not land on the wrong person. The proof still checks each one
+    against the desk before a line goes live."""
+    claims = {}
+    for name in names:
+        hits = _login_guesses(name) & set(by_user)
+        if len(hits) == 1:
+            claims.setdefault(next(iter(hits)), []).append(name)
+    return {found[0]: login for login, found in claims.items() if len(found) == 1}
+
+
 def _first_filled(actuals, sheet):
     """The sheet's first month with any figure."""
     for month in range(1, 13):
@@ -288,22 +310,27 @@ def _first_filled(actuals, sheet):
     return None
 
 
-def prove_iapply(desk, prior, people, by_user, year, month, start_month):
+def prove_iapply(desk, prior, people, by_user, year, month, start_month, roster=None):
     """The definition matching most of ``people`` [(name, code)] → (share, feed, n) or None.
 
     ``desk`` and ``prior`` are {name: figure} for the month and the one before it.
     Where the person has a prior-month figure the definition must match that too.
+    ``roster`` is everybody on the List, so that a sign-in two people could hold is
+    refused even when only one of them is in this group.
     """
     best = None
     group = [(n, c, desk[n]) for n, c in people if desk.get(n)]
     if len(group) < MIN_PEOPLE or not _varied(v for _, _, v in group):
         return None
-    for identity in ("code", "username"):
+    logins = login_map(roster if roster is not None else [n for n, _ in people], by_user)
+    for identity in ("code", "username", "login"):
         for measure in IAPPLY_MEASURES:
             for span in IAPPLY_SPANS:
                 hits = 0
                 for name, code, value in group:
-                    months = by_user.get(_iapply_key(code, name, identity))
+                    user = (logins.get(name) if identity == "login"
+                            else _iapply_key(code, name, identity))
+                    months = by_user.get(user)
                     if not months or not _close(value, iapply_value(
                             months, measure, span, month, start_month, year)):
                         continue
@@ -317,6 +344,8 @@ def prove_iapply(desk, prior, people, by_user, year, month, start_month):
                     best = (share, {"kind": "iapply", "measure": measure, "span": span,
                                     "identity": identity, "start_month": start_month},
                             len(group))
+                    if identity == "login":
+                        best[1]["logins"] = {str(n).strip().lower(): u for n, u in logins.items()}
     return best
 
 
@@ -470,10 +499,12 @@ def probe(year, month, out=print):
         out(f"The account-opening trail could not be read: {exc}")
         by_user = {}
     if by_user:
+        logins = login_map(list(who), by_user)
         known = sum(1 for n, c in who.items() if _iapply_key(c, n, "code") in by_user
-                    or _iapply_key(c, n, "username") in by_user)
+                    or _iapply_key(c, n, "username") in by_user or n in logins)
         out(f"{known} of {len(who)} people on the back-office List action applications "
-            f"under their code or sign-in name. A sample of what ActionUser holds: "
+            f"under their code or sign-in name ({len(logins)} through a sign-in worked out "
+            f"from their name). A sample of what ActionUser holds: "
             f"{', '.join(sorted(by_user)[:8])}")
 
     found = {}
@@ -517,7 +548,7 @@ def probe(year, month, out=print):
                 group = [(n, c) for n, c in everyone
                          if role is None or role_of.get(n) == role]
                 hit = prove_iapply(flat, prior, group, by_user, year, month,
-                                   _first_filled(actuals, sheet))
+                                   _first_filled(actuals, sheet), roster=list(who))
                 if hit and (trail_best is None or hit[0] > trail_best[0]):
                     trail_best = (hit[0], dict(hit[1], roles=[role] if role else None), hit[2])
             if trail_best:
@@ -665,7 +696,12 @@ def _iapply_live(feed, sales_code, name, as_at):
         except Exception:  # noqa: BLE001 - a slow read leaves the desk's figure
             return None
         cache.set(key, by_user, 6 * 3600)
-    months = by_user.get(_iapply_key(sales_code, name, feed["identity"]))
+    if feed["identity"] == "login":
+        # The sign-ins the proof checked; nobody new is worked out here unchecked.
+        user = (feed.get("logins") or {}).get(str(name or "").strip().lower())
+    else:
+        user = _iapply_key(sales_code, name, feed["identity"])
+    months = by_user.get(user)
     if not months:
         return None
     return iapply_value(months, feed["measure"], feed["span"], as_at.month,

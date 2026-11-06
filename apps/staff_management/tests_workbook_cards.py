@@ -630,6 +630,59 @@ class AccountOpeningTrailProofTests(TestCase):
         _, feed, _ = f.prove_iapply(desk, {}, list(names.items()), renamed, 2026, 8, 7)
         self.assertEqual(feed["identity"], "username")
 
+    def test_the_trail_writes_an_initial_and_a_name(self):
+        from . import bo_live_feeds as f
+
+        self.assertEqual(f.login_map(["eunice gititi"], {"EGITITI": {}}),
+                         {"eunice gititi": "EGITITI"})
+        # The surname may come first on the List, and a middle name may be the one used.
+        self.assertEqual(f.login_map(["kuria john mwangi"], {"JKURIA": {}}),
+                         {"kuria john mwangi": "JKURIA"})
+
+    def test_a_sign_in_two_people_could_hold_goes_to_neither(self):
+        from . import bo_live_feeds as f
+
+        self.assertEqual(f.login_map(["john kuria", "jane kuria"], {"JKURIA": {}}), {})
+
+    def test_a_person_with_two_possible_sign_ins_is_left_out(self):
+        from . import bo_live_feeds as f
+
+        self.assertEqual(f.login_map(["john kuria"], {"JKURIA": {}, "KJOHN": {}}), {})
+
+    def _logins(self):
+        names, by_user = self._people()
+        written = {"ann one": "AONE", "ben two": "BTWO", "cy three": "CTHREE",
+                   "di four": "DFOUR", "ed five": "EFIVE", "flo six": "FSIX"}
+        return names, {written[n]: by_user[c] for n, c in names.items()}
+
+    def test_the_proof_finds_people_by_their_sign_in(self):
+        from . import bo_live_feeds as f
+
+        names, trail = self._logins()
+        desk = {n: 3.0 * (i + 1) for i, n in enumerate(names)}
+        share, feed, _ = f.prove_iapply(desk, {}, list(names.items()), trail, 2026, 8, 7)
+        self.assertEqual((share, feed["identity"]), (1.0, "login"))
+        self.assertEqual(feed["logins"]["ben two"], "BTWO")
+
+    def test_a_card_reads_only_the_sign_in_the_proof_checked(self):
+        from unittest.mock import patch
+
+        from django.core.cache import cache
+
+        from . import bo_live_feeds as f
+
+        names, trail = self._logins()
+        rows = [(u, m, *[v.get(k, 0.0) for k in f.IAPPLY_FIELDS])
+                for u, months in trail.items() for m, v in months.items()]
+        feed = {"kind": "iapply", "measure": "tat_pb", "span": "month", "identity": "login",
+                "logins": {"ben two": "BTWO"}}
+        day = datetime.date(2026, 8, 31)
+        cache.delete(f"bo_iapply:{day.isoformat()}")
+        with patch.object(f, "_iapply_rows", return_value=rows):
+            self.assertEqual(f._iapply_live(feed, "BB2", "Ben Two", day), 6.0)
+            self.assertIsNone(f._iapply_live(feed, "AA1", "Ann One", day))
+        cache.delete(f"bo_iapply:{day.isoformat()}")
+
     def test_the_query_runs_on_the_real_engine(self):
         """The table's shape, as accounts_tat.py names it: text dates, mixed ids."""
         from django.db import connection
@@ -769,6 +822,88 @@ class TheProofMustNotCompareTheDeskWithItselfTests(TestCase):
         bo.save_file(f.ENGINE_STORE_KIND, {"casa|accountopening": {
             "name": "Account Opening", "match": 1.0, "live": True, "warehouse_read": True}})
         self.assertTrue(f.engine_proven()["casa|accountopening"]["live"])
+
+
+class PropertyDefinitionTests(TestCase):
+    """What each definition asks the warehouse for; the proof decides which is right."""
+
+    def _sql(self, **options):
+        from unittest.mock import patch
+
+        from . import bb_live_feeds as f
+
+        with patch.object(f, "_rows", return_value=[]) as rows:
+            f._totals(dict({"kind": "property", "measure": "volume"}, **options), 2026, 9, 1000)
+        return rows.call_args[0][0]
+
+    def test_the_first_definition_is_unchanged(self):
+        sql = self._sql()
+        self.assertIn("COALESCE(sale_month, booking_date)", sql)
+        self.assertIn("hfdi_projects_inventory_sales_data", sql)
+        self.assertNotIn("employee_table", sql)
+
+    def test_the_reports_rule_does_not_count_a_booking_as_a_sale(self):
+        self.assertNotIn("booking_date", self._sql(dated="sale"))
+
+    def test_the_weighted_report_reads_its_own_table(self):
+        sql = self._sql(dated="sale", source="weighted")
+        self.assertIn("hfdi_weighted_dashboard_sales_data", sql)
+        self.assertNotIn("hfdi_projects_inventory_sales_data", sql)
+        self.assertNotIn("booking_date", sql)
+
+    def test_the_seller_can_be_found_through_their_pf(self):
+        sql = self._sql(dated="sale", seller="pf")
+        self.assertIn("FROM employee_table e", sql)
+        self.assertIn("FLOOR(d.staff_pf_number::numeric) = FLOOR(e.staff_id::numeric)", sql)
+
+    def test_every_definition_runs_on_the_real_engine(self):
+        from django.db import connection
+
+        from . import bb_live_feeds as f
+
+        if connection.vendor != "postgresql":
+            self.skipTest("the property query is PostgreSQL")
+        columns = ("project_name varchar(80), unit_name varchar(80), staff_name varchar(80), "
+                   "unit_value numeric, sale_month date")
+        with connection.cursor() as cur:
+            for table in ("weighted_dashboard_manual_sales_table", "employee_table",
+                          "hfdi_projects_inventory_sales_data", "branch_employee_dmc_data",
+                          "hfdi_weighted_dashboard_sales_data"):
+                cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+            cur.execute(f"CREATE TABLE weighted_dashboard_manual_sales_table ({columns}, booking_date date)")
+            cur.execute(f"CREATE TABLE hfdi_projects_inventory_sales_data ({columns}, booking_date date)")
+            # The weighted report's table is deliberately given no booking date.
+            cur.execute(f"CREATE TABLE hfdi_weighted_dashboard_sales_data ({columns})")
+            cur.execute("CREATE TABLE employee_table (staff_id numeric, name varchar(80))")
+            cur.execute("""CREATE TABLE branch_employee_dmc_data (staff_pf_number integer,
+                           staff_name varchar(80), staff_branch varchar(80))""")
+            cur.execute("INSERT INTO employee_table VALUES (4018, 'Brian Njenga')")
+            # The roster spells them differently, so only the PF finds them.
+            cur.execute("INSERT INTO branch_employee_dmc_data VALUES (4018, 'B. Njenga', 'THIKA')")
+            for table in ("hfdi_projects_inventory_sales_data", "weighted_dashboard_manual_sales_table"):
+                cur.execute(f"""INSERT INTO {table} VALUES
+                    ('P', '1', 'Brian Njenga', 100, '2026-08-10', '2026-08-01'),
+                    ('P', '2', 'Brian Njenga', 100, NULL, '2026-08-01')""")
+            cur.execute("""INSERT INTO hfdi_weighted_dashboard_sales_data VALUES
+                    ('P', '1', 'Brian Njenga', 100, '2026-08-10')""")
+        thika = f.branch_key("THIKA")
+        for key in ("Plot_Sales_Volume", "Plot_Sales_Value"):
+            for _label, kind, options in f.DEFINITIONS[key]:
+                f._totals({"kind": kind, **options}, 2026, 9, 30000)
+        read = lambda **o: f._totals(  # noqa: E731
+            {"kind": "property", "measure": "volume", **o}, 2026, 9, 30000)
+        self.assertEqual(read(), {})  # the name differs on the roster
+        self.assertEqual(read(seller="pf"), {thika: 2.0})  # a booking counted as a sale
+        self.assertEqual(read(seller="pf", dated="sale"), {thika: 1.0})
+        self.assertEqual(read(seller="pf", dated="sale", source="weighted"), {thika: 1.0})
+
+    def test_every_listed_definition_builds(self):
+        from . import bb_live_feeds as f
+
+        for key in ("Plot_Sales_Volume", "Plot_Sales_Value"):
+            self.assertEqual(len(f.DEFINITIONS[key]), 4)
+            for _label, kind, options in f.DEFINITIONS[key]:
+                self.assertIn("one_per_unit", self._sql(**{"kind": kind, **options}))
 
 
 class BranchProofTests(TestCase):

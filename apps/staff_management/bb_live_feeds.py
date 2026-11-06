@@ -38,6 +38,11 @@ repo - not a reading of the tables of my own:
 * number and value of property sold - ``weighted_dashboard_manual_sales_table``
   and ``hfdi_projects_inventory_sales_data``, de-duplicated on project + unit
   as the RM cards do, each sale put on the seller's branch on the DMC roster.
+  ``weighted_sales_report.py`` dates a sale by ``sale_month`` alone and reads
+  ``hfdi_weighted_dashboard_sales_data``; those are tried as definitions too, as
+  is finding the seller through their PF (the ETLs write ``employee_table.name``
+  as ``staff_name``, which the roster may spell differently). A seller's name is
+  blank where their ERP id is not on ``employee_table``, so no branch is claimed.
 * new customers - ``customers.open_date`` by ``customers.branch``: all of
   them, and only the registration report's segments and balance set.
 * active customers - ``sc_customer_monthly_activity`` (transaction_diary, a
@@ -231,7 +236,35 @@ def _ifrs(year, month, column, ytd, timeout_ms):
         GROUP BY 1""", [start, end], timeout_ms))
 
 
-def _property(year, month, measure, timeout_ms):
+#: What each property definition reads. The weighted report's table has no need
+#: of a booking date, so ``sale`` never asks for one.
+PROPERTY_SOURCES = {"both": PROPERTY_TABLES,
+                    "weighted": ("hfdi_weighted_dashboard_sales_data",)}
+PROPERTY_DATES = {"sale_or_booking": "COALESCE(sale_month, booking_date)",
+                  "sale": "sale_month"}
+#: The seller's name → their branch, by the roster's name or through their PF.
+PROPERTY_ROSTERS = {
+    "name": """
+            SELECT UPPER(TRIM(staff_name)) AS seller,
+                   MIN(staff_branch) AS branch,
+                   COUNT(DISTINCT staff_branch) AS branches
+            FROM branch_employee_dmc_data
+            WHERE staff_name IS NOT NULL
+            GROUP BY 1""",
+    "pf": """
+            SELECT UPPER(TRIM(e.name)) AS seller,
+                   MIN(d.staff_branch) AS branch,
+                   COUNT(DISTINCT d.staff_branch) AS branches
+            FROM employee_table e
+            JOIN branch_employee_dmc_data d
+              ON FLOOR(d.staff_pf_number::numeric) = FLOOR(e.staff_id::numeric)
+            WHERE e.name IS NOT NULL
+            GROUP BY 1""",
+}
+
+
+def _property(year, month, measure, timeout_ms, dated="sale_or_booking",
+              source="both", seller="name"):
     """Units sold this year to the month's end, one per project + unit,
     on the seller's DMC-roster branch: a count, or their value."""
     start, end = _span(year, month, True)
@@ -239,9 +272,9 @@ def _property(year, month, measure, timeout_ms):
         SELECT UPPER(TRIM(COALESCE(project_name, ''))) AS project,
                UPPER(TRIM(COALESCE(unit_name, ''))) AS unit,
                UPPER(TRIM(COALESCE(staff_name, ''))) AS seller,
-               unit_value, COALESCE(sale_month, booking_date) AS sold_on,
+               unit_value, {PROPERTY_DATES[dated]} AS sold_on,
                {i} AS feed, ROW_NUMBER() OVER () AS rn
-        FROM {t}""" for i, t in enumerate(PROPERTY_TABLES)]
+        FROM {t}""" for i, t in enumerate(PROPERTY_SOURCES[source])]
     total = "COUNT(*)" if measure == "volume" else \
         "SUM(COALESCE(u.unit_value, 0))"
     return _by_place(_rows(f"""
@@ -255,13 +288,7 @@ def _property(year, month, measure, timeout_ms):
             SELECT DISTINCT ON (dedupe) seller, unit_value, sold_on
             FROM keyed
             ORDER BY dedupe, sold_on DESC NULLS LAST, feed),
-        roster AS (
-            SELECT UPPER(TRIM(staff_name)) AS seller,
-                   MIN(staff_branch) AS branch,
-                   COUNT(DISTINCT staff_branch) AS branches
-            FROM branch_employee_dmc_data
-            WHERE staff_name IS NOT NULL
-            GROUP BY 1)
+        roster AS ({PROPERTY_ROSTERS[seller]})
         SELECT CASE WHEN r.branches = 1 THEN r.branch
                     ELSE 'seller not on the roster: ' || u.seller END,
                {total}
@@ -543,10 +570,24 @@ DEFINITIONS = {
     "Plot_Sales_Volume": [
         ("property units sold YTD, seller's roster branch (HFDI + CRM)",
          "property", {"measure": "volume", "zeros": True}),
+        ("units with a sale month YTD (the reports' rule), roster name",
+         "property", {"measure": "volume", "zeros": True, "dated": "sale"}),
+        ("units with a sale month YTD (the reports' rule), seller's PF",
+         "property", {"measure": "volume", "zeros": True, "dated": "sale", "seller": "pf"}),
+        ("weighted sales report's table YTD, seller's PF",
+         "property", {"measure": "volume", "zeros": True, "dated": "sale",
+                      "source": "weighted", "seller": "pf"}),
     ],
     "Plot_Sales_Value": [
         ("property value sold YTD, seller's roster branch (HFDI + CRM)",
          "property", {"measure": "value", "zeros": True}),
+        ("value with a sale month YTD (the reports' rule), roster name",
+         "property", {"measure": "value", "zeros": True, "dated": "sale"}),
+        ("value with a sale month YTD (the reports' rule), seller's PF",
+         "property", {"measure": "value", "zeros": True, "dated": "sale", "seller": "pf"}),
+        ("weighted sales report's table YTD, seller's PF",
+         "property", {"measure": "value", "zeros": True, "dated": "sale",
+                      "source": "weighted", "seller": "pf"}),
     ],
     "New_Customers": [
         ("customers opened YTD by customers.branch", "customers",
@@ -593,7 +634,10 @@ def _totals(feed, year, month, timeout_ms, live=False, today=None):
     if feed["kind"] == "ifrs":
         return _ifrs(year, month, feed["column"], feed["ytd"], timeout_ms)
     if feed["kind"] == "property":
-        return _property(year, month, feed["measure"], timeout_ms)
+        return _property(year, month, feed["measure"], timeout_ms,
+                         dated=feed.get("dated", "sale_or_booking"),
+                         source=feed.get("source", "both"),
+                         seller=feed.get("seller", "name"))
     if feed["kind"] == "customers":
         return _new_customers(year, month, feed["source"], timeout_ms)
     if feed["kind"] == "active":
