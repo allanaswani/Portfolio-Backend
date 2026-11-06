@@ -451,3 +451,69 @@ class UploadTests(TransactionTestCase):
             URL, {"file": workbook({"full_list": [person(4022, "G")]})},
             format="multipart")
         self.assertIn(resp.status_code, (401, 403))
+
+
+LISTING_HEADER = [
+    "Employee Code", "Employee Name", "Branch", "Job", "Grade", "Employment Type",
+    "Department Group", "Department", "COST CENTER", "Section", "Date Hired", "Birthdate",
+    "Age", "Gender", "Email", "Emergency Contact", "Bank", "Membership",
+    "End Of Contract", "EOC/Leaving Reason"]
+
+
+def listing(*rows):
+    """HR's Employee_Listing_Report, one sheet, as Excel holds its numbers."""
+    import pandas as pd
+
+    buf = io.BytesIO()
+    frame = pd.DataFrame([dict(zip(LISTING_HEADER, r)) for r in rows], columns=LISTING_HEADER)
+    frame.to_excel(buf, sheet_name="Employee_Listing_Report", index=False, engine="openpyxl")
+    buf.seek(0)
+    buf.name = "listing.xlsx"
+    return buf
+
+
+ROW = (4022.0, "Grace Kanja", "Retail Banking", "Branch Manager", 5.0, "Permanent",
+       "Branch Business", "Mombasa Branch", 700.0, "HFCB Limited", "15-Jan-2020",
+       "04-May-1990", 36, "Female", "grace.kanja@hfcb.co.ke", "0700", "HFCB", "M1",
+       "31-Dec-2026", "Resignation")
+
+
+class ListingTests(SimpleTestCase):
+    def test_it_reads_as_a_full_list_with_only_the_mapped_columns(self):
+        sheets = emv.read_sheets(listing(ROW))
+        self.assertEqual(list(sheets), ["full_list"])
+        columns = set(sheets["full_list"].columns)
+        self.assertIn("job title", columns)
+        for private in ("Emergency Contact", "Bank", "Membership"):
+            self.assertNotIn(private, columns)
+
+    def test_a_contract_date_or_reason_is_not_an_exit(self):
+        rows = emv.clean_staff_list(emv.read_sheets(listing(ROW))["full_list"])
+        self.assertEqual(rows[0]["exit"], 0)
+        self.assertIsNone(rows[0]["staff_exit_date"])
+
+    def test_each_column_lands_where_the_roster_keeps_it(self):
+        row = emv.clean_staff_list(emv.read_sheets(listing(ROW))["full_list"])[0]
+        self.assertEqual(row["staff_id"], 4022)
+        self.assertEqual(row["department"], "Retail Banking")
+        self.assertEqual(row["division"], "HFCB Limited")
+        self.assertEqual(row["unit"], "Mombasa Branch")
+        self.assertEqual(row["org_unit"], "700")
+        self.assertEqual(row["grade"], "05")
+        self.assertEqual(row["job_title"], "Branch Manager")
+        self.assertEqual(row["date_of_employment"].year, 2020)
+
+    def test_the_old_workbook_is_not_taken_for_a_listing(self):
+        sheets = emv.read_sheets(workbook({"full_list": [person(1, "A B")]}))
+        self.assertIn("staffid", [str(c).lower() for c in sheets["full_list"].columns])
+
+
+class ListingUploadTests(UploadTests):
+    def test_new_people_are_added_and_those_not_on_the_file_only_counted(self):
+        employees().create(staff_id=9, name="Someone Else", exit=0)
+        employees().create(staff_id=8, name="Already Left", exit=1)
+        resp = self.client.post(URL, {"file": listing(ROW)}, format="multipart")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["inserted"], 1)
+        self.assertEqual(resp.data["active_not_on_file"], 1)
+        self.assertEqual(employees().get(staff_id=9).exit, 0)

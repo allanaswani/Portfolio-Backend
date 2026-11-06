@@ -14,8 +14,6 @@ STATUS_KIND = "feed_proof_status"
 BOOKS = ("back_office", "sales", "branch_managers", "scheme")
 #: A run silent this long died with its worker, so another may start.
 STALE_AFTER = datetime.timedelta(hours=1)
-#: How often a running proof reports that it is still going.
-SAVE_EVERY = datetime.timedelta(seconds=30)
 
 
 def _now():
@@ -85,9 +83,9 @@ def run(book, year, month, by=""):
     _save(state)
 
     def out(line=""):
+        # Saved at once: the line before a long read is the one the screen needs.
         state["log"].append(str(line))
-        if _now() - datetime.datetime.fromisoformat(state["updated_at"]) >= SAVE_EVERY:
-            _save(state)
+        _save(state)
 
     try:
         _run_book(book, year, month, out)

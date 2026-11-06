@@ -42,6 +42,14 @@ file that loaded before loads the same way.
 The script also maintains ``hfdi_employee_data`` from the HFDI rows of the same
 workbook (insert the new ones, mark the exits inactive); that runs here too.
 
+HR'S NEWER LISTING
+------------------
+Since Oct 2026 HR also sends ``Employee_Listing_Report``: an .xls with one sheet and
+different headers. It is the current staff, so it is read as a ``full_list``. See
+:data:`LISTING_COLUMNS` for how its columns map. It says nothing about who has left:
+"End Of Contract" is a contract date, not an exit. So nobody is marked as an exit from
+it, and those on the roster but not in the file are counted for a person to look at.
+
 Two production quirks the host script never had to think about are handled:
 
 * ``employee_table.id`` may have no sequence or identity default (see
@@ -132,6 +140,19 @@ PROPERTIES_DIVISION = "HFCB Properties"
 
 DATE_FIELDS = ["date_of_birth", "date_of_employment", "staff_exit_date", "promotion_date"]
 
+# HR's Employee_Listing_Report -> the loader's headers. Its "Branch" holds what the
+# roster calls department (Retail Banking, Credit), "Section" the entity the roster
+# calls division (HFCB Limited), "Department" the finer unit (Mombasa Branch), and
+# COST CENTER what the roster's org_unit is closest to. Everything else in the file,
+# such as bank, emergency contact and membership, is deliberately not read.
+LISTING_COLUMNS = {
+    "employee code": "staffid", "employee name": "name", "branch": "department",
+    "job": "job title", "grade": "grade", "department": "unit",
+    "cost center": "org unit", "section": "division", "date hired": "date of employement",
+    "birthdate": "date of birth", "gender": "gender", "email": "email",
+}
+LISTING_MARKS = {"employee code", "employee name", "date hired"}
+
 # Every field the cleaner guarantees on a row, so a sheet missing an optional
 # column loads with that column blank instead of raising.
 GUARANTEED_FIELDS = [
@@ -221,9 +242,45 @@ def read_sheets(upload):
         pass
     if name.endswith(".csv"):
         return {SHEET_FULL_LIST: pd.read_csv(upload, dtype={"grade": "str"})}
-    sheets = pd.read_excel(upload, sheet_name=None, engine="openpyxl",
-                           dtype={"grade": "str"})
-    return {normalize_sheet_name(k): v for k, v in sheets.items()}
+    # .xls is the older binary format HR's system exports, which openpyxl cannot read.
+    engine = "xlrd" if name.endswith(".xls") else "openpyxl"
+    sheets = pd.read_excel(upload, sheet_name=None, engine=engine, dtype={"grade": "str"})
+    out = {}
+    for sheet, frame in sheets.items():
+        if _is_listing(frame):
+            out[SHEET_FULL_LIST] = listing_to_full_list(frame)
+        else:
+            out[normalize_sheet_name(sheet)] = frame
+    return out
+
+
+def _is_listing(frame):
+    return LISTING_MARKS <= {" ".join(str(c).lower().split()) for c in frame.columns}
+
+
+def listing_to_full_list(frame):
+    """HR's Employee_Listing_Report as the loader's ``full_list``, its mapped columns only."""
+    renamed = {}
+    for column in frame.columns:
+        target = LISTING_COLUMNS.get(" ".join(str(column).lower().split()))
+        if target:
+            renamed[column] = target
+    out = frame[list(renamed)].rename(columns=renamed)
+    if "grade" in out.columns:
+        out["grade"] = out["grade"].map(_whole_number_text)
+    if "org unit" in out.columns:
+        out["org unit"] = out["org unit"].map(_whole_number_text)
+    return out
+
+
+def _whole_number_text(value):
+    """Excel stores 5 as 5.0, which is not the grade or cost centre "5"."""
+    text = str(value).strip() if value is not None else ""
+    if text.lower() in ("", "nan", "none"):
+        return None
+    if text.endswith(".0") and text[:-2].lstrip("-").isdigit():
+        return text[:-2]
+    return text
 
 
 def clean_staff_list(frame):
@@ -464,6 +521,7 @@ class UploadAndProcessEmployeeData(APIView):
                 errors.append(problem)
 
         hfdi = self._sync_hfdi(cleaned)
+        missing = self._active_but_not_on_file(cleaned.get(SHEET_FULL_LIST, []), alias)
 
         return Response(
             {
@@ -473,12 +531,28 @@ class UploadAndProcessEmployeeData(APIView):
                 "already_present": already_present,
                 "updated": updated,
                 "not_found": not_found,
+                "active_not_on_file": missing,
                 "hfdi": hfdi,
                 "errors": errors[:50],
                 "error_count": error_count,
             },
             status=status.HTTP_200_OK,
         )
+
+    @staticmethod
+    def _active_but_not_on_file(rows, alias):
+        """How many the roster has as still here whom this list of current staff omits.
+
+        A count for a person to look at. Nobody is marked as having left because of it.
+        """
+        ids = {r.get("staff_id") for r in rows} - {None}
+        if not ids:
+            return 0
+        on_roster = {
+            canon_staff_id(v) for v in EmployeeTable.objects.using(alias)
+            .exclude(exit=1).exclude(staff_id=None).values_list("staff_id", flat=True)}
+        on_roster.discard(None)
+        return len(on_roster - ids)
 
     # ── full_list -> insert the people who are not already on the roster ─────
     def _insert_new(self, rows, alias):
