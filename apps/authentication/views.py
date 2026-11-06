@@ -368,7 +368,10 @@ class UserMetaChoicesView(APIView):
     def get(self, request):
         from apps.portfolio.models import BRANCH_CHOICES, SEGMENT_CHOICES
         return Response({
-            "branches": [value for value, _label in BRANCH_CHOICES],
+            # Kisii has closed, and Gill House is Harambee Ave. An account already
+            # on either keeps working; nobody new is put there.
+            "branches": [value for value, _label in BRANCH_CHOICES
+                         if value not in ("KISII BRANCH", "GILL HOUSE BRANCH")],
             "segments": [value for value, _label in SEGMENT_CHOICES],
         })
 

@@ -42,7 +42,11 @@ from django.utils import timezone
 
 NO_BRANCH = "No branch recorded"
 #: Profile branches that are real, but not branches to rank.
-NOT_RANKED = {"HEAD OFFICE BRANCH", "HFDI"}
+NOT_RANKED = {"HEAD OFFICE BRANCH", "HFDI",
+              # Closed, and Harambee Ave under its other name.
+              "KISII BRANCH", "GILL HOUSE BRANCH"}
+#: A name on a profile or roster, and the name the report ranks that branch under.
+ONE_BRANCH = {"GILL HOUSE BRANCH": "HARAMBEE AVE BRANCH"}
 TOP = 10
 
 
@@ -154,12 +158,12 @@ def _branches():
     for user in get_user_model().objects.only("id", "username", "email"):
         profile = profiles.get(user.id, {})
         local = (user.email or "").strip().lower().split("@")[0]
-        out[user.username.lower()] = (
-            (profile.get("branch") or "").strip()
-            or by_code.get((profile.get("sales_code") or "").strip().upper())
-            or by_email.get(local)
-            or by_email.get(user.username.lower())
-            or NO_BRANCH)
+        branch = ((profile.get("branch") or "").strip()
+                  or by_code.get((profile.get("sales_code") or "").strip().upper())
+                  or by_email.get(local)
+                  or by_email.get(user.username.lower())
+                  or NO_BRANCH)
+        out[user.username.lower()] = ONE_BRANCH.get(branch, branch)
     return out
 
 

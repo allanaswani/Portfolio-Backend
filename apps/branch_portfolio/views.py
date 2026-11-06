@@ -37,6 +37,7 @@ from apps.gceo_dashboard.models import (
     DailyBalanceMovement, LoanDailyBalanceMovement, Revenue, LoansHistory,
 )
 from core.pagination import StandardPagination
+from core.branch_names import customer_branch, roster_branch
 from core.date_utils import cy, py, _yester_case, _prev_month_case, branch_code_for
 
 import django_filters.rest_framework
@@ -65,7 +66,16 @@ def _may_see_all_branches(user):
 
 
 def _branch_filter(profile, branch=None):
-    """Effective branch name to filter on — WITH authorization.
+    """The branch to filter ``hf_customer`` on, in that table's spelling.
+
+    See core/branch_names.py. Authorisation is :func:`_roster_name`'s.
+    """
+    return customer_branch(_roster_name(profile, branch))
+
+
+def _roster_name(profile, branch=None):
+    """Effective branch name to filter on — WITH authorization. In the spelling the
+    rosters and the arrears queries use.
 
     Only EXCO/CEO/superuser may inspect an arbitrary branch via the /<branch>
     drill-down routes, or see the all-branch roll-up. For everyone else:
@@ -85,7 +95,7 @@ def _branch_filter(profile, branch=None):
     if not resolved and not privileged:
         from rest_framework.exceptions import PermissionDenied
         raise PermissionDenied("No branch is assigned to your account.")
-    return resolved
+    return roster_branch(resolved)
 
 
 # ── Customers ──────────────────────────────────────────────────────────────
@@ -334,7 +344,10 @@ class BranchDepositTrendsView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        accounts = Accounts.objects.filter(opening_branch__icontains=_branch_filter(profile))
+        # accounts has its own spelling, which has not been measured: take either.
+        accounts = Accounts.objects.filter(
+            Q(opening_branch__icontains=_branch_filter(profile))
+            | Q(opening_branch__icontains=_roster_name(profile)))
         data = accounts.values("product_type").annotate(
             count=Count("id"), total_balance=Sum("current_balance")
         )
@@ -751,7 +764,7 @@ class BranchLoansArrearsSummaryView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         return Response(
-            LoansArrearsSummaryManager().high_level_summary_by_branch(_branch_filter(profile))
+            LoansArrearsSummaryManager().high_level_summary_by_branch(_roster_name(profile))
         )
 
 
@@ -761,7 +774,7 @@ class BranchLoansArrearsListView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        rows = LoansArrearsAccountsListManager().accounts_in_arrears_by_branch(_branch_filter(profile))
+        rows = LoansArrearsAccountsListManager().accounts_in_arrears_by_branch(_roster_name(profile))
         paginator = StandardPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return paginator.get_paginated_response(page)
@@ -781,7 +794,7 @@ class BranchLoansArrearsDPDView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         return Response(
-            LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary_by_branch(_branch_filter(profile))
+            LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary_by_branch(_roster_name(profile))
         )
 
 
@@ -792,7 +805,7 @@ class BranchLoansArrearsProductsView(APIView):
     def get(self, request):
         profile = _get_profile(request.user)
         return Response(
-            LoansProductArrearsSummaryManager().product_arrears_summary_by_branch(_branch_filter(profile))
+            LoansProductArrearsSummaryManager().product_arrears_summary_by_branch(_roster_name(profile))
         )
 
 
@@ -806,7 +819,10 @@ class BranchFixedDepositListView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
-        rows = fdm.FixedDepositListManager().fixed_deposits_list_by_branch_name(_branch_filter(profile))
+        # accounts.current_branch has its own spelling, which has not been measured.
+        deposits = fdm.FixedDepositListManager()
+        rows = (deposits.fixed_deposits_list_by_branch_name(_roster_name(profile))
+                or deposits.fixed_deposits_list_by_branch_name(_branch_filter(profile)))
         paginator = StandardPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return paginator.get_paginated_response(page)
@@ -1088,9 +1104,9 @@ def _branch_scope(request, branch=None):
     layer treats as "match nothing", never as "no filter".
     """
     profile = _get_profile(request.user)
-    name = _branch_filter(profile, branch)
+    name = _roster_name(profile, branch)
     if not name:
-        # _branch_filter returns "" only for a privileged caller; it raises
+        # _roster_name returns "" only for a privileged caller; it raises
         # PermissionDenied for anyone else without a branch.
         return "", None, True
     return name, branch_codes_for(name), False

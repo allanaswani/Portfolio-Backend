@@ -73,6 +73,15 @@ STATIC_CODE_TO_NAME = {
     280: "WESTLANDS BRANCH",
 }
 
+# One branch under another name: hf_customer's, the ETLs' and the rosters' spellings
+# all reach the same code. See core/branch_names.py.
+_CODE_BY_OTHER_SPELLING = {
+    "HARAMBEE AVENUE": {220}, "HARAMBEE AVE": {220}, "GILL HOUSE": {220},
+    "SAMEER": {270}, "SAMEER BUSINESS PARK": {270},
+    "TRM": {260}, "THIKA ROAD MALL-TRM": {260},
+    "HF WHIZZ": {109}, "HFCB WHIZZ": {109},
+}
+
 # (table, code column, name column). Order is documentation only — the vote is
 # by row count, not by position.
 _LIVE_SOURCES = (
@@ -221,7 +230,7 @@ def branch_codes_for(branch_name) -> list[int]:
     if not key:
         return []
     name_to_codes, _ = _maps()
-    return sorted(name_to_codes.get(key, set()))
+    return sorted(name_to_codes.get(key, set()) | _CODE_BY_OTHER_SPELLING.get(key, set()))
 
 
 def branch_name_for_code(code) -> str:

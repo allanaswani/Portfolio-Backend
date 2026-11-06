@@ -79,21 +79,31 @@ class UsageReportTests(TestCase):
         self.assertEqual(ranking[0]["share"], 1.0)
         self.assertEqual(ranking[0]["pages"], 2)
         names = [r["branch"] for r in ranking]
-        self.assertIn("KISII BRANCH", names)
+        self.assertIn("KENYATTA BRANCH", names)
         self.assertNotIn("HEAD OFFICE BRANCH", names)
         self.assertNotIn("HFDI", names)
+
+    def test_gill_house_is_harambee_and_kisii_is_gone(self):
+        from apps.portfolio.models import Profile
+
+        Profile.objects.filter(user=self.amy).update(branch="GILL HOUSE BRANCH")
+        names = [r["branch"] for r in report.branch_ranking(DAY)]
+        self.assertIn("HARAMBEE AVE BRANCH", names)
+        self.assertNotIn("GILL HOUSE BRANCH", names)
+        self.assertNotIn("KISII BRANCH", names)
+        self.assertEqual(report._branches()["amy.k"], "HARAMBEE AVE BRANCH")
 
     def test_the_rank_is_on_the_share_of_accounts_not_the_headcount(self):
         User = get_user_model()
         Profile.objects.filter(user=self.amy).update(branch="NYALI BRANCH")
-        Profile.objects.filter(user=self.ben).update(branch="KISII BRANCH")
+        Profile.objects.filter(user=self.ben).update(branch="KENYATTA BRANCH")
         # Kisii has three people on it, one of whom used it. Nyali's one did.
         for name in ("c.c", "d.d"):
             Profile.objects.filter(user=User.objects.create_user(name)).update(
-                branch="KISII BRANCH")
+                branch="KENYATTA BRANCH")
         ranking = report.branch_ranking(DAY)
         self.assertEqual([r["branch"] for r in ranking[:2]],
-                         ["NYALI BRANCH", "KISII BRANCH"])
+                         ["NYALI BRANCH", "KENYATTA BRANCH"])
 
     def test_customer_360_counts_towards_a_branch(self):
         Profile.objects.filter(user=self.amy).update(branch="NYALI BRANCH")
