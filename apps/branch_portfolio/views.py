@@ -43,7 +43,13 @@ import django_filters.rest_framework
 
 
 def _get_profile(user):
-    return get_object_or_404(Profile, user_id=user.id)
+    profile = get_object_or_404(Profile, user_id=user.id)
+    if not (profile.branch or "").strip():
+        # For this request only - see own_branch.
+        from .own_branch import roster_branch
+
+        profile.branch = roster_branch(user) or profile.branch
+    return profile
 
 
 # Roles allowed to inspect ANY branch (and the all-branch roll-up). Everyone else

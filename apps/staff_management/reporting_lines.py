@@ -393,6 +393,42 @@ def save(lines, source, apply=False, kinds=None):
     return counts
 
 
+def refresh_from_loaded(apply=False):
+    """Every line the workbooks already in the system hold, and the rosters, so that
+    nobody has to find the files again → the total as one report, or None if no
+    workbook is loaded."""
+    from .workbook_cards import saved
+
+    total = {"source": "the loaded workbooks", "kinds": set(), "lines": 0, "new": 0,
+             "changed": 0, "unchanged": 0, "retired": 0}
+    found_any = False
+
+    def add(kinds, found, counts):
+        total["kinds"] |= set(kinds)
+        total["lines"] += found
+        for key, value in counts.items():
+            total[key] += value
+
+    for kind in ("sales_scorecards", "scorecards", "bb_scorecards"):
+        book = saved(kind)
+        rows = _dicts((book or {}).get("tables", {}).get("List") or [])
+        if not rows:
+            continue
+        source, found = lines_from_rows(rows)
+        found = use_branch_manager_page(found)
+        found_any = True
+        add({line["line_kind"] for line in found}, len(found),
+            save(found, source, apply=apply))
+    if not found_any:
+        return None
+    found = lines_from_rosters()
+    add({line["line_kind"] for line in found}, len(found),
+        save(found, "rosters", apply=apply))
+    total["kinds"] = sorted(total["kinds"])
+    total["applied"] = apply
+    return total
+
+
 def _viewer_keys(user):
     """What identifies this account as a manager. Nothing off the profile."""
     locals_ = {_local(getattr(user, "email", "")),

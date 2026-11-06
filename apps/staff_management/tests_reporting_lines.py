@@ -220,6 +220,54 @@ class SavingTests(TestCase):
         self.assertEqual(client.get(SC + "reporting-lines/").status_code, 403)
 
 
+class FromLoadedWorkbooksTests(TestCase):
+    """Teams come from the workbooks already in the system, with no file to find."""
+
+    URL = SC + "reporting-lines/"
+    LIST = [["StaffPF-Number", "StaffSalesCode", "Staff - Name", "Role", "Branch", "Zone",
+             "BM", "E-mail_To"],
+            [1, "AA1", "Ann One", "Teller", "Nyali", "Z", "Boss Person", "boss.person@hfcb.co.ke"]]
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        self.client = APIClient()
+        self.client.force_authenticate(User.objects.create_superuser("root.admin", password="x"))
+        self.boss = User.objects.create_user("boss.person", email="boss.person@hfcb.co.ke",
+                                             first_name="Boss", last_name="Person")
+
+    def _load(self):
+        from .workbook_cards import save_file
+
+        save_file("scorecards", {"tables": {"List": self.LIST}, "cards": {}})
+
+    def test_checking_saves_nothing(self):
+        self._load()
+        body = self.client.post(self.URL, {"from_loaded": "1"}).json()
+        self.assertFalse(body["applied"])
+        self.assertGreaterEqual(body["new"], 1)
+        self.assertEqual(lines.team_for(self.boss), [])
+
+    def test_saving_gives_the_manager_their_team(self):
+        self._load()
+        body = self.client.post(self.URL, {"from_loaded": "1", "apply": "1"}).json()
+        self.assertTrue(body["applied"])
+        self.assertEqual([p["sales_code"] for p in lines.team_for(self.boss)], ["AA1"])
+        self.assertTrue(lines.is_in_team(self.boss, "AA1"))
+
+    def test_running_it_again_changes_nothing(self):
+        self._load()
+        self.client.post(self.URL, {"from_loaded": "1", "apply": "1"})
+        again = self.client.post(self.URL, {"from_loaded": "1", "apply": "1"}).json()
+        self.assertEqual((again["new"], again["retired"]), (0, 0))
+
+    def test_with_no_workbook_it_says_so(self):
+        response = self.client.post(self.URL, {"from_loaded": "1"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("No scorecard workbook", response.json()["file"])
+
+
 class BranchManagerPageTests(TestCase):
     """The page answers what a List leaves unclear, and nothing else."""
 

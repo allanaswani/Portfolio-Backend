@@ -1887,6 +1887,12 @@ class ReportingLinesView(APIView):
         if not _may_set_figures(request.user):
             return Response({"detail": "Only an administrator can load this."},
                             status=403)
+        if str(request.data.get("from_loaded", "")).lower() in ("1", "true", "yes"):
+            apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+            report = lines.refresh_from_loaded(apply=apply)
+            if report is None:
+                return Response({"file": "No scorecard workbook is loaded yet."}, status=400)
+            return Response(report)
         upload = request.FILES.get("file")
         if upload is None:
             return Response({"file": "Choose the file first."}, status=400)
