@@ -23,6 +23,7 @@
 set -u
 
 DATA_MOUNT="${DATA_MOUNT:-/data}"
+WAREHOUSE_DB="${WAREHOUSE_DB:-datawarehouse}"
 TRACE_FILE="${TRACE_FILE:-/data/apps/datascience/metabase.db.trace.db}"
 TRACE_MAX_GB="${TRACE_MAX_GB:-5}"
 TRACE_KEEP_DIR="${TRACE_KEEP_DIR:-/var/tmp}"
@@ -67,6 +68,10 @@ if [ "$percent" -ge "$DISK_WARN_PERCENT" ]; then
     if [ ! -f "$marker" ]; then
         big=$(du -xsh "$DATA_MOUNT"/* 2>/dev/null | sort -h | tail -6)
         wal=$(du -sh "$DATA_MOUNT"/db_data/pgsql/12/data/data/pg_wal 2>/dev/null)
+        databases=$(cd / && sudo -n -u postgres psql -At -c \
+            "SELECT pg_size_pretty(pg_database_size(datname)) || '  ' || datname FROM pg_database WHERE NOT datistemplate ORDER BY pg_database_size(datname) DESC" 2>/dev/null)
+        tables=$(cd / && sudo -n -u postgres psql -d "$WAREHOUSE_DB" -At -c \
+            "SELECT pg_size_pretty(pg_total_relation_size(c.oid)) || '  ' || n.nspname || '.' || c.relname || '  dead rows: ' || coalesce(s.n_dead_tup, 0) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid WHERE c.relkind IN ('r', 'm') AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 15" 2>/dev/null)
         body="What happened:
 $DATA_MOUNT is ${percent}% full on $(hostname).
 
@@ -83,7 +88,13 @@ The largest folders:
 $big
 
 WAL:
-$wal"
+$wal
+
+The databases:
+${databases:-could not be read}
+
+The largest tables in $WAREHOUSE_DB:
+${tables:-could not be read}"
         echo "$(stamp) /data at ${percent}%, reporting"
         report --subject "ACTION NEEDED: /data is ${percent}% full" --body "$body" && touch "$marker"
     fi

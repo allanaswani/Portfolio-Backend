@@ -1,4 +1,4 @@
-"""The Daily Usage Report: a short mail with an Excel workbook attached.
+"""The Daily Usage Report: the full report in the mail, with an Excel workbook attached.
 
     0 7 * * * docker exec hf-backend python manage.py send_usage_report
     manage.py send_usage_report --dry-run                    # print, send nothing
@@ -34,7 +34,6 @@ either tool, then how many people, then how much they opened.
 """
 
 import datetime
-import html as html_module
 from collections import Counter, defaultdict
 
 from django.core.management.base import BaseCommand, CommandError
@@ -429,59 +428,18 @@ def build_sheets(day):
     return sheets
 
 
-def _highlights(day):
-    """The note's few lines: where the branches stand this week."""
-    ranking = branch_ranking(day)
-    with_accounts = [r for r in ranking if r["accounts"]]
-    if not with_accounts:
-        return []
-
-    def line(r):
-        return (f"{r['branch']} ({r['active']} of {r['accounts']} accounts, "
-                f"{r['share']:.0%})")
-
-    top = with_accounts[:3]
-    bottom = [r for r in with_accounts[-3:] if r not in top]
-    lines = ["Most used this week: " + "; ".join(line(r) for r in top) + "."]
-    if bottom:
-        lines.append("Least used: " + "; ".join(line(r) for r in bottom) + ".")
-    return lines
-
-
 def build(day):
-    """The mail's text. The figures are in the attachment."""
-    p = portfolio_day(day)
-    lines = [
-        "Dear All,",
-        "",
-        f"Please find attached the Daily Usage Report for {day:%A %d %B %Y}.",
-        "",
-        f"{p['users']} of {p['accounts']} accounts used the portfolio tool, "
-        f"opening {p['views']:,} pages.",
-    ]
-    lines += _highlights(day)
-    lines += ["", "The branch ranking, the people and those not using the "
-                  "tools are in the attached sheets. The Strategy team is not "
-                  "counted.", "", "Kind Regards,",
-              "Analytics and Business Performance."]
-    return "\n".join(lines) + "\n"
+    """The mail's text: the full report. See :mod:`apps.observability.usage_mail`."""
+    from apps.observability import usage_mail
+
+    return usage_mail.build(day)
 
 
 def build_html(day):
-    """The same note as a mail client shows it: the bank's report note, no
-    dashboards in the body."""
-    paragraphs, current = [], []
-    for line in build(day).splitlines():
-        if line:
-            current.append(html_module.escape(line))
-        elif current:
-            paragraphs.append("<br/>".join(current))
-            current = []
-    if current:
-        paragraphs.append("<br/>".join(current))
-    body = "".join(f'<p style="margin:0 0 14px">{p}</p>' for p in paragraphs)
-    return ('<!DOCTYPE html><html><body style="font-family:Calibri,Arial,'
-            f'sans-serif;font-size:14px;color:#1F2D33">{body}</body></html>')
+    """The part a mail client shows."""
+    from apps.observability import usage_mail
+
+    return usage_mail.build_html(day)
 
 
 class Command(BaseCommand):
@@ -519,7 +477,7 @@ class Command(BaseCommand):
             return
         count = alerts.send(
             alerts.AlertRecipient.KIND_USAGE_REPORT,
-            f"Daily Usage Report - {day:%d %b %Y}", body, html=build_html(day),
+            f"Daily usage - {day:%d %b %Y}", body, html=build_html(day),
             attachments=[(f"Daily Usage Report - {day:%Y-%m-%d}.xlsx", workbook,
                           report_xlsx.XLSX_MIME)])
         self.stdout.write(f"usage report sent to {count} recipient(s)")

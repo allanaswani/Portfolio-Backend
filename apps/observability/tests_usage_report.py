@@ -139,11 +139,26 @@ class UsageReportTests(TestCase):
         self.assertIn("Nothing reported for 28 Oct 2026", summary)
         self.assertIn("Last report received", summary)
 
-    def test_the_note_is_short_and_says_what_is_attached(self):
+    def test_the_mail_is_the_full_report_and_says_what_is_attached(self):
         body = report.build(DAY)
-        self.assertIn("Please find attached the Daily Usage Report", body)
-        self.assertIn("Kind Regards", body)
-        self.assertLess(len(body.splitlines()), 15)
+        self.assertIn("PORTFOLIO TOOL", body)
+        self.assertIn("LAST 7 DAYS", body)
+        self.assertIn("Most active people", body)
+        self.assertIn("attached Excel workbook", body)
+        page = report.build_html(DAY)
+        self.assertIn("Most active people", page)
+        self.assertIn("Amy Kariuki", page)
+        self.assertIn("attached Excel workbook", page)
+
+    def test_strategy_stays_out_of_the_full_mail(self):
+        ExternalUsageDay.objects.create(
+            source="customer-360", day=DAY, username="wash.a", customer_views=99)
+        ExternalUsageDay.objects.create(
+            source="customer-360", day=DAY, username="amy.k", customer_views=3,
+            searches=1)
+        for text in (report.build(DAY), report.build_html(DAY)):
+            self.assertNotIn("Wash Amolo", text)
+            self.assertIn("Amy Kariuki", text)
 
     def test_the_workbook_has_the_expected_sheets(self):
         ExternalUsageDay.objects.create(
@@ -170,7 +185,7 @@ class UsageReportTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         message = mail.outbox[0]
         self.assertEqual(message.to, ["boss@hfgroup.co.ke"])
-        self.assertIn("Daily Usage Report - 28 Oct 2026", message.subject)
+        self.assertIn("Daily usage - 28 Oct 2026", message.subject)
         self.assertTrue(message.subject.startswith("[HFCB Portfolio]"))
         self.assertEqual(message.alternatives[0][1], "text/html")
         name, content, kind = message.attachments[0]
