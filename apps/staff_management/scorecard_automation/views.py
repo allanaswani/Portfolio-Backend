@@ -2117,7 +2117,8 @@ class FeedProofView(APIView):
 
         if not _may_set_figures(request.user):
             return Response({"detail": "Only an administrator can open this."}, status=403)
-        return Response({"status": feed_proof.status(), "summary": feed_proof.summary()})
+        return Response({"status": feed_proof.status(), "summary": feed_proof.summary(),
+                         "months": {b: feed_proof.closed_months(b) for b in feed_proof.BOOKS}})
 
     def post(self, request):
         from apps.staff_management import feed_proof
@@ -2134,6 +2135,15 @@ class FeedProofView(APIView):
             datetime_ok = False
         if not datetime_ok:
             return Response({"detail": "Choose a closed month."}, status=400)
+        if feed_proof._is_running(feed_proof.status()):
+            return Response({"detail": "A run is already going. Wait for it to finish."},
+                            status=409)
+        months = feed_proof.closed_months(book)
+        if f"{year}-{month:02d}" not in months:
+            latest = months[-1] if months else "none"
+            return Response({"detail": f"The desk has no figures for {year}-{month:02d} on "
+                                       f"this workbook. Its latest month is {latest}."},
+                            status=400)
         if not feed_proof.start(book, year, month, by=request.user.username):
             return Response({"detail": "A run is already going. Wait for it to finish."},
                             status=409)

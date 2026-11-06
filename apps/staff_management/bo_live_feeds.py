@@ -432,6 +432,10 @@ def probe(year, month, out=print):
            GROUP BY 1""", [first, nxt], PROBE_TIMEOUT_MS))
 
     users = {u for u, *_ in by_code}
+    if not users:
+        out(f"transaction_diary has no rows for {first:%B %Y}, so nothing can be compared. "
+            f"Check that the ETL has loaded that month.")
+        return {}
     on_diary = {n: c for n, c in who.items() if c in users}
     out(f"{len(on_diary)} of {len(who)} people on the back-office List post "
         f"transactions under their sales code in {first:%B}.")

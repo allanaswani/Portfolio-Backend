@@ -742,6 +742,57 @@ class WholeBackOfficeProofTests(TestCase):
         self.assertEqual(found, {})
 
 
+class BranchProofTests(TestCase):
+    """The branch proof, over a template and a warehouse of its own."""
+
+    DEFINITIONS = {"Plot_Sales_Volume": [("units", "property", {"zeros": True})]}
+
+    def _prove(self, desk, warehouse, month=10):
+        from unittest.mock import patch
+
+        from . import bb_live_feeds as f
+
+        people = [type("H", (), {"sales_code": f"C{i}", "branch": f"B{i}"})()
+                  for i in range(len(desk))]
+        rows = [["x"] * 6 + ["m"] * 12] + [
+            [1, f"C{i}", "n", "r", "b", "z"] + [0.0] * (month - 1) + [v]
+            for i, v in enumerate(desk)]
+        actuals = {"Plot_Sales_Volume": rows}
+        log = []
+        with patch.object(f, "DEFINITIONS", self.DEFINITIONS), \
+                patch.object(f, "_branch_managers", return_value=(people, actuals)), \
+                patch.object(f, "_totals", return_value={}), \
+                patch.object(f, "_branch_total",
+                             side_effect=lambda t, branch, feed: warehouse[int(branch[1:])]):
+            found = f.probe(2026, month, out=log.append)
+        return found, log
+
+    def test_a_month_of_noughts_proves_nothing(self):
+        """October: 22 blank branches, 19 of them nought in the warehouse too."""
+        found, log = self._prove([0.0] * 22, [0.0] * 19 + [1.0] * 3)
+        self.assertEqual(found, {})
+        self.assertIn("skipped", log[0])
+
+    def test_real_figures_that_match_go_live(self):
+        found, _ = self._prove([1.0, 2.0, 3.0, 0.0], [1.0, 2.0, 3.0, 0.0])
+        self.assertIn("Plot_Sales_Volume", found)
+
+    def test_a_sheet_that_stops_passing_is_dropped(self):
+        from . import bb_live_feeds as f
+
+        bo.save_file(f.STORE_KIND, {"Plot_Sales_Volume": {"kind": "property", "sheet": "x"}})
+        _, log = self._prove([100.0, 200.0, 300.0], [1.0, 2.0, 3.0])
+        self.assertNotIn("Plot_Sales_Volume", f.proven())
+        self.assertTrue(any("back to the desk's figure" in x for x in log))
+
+    def test_a_month_not_filled_in_leaves_what_was_proven(self):
+        from . import bb_live_feeds as f
+
+        bo.save_file(f.STORE_KIND, {"Plot_Sales_Volume": {"kind": "property", "sheet": "x"}})
+        self._prove([0.0] * 5, [0.0] * 5)
+        self.assertIn("Plot_Sales_Volume", f.proven())
+
+
 class FeedProofScreenTests(TestCase):
     URL = "/staff_management/scorecard-automation/feed-proof/"
 
@@ -816,6 +867,59 @@ class FeedProofScreenTests(TestCase):
         with patch.object(feed_proof.threading, "Thread"):
             self.assertTrue(feed_proof.start("sales", 2026, 8, "root.admin"))
             self.assertFalse(feed_proof.start("sales", 2026, 8, "root.admin"))
+
+    def _template_through_august(self):
+        grid = template({"CASA": {f"P{i}": [1] * 8 for i in range(10)}})
+        bo.save_file("actuals", grid)
+        bo.save_file("sales_actuals", grid)
+
+    def test_a_month_the_desk_has_not_loaded_is_refused(self):
+        self._template_through_august()
+        year = __import__("apps.staff_management.feed_proof", fromlist=["x"])._now().year
+        response = self.client.post(self.URL, {"book": "sales", "month": f"{year}-10"},
+                                    format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(f"Its latest month is {year}-08", response.json()["detail"])
+
+    def test_the_screen_offers_only_the_months_the_desk_has(self):
+        from . import feed_proof
+
+        self._template_through_august()
+        year = feed_proof._now().year
+        months = self.client.get(self.URL).json()["months"]
+        self.assertEqual(months["sales"][-1], f"{year}-08")
+        self.assertEqual(months["back_office"], [f"{year}-{m:02d}" for m in range(1, 9)])
+        self.assertEqual(months["scheme"], [])
+
+    def test_too_few_to_compare_never_replaces_a_result(self):
+        from unittest.mock import patch
+
+        from . import sales_live_feeds as f
+
+        bo.save_file(f.STORE_KIND, {"newcustomers|newcustomers": {
+            "name": "New Customers", "match": 0.95, "live": True, "month": "2026-08"}})
+        bo.save_file("sales_scorecards", {"tables": {}, "cards": {}})
+        bo.save_file("sales_actuals", {})
+        line = {"feed": "New_Customers", "measure": "New Customers", "initiative": ""}
+        person = type("P", (), {"sales_code": "A1", "name": "A"})()
+        with patch.object(f, "_people", return_value=[person]), \
+                patch.object(f, "_pairs", return_value=[(line, 0, 5.0)]):
+            f.probe(2026, 10, out=lambda *_: None)
+        self.assertTrue(f.proven()["newcustomers|newcustomers"]["live"])
+
+    def test_an_empty_diary_month_says_so_and_not_that_codes_are_wrong(self):
+        from unittest.mock import patch
+
+        from . import bo_live_feeds as f
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        bo.save_file(f.STORE_KIND, {"CASA": {"kind": "ratio", "sheet": "CASA"}})
+        log = []
+        with patch.object(f, "_rows", return_value=[]):
+            self.assertEqual(f.probe(2026, 10, out=log.append), {})
+        self.assertIn("transaction_diary has no rows for October 2026", log[-1])
+        self.assertIn("CASA", f.proven())
 
     def test_the_screen_shows_nothing_proven_yet(self):
         data = self.client.get(self.URL).json()

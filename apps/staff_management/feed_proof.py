@@ -22,6 +22,29 @@ def _now():
     return timezone.now()
 
 
+def closed_months(book):
+    """The months the desk has figures for on this workbook → ["2026-08", ...].
+
+    A proof against any other month compares the warehouse with blank cells. Run on
+    October, that read zero as a match and overwrote real results.
+    """
+    from .workbook_cards import saved, template_months
+
+    year = _now().year
+    if book == "scheme":
+        from . import scheme_cards
+        from .models import SchemeScorecard
+
+        return sorted({r.month.strftime("%Y-%m")
+                       for r in SchemeScorecard.objects.filter(month__year=year)
+                       if scheme_cards.has_desk_figures(r)})
+    kind = "actuals" if book == "back_office" else "sales_actuals"
+    actuals = saved(kind)
+    if not actuals:
+        return []
+    return [f"{year}-{m:02d}" for m in template_months(actuals)]
+
+
 def status():
     from .workbook_cards import saved
 
@@ -117,6 +140,14 @@ def start(book, year, month, by=""):
     return True
 
 
+def _branch_how(feed):
+    """How a branch feed reads, and how close it came: a low share of exact matches can
+    still pass on the typical branch being close, and the screen must say so."""
+    median = feed.get("median")
+    gap = "" if median is None else f" Typical branch {median:.1%} off the desk."
+    return f"{feed.get('label')}.{gap}"
+
+
 def summary():
     """What is proven for each workbook now, for the screen."""
     from . import bb_live_feeds, bo_live_feeds, sales_live_feeds, scheme_live_feeds
@@ -137,6 +168,7 @@ def summary():
         "scheme": engine_rows(scheme_live_feeds.proven()),
         "branch_managers": [
             {"line": key, "sheet": feed.get("sheet"), "match": feed.get("match"),
-             "month": feed.get("month"), "live": True, "how": feed.get("label")}
+             "month": feed.get("month"), "live": True,
+             "how": _branch_how(feed)}
             for key, feed in sorted(bb_live_feeds.proven().items())],
     }

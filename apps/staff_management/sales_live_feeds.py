@@ -162,8 +162,10 @@ def probe(year, month, out=print, book=None, store=STORE_KIND):
                         "live": share >= PASS_SHARE,
                         "month": f"{year}-{month:02d}"}
 
+    # "Too few to compare" is no result, so it never replaces one.
     stored = saved(store) or {}
-    stored.update(results)
+    stored.update({key: value for key, value in results.items()
+                   if not value.get("few") or key not in stored})
     save_file(store, stored, f"probe {year}-{month:02d}", "probe")
     proven_now = sorted(v["name"] for v in results.values()
                         if v["live"])

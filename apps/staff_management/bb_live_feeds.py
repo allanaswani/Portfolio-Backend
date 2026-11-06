@@ -648,7 +648,7 @@ def probe(year, month, out=print):
             "actuals template (2026_Actual_Template.xlsx) first - the probe "
             "compares against them.")
         return {}
-    found = {}
+    found, tested = {}, set()
     for key, definitions in DEFINITIONS.items():
         sheet = key.split("#")[0]
         block = int(key.split("#")[1]) if "#" in key else 0
@@ -657,10 +657,13 @@ def probe(year, month, out=print):
         keep_zero = any(o.get("zeros") for _l, _k, o in definitions)
         targets = [(h, t) for h, t in targets
                    if t or (keep_zero and t is not None)]
-        if not targets:
+        # All noughts is a month the desk has not filled in: a warehouse with nothing
+        # would "match" every one of them.
+        if not any(t for _h, t in targets):
             out(f"  {key:24} the template has no {MONTHS[month - 1]} "
                 f"figure for any branch manager - skipped")
             continue
+        tested.add(key)
         for label, kind, options in definitions:
             feed = dict(options, sheet=sheet, kind=kind, label=label)
             _unplaced.clear()
@@ -711,9 +714,13 @@ def probe(year, month, out=print):
     for feed in found.values():
         feed.pop("rank", None)
 
-    stored = {k: v for k, v in (saved(STORE_KIND) or {}).items()
-              if k in DEFINITIONS}
+    # A sheet tested this time that no longer passes stops being live.
+    previous = {k: v for k, v in (saved(STORE_KIND) or {}).items() if k in DEFINITIONS}
+    dropped = sorted(k for k in previous if k in tested and k not in found)
+    stored = {k: v for k, v in previous.items() if k not in dropped}
     stored.update(found)
+    if dropped:
+        out(f"No longer passing, back to the desk's figure: {', '.join(dropped)}.")
     save_file(STORE_KIND, stored, f"probe {year}-{month:02d}", "probe")
     out(f"{len(found)} branch sheet(s) now read live: "
         f"{', '.join(sorted(found)) or 'none'}. The rest stay waiting on "
