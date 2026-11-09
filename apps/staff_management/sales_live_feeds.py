@@ -163,6 +163,28 @@ def probe(year, month, out=print, book=None, store=STORE_KIND):
                         "warehouse_read": True,
                         "month": f"{year}-{month:02d}"}
 
+    # Lines no report computes: try each candidate definition against the
+    # desk and keep the one that reproduces it (see rm_definitions).
+    if spec.book == SALES:
+        from . import rm_definitions
+        from .workbook_cards import _key
+
+        for key, entry in seen.items():
+            sheet = _key(entry["sheet"] or "")
+            result = results.get(key) or {}
+            if sheet not in rm_definitions.SHEETS or result.get("live") or result.get("few"):
+                continue
+            people = []
+            for who, desk, _warehouse in entry["rows"]:
+                code = who.rsplit("(", 1)[-1].rstrip(")").replace(" ", "").upper()
+                if _num(desk) and desk != 0 and code:
+                    people.append((code, float(desk)))
+            out(f"  {entry['name'][:38]} [{entry['sheet']}]: trying candidate definitions")
+            best = rm_definitions.choose(sheet, people, year, month, same, out)
+            if best and best[0] >= PASS_SHARE:
+                result.update({"live": True, "match": best[0], "definition": best[1]})
+                results[key] = result
+
     # "Too few to compare" is no result, so it never replaces one.
     stored = saved(store) or {}
     stored.update({key: value for key, value in results.items()

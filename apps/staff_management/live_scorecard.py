@@ -2624,6 +2624,32 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     out.pop("_last_year_loan_loss", None)
     out["_bases"] = bases
     out["_base_problems"] = base_problems
+
+    # ── PAR, Deposit Growth, Errors: the definition the proof chose ───────
+    # No report computes these per RM; the sales proof tries every candidate
+    # against the desk and stores the one that reproduces it (rm_definitions).
+    # Where one is stored it replaces the reader above for that line.
+    from . import rm_definitions
+
+    picked = rm_definitions.chosen()
+    for sheet, (_compute, key) in rm_definitions.SHEETS.items():
+        if sheet not in picked:
+            continue
+
+        def chosen_line(sheet=sheet):
+            from .feed_cache import PREPARING
+
+            found = rm_definitions.value(sheet, sales_code, monthly)
+            if found == "preparing":
+                return _figure(None, problem=PREPARING)
+            if found is None:
+                return _figure(None, problem=(
+                    f"no figure for this sales code under the definition the "
+                    f"proof chose ({picked[sheet]})"))
+            return _figure(found, monthly, f"{picked[sheet]}, {monthly_label}")
+
+        attempt(key, chosen_line)
+
     return out
 
 
