@@ -37,35 +37,63 @@ def _filled(actuals, feed, month):
 
 
 def find_errors(book, actuals, month):
-    """→ {(template, line, problem): [names]} for one workbook and month."""
+    """→ {(template, line, problem): [names]} for one workbook and month.
+
+    Reported only where the evidence proves it, after a first version also
+    reported equal targets that were the desk's design:
+
+    * a copied target: equal to the line above AND the same measure carries one
+      fixed target on every other template, which this one does not match
+      (Leave Management: 1 everywhere else, 48 on the BSA card);
+    * an unmeasured line: nobody has a figure on its sheet for the month AND the
+      card actually scores it 0 - a blank that scores well is no harm done.
+    """
     from apps.staff_management.workbook_cards import compute, holders
 
-    found, filled = {}, {}
+    cards = []
     for holder in holders(book):
         if holder.sheet not in book["cards"]:
             continue
         try:
-            card = compute(book, actuals, holder, month)
+            cards.append((holder, compute(book, actuals, holder, month)))
         except Exception:  # noqa: BLE001 - one card must not stop the sweep
             continue
+
+    # Each measure's targets, by template.
+    targets = {}
+    for holder, card in cards:
+        for line in card["lines"]:
+            if line["measure"] and _number(line["pm"]):
+                targets.setdefault(line["measure"].lower(), {}).setdefault(
+                    holder.sheet, set()).add(line["pm"])
+
+    found, filled = {}, {}
+    for holder, card in cards:
         previous = None
         for line in card["lines"]:
             name = line["measure"] or line["initiative"]
-            if (previous is not None and line["measure"]
+            if (previous is not None and line["measure"] and previous["measure"]
                     and line["measure"] != previous["measure"]
-                    and _number(line["pm"]) and line["pm"] > 1
-                    and line["pm"] == previous["pm"]
+                    and _number(line["pm"]) and line["pm"] == previous["pm"]
                     and line["ytd_target"] == previous["ytd_target"]):
-                problem = (f"target {line['pm']:g} / {line['ytd_target']:g} is the "
-                           f"same as the line above ({previous['measure']})")
-                found.setdefault((holder.sheet, name, problem), []).append(holder.name)
+                others = [v for sheet, v in targets.get(line["measure"].lower(), {}).items()
+                          if sheet != holder.sheet]
+                elsewhere = set().union(*others) if others else set()
+                # At least two other templates agreeing on one value: a target set
+                # per person (banca, mortgages) never gives a single value.
+                if len(others) >= 2 and len(elsewhere) == 1 and line["pm"] not in elsewhere:
+                    problem = (f"target {line['pm']:g} / {line['ytd_target']:g} is the "
+                               f"line above's ({previous['measure']}); every other "
+                               f"template has {next(iter(elsewhere)):g}")
+                    found.setdefault((holder.sheet, name, problem), []).append(holder.name)
             feed = line["feed"]
             if feed and not line["typed"] and feed in actuals:
                 if feed not in filled:
                     filled[feed] = _filled(actuals, feed, month)
-                if not filled[feed] and _number(line["weight"]) and line["weight"] > 0:
-                    problem = (f"scored from {feed}, where nobody has a figure for the "
-                               f"month - not measured, but scored as 0")
+                if (not filled[feed] and _number(line["weight"]) and line["weight"] > 0
+                        and _number(line["score"]) and line["score"] == 0):
+                    problem = (f"scored 0 from {feed}, where nobody has a figure for "
+                               f"the month - not measured")
                     found.setdefault((holder.sheet, name, problem), []).append(holder.name)
             previous = line
     return found

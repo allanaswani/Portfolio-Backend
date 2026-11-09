@@ -659,6 +659,65 @@ def _month_end(column):
     return date(year, index + 1, day)
 
 
+_FTP_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun",
+               "jul", "aug", "sep", "oct", "nov", "dec")
+#: The RM's book as whole-number customer ids, so the large tables' own
+#: cust_id indexes can be used.
+_BOOK_IDS = f"""
+    SELECT TRIM(b.cust_id::text)::bigint FROM ({RM_BOOK}) b
+    WHERE TRIM(b.cust_id::text) ~ '^[0-9]+$'
+"""
+
+
+def rm_income_ytd(sales_code, as_at):
+    """The parts of an RM's Income Contribution, 1 January to the end of
+    ``as_at``'s month → {interest_income, interest_expenses, nfi, ftp, loan_loss}.
+
+    For the scorecard, which reads a named month. ``rm_revenue`` (the portfolio
+    pages) reads a stored snapshot and the year to date as of today, so a
+    September card read October too. Checked against the desk's September 2026
+    figures for three RMs:
+
+    * revenue is ``revenue`` - the table Finance's scorecard_finance_revenue.sql
+      dumps - by income_category and trx_date. interest_expenses is stored
+      NEGATIVE.
+    * FTP is the month columns of ``cust_monthly_ftp``: its ``total_ftp`` does not
+      equal its own months (50.6m against 65.4m for one RM).
+    * loan loss is the IFRS movement's month ends, negated: a charge is negative.
+    """
+    start = date(as_at.year, 1, 1)
+    end = (as_at.replace(day=28) + timedelta(days=4)).replace(day=1)
+    ftp_sum = " + ".join(f"COALESCE(f.{m}_ftp, 0)" for m in _FTP_MONTHS[:as_at.month])
+    with connection.cursor() as cursor:
+        cursor.execute(f"""
+            SELECT
+              COALESCE(SUM(r.sum_dc) FILTER (WHERE r.income_category = 'interest_income'), 0),
+              COALESCE(SUM(r.sum_dc) FILTER (WHERE r.income_category = 'interest_expenses'), 0),
+              COALESCE(SUM(r.sum_dc) FILTER (WHERE r.income_category = 'nfi'), 0)
+            FROM revenue r
+            WHERE r.trx_date >= %s AND r.trx_date < %s
+              AND r.cust_id IN ({_BOOK_IDS})""", [start, end, sales_code])
+        interest_income, interest_expenses, nfi = cursor.fetchone()
+        cursor.execute(f"""
+            SELECT COALESCE(SUM({ftp_sum}), 0)
+            FROM cust_monthly_ftp f
+            WHERE f.current_year = %s AND f.cust_cif IN ({_BOOK_IDS})""",
+                       [as_at.year, sales_code])
+        ftp = cursor.fetchone()[0]
+        cursor.execute(f"""
+            SELECT -COALESCE(SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)), 0)
+            FROM loans_mom_ifrs_movement l
+            WHERE l.eom_date >= %s AND l.eom_date < %s
+              AND l.cust_code_strategy ~ '^[0-9]+$'
+              AND l.cust_code_strategy::bigint IN ({_BOOK_IDS})""",
+                       [start, end, sales_code])
+        loan_loss = cursor.fetchone()[0]
+    return {"interest_income": float(interest_income or 0),
+            "interest_expenses": float(interest_expenses or 0),
+            "nfi": float(nfi or 0), "ftp": float(ftp or 0),
+            "loan_loss": float(loan_loss or 0)}
+
+
 def rm_revenue(sales_code):
     """RM revenue breakdown by income_category — verbatim port of old core.revenue().
     Rows are (sales_code, income_category, value): the STORED portfolio_rm_revenue

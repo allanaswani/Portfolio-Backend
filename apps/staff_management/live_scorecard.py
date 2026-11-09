@@ -2126,19 +2126,18 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     # ── Income ────────────────────────────────────────────────────────────
     def revenue():
-        rows = svc.rm_revenue(sales_code)
-        by_category = {}
-        for row in rows:
-            key = (row.get("income_category") or "").strip().lower()
-            by_category[key] = by_category.get(key, 0) + float(row.get("value") or 0)
-        gii = by_category.get("interest_income", 0)
-        ie = by_category.get("interest_expenses", 0)
-        nfi = by_category.get("nfi", 0)
-        ftp = by_category.get("ftp", 0)
-        # rm_revenue already returns loan_loss NEGATED - a provision CHARGE
-        # arrives as a negative number. So adding it here IS subtracting the
-        # loss, which is what "(+/-)FTP - Loan Loss" on the card means.
-        loss = by_category.get("loan_loss", 0)
+        # The card's month, not the year to date as of today (see rm_income_ytd).
+        parts = svc.rm_income_ytd(sales_code, monthly)
+        gii = parts["interest_income"]
+        # Interest expense is stored NEGATIVE, so "GII - IE" subtracted a
+        # negative and ADDED the expense: 366.5m for an RM whose desk figure is
+        # 96.7m (September 2026). Taken as a size, whatever its stored sign.
+        ie = abs(parts["interest_expenses"])
+        nfi = parts["nfi"]
+        ftp = parts["ftp"]
+        # Loan loss arrives NEGATED - a provision CHARGE is a negative number -
+        # so adding it IS subtracting the loss: "(+/-)FTP - Loan Loss".
+        loss = parts["loan_loss"]
         return {
             "direct_portfolio_contribution": _figure(
                 gii - ie + nfi, monthly, monthly_label),
