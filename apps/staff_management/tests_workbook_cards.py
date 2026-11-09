@@ -1160,3 +1160,22 @@ class StoredCardRunningTotalTests(TestCase):
         # Not a running total: the desk's nought stands, and the original is untouched.
         self.assertEqual(filled["PAR"][1][14], 0)
         self.assertEqual(actuals["Plot_Sales_Value"][1][14], 0)
+
+    def test_a_filled_running_total_shows_the_recomputed_score(self):
+        """The desk's recorded 73.8% predates Naomi's 38m year to date; the
+        recomputed 75.6% is shown and the card says why."""
+        import datetime as _dt
+
+        from .workbook_cards import card_payload
+
+        rec = type("R", (), {})()
+        rec.book, rec.total, rec.recorded = "branch_business", 0.756, 0.738
+        rec.card = {"lines": [], "filled_running_totals": ["Value of Property Sales"]}
+        rec.month, rec.sales_code, rec.staff_name = _dt.date(2026, 9, 1), "NWK1466", "Naomi"
+        rec.sheet, rec.branch = "BM_Scorecard", "Thika"
+        payload = card_payload(rec)
+        self.assertEqual(payload["performance_score"], 0.756)
+        self.assertIn("before Value of Property Sales", payload["coverage_note"])
+        # Without a filled line the desk's recorded score still wins.
+        rec.card = {"lines": []}
+        self.assertEqual(card_payload(rec)["performance_score"], 0.738)

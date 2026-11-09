@@ -1447,12 +1447,25 @@ def compute_all(book, actuals, months=None):
     """Every holder × every month with figures → [(holder, month, card)]."""
     months = months or template_months(actuals)
     by_month = {month: running_totals_filled(actuals, month) for month in months}
+    changed = {month: any(by_month[month][k] is not actuals[k]
+                          and by_month[month][k] != actuals[k] for k in actuals)
+               for month in months}
     out = []
     for holder in holders(book):
         if holder.sheet is None or holder.sheet not in book["cards"]:
             continue
         for month in months:
-            out.append((holder, month, compute(book, by_month[month], holder, month)))
+            card = compute(book, by_month[month], holder, month)
+            if changed[month]:
+                # Which lines took the person's last running total: the desk's
+                # recorded score predates them (see card_payload).
+                plain = compute(book, actuals, holder, month)
+                moved = [ln["measure"] or ln["initiative"]
+                         for ln, was in zip(card["lines"], plain["lines"])
+                         if ln["actual"] != was["actual"]]
+                if moved:
+                    card["filled_running_totals"] = moved
+            out.append((holder, month, card))
     return out
 
 
@@ -1668,6 +1681,19 @@ def card_payload(record, asked=None):
     # somebody signed.
     recorded = record.recorded
     notes = []
+    filled = data.get("filled_running_totals") or []
+    if filled and _num(total):
+        # The desk's run predates a running total it had not yet filled in:
+        # Naomi Kagiri's September run recorded 73.8% with Value of Property
+        # Sales at 0; her year to date is 38m, and the workbook then gives 75.6%.
+        # The year to date sticks, so the recomputed score is the one shown.
+        if _num(recorded) and abs(recorded - total) >= 1e-9:
+            notes.append(
+                f"The desk's scorecard run recorded {recorded:.1%} for "
+                f"{record.month:%B %Y} before {', '.join(filled)} had the "
+                f"year-to-date figure. With it, the workbook gives "
+                f"{total:.1%}, which is the score shown.")
+        recorded = None
     if _num(recorded) and not (_num(total) and abs(recorded - total) < 1e-9):
         notes.append(
             f"The desk's scorecard run recorded {recorded:.1%} for "
