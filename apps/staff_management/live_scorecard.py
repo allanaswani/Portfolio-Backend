@@ -855,7 +855,10 @@ SOURCES["par"] = Source(actual_key="par", higher_is_better=False,
 #: Turnaround is in iApply: total_bank_tat is the bank's own time, which is
 #: what the card measures - `tat` includes waiting on the customer, and holding
 #: an RM to that is holding them to somebody else's delay.
-SOURCES["tat_loan"] = Source(actual_key="tat_days", higher_is_better=False)
+#: The desk's TAT (Loan) is loan_tat_iapply_automation.py's seller view for the
+#: month (see loan_tat_seller), not the year's total bank TAT, which read 80-93
+#: days against the desk's 12-23 on the September 2026 proof.
+SOURCES["tat_loan"] = Source(actual_key="tat_seller_month", higher_is_better=False)
 for _code in ("weigted_tat",
               "weigted_tat_sla_service_standards_query_response_time"):
     SOURCES[_code] = Source(actual_key="tat_within_sla")
@@ -2409,6 +2412,22 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 "tat_within_sla": _figure(within, at, label)}
 
     attempt(("tat_days", "tat_within_sla"), turnaround)
+
+    # ── TAT (Loan), the iApply TAT report's seller view for the card's month ──
+    def seller_tat():
+        from . import loan_tat_seller
+
+        found = loan_tat_seller.seller_month_tat(monthly.year, monthly.month)
+        code = sales_code.strip().replace(" ", "").upper()
+        if code not in found:
+            return {"tat_seller_month": _figure(None, problem=(
+                f"no loan actions under this sales code in {monthly:%B %Y} on "
+                f"the iApply loan TAT report"))}
+        return {"tat_seller_month": _figure(
+            found[code], monthly,
+            f"iApply loan TAT report, seller view, {monthly:%B %Y}")}
+
+    attempt(("tat_seller_month",), seller_tat)
 
     # ── Application errors: what iApply sent back ─────────────────────────
     def application_errors():
