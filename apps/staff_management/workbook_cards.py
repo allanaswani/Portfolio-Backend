@@ -2185,8 +2185,13 @@ def live_card(sales_code, engine_card, as_at):
                 or (r - 1, actual_col) in overrides or r in live_rows):
             continue
         if then not in by_month:
+            # With that month's unfilled running totals given the person's last
+            # figure, as the stored cards are: Naomi Kagiri's November card
+            # carried 38m Value of Property Sales, then re-scored it at September
+            # off the template's unfilled September cell and showed 0.
             by_month[then] = {w["row"]: w for w in compute(
-                book, template_live or actuals, holder, then)["lines"]}
+                book, running_totals_filled(template_live or actuals, then),
+                holder, then)["lines"]}
         earlier = by_month[then].get(r)
         if earlier is not None:
             for field in ("ytd_target", "actual", "score", "weighted"):

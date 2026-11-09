@@ -1179,3 +1179,16 @@ class StoredCardRunningTotalTests(TestCase):
         # Without a filled line the desk's recorded score still wins.
         rec.card = {"lines": []}
         self.assertEqual(card_payload(rec)["performance_score"], 0.738)
+
+
+class CarriedLineRescoredTests(TestCase):
+    def test_the_rescore_month_keeps_the_running_total(self):
+        """The live card re-scores a carried line at the month its figure is
+        from; that month's unfilled running total must not turn it to 0."""
+        from .workbook_cards import running_totals_filled
+
+        head = ["PF", "Code", "Name", "Role", "Branch", "Zone"] + list(range(1, 13))
+        row = [1466, "NWK1466", "Naomi", "BM", "Thika", "Zone A",
+               0, 0, 0, 0, 0, 0, 29, 38, 0, 38, 0, 0]
+        filled = running_totals_filled({"Plot_Sales_Value": [head, row]}, 9)
+        self.assertEqual(filled["Plot_Sales_Value"][1][14], 38)
