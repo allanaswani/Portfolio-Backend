@@ -60,3 +60,16 @@ class FocusAccountsTests(SimpleTestCase):
         self.assertEqual(
             SOURCES["cross_sell_new_casa_accounts_focus_accounts"].actual_key,
             "focus_accounts")
+
+
+class BranchNewCustomersTests(SimpleTestCase):
+    def test_by_branch_with_210_as_hurlingham(self):
+        from .weighted_sales_new_customers import count_by_branch
+
+        sep = dt.datetime(2026, 9, 3)
+        frame = pd.DataFrame([dict(row("MK3445", 1, sep), BRN_CODE=500),
+                              dict(row("MK3445", 1, sep), BRN_CODE=500),   # same customer
+                              dict(row("AB1", 2, sep), BRN_CODE=210),
+                              dict(row("DSR309", 3, dt.datetime(2026, 5, 1)), BRN_CODE=19)])
+        # No seller is zeroed on the branch table, and 210 is Hurlingham (19).
+        self.assertEqual(count_by_branch(frame, 2026, 9), {500: 1, 19: 2})

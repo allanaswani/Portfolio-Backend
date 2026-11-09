@@ -79,6 +79,50 @@ def count_by_seller(frame, year, month):
     return out
 
 
+def count_by_branch(frame, year, month):
+    """The report's branch_new_customers_table (line 11004): the same customers
+    as :func:`count_by_seller`, by brn_code, 210 counted as 19 (Hurlingham), and
+    no seller zeroed → {brn_code: customers}."""
+    import numpy as np
+    import pandas as pd
+
+    df = frame.copy()
+    df.columns = [str(c).lower() for c in df.columns]
+    df = df.rename(columns=RENAMES)
+    df = df[(df["customer_segment"] != "STAFF")
+            & (df["customer_segment"] != "INTERNAL ACCOUNTS")]
+    df = df.fillna(0)
+    new = np.where(df["total_accounts_before_current_year"] == 0, "Y", "N")
+    funded = np.where((pd.to_numeric(df["cust_cto"], errors="coerce").fillna(0) > 0)
+                      | (pd.to_numeric(df["current_year_bal"], errors="coerce")
+                         .fillna(0) > 0), "F", "N")
+    first = ~df["cust_cif"].duplicated()
+    opened = pd.to_datetime(df["cust_open_date"], errors="coerce")
+    keep = ((funded == "F") & (df["account_status"] != "CLOSED") & (new == "Y")
+            & first & (opened.dt.year == year) & (opened.dt.month <= month))
+    out = {}
+    for code in pd.to_numeric(df.loc[keep, "brn_code"], errors="coerce"):
+        if pd.isna(code):
+            continue
+        code = 19 if int(code) == 210 else int(code)
+        out[code] = out.get(code, 0) + 1
+    return out
+
+
+def new_customers_by_branch(year, month, timeout_ms=120_000):
+    """{brn_code: new customers} January to ``month``, kept an hour."""
+    import pandas as pd
+    from django.core.cache import cache
+
+    key = f"weighted_new_customers_branch:{year}-{month:02d}"
+    found = cache.get(key)
+    if found is None:
+        names, rows = _rows(year, timeout_ms)
+        found = count_by_branch(pd.DataFrame(rows, columns=names), year, month)
+        cache.set(key, found, 3600)
+    return found
+
+
 def new_customers_by_seller(as_at, timeout_ms=120_000):
     """{SALES CODE: new customers} from 1 January to ``as_at``'s month, kept an hour."""
     import pandas as pd

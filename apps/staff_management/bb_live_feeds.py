@@ -305,6 +305,11 @@ def _new_customers(year, month, source, timeout_ms):
     """Customers opened this year to the month's end, by customers.branch -
     all of them, or only the registration report's set (its pb/sme segments,
     and customers with a balance row on daily_balance_movement)."""
+    if source == "weighted":
+        # weighted_sales_daily_report.py's branch_new_customers_table.
+        from .weighted_sales_new_customers import new_customers_by_branch
+
+        return _by_place(new_customers_by_branch(year, month, timeout_ms).items())
     start, end = _span(year, month, True)
     extra, params = "", [start, end]
     if source == "report":
@@ -610,6 +615,8 @@ DEFINITIONS = {
          {"source": "customers"}),
         ("customers opened YTD by customers.branch, registration report's "
          "segments and balance set", "customers", {"source": "report"}),
+        ("funded new customers by brn_code (weighted sales report's "
+         "branch_new_customers_table)", "customers", {"source": "weighted"}),
     ],
     "Active_Customers": [
         ("transacted in the month, hf_customer branch (branch portfolio "
