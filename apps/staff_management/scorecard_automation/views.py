@@ -2148,3 +2148,48 @@ class FeedProofView(APIView):
             return Response({"detail": "A run is already going. Wait for it to finish."},
                             status=409)
         return Response({"detail": "Started."}, status=202)
+
+
+class WeightedTatView(APIView):
+    """The desk's monthly Weighted TAT Dashboard: which months are loaded, and
+    loading one. Each month's Weighted TAT lines read the dashboard for it."""
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        from apps.staff_management.models import BoWorkbookFile
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can open this."}, status=403)
+        rows = (BoWorkbookFile.objects.filter(kind__startswith="weighted_tat:")
+                .order_by("-kind"))
+        return Response({"months": [{
+            "month": r.kind.split(":", 1)[1], "file_name": r.file_name,
+            "loaded_by": r.loaded_by, "loaded_at": r.loaded_at,
+            "people": len((r.payload or {}).get("people") or {}),
+            "branches": len((r.payload or {}).get("branches") or {}),
+            "skipped": (r.payload or {}).get("skipped") or {}} for r in rows]})
+
+    def post(self, request):
+        from apps.staff_management import weighted_tat
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can load this."}, status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"detail": "Choose the Weighted TAT Dashboard file."}, status=400)
+        try:
+            found = weighted_tat.read(upload)
+        except Exception as exc:  # noqa: BLE001 - said back to the person loading it
+            return Response({"detail": f"This file could not be read as a Weighted TAT "
+                                       f"Dashboard: {exc}"}, status=400)
+        if not found["people"] and not found["branches"]:
+            return Response({"detail": "No weighted scores were found in this file."},
+                            status=400)
+        weighted_tat.save(found, upload.name, request.user.username)
+        return Response({"month": found["month"].isoformat()[:7],
+                         "people": len(found["people"]),
+                         "branches": len(found["branches"]),
+                         "sheets": found["sheets"], "skipped": found["skipped"]},
+                        status=201)

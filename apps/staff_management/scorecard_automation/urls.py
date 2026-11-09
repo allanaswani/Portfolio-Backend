@@ -124,6 +124,7 @@ urlpatterns = [
     path("reporting-lines/", views.ReportingLinesView.as_view()),
     # Fixing codes and reaching cards from the browser.
     path("feed-proof/", views.FeedProofView.as_view()),
+    path("weighted-tat/", views.WeightedTatView.as_view()),
     path("code-review/", views.SalesCodeReviewView.as_view()),
     path("code-review/undo/", views.SalesCodeUndoView.as_view()),
     path("card-reach/", views.CardReachView.as_view()),

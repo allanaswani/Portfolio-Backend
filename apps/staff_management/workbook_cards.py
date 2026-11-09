@@ -2083,6 +2083,7 @@ def live_card(sales_code, engine_card, as_at):
             if carried else {})
     prior = {}
     beside = {}     # row -> scored on the warehouse's figure, not yet matched to the desk
+    dashboard = {}  # row -> the month of the Weighted TAT Dashboard it read
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -2090,6 +2091,28 @@ def live_card(sales_code, engine_card, as_at):
             # The desk has this person's figure for this very month - the
             # figure that is signed. Nothing live replaces it.
             continue
+        if _key(wl["feed"]) == "weightedtat":
+            # Weighted TAT is the desk's monthly dashboard (see weighted_tat):
+            # by sales code on a person's card, by branch on a branch manager's.
+            from . import weighted_tat
+
+            on_branch = spec.book == BRANCH_BUSINESS
+            value = weighted_tat.score(
+                as_at, code=None if on_branch else code,
+                branch=holder.branch if on_branch else None)
+            if value is not None:
+                if template_live is None:
+                    import copy
+
+                    template_live = copy.deepcopy(actuals)
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    dashboard[wl["row"]] = as_at.replace(day=1)
+                    continue
         feed = feeds_live.get(_key(wl["feed"]))
         block = 0
         if feed is not None and spec.book == BRANCH_BUSINESS:
@@ -2243,6 +2266,9 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
                 ln["as_at"] = "typed on the desk's card"
+            elif wl["row"] in dashboard:
+                ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
+                               f"{dashboard[wl['row']]:%B %Y}")
             else:
                 ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
                 if spec.book == SALES:
