@@ -120,8 +120,55 @@ def save(found, file_name="", loaded_by=""):
     cache.delete(KIND.format(found["month"]))
 
 
+#: Written every morning by the ETL weighted_tat_dashboard.py, which builds the
+#: dashboard from the TAT reports with the rules read off the desk's file.
+TABLE = "weighted_tat_scores"
+
+
+def _etl_key(branch):
+    """The ETL's branch key: the report's branch name, letters and digits only."""
+    text = str(branch or "").upper().replace(" BRANCH", "")
+    key = "".join(ch for ch in text if ch.isalnum())
+    return {"THIKAROADMALLTRM": "TRM", "SAMEERBUSINESSPARK": "SAMEER",
+            "SAMEERPARK": "SAMEER", "HARAMBEEAVENUE": "HARAMBEEAVE",
+            "HARAMBEE": "HARAMBEEAVE"}.get(key, key)
+
+
+def from_etl(month, code=None, branch=None):
+    """The ETL's weighted score for ``month`` → float, or None."""
+    from django.db import connection, transaction
+
+    kind, key = (("person", code.replace(" ", "").upper()) if code
+                 else ("branch", _etl_key(branch)))
+    try:
+        # A savepoint: before the ETL's first run the table does not exist, and
+        # the failed read must not poison the request's transaction.
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute(f"SELECT weighted_score FROM {TABLE} "
+                        f"WHERE report_month = %s AND kind = %s AND key = %s",
+                        [month.replace(day=1), kind, key])
+            row = cur.fetchone()
+    except Exception:  # noqa: BLE001 - the table exists once the ETL has run
+        return None
+    return float(row[0]) if row and row[0] is not None else None
+
+
 def score(month, code=None, branch=None):
-    """The dashboard's weighted score for ``month`` (a date) → float, or None."""
+    """The month's weighted score → float, or None: the ETL's figure, else a
+    dashboard the desk loaded for that month."""
+    if code:
+        found = from_etl(month, code=code)
+        if found is not None:
+            return found
+    if branch:
+        found = from_etl(month, branch=branch)
+        if found is not None:
+            return found
+    return _from_dashboard(month, code=code, branch=branch)
+
+
+def _from_dashboard(month, code=None, branch=None):
+    """A loaded dashboard's weighted score for ``month`` → float, or None."""
     from django.core.cache import cache
 
     from .bb_live_feeds import branch_key

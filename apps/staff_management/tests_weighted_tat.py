@@ -72,3 +72,22 @@ class WeightedTatTests(TestCase):
                          ("2026-09", 1, 1))
         listed = client.get(url).data["months"]
         self.assertEqual(listed[0]["month"], "2026-09")
+
+
+class EtlScoresTests(TestCase):
+    def test_the_etls_table_is_read_first(self):
+        from django.db import connection
+
+        from .weighted_tat import read, save, score
+
+        with connection.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS weighted_tat_scores (
+                report_month date, kind varchar(10), key varchar(60), weighted_score double precision)""")
+            cur.execute("INSERT INTO weighted_tat_scores VALUES ('2026-10-01', 'person', 'DN3998', 0.85), "
+                        "('2026-10-01', 'branch', 'THIKA', 0.4)")
+        october = datetime.date(2026, 10, 31)
+        self.assertEqual(score(october, code="DN3998"), 0.85)
+        self.assertEqual(score(october, branch="THIKA BRANCH"), 0.4)
+        # A month the ETL has not computed falls back to a loaded dashboard.
+        save(read(dashboard()), "dashboard.xlsx", "test")
+        self.assertEqual(score(datetime.date(2026, 9, 30), code="DN3998"), 0.775)
