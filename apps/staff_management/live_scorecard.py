@@ -2186,11 +2186,15 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     # ── Disbursements ─────────────────────────────────────────────────────
     def drawdowns():
-        # ``up_to=as_at``, the parameter - only a card asked for a NAMED month
-        # bounds this. A live card is meant to move with the book.
-        value, at = _drawdowns_ytd(sales_code, year, up_to=as_at)
-        return _figure(value, at,
-                       f"as at {at.day} {at:%b %Y}" if at else None)
+        # weighted_sales_daily_report.py's net_drawdown_table (see
+        # weighted_sales_drawdowns): salesperson only, staff and SBP0001 out.
+        # Matching loan_officer_id too read 173.6m against the desk's 101.7m.
+        from . import weighted_sales_drawdowns as wsd
+
+        found = wsd.net_drawdowns_by_seller(today)
+        value = found.get(sales_code.strip().replace(" ", "").upper(), 0.0)
+        return _figure(value, today,
+                       f"weighted sales report, net drawdowns to {today:%b %Y}")
 
     attempt("drawdowns", drawdowns)
 
