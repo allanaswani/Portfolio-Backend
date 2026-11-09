@@ -2166,6 +2166,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         from . import weighted_sales_new_customers as wnc
 
         found = wnc.new_customers_by_seller(today)
+        if found is None:
+            from .feed_cache import PREPARING
+
+            return _figure(None, problem=PREPARING)
         count = found.get(sales_code.strip().replace(" ", "").upper(), 0)
         return _figure(count, today,
                        f"weighted sales report, funded new customers to "
@@ -2177,6 +2181,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         from . import weighted_sales_new_customers as wnc
 
         found = wnc.focus_accounts_by_seller(today)
+        if found is None:
+            from .feed_cache import PREPARING
+
+            return _figure(None, problem=PREPARING)
         count = found.get(sales_code.strip().replace(" ", "").upper(), 0)
         return _figure(count, today,
                        f"weighted sales report, funded focus accounts to "
@@ -2192,6 +2200,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         from . import weighted_sales_drawdowns as wsd
 
         found = wsd.net_drawdowns_by_seller(today)
+        if found is None:
+            from .feed_cache import PREPARING
+
+            return _figure(None, problem=PREPARING)
         value = found.get(sales_code.strip().replace(" ", "").upper(), 0.0)
         return _figure(value, today,
                        f"weighted sales report, net drawdowns to {today:%b %Y}")
@@ -2441,6 +2453,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         from . import loan_tat_seller
 
         found = loan_tat_seller.seller_month_tat(monthly.year, monthly.month)
+        if found is None:
+            from .feed_cache import PREPARING
+
+            return {"tat_seller_month": _figure(None, problem=PREPARING)}
         code = sales_code.strip().replace(" ", "").upper()
         if code not in found:
             return {"tat_seller_month": _figure(None, problem=(

@@ -71,15 +71,15 @@ def net_by_seller(frame, branches, year, month):
 
 
 def net_drawdowns_by_seller(as_at, timeout_ms=120_000):
-    """{CODE: net drawdowns} January to ``as_at``'s month, kept an hour."""
-    import pandas as pd
-    from django.core.cache import cache
+    """{CODE: net drawdowns} January to ``as_at``'s month, or None while it is
+    read in the background (see feed_cache)."""
+    from .feed_cache import cached
 
-    key = f"weighted_net_drawdowns:{as_at.year}-{as_at.month:02d}"
-    found = cache.get(key)
-    if found is None:
+    def compute():
+        import pandas as pd
+
         names, rows, branches = _rows(as_at.year, timeout_ms)
-        found = net_by_seller(pd.DataFrame(rows, columns=names), branches,
-                              as_at.year, as_at.month)
-        cache.set(key, found, 3600)
-    return found
+        return net_by_seller(pd.DataFrame(rows, columns=names), branches,
+                             as_at.year, as_at.month)
+
+    return cached(f"weighted_net_drawdowns:{as_at.year}-{as_at.month:02d}", compute)

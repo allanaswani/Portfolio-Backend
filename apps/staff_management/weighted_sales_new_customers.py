@@ -110,32 +110,32 @@ def count_by_branch(frame, year, month):
 
 
 def new_customers_by_branch(year, month, timeout_ms=120_000):
-    """{brn_code: new customers} January to ``month``, kept an hour."""
-    import pandas as pd
-    from django.core.cache import cache
+    """{brn_code: new customers} January to ``month``, or None while it is read
+    in the background (see feed_cache)."""
+    from .feed_cache import cached
 
-    key = f"weighted_new_customers_branch:{year}-{month:02d}"
-    found = cache.get(key)
-    if found is None:
+    def compute():
+        import pandas as pd
+
         names, rows = _rows(year, timeout_ms)
-        found = count_by_branch(pd.DataFrame(rows, columns=names), year, month)
-        cache.set(key, found, 3600)
-    return found
+        return count_by_branch(pd.DataFrame(rows, columns=names), year, month)
+
+    return cached(f"weighted_new_customers_branch:{year}-{month:02d}", compute)
 
 
 def new_customers_by_seller(as_at, timeout_ms=120_000):
-    """{SALES CODE: new customers} from 1 January to ``as_at``'s month, kept an hour."""
-    import pandas as pd
-    from django.core.cache import cache
+    """{SALES CODE: new customers} from 1 January to ``as_at``'s month, or None
+    while it is read in the background (see feed_cache)."""
+    from .feed_cache import cached
 
-    key = f"weighted_new_customers:{as_at.year}-{as_at.month:02d}"
-    found = cache.get(key)
-    if found is None:
+    def compute():
+        import pandas as pd
+
         names, rows = _rows(as_at.year, timeout_ms)
-        found = count_by_seller(pd.DataFrame(rows, columns=names),
-                                as_at.year, as_at.month)
-        cache.set(key, found, 3600)
-    return found
+        return count_by_seller(pd.DataFrame(rows, columns=names),
+                               as_at.year, as_at.month)
+
+    return cached(f"weighted_new_customers:{as_at.year}-{as_at.month:02d}", compute)
 
 
 # ── Cross-sell new CASA accounts (focus accounts) ─────────────────────────────
@@ -195,16 +195,16 @@ def focus_by_seller(frame, products, branches, year, month):
 
 
 def focus_accounts_by_seller(as_at, timeout_ms=120_000):
-    """{SALES CODE: funded focus accounts} January to ``as_at``'s month, kept an hour."""
-    import pandas as pd
-    from django.core.cache import cache
+    """{SALES CODE: funded focus accounts} January to ``as_at``'s month, or None
+    while it is read in the background (see feed_cache)."""
+    from .feed_cache import cached
 
-    key = f"weighted_focus_accounts:{as_at.year}-{as_at.month:02d}"
-    found = cache.get(key)
-    if found is None:
+    def compute():
+        import pandas as pd
+
         names, rows = _rows(as_at.year, timeout_ms)
         products, branches = _lookups(timeout_ms)
-        found = focus_by_seller(pd.DataFrame(rows, columns=names), products,
-                                branches, as_at.year, as_at.month)
-        cache.set(key, found, 3600)
-    return found
+        return focus_by_seller(pd.DataFrame(rows, columns=names), products,
+                               branches, as_at.year, as_at.month)
+
+    return cached(f"weighted_focus_accounts:{as_at.year}-{as_at.month:02d}", compute)

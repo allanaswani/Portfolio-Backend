@@ -309,7 +309,9 @@ def _new_customers(year, month, source, timeout_ms):
         # weighted_sales_daily_report.py's branch_new_customers_table.
         from .weighted_sales_new_customers import new_customers_by_branch
 
-        return _by_place(new_customers_by_branch(year, month, timeout_ms).items())
+        found = new_customers_by_branch(year, month, timeout_ms)
+        # None while it is read in the background: nothing read, not nought.
+        return _by_place(found.items()) if found is not None else {}
     start, end = _span(year, month, True)
     extra, params = "", [start, end]
     if source == "report":

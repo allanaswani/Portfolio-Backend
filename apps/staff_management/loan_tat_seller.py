@@ -114,12 +114,9 @@ def seller_tat(rows, year, month):
 
 
 def seller_month_tat(year, month, timeout_ms=180_000):
-    """{SELLER CODE: days} for the month, read once and kept for an hour."""
-    from django.core.cache import cache
+    """{SELLER CODE: days} for the month, or None while it is read in the
+    background (see feed_cache)."""
+    from .feed_cache import cached
 
-    key = f"loan_tat_seller:{year}-{month:02d}"
-    found = cache.get(key)
-    if found is None:
-        found = seller_tat(_rows(year, month, timeout_ms), year, month)
-        cache.set(key, found, 3600)
-    return found
+    return cached(f"loan_tat_seller:{year}-{month:02d}",
+                  lambda: seller_tat(_rows(year, month, timeout_ms), year, month))

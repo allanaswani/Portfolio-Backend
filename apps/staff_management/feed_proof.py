@@ -131,8 +131,13 @@ def start(book, year, month, by=""):
     _save(_fresh(book, year, month, by))
 
     def target():
+        from .feed_cache import waiting
+
         try:
-            run(book, year, month, by)
+            # The proof reads every figure in full: a line still being read in
+            # the background would otherwise count as a mismatch.
+            with waiting():
+                run(book, year, month, by)
         finally:
             connection.close()
 
