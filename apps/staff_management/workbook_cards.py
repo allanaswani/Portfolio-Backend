@@ -2018,6 +2018,7 @@ def live_card(sales_code, engine_card, as_at):
              compute(book, template_live, holder, month)["lines"]}
             if carried else {})
     prior = {}
+    beside = {}     # row -> today's warehouse figure, shown but not scored
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -2052,15 +2053,16 @@ def live_card(sales_code, engine_card, as_at):
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 continue
-        if spec.book == BRANCH_BUSINESS or (
-                wl["row"] in carried
-                and sales_live_feeds.line_key(wl) not in bo_engine):
-            # Where the desk has a figure, its year to date stands unless the
-            # warehouse was proven to give the desk's figures on that line
-            # (decided 6 Nov 2026, for RM cards too: Income Contribution read
-            # 349.9m against the desk's 96.7m). A person the desk has no figure
-            # for still sees the warehouse's, and the card says it is unproven.
+        if spec.book == BRANCH_BUSINESS:
             continue
+        # Where the desk has a figure, its year to date is SCORED unless the
+        # warehouse was proven to give the desk's figures on that line (decided
+        # 6 Nov 2026: Income Contribution read 349.9m against the desk's 96.7m).
+        # Today's warehouse figure is still shown beside it, unscored (decided
+        # 9 Nov 2026: the open month should show live data). A person the desk
+        # has no figure for is scored on the warehouse's, marked unproven.
+        unproven = (wl["row"] in carried
+                    and sales_live_feeds.line_key(wl) not in bo_engine)
         match = (next((p for p in pool if p["feed"] and
                        p["feed"] == _key(wl["feed"])), None)
                  or next((p for p in pool if p["name"] and
@@ -2075,7 +2077,10 @@ def live_card(sales_code, engine_card, as_at):
         # A warehouse nought where the desk has a figure is a reader that found nothing,
         # not a result: Digital Adoption read 0 against the desk's 585.
         if _num(value) and not (value == 0 and _num(desk.get(wl["row"])) and desk[wl["row"]]):
-            overrides[(wl["row"] - 1, actual_col)] = float(value)
+            if unproven:
+                beside[wl["row"]] = float(value)
+            else:
+                overrides[(wl["row"] - 1, actual_col)] = float(value)
     card = compute(book, template_live or actuals, holder, month, overrides)
 
     # A year-to-date count or sum cannot fall below what the desk already
@@ -2167,6 +2172,11 @@ def live_card(sales_code, engine_card, as_at):
                 ln["as_at"] = (
                     f"{kind}, the desk's latest figure "
                     f"({datetime.date(as_at.year, wl['carried'], 1):%b %Y})")
+                if wl["row"] in beside:
+                    ln["warehouse_said"] = beside[wl["row"]]
+                    ln["as_at"] += (f"; the warehouse reads {beside[wl['row']]:,.2f} "
+                                    f"today, shown, not scored until it matches "
+                                    f"the desk")
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
                 ln["as_at"] = "typed on the desk's card"

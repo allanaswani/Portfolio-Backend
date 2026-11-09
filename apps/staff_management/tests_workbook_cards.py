@@ -442,6 +442,10 @@ class SalesWorkbookTests(TestCase):
         # 50% matched: the desk's 14 stands, not the warehouse's 99, and the card says so.
         self.assertEqual(trade["ytd_actual"], 14)
         self.assertIn("the desk's latest figure", trade["as_at"])
+        # Today's warehouse figure is shown beside it, unscored.
+        self.assertEqual(trade["warehouse_said"], 99.0)
+        self.assertIn("not scored until it matches", trade["as_at"])
+        self.assertIsNone(customers.get("warehouse_said"))
 
     def test_a_loss_goes_into_the_card_in_the_templates_sign(self):
         """PL_Charge stores a loan loss as a negative; the engine reads the
