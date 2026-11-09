@@ -23,6 +23,9 @@ import datetime
 
 KIND = "weighted_tat:{:%Y-%m}"
 TITLE = "WEIGHTED SCORES"
+PART_TITLES = {"TAT ACCOUNTS": "tat_accounts", "TAT LOANS": "tat_loans",
+               "ACCOUNT ERROR RATE": "account_error_rate",
+               "LOANS ERROR RATE": "loans_error_rate"}
 SLA = "TAT SLA CRM"
 SCORE_HEADERS = ("% w. score", "monthly % w. score")
 
@@ -40,7 +43,7 @@ def read(stream):
 
     book = openpyxl.load_workbook(stream, read_only=True, data_only=True)
     out = {"month": None, "people": {}, "branches": {}, "sla": {},
-           "sheets": [], "skipped": {}}
+           "parts": {}, "sheets": [], "skipped": {}}
     for ws in book.worksheets:
         rows = list(ws.iter_rows(values_only=True))
         for r in rows[:4]:
@@ -68,6 +71,14 @@ def read(stream):
                 s_col = titles.index(SLA)
                 sla_col = next((j for j in range(s_col, start_col)
                                 if heads[j] == "monthly % score"), None)
+            # Each part's month actual, kept so the ETL can be checked against
+            # the desk's own figures (weighted_tat_dashboard.py --check db).
+            part_cols = {}
+            for part_title, part in PART_TITLES.items():
+                if part_title in titles:
+                    j = titles.index(part_title)
+                    part_cols[part] = next((k for k in range(j, min(j + 6, len(heads)))
+                                            if heads[k] == "current month actual"), None)
             # The branch table's first headers read "Branch"; the zone table's
             # read "Zone" - zones are not a card's figure.
             branch_table = heads[:1] == ["branch"] or heads[1:2] == ["branch"]
@@ -98,6 +109,11 @@ def read(stream):
                     read_here += 1
                 else:
                     skipped += 1
+                kind = "branch" if branch_table else "person"
+                parts = {part: float(r[c]) for part, c in part_cols.items()
+                         if c is not None and len(r) > c and _number(r[c])}
+                if parts:
+                    out["parts"][f"{kind}:{key}"] = parts
                 sla = r[sla_col] if sla_col is not None and len(r) > sla_col else None
                 if _number(sla):
                     out["sla"][key] = float(sla)
