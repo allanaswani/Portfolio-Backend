@@ -237,7 +237,16 @@ class TradeRegisterEntrySerializer(serializers.ModelSerializer):
         return action
 
     def validate(self, attrs):
-        """An action on an existing instrument must say which one."""
+        """An action on an existing instrument must say which one, and every
+        transaction needs its FX rate."""
+        # The rate must be filled (the desk's rule, 9 Nov 2026): required on a
+        # new transaction, and never set to nought or blank on an edit.
+        if self.instance is None or "fx_rate" in attrs:
+            rate = attrs.get("fx_rate")
+            if rate is None or rate <= 0:
+                raise serializers.ValidationError({
+                    "fx_rate": "Enter the FX rate - it must be more than 0 "
+                               "(1 for a KES transaction)."})
         action = attrs.get("action", getattr(self.instance, "action", "")) or ""
         parent = attrs.get("parent_ref", getattr(self.instance, "parent_ref", ""))
         if action.upper() in refs.ACTIONS_ON_EXISTING and not parent:

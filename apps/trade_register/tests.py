@@ -138,12 +138,26 @@ class ApiTests(APITestCase):
         resp = self.client.post("/trade_register/entries/", {
             "originating_branch": "WESTLANDS", "rm_name": "JANE", "segment": "COMMERCIAL",
             "our_customer": "ACME", "beneficiary": "KPLC", "currency": "KES",
-            "amount_fcy": "5000", "customer_id": 777, "product": self.bid.id,
+            "amount_fcy": "5000", "fx_rate": "1", "customer_id": 777, "product": self.bid.id,
             "issue_date": "2026-08-13",
         }, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(resp.data["guarantee_ref"], "HFCB/GTE/260813/01")
         self.assertEqual(resp.data["product_type"], "BID BOND GUARANTEE")
+
+    def test_a_transaction_needs_its_fx_rate(self):
+        """The rate must be filled: blank or nought is refused."""
+        entry = {
+            "originating_branch": "WESTLANDS", "rm_name": "JANE", "segment": "COMMERCIAL",
+            "our_customer": "ACME", "beneficiary": "KPLC", "currency": "USD",
+            "amount_fcy": "5000", "customer_id": 777, "product": self.bid.id,
+            "issue_date": "2026-08-13",
+        }
+        for rate in (None, "0"):
+            body = dict(entry, **({} if rate is None else {"fx_rate": rate}))
+            resp = self.client.post("/trade_register/entries/", body, format="json")
+            self.assertEqual(resp.status_code, 400, resp.content)
+            self.assertIn("fx_rate", resp.data)
 
     def test_products_dropdown(self):
         resp = self.client.get("/trade_register/products/")
