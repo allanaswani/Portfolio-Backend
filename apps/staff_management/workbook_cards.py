@@ -1829,11 +1829,22 @@ def _carry_forward(actuals, sheet, month):
                                   for r in keyed)), None)
         if latest is None:
             continue
-        if latest < month:
+        if latest <= month:
             growing = _key(sheet) in ACCUMULATING_SHEETS
             for r in people:
                 while len(r) < o + 6 + month:
                     r.append(None)
+                if latest == month:
+                    # The desk's latest month itself: a person's own figure there
+                    # stands, unless it is blank, or a nought after a figure on a
+                    # sheet that only grows. Naomi Kagiri's Value of Property
+                    # Sales read 29m (Jul), 38m (Aug), 0 (Sep) on a template the
+                    # desk had not finished, and the card scored her 0.
+                    cell = r[o + 5 + month]
+                    if _num(cell) and not (cell == 0 and growing and any(
+                            _num(r[o + 5 + e]) and r[o + 5 + e] != 0
+                            for e in range(1, month))):
+                        continue
                 # Each person's own latest: blank in the desk's latest month
                 # means the desk did not fill them that month, so their last
                 # entered month stands; on a sheet that only grows, a nought

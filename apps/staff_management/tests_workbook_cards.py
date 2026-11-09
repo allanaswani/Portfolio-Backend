@@ -1108,3 +1108,31 @@ class FeedProofScreenTests(TestCase):
     def test_the_screen_shows_nothing_proven_yet(self):
         data = self.client.get(self.URL).json()
         self.assertEqual(data["summary"]["back_office"], [])
+
+
+class RunningTotalInTheLatestMonthTests(TestCase):
+    """A running total cannot fall: a nought after a figure in the desk's latest
+    month is a cell the desk had not filled, not a fall (Naomi Kagiri, Thika:
+    Value of Property Sales 29m Jul, 38m Aug, 0 Sep on the 30 Oct template)."""
+
+    @staticmethod
+    def _sheet(sept_naomi, sept_other=5):
+        head = ["PF", "Code", "Name", "Role", "Branch", "Zone"] + list(range(1, 13))
+        naomi = [1466, "NWK1466", "Naomi Kagiri", "BM", "Thika", "Zone A",
+                 0, 0, 0, 0, 0, 0, 29_000_000, 38_000_000, sept_naomi, 0, 0, 0]
+        other = [1, "AB1", "Other", "BM", "Embu", "Zone B",
+                 0, 0, 0, 0, 0, 0, 1, 2, sept_other, 0, 0, 0]
+        return {"Plot_Sales_Value": [head, naomi, other]}
+
+    def _naomi(self, actuals, month):
+        from .workbook_cards import _carry_forward
+
+        _carry_forward(actuals, "Plot_Sales_Value", month)
+        return actuals["Plot_Sales_Value"][1][5 + month]
+
+    def test_a_nought_after_a_figure_keeps_the_figure(self):
+        self.assertEqual(self._naomi(self._sheet(0), 9), 38_000_000)
+        self.assertEqual(self._naomi(self._sheet(0), 11), 38_000_000)
+
+    def test_a_figure_the_desk_entered_stands(self):
+        self.assertEqual(self._naomi(self._sheet(40_000_000), 9), 40_000_000)
