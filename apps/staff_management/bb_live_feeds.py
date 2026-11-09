@@ -495,17 +495,35 @@ def _banca(year, month, part, timeout_ms, as_at=None):
     return out
 
 
+def banca_by_seller(year, month, timeout_ms, as_at=None):
+    """bancassurance_report.py's premiums per seller, keyed by the policy's code
+    → {sales code: {"vic_life": x, "vic_non_life": y, "all": z}}.
+
+    ``vic_life`` and ``vic_non_life`` are its RMs_and_BBCs_VIC tables. ``all`` is
+    its RMs_and_BBCs_paid_premiums table: roles_all_premiums over paid_premiums,
+    every product and underwriter, by code."""
+    out = {}
+    for _branch, code, kind, value in _banca_policies(year, month, timeout_ms,
+                                                      as_at):
+        if not code:
+            continue
+        row = out.setdefault(code, {"vic_life": 0.0, "vic_non_life": 0.0,
+                                    "all": 0.0})
+        row["all"] += value
+        if kind in ("vic_life", "vic_non_life"):
+            row[kind] += value
+    return out
+
+
 def vic_by_seller(year, month, timeout_ms, as_at=None):
     """bancassurance_report.py's VIC premiums per seller → {sales code:
     {"vic_life": x, "vic_non_life": y}}: the RMs_and_BBCs_VIC tables, which
     the report keys by the policy's code matched to the sales code."""
-    out = {}
-    for _branch, code, kind, value in _banca_policies(year, month, timeout_ms,
-                                                      as_at):
-        if kind in ("vic_life", "vic_non_life") and code:
-            row = out.setdefault(code, {"vic_life": 0.0, "vic_non_life": 0.0})
-            row[kind] += value
-    return out
+    return {code: {"vic_life": row["vic_life"],
+                   "vic_non_life": row["vic_non_life"]}
+            for code, row in banca_by_seller(year, month, timeout_ms,
+                                             as_at).items()
+            if row["vic_life"] or row["vic_non_life"]}
 
 
 def _drawdowns(year, up_to):

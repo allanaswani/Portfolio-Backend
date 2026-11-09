@@ -98,10 +98,11 @@ class TheResidualTests(TestCase):
 
 class TheLineIsNoLongerPendingTests(TestCase):
     def test_both_cards_that_carry_it_now_read_a_figure(self):
-        for code in ("bancassurance_premiums", "other_bancassurance_premiums"):
+        for code, key in (("bancassurance_premiums", "banca_paid_all"),
+                          ("other_bancassurance_premiums", "banca_other")):
             with self.subTest(code):
                 source = SOURCES[code]
-                self.assertEqual(source.actual_key, "banca_other")
+                self.assertEqual(source.actual_key, key)
                 self.assertFalse(source.pending)
                 # The target still comes off the roster column it always did.
                 self.assertEqual(source.target_field, "target_banca_value")
@@ -145,6 +146,21 @@ class VicOnlyTests(TestCase):
         got = vic_by_seller(2026, 9, 60_000)["AKL3116"]
         self.assertEqual(got, {"vic_life": 100_000.0,
                                "vic_non_life": 40_000.0})
+
+    def test_all_paid_premiums_count_every_product_by_code(self):
+        """Bancassurance Premiums = the report's RMs_and_BBCs_paid_premiums:
+        paid premiums on every product and underwriter, by the policy's code."""
+        from .bb_live_feeds import banca_by_seller
+
+        self._policy("R1", "WHOLE LIFE", "Britam Life", 100_000, "AKL3116")
+        self._policy("R3", "Private Comprehensive", "Jubilee", 900_000,
+                     "AKL 3116")
+        self._policy("R6", "SOMETHING UNMAPPED", "APA", 7_000, "AKL3116")
+        self._policy("R5", "WHOLE LIFE", "Britam Life", 5_000, "AKL3116",
+                     insured="Hf Bancassurance Intermediary Ltd")  # excluded
+        got = banca_by_seller(2026, 9, 60_000)["AKL3116"]
+        self.assertEqual(got["all"], 1_007_000.0)
+        self.assertEqual(got["vic_life"], 100_000.0)
 
     def test_the_vic_lines_read_the_vic_figures(self):
         for code, key in (("commercial_vic_premiums", "vic_total"),

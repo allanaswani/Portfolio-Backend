@@ -369,8 +369,17 @@ _register(
 # ``premium_types_mapping`` row - which the reader was already counting and
 # reporting as "counted in the total only". That count had nowhere to go.
 _register(
-    ["bancassurance_premiums", "other_bancassurance_premiums"],
+    ["other_bancassurance_premiums"],
     Source(target_field="target_banca_value", actual_key="banca_other"))
+
+# "Bancassurance Premiums" is the whole book, not the residual: the desk's
+# figure is bancassurance_report.py's RMs_and_BBCs_paid_premiums table (paid
+# premiums, every product, by code), on the same target_banca_value roster
+# column. Read as the residual it was 0.00 for all 62 people on the September
+# 2026 proof while the desk had up to 4,032,094.
+_register(
+    ["bancassurance_premiums"],
+    Source(target_field="target_banca_value", actual_key="banca_paid_all"))
 
 # ── Active customers, and digital adoption ───────────────────────────────────
 # Both are a COUNT over the RM's own book, and both state their target as a
@@ -2221,23 +2230,26 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         from . import bb_live_feeds
 
         upto = as_at or today
-        key = f"vic_by_seller:{upto.isoformat()}"
+        key = f"banca_by_seller:{upto.isoformat()}"
         sellers = cache.get(key)
         if sellers is None:
-            sellers = bb_live_feeds.vic_by_seller(
+            sellers = bb_live_feeds.banca_by_seller(
                 upto.year, upto.month, 120_000, as_at=upto)
             cache.set(key, sellers, 3600)
         row = sellers.get(sales_code.strip().replace(" ", "").upper(),
-                          {"vic_life": 0.0, "vic_non_life": 0.0})
+                          {"vic_life": 0.0, "vic_non_life": 0.0, "all": 0.0})
         label = f"VIC (Britam) paid premiums, as at {upto.day} {upto:%b %Y}"
         return {
             "vic_life": _figure(row["vic_life"], upto, label),
             "vic_non_life": _figure(row["vic_non_life"], upto, label),
             "vic_total": _figure(row["vic_life"] + row["vic_non_life"], upto,
                                  label),
+            "banca_paid_all": _figure(
+                row["all"], upto,
+                f"paid premiums, all products, as at {upto.day} {upto:%b %Y}"),
         }
 
-    attempt(("vic_life", "vic_non_life", "vic_total"), vic)
+    attempt(("vic_life", "vic_non_life", "vic_total", "banca_paid_all"), vic)
 
     # ── Trade finance ─────────────────────────────────────────────────────
     def trade():
