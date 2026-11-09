@@ -406,7 +406,8 @@ class SalesWorkbookTests(TestCase):
     def test_only_a_proven_rm_line_reads_the_warehouse(self):
         """April is open. New Customers was found to give the desk's figures,
         so it reads the warehouse against April's targets; Trade Finance was
-        found to differ, so the desk's latest figure stands."""
+        found to differ, and April is not a month the desk filled, so it reads
+        April's warehouse figure too and the card says how far apart they were."""
         from . import sales_live_feeds
         from .scorecard_automation.models import ScKpi
 
@@ -439,13 +440,11 @@ class SalesWorkbookTests(TestCase):
         self.assertEqual((customers["ytd_target"], customers["ytd_actual"]),
                          (8.0, 9.0))
         self.assertEqual(customers["as_at"], "live, as at 30 Apr 2026")
-        # 50% matched: the desk's 14 stands, not the warehouse's 99, and the card says so.
-        self.assertEqual(trade["ytd_actual"], 14)
-        self.assertIn("the desk's latest figure", trade["as_at"])
-        # Today's warehouse figure is shown beside it, unscored.
-        self.assertEqual(trade["warehouse_said"], 99.0)
-        self.assertIn("not scored until it matches", trade["as_at"])
-        self.assertIsNone(customers.get("warehouse_said"))
+        # April is a month the desk did not fill, so it is scored on April's
+        # warehouse figure even though Trade Finance matched only 50% - and the
+        # card says how far apart the two were (decided 9 Nov 2026).
+        self.assertEqual(trade["ytd_actual"], 99.0)
+        self.assertIn("differs from the desk's", trade["as_at"])
 
     def test_a_loss_goes_into_the_card_in_the_templates_sign(self):
         """PL_Charge stores a loan loss as a negative; the engine reads the
@@ -1140,3 +1139,24 @@ class RunningTotalInTheLatestMonthTests(TestCase):
 
     def test_a_figure_the_desk_entered_stands(self):
         self.assertEqual(self._naomi(self._sheet(40_000_000), 9), 40_000_000)
+
+
+class StoredCardRunningTotalTests(TestCase):
+    """The stored (closed-month) card applies the running-total rule too: the
+    desk's own workbook scored Naomi Kagiri's September Value of Property Sales
+    at 38m while the uploaded template still had 0 in September."""
+
+    def test_an_unfilled_running_total_takes_the_last_figure(self):
+        from .workbook_cards import running_totals_filled
+
+        head = ["PF", "Code", "Name", "Role", "Branch", "Zone"] + list(range(1, 13))
+        row = [1466, "NWK1466", "Naomi", "BM", "Thika", "Zone A",
+               0, 0, 0, 0, 0, 0, 29, 38, 0, 0, 0, 0]
+        rate = [1466, "NWK1466", "Naomi", "BM", "Thika", "Zone A",
+                0, 0, 0, 0, 0, 0, 0.5, 0.6, 0, 0, 0, 0]
+        actuals = {"Plot_Sales_Value": [head, row], "PAR": [head, rate]}
+        filled = running_totals_filled(actuals, 9)
+        self.assertEqual(filled["Plot_Sales_Value"][1][14], 38)
+        # Not a running total: the desk's nought stands, and the original is untouched.
+        self.assertEqual(filled["PAR"][1][14], 0)
+        self.assertEqual(actuals["Plot_Sales_Value"][1][14], 0)

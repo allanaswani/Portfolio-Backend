@@ -293,9 +293,11 @@ _register(
                    "The warehouse has the customer list but no activity flag "
                    "to apply that test to."))
 
+# weighted_sales_daily_report.py's funded focus accounts (line 3877), see
+# weighted_sales_new_customers.focus_by_seller.
 _register(
     ["cross_sell_new_casa_accounts_focus_accounts"],
-    Source(target_field="target_focus_accounts", actual_key="new_accounts",
+    Source(target_field="target_focus_accounts", actual_key="focus_accounts",
            counted=True))
 
 # ── Income ───────────────────────────────────────────────────────────────────
@@ -2156,14 +2158,31 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
              "loan_loss"), revenue)
 
     # ── Customers ─────────────────────────────────────────────────────────
-    # This one counts accounts.opened_by against customers.open_date, which are
-    # live tables - the count includes an account opened this morning. So it is
-    # as at TODAY, and the target is sliced to today to match. Dating it to the
-    # last closed month would compare a figure that includes this month against
-    # a target that does not.
-    attempt("new_customers", lambda: _figure(
-        (svc.rm_new_customers_ytd(sales_code) or {}).get("new_customers", 0),
-        today, "as at today"))
+    # weighted_sales_daily_report.py's count (see weighted_sales_new_customers):
+    # funded new customers by the month they opened, January to the card's
+    # month. accounts.opened_by, read before, gave 104 against the desk's 86
+    # (September 2026 proof). Funded is today's balance, as in the report.
+    def new_customers():
+        from . import weighted_sales_new_customers as wnc
+
+        found = wnc.new_customers_by_seller(today)
+        count = found.get(sales_code.strip().replace(" ", "").upper(), 0)
+        return _figure(count, today,
+                       f"weighted sales report, funded new customers to "
+                       f"{today:%b %Y}")
+
+    attempt("new_customers", new_customers)
+
+    def focus_accounts():
+        from . import weighted_sales_new_customers as wnc
+
+        found = wnc.focus_accounts_by_seller(today)
+        count = found.get(sales_code.strip().replace(" ", "").upper(), 0)
+        return _figure(count, today,
+                       f"weighted sales report, funded focus accounts to "
+                       f"{today:%b %Y}")
+
+    attempt("focus_accounts", focus_accounts)
 
     # ── Disbursements ─────────────────────────────────────────────────────
     def drawdowns():

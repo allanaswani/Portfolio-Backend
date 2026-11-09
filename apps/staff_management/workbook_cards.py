@@ -1406,15 +1406,53 @@ def book_year(book):
     return datetime.date.today().year
 
 
+def running_totals_filled(actuals, month):
+    """The template with each running total's unfilled cell for ``month`` given
+    the person's last figure → a template copy (sheets it does not touch shared).
+
+    On a sheet that only grows (:data:`ACCUMULATING_SHEETS`) a blank, or a nought
+    after a figure, is a cell the desk had not filled - never a fall. The stored
+    September card for Naomi Kagiri read Value of Property Sales 0 because the
+    30 Oct template had 29m (Jul), 38m (Aug), 0 (Sep); the desk's own workbook
+    showed 38m. The live card applied this already (:func:`_carry_forward`)."""
+    from .bb_live_feeds import BLOCK_WIDTH
+
+    out = dict(actuals)
+    for sheet, rows in actuals.items():
+        if _key(sheet) not in ACCUMULATING_SHEETS or len(rows) < 2:
+            continue
+        filled = [rows[0]]
+        for row in rows[1:]:
+            row = list(row)
+            for o in range(0, len(row), BLOCK_WIDTH):
+                at = o + 5 + month
+                if at >= len(row):
+                    break
+                cell = row[at]
+                if _num(cell) and cell != 0:
+                    continue
+                if cell not in (None, "") and not _num(cell):
+                    continue
+                last = next((row[o + 5 + e] for e in range(month - 1, 0, -1)
+                             if o + 5 + e < len(row) and _num(row[o + 5 + e])
+                             and row[o + 5 + e] != 0), None)
+                if last is not None:
+                    row[at] = last
+            filled.append(row)
+        out[sheet] = filled
+    return out
+
+
 def compute_all(book, actuals, months=None):
     """Every holder × every month with figures → [(holder, month, card)]."""
     months = months or template_months(actuals)
+    by_month = {month: running_totals_filled(actuals, month) for month in months}
     out = []
     for holder in holders(book):
         if holder.sheet is None or holder.sheet not in book["cards"]:
             continue
         for month in months:
-            out.append((holder, month, compute(book, actuals, holder, month)))
+            out.append((holder, month, compute(book, by_month[month], holder, month)))
     return out
 
 
@@ -2018,7 +2056,7 @@ def live_card(sales_code, engine_card, as_at):
              compute(book, template_live, holder, month)["lines"]}
             if carried else {})
     prior = {}
-    beside = {}     # row -> today's warehouse figure, shown but not scored
+    beside = {}     # row -> scored on the warehouse's figure, not yet matched to the desk
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -2055,12 +2093,11 @@ def live_card(sales_code, engine_card, as_at):
                 continue
         if spec.book == BRANCH_BUSINESS:
             continue
-        # Where the desk has a figure, its year to date is SCORED unless the
-        # warehouse was proven to give the desk's figures on that line (decided
-        # 6 Nov 2026: Income Contribution read 349.9m against the desk's 96.7m).
-        # Today's warehouse figure is still shown beside it, unscored (decided
-        # 9 Nov 2026: the open month should show live data). A person the desk
-        # has no figure for is scored on the warehouse's, marked unproven.
+        # A month the desk did not fill is scored on the warehouse's figures
+        # (decided 9 Nov 2026: the September template is the last; October and
+        # after read live, as of the month the person asks for). A month the
+        # desk filled kept its figure above. A line not yet matched to the desk
+        # says so on the card.
         unproven = (wl["row"] in carried
                     and sales_live_feeds.line_key(wl) not in bo_engine)
         match = (next((p for p in pool if p["feed"] and
@@ -2077,10 +2114,9 @@ def live_card(sales_code, engine_card, as_at):
         # A warehouse nought where the desk has a figure is a reader that found nothing,
         # not a result: Digital Adoption read 0 against the desk's 585.
         if _num(value) and not (value == 0 and _num(desk.get(wl["row"])) and desk[wl["row"]]):
+            overrides[(wl["row"] - 1, actual_col)] = float(value)
             if unproven:
                 beside[wl["row"]] = float(value)
-            else:
-                overrides[(wl["row"] - 1, actual_col)] = float(value)
     card = compute(book, template_live or actuals, holder, month, overrides)
 
     # A year-to-date count or sum cannot fall below what the desk already
@@ -2172,11 +2208,7 @@ def live_card(sales_code, engine_card, as_at):
                 ln["as_at"] = (
                     f"{kind}, the desk's latest figure "
                     f"({datetime.date(as_at.year, wl['carried'], 1):%b %Y})")
-                if wl["row"] in beside:
-                    ln["warehouse_said"] = beside[wl["row"]]
-                    ln["as_at"] += (f"; the warehouse reads {beside[wl['row']]:,.2f} "
-                                    f"today, shown, not scored until it matches "
-                                    f"the desk")
+
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
                 ln["as_at"] = "typed on the desk's card"
@@ -2186,6 +2218,9 @@ def live_card(sales_code, engine_card, as_at):
                     note = sales_live_feeds.note(sales_proven, wl)
                     if note:
                         ln["as_at"] += f" - {note}"
+                elif wl["row"] in beside:
+                    ln["as_at"] += (" - warehouse figure, not yet matched to the "
+                                    "desk's")
     read_now = [w for w in card["lines"]
                 if not w.get("carried") and not w.get("waiting") and not w["typed"]]
     desk_months = sorted({w["carried"] for w in card["lines"] if w.get("carried")})
