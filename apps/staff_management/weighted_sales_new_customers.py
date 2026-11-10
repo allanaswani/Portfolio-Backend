@@ -38,7 +38,7 @@ def _rows(year, timeout_ms):
     from django.db import connection, transaction
 
     with transaction.atomic(), connection.cursor() as cur:
-        cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+        cur.execute(f"SET LOCAL statement_timeout = {_limit(timeout_ms)}")
         # ctid: the table's own order, which is the order the report's unordered
         # select returns it in, and step 5 keeps a customer's first row.
         cur.execute("SELECT * FROM daily_sales_accounts_with_cto "
@@ -151,7 +151,7 @@ def _lookups(timeout_ms):
     from django.db import connection, transaction
 
     with transaction.atomic(), connection.cursor() as cur:
-        cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+        cur.execute(f"SET LOCAL statement_timeout = {_limit(timeout_ms)}")
         cur.execute("SELECT code AS prod_id, focus FROM product_mapping")
         products = cur.fetchall()
         cur.execute("SELECT brn_code, staff_branch FROM branch_final_employee_dmc_data")
@@ -208,3 +208,9 @@ def focus_accounts_by_seller(as_at, timeout_ms=120_000):
                                branches, as_at.year, as_at.month)
 
     return cached(f"weighted_focus_accounts:{as_at.year}-{as_at.month:02d}", compute)
+
+
+def _limit(ms):
+    from .feed_cache import timeout
+
+    return timeout(ms)

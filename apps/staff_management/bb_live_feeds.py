@@ -379,7 +379,9 @@ def _rows(sql, params, timeout_ms):
 
     with transaction.atomic():
         with connection.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = %s", [timeout_ms])
+            from .feed_cache import timeout
+
+            cur.execute("SET LOCAL statement_timeout = %s", [timeout(timeout_ms)])
             cur.execute(sql, params)
             return cur.fetchall()
 

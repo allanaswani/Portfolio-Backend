@@ -32,7 +32,7 @@ def _rows(year, timeout_ms):
     from django.db import connection, transaction
 
     with transaction.atomic(), connection.cursor() as cur:
-        cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+        cur.execute(f"SET LOCAL statement_timeout = {_limit(timeout_ms)}")
         cur.execute("SELECT * FROM drawdown_daily WHERE drawdown_dt >= %s",
                     [datetime.date(year, 1, 1)])
         names = [d[0] for d in cur.description]
@@ -83,3 +83,9 @@ def net_drawdowns_by_seller(as_at, timeout_ms=120_000):
                              as_at.year, as_at.month)
 
     return cached(f"weighted_net_drawdowns:{as_at.year}-{as_at.month:02d}", compute)
+
+
+def _limit(ms):
+    from .feed_cache import timeout
+
+    return timeout(ms)

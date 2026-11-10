@@ -57,7 +57,7 @@ def _rows(year, month, timeout_ms):
                OR ({created} >= %s AND {created} < %s))
     """
     with transaction.atomic(), connection.cursor() as cur:
-        cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+        cur.execute(f"SET LOCAL statement_timeout = {_limit(timeout_ms)}")
         cur.execute(sql, [first, after, first, after])
         return cur.fetchall()
 
@@ -120,3 +120,9 @@ def seller_month_tat(year, month, timeout_ms=180_000):
 
     return cached(f"loan_tat_seller:{year}-{month:02d}",
                   lambda: seller_tat(_rows(year, month, timeout_ms), year, month))
+
+
+def _limit(ms):
+    from .feed_cache import timeout
+
+    return timeout(ms)

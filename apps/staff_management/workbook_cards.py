@@ -1290,7 +1290,42 @@ def _branch_name(branch):
     return text.title()
 
 
-def holders(book):
+NO_CARD = "no_card"
+
+
+def no_card():
+    """{SALES CODE: {"from": "YYYY-MM", "reason": str}} - people the desk's
+    workbooks still carry who are no longer in a scored role. Julie Ambundo
+    (JMA1138) was still a Kisumu BOM in the back-office workbook in November
+    2026 after moving to CX Manager at head office, and was being scored.
+    Set with ``manage.py scorecard_no_card``."""
+    from django.core.cache import cache
+
+    found = cache.get(NO_CARD)
+    if found is None:
+        try:
+            found = saved(NO_CARD) or {}
+        except Exception:  # noqa: BLE001 - before the table exists
+            found = {}
+        cache.set(NO_CARD, found, 300)
+    return found
+
+
+def off_card(sales_code, month=None):
+    """The no-card entry for ``sales_code`` if it applies to ``month`` (a date,
+    default today) → dict, or None. Months before its "from" keep their card."""
+    entry = no_card().get((sales_code or "").replace(" ", "").upper())
+    if not entry:
+        return None
+    month = month or datetime.date.today()
+    start = entry.get("from") or ""
+    return entry if not start or f"{month:%Y-%m}" >= start else None
+
+
+def holders(book, keep_off=False):
+    """The workbook's card holders. Somebody on the no-card list (see
+    :func:`no_card`) is left out from their month on; ``keep_off`` keeps them
+    for compute_all, which scores the months before it."""
     spec = spec_of(book)
     grid = book["tables"].get("List", [])
     out = []
@@ -1302,6 +1337,8 @@ def holders(book):
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
         if not (holder.name and (holder.sales_code or holder.pf)):
+            continue
+        if not keep_off and off_card(holder.sales_code):
             continue
         found = roster.get(holder.sales_code)
         if spec.book == BACK_OFFICE and found:
@@ -1510,10 +1547,13 @@ def compute_all(book, actuals, months=None):
                           and by_month[month][k] != actuals[k] for k in actuals)
                for month in months}
     out = []
-    for holder in holders(book):
+    year = book_year(book)
+    for holder in holders(book, keep_off=True):
         if holder.sheet is None or holder.sheet not in book["cards"]:
             continue
         for month in months:
+            if off_card(holder.sales_code, datetime.date(year, month, 1)):
+                continue
             card = compute(book, by_month[month], holder, month)
             if changed[month]:
                 # Which lines took the person's last running total: the desk's

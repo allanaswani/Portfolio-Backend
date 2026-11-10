@@ -29,7 +29,9 @@ def _rows(sql, params):
     from django.db import connection, transaction
 
     with transaction.atomic(), connection.cursor() as cur:
-        cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
+        from .feed_cache import timeout
+
+        cur.execute(f"SET LOCAL statement_timeout = {timeout(TIMEOUT_MS)}")
         cur.execute(sql, params)
         return cur.fetchall()
 

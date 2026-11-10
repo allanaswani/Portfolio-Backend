@@ -2895,14 +2895,24 @@ FULL_YEAR_TARGETS |= {
     "bo_weighted_tat",
 }
 
-def _no_target_reason(from_the_sheet):
+def _no_target_reason(from_the_sheet, off_the_sheet=False):
     """What to tell somebody whose line has no target - by WHERE it lives.
 
     Two different screens fix two different problems, and naming the wrong
     one wastes the reader's time. A line whose target comes off the Summary
     Allocation sheet is not fixed on Figures-to-load, however many times
     somebody types into it.
+
+    ``off_the_sheet``: the sheet is loaded and this person is not on it at all
+    (Valary Simiyu, VS3759, PB ARM Rehani - on the DMC roster, absent from the
+    Q3 workbook's List and Summary Allocation). Reloading the sheet changes
+    nothing; the desk has to add them.
     """
+    if from_the_sheet and off_the_sheet:
+        return ("No target is set for this line: you are not on the desk's "
+                "Summary Allocation sheet, which is where this line's target "
+                "is set. The scorecard desk adds you there; the line is "
+                "scored once that sheet is loaded again.")
     if from_the_sheet:
         return ("No target is set for this line yet. It comes from the "
                 "workbook's Summary Allocation sheet - Administration loads "
@@ -3918,6 +3928,12 @@ def build_card(sales_code, profile=None, as_at=None):
 
     from . import workbook_cards
 
+    off = workbook_cards.off_card(sales_code, as_at)
+    if off is not None:
+        return {"has_card": False, "reason": "no_card", "sales_code": sales_code,
+                "detail": "There is no scorecard for you from "
+                          f"{off.get('from') or 'now'}: "
+                          f"{off.get('reason') or 'you are no longer in a scored role'}."}
     if as_at is None:
         # No month asked for is the month in progress. For somebody a
         # workbook holds, the last closed month is already a stored card -
@@ -4123,6 +4139,15 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                     allocation_bases[row.kpi_code] = float(base)
     except Exception:  # noqa: BLE001 - an absent table must not blank the card
         allocations, allocation_bases = {}, {}
+    # The sheet is loaded for the year but holds nothing for this person.
+    off_the_sheet = False
+    if not allocations:
+        try:
+            with transaction.atomic():
+                off_the_sheet = ScEmployeeKpiTarget.objects.filter(
+                    year=(as_at or datetime.date.today()).year).exists()
+        except Exception:  # noqa: BLE001 - as above
+            off_the_sheet = False
 
     # Figures an administrator loaded for the lines the system cannot measure.
     # Read for the last CLOSED month, which is the month a manual return is
@@ -4502,11 +4527,11 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             # added. True, and the wrong audience: it is on a document the
             # person signs, where a table name reads as a statement about them
             # and gives them nothing they can act on.
-            pending = _no_target_reason(from_the_sheet)
+            pending = _no_target_reason(from_the_sheet, off_the_sheet)
             pending_label = "No target set"
         elif fy_target is None:
             pending = (source.no_target_reason
-                       or _no_target_reason(from_the_sheet))
+                       or _no_target_reason(from_the_sheet, off_the_sheet))
             pending_label = "No target set"
         elif unwired:
             pending = ("There is no live source wired for this line yet. The "

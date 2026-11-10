@@ -1271,3 +1271,37 @@ class RosterBranchTableTests(TestCase):
         BranchFinalEmployeeDmcData.objects.create(**fields)
         self.assertEqual(roster_roles()["DG3727"],
                          ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727))
+
+
+class NoCardListTests(TestCase):
+    """Julie Ambundo (JMA1138) moved from Kisumu BOM to CX Manager at head
+    office; the desk's back-office workbook still carries her as a BOM."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        from apps.staff_management import workbook_cards as wc
+
+        cache.clear()
+        wc.save_file(wc.NO_CARD, {"JMA1138": {"from": "2026-10",
+                                              "reason": "CX Manager, Head Office"}})
+
+    def test_off_from_the_month_on_and_on_before_it(self):
+        import datetime
+
+        from apps.staff_management import workbook_cards as wc
+
+        self.assertIsNotNone(wc.off_card("JMA1138", datetime.date(2026, 10, 31)))
+        self.assertIsNotNone(wc.off_card("jma 1138", datetime.date(2026, 11, 1)))
+        self.assertIsNone(wc.off_card("JMA1138", datetime.date(2026, 9, 30)))
+        self.assertIsNone(wc.off_card("NJK1452", datetime.date(2026, 10, 31)))
+
+    def test_the_card_says_there_is_none(self):
+        import datetime
+
+        from apps.staff_management.live_scorecard import build_card
+
+        card = build_card("JMA1138", as_at=datetime.date(2026, 10, 31))
+        self.assertFalse(card["has_card"])
+        self.assertEqual(card["reason"], "no_card")
+        self.assertIn("CX Manager, Head Office", card["detail"])

@@ -601,6 +601,12 @@ class GrowthProrationTests(SimpleTestCase):
         self.assertIn("Figures to load", typed)
         self.assertNotIn("Allocation sheet", typed)
 
+        # Valary Simiyu (VS3759) is on no row of the loaded sheet: reloading
+        # it would change nothing, so the card must not say it would.
+        absent = _no_target_reason(True, off_the_sheet=True)
+        self.assertIn("not on the desk's Summary Allocation sheet", absent)
+        self.assertNotIn("If the sheet has been loaded already", absent)
+
     def test_more_than_two_products_is_measurable(self):
         """"> 2 Active Products" was refused for want of a product count.
 
