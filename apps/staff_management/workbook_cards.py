@@ -1373,6 +1373,41 @@ def _layout(spec, card):
     return header, end
 
 
+#: Targets the business changed after the desk's workbook was set, from a
+#: month on. Each puts its values into the card's own target cells, so the
+#: workbook's formulas score against them unchanged; months before keep the
+#: workbook's.
+#:
+#: Mortgage Business RM / ARM (both on the Mortgage_Business card), TAT (Loan):
+#: "< 7 Days" became "< 14 Days" from the October 2026 scorecard (asked for on
+#: 10 Nov 2026). The row's score is IF(actual <= YTD target, 1,
+#: IF(actual <= YTD target + 1, 0.5, 0)) over the typed 7 in GROWTH, 2026 FY
+#: and YTD Target.
+TARGET_CHANGES = (
+    {"sheet": "Mortgage_Business", "measure": "TAT (Loan)", "from": (2026, 10),
+     "cells": {"growth": 14.0, "fy": 14.0, "ytd": 14.0},
+     "initiative": "< 14 Days (Binary 90%)"},
+)
+
+
+def _target_changes(spec, card, sheet, year, month):
+    """{(row, col): value} for the TARGET_CHANGES in force for ``month``."""
+    out = {}
+    for change in TARGET_CHANGES:
+        if change["sheet"] != sheet or (year, month) < change["from"]:
+            continue
+        for r, row in enumerate(card["grid"]):
+            text = row[spec.cols["measure"]] if len(row) > spec.cols["measure"] else None
+            if _txt(text) != change["measure"]:
+                continue
+            for field, value in change["cells"].items():
+                if spec.cols.get(field) is not None:
+                    out[(r, spec.cols[field])] = value
+            if change.get("initiative"):
+                out[(r, spec.cols["initiative"])] = change["initiative"]
+    return out
+
+
 def compute(book, actuals, holder, month, overrides=None):
     """One person's card for one month → dict, as the workbook would show it.
 
@@ -1383,6 +1418,7 @@ def compute(book, actuals, holder, month, overrides=None):
     spec = spec_of(book)
     card = book["cards"][holder.sheet]
     ev = Evaluator(book, actuals, holder, month)
+    ev.inputs.update(_target_changes(spec, card, holder.sheet, book_year(book), month))
     ev.inputs.update(overrides or {})
     col = spec.cols
     header, end = _layout(spec, card)

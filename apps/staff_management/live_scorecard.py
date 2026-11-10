@@ -2134,6 +2134,20 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     # ── Income ────────────────────────────────────────────────────────────
     def revenue():
+        # Last year's Income Contribution, the BASE of the Summary Allocation
+        # sheet's income target ("2024 (Income+(FTP-LoanLoss))" grown 20% for
+        # every role) - for somebody the sheet does not carry (OFF_SHEET_RULES).
+        try:
+            prior = svc.rm_income_ytd(sales_code, datetime.date(year - 1, 12, 31))
+            if any(prior.values()):
+                bases["last_year_income"] = (
+                    prior["interest_income"] - abs(prior["interest_expenses"])
+                    + prior["nfi"] + prior["ftp"] + prior["loan_loss"])
+            else:
+                base_problems["last_year_income"] = (
+                    f"no revenue, FTP or provisions on your book in {year - 1}")
+        except Exception as exc:  # noqa: BLE001 - the figure below still stands
+            base_problems["last_year_income"] = f"{type(exc).__name__}: {exc}"
         # The card's month, not the year to date as of today (see rm_income_ytd).
         parts = svc.rm_income_ytd(sales_code, monthly)
         gii = parts["interest_income"]
@@ -3007,6 +3021,33 @@ TARGET_BASES = {
     # what the line is called after - "AUM (Dec previous year)".
     "december_aum_book": "portfolio_aum",
 }
+
+
+#: The Summary Allocation sheet's target rules, for somebody it does not carry
+#: (Valary Simiyu, VS3759, PB ARM Rehani: on the DMC roster, absent from the
+#: Q3 workbook). Measured on the Q3 2026 sheet, 10 Nov 2026:
+#:   income   "2024 (Income+(FTP-LoanLoss))" -> 2025 target: x1.2 for all 72
+#:            positive bases, x0.8 for all 16 negative - i.e. base + 20% of |base|,
+#:            the same for every role;
+#:   loan loss 2025 -> 2026: x0.8 for all 68 positive (a charge), x1.2 for all
+#:            20 negative - base - 20% of |base|.
+#: actual key -> (base name, sign of the 20% step, how the card says it).
+OFF_SHEET_RULES = {
+    "income_contribution": ("last_year_income", 1,
+                            "last year's income contribution of {b:,.0f} grown "
+                            "20%, the Summary Allocation sheet's rule for every "
+                            "role (you are not on the sheet)"),
+    "loan_loss_charge": ("last_year_loan_loss", -1,
+                         "last year's provisions of {b:,.0f} reduced 20%, the "
+                         "Summary Allocation sheet's rule (you are not on the "
+                         "sheet)"),
+}
+
+
+def off_sheet_target(rule, base):
+    """(target, how) from an OFF_SHEET_RULES entry and the person's base."""
+    _name, sign, how = rule
+    return base + sign * 0.2 * abs(base), how.format(b=base)
 
 
 def role_target(mapping, bases):
@@ -4091,6 +4132,11 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
     for mapping in mappings:
         base = (getattr(mapping, "target_base", "") or "")
         wanted |= _READERS_BEHIND_A_BASE.get(base, set())
+        # The off-sheet rules' bases too: the loan-loss base has its own reader.
+        source = SOURCES.get(mapping.kpi_code)
+        rule = OFF_SHEET_RULES.get(source.actual_key) if source else None
+        if rule:
+            wanted |= _READERS_BEHIND_A_BASE.get(rule[0], set())
 
     actuals = live_actuals(sales_code, person.name, pf_for(sales_code, row),
                            person.branch, brn_code_for(sales_code, row),
@@ -4272,6 +4318,13 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
 
         if fy_target is None:
             fy_target, target_how = role_target(mapping, line_bases)
+
+        # Not on the Summary Allocation sheet: the sheet's own rule on this
+        # person's own last year (see OFF_SHEET_RULES).
+        if fy_target is None and mapping.kpi_code not in allocations:
+            rule = OFF_SHEET_RULES.get(source.actual_key)
+            if rule and line_bases.get(rule[0]) is not None:
+                fy_target, target_how = off_sheet_target(rule, line_bases[rule[0]])
 
         # A target of nought is not a target. It is how the cards say "this
         # line does not apply to this role" - Mortgage Business carries a

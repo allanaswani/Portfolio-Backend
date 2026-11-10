@@ -33,13 +33,9 @@ import datetime
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone as djtimezone
 
-#: What counts as DIGITAL. The two channel descriptions the CEO dashboard
-#: already treats as digital - see ``gceo_legacy.digital_active_30`` - so
-#: "digital" means one thing on both screens.
-DIGITAL_CHANNELS = (
-    "ESB - ENTERPRISE SERVICE BUS",
-    "KOCELA - SUBSCRIBER AND PAYMENT CHANNEL",
-)
+#: What counts as DIGITAL: the trx_usr patterns of the registration report's
+#: mobile_app CTE (see SQL below).
+DIGITAL_CHANNELS = ("%koce%", "%esb%")
 
 #: Per MONTH, not per run. A month that cannot be read in this long is
 #: reported and the rest still load.
@@ -68,10 +64,17 @@ LAST_TXN_MONTH_SQL = """
     GROUP BY t.fk_customercust_id
 """
 
+#: DIGITAL is routine_registration_data.py's own rule for its mobile_active
+#: flags - the report the desk's Digital Adoption comes from: a transaction
+#: whose trx_usr names KOCELA or the ESB (its ``mobile_app`` CTE,
+#: ``lower(trx_usr) LIKE '%koce%' OR lower(trx_usr) LIKE '%esb%'``). This used
+#: the CEO dashboard's justific_name list instead, and Digital Adoption read
+#: nothing for Valary Simiyu's book in either year (10 Nov 2026) while 360 of
+#: its customers were active. %s takes the patterns, so the SQL has no literal
+#: percent signs for the driver to misread.
 SQL = """
     SELECT t.fk_customercust_id AS cust_id,
-           MAX(CASE WHEN t.chanel_description IS NOT NULL
-                     AND TRIM(t.justific_name) = ANY(%s)
+           MAX(CASE WHEN lower(t.trx_usr) LIKE ANY(%s)
                     THEN 1 ELSE 0 END) AS digital
     FROM transaction_diary t
     WHERE t.tmstamp >= %s AND t.tmstamp < %s
@@ -175,7 +178,7 @@ class Command(BaseCommand):
         write("")
         write(f"  source            transaction_diary")
         write(f"  months            {start:%b %Y} to {end:%b %Y}")
-        write(f"  digital channels  {len(DIGITAL_CHANNELS)}")
+        write(f"  digital           trx_usr like {' or '.join(DIGITAL_CHANNELS)}")
         write("")
 
         month = start
