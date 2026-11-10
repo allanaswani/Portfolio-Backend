@@ -1192,3 +1192,41 @@ class CarriedLineRescoredTests(TestCase):
                0, 0, 0, 0, 0, 0, 29, 38, 0, 38, 0, 0]
         filled = running_totals_filled({"Plot_Sales_Value": [head, row]}, 9)
         self.assertEqual(filled["Plot_Sales_Value"][1][14], 38)
+
+
+class RosterOverridesListTests(TestCase):
+    """The branch roster corrects a List row the desk has not updated."""
+
+    def _book(self, book_kind, rows):
+        return {"book": book_kind, "tables": {"List": [["h"] * 9] + rows}, "cards": {}}
+
+    def test_back_office_role_and_branch_follow_the_roster(self):
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = self._book("back_office", [
+            [3227, "JKK3227", "Joseph Kinuthia", "BOM", "Naivasha"],
+            [1, "UB1", "Ultimate CSO", "CSO_UB", "Westlands"],
+        ])
+        roster = {"JKK3227": ("Joseph Kinuthia", "CSO", "EMBU BRANCH", 3227),
+                  "UB1": ("Ultimate CSO", "CSO", "WESTLANDS BRANCH", 1)}
+        with mock.patch.object(wc, "roster_roles", return_value=roster):
+            joseph, ub = wc.holders(book)
+        self.assertEqual((joseph.role, joseph.sheet, joseph.branch),
+                         ("CSO", "CSO_SCORECARD", "Embu"))
+        self.assertEqual((ub.role, ub.sheet), ("CSO_UB", "CSO_UB_SCORECARD"))
+
+    def test_a_branch_manager_missing_from_the_list_gets_the_bm_card(self):
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = self._book("branch_business", [[1466, "NWK1466", "Naomi Kagiri", "Thika"]])
+        roster = {"DG3727": ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727),
+                  "NWK1466": ("Naomi Kagiri", "BBM", "THIKA BRANCH", 1466),
+                  "X1": ("A Teller", "Teller", "EMBU BRANCH", 9)}
+        with mock.patch.object(wc, "roster_roles", return_value=roster):
+            got = {h.sales_code: (h.branch, h.sheet) for h in wc.holders(book)}
+        self.assertEqual(got, {"NWK1466": ("Thika", "BM_Scorecard"),
+                               "DG3727": ("Naivasha", "BM_Scorecard")})

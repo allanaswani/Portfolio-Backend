@@ -1251,13 +1251,75 @@ def spec_of(book):
     return SPECS[book.get("book", BACK_OFFICE)]
 
 
+def roster_roles():
+    """sales code -> (name, role, branch, pf) off branch_employee_dmc_data, the
+    active row first - the roster the platform's employee list shows. Kept ten
+    minutes; {} where the table cannot be read."""
+    from django.core.cache import cache
+    from django.db import connection, transaction
+
+    found = cache.get("workbook_roster_roles")
+    if found is not None:
+        return found
+    found = {}
+    try:
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (UPPER(REPLACE(TRIM(sales_code), ' ', '')))
+                       UPPER(REPLACE(TRIM(sales_code), ' ', '')), staff_name,
+                       TRIM(staff_role), staff_branch, staff_pf_number
+                FROM branch_employee_dmc_data
+                WHERE sales_code IS NOT NULL AND TRIM(sales_code) <> ''
+                ORDER BY UPPER(REPLACE(TRIM(sales_code), ' ', '')),
+                         active DESC NULLS LAST""")
+            found = {code: (name, role, branch, pf)
+                     for code, name, role, branch, pf in cur.fetchall()}
+    except Exception:  # noqa: BLE001 - the List alone is still a card
+        found = {}
+    cache.set("workbook_roster_roles", found, 600)
+    return found
+
+
+def _branch_name(branch):
+    """'EMBU BRANCH' -> 'Embu', as the back-office List writes branches."""
+    text = re.sub(r"\s+branch\s*$", "", str(branch or "").strip(), flags=re.I)
+    return text.title()
+
+
 def holders(book):
     spec = spec_of(book)
     grid = book["tables"].get("List", [])
     out = []
+    roster = roster_roles() if spec.book in (BACK_OFFICE, BRANCH_BUSINESS) else {}
+    by_role = {k.upper(): k for k in spec.role_sheets}
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
-        if holder.name and (holder.sales_code or holder.pf):
+        if not (holder.name and (holder.sales_code or holder.pf)):
+            continue
+        found = roster.get(holder.sales_code)
+        if spec.book == BACK_OFFICE and found:
+            # The desk's List lags the roster: Joseph Kinuthia, a CSO at Embu
+            # on the roster, still had the List's BOM card for Naivasha.
+            role = by_role.get(str(found[1] or "").upper())
+            # A more specific List role of the same family stands: the roster's
+            # "CSO" against the List's "CSO_UB", "RBO" against "TL_RBO".
+            same_family = role and (holder.role.upper().endswith(role.upper())
+                                    or holder.role.upper().startswith(role.upper())
+                                    or role.upper().startswith(holder.role.upper()))
+            if role and role != holder.role and not same_family:
+                holder.role, holder.sheet = role, spec.role_sheets[role]
+            if found[2] and _branch_name(found[2]) != _branch_name(holder.branch):
+                holder.branch = _branch_name(found[2])
+        out.append(holder)
+    if spec.book == BRANCH_BUSINESS:
+        # A branch manager on the roster the desk's List does not carry yet
+        # (Dennis Geni, BBM Naivasha) gets the branch manager's card.
+        listed = {h.sales_code for h in out}
+        for n, (code, (name, role, branch, pf)) in enumerate(sorted(roster.items())):
+            if str(role or "").upper() != "BBM" or code in listed or not name:
+                continue
+            row = [pf, code, name, _branch_name(branch)]
+            holder = Holder(spec, len(grid) + n, row)
             out.append(holder)
     return out
 
