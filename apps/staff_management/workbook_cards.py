@@ -1262,20 +1262,24 @@ def roster_roles():
     if found is not None:
         return found
     found = {}
-    try:
-        with transaction.atomic(), connection.cursor() as cur:
-            cur.execute("""
-                SELECT DISTINCT ON (UPPER(REPLACE(TRIM(sales_code), ' ', '')))
-                       UPPER(REPLACE(TRIM(sales_code), ' ', '')), staff_name,
-                       TRIM(staff_role), staff_branch, staff_pf_number
-                FROM branch_employee_dmc_data
-                WHERE sales_code IS NOT NULL AND TRIM(sales_code) <> ''
-                ORDER BY UPPER(REPLACE(TRIM(sales_code), ' ', '')),
-                         active DESC NULLS LAST""")
-            found = {code: (name, role, branch, pf)
-                     for code, name, role, branch, pf in cur.fetchall()}
-    except Exception:  # noqa: BLE001 - the List alone is still a card
-        found = {}
+    # The per-person table first, then the branch table behind it - the order
+    # live_scorecard.roster_row reads them in. A branch manager can be on the
+    # branch table only: Dennis Geni (Naivasha BBM) had no per-person row.
+    for table in ("branch_employee_dmc_data", "branch_final_employee_dmc_data"):
+        try:
+            with transaction.atomic(), connection.cursor() as cur:
+                cur.execute(f"""
+                    SELECT DISTINCT ON (UPPER(REPLACE(TRIM(sales_code), ' ', '')))
+                           UPPER(REPLACE(TRIM(sales_code), ' ', '')), staff_name,
+                           TRIM(staff_role), staff_branch, staff_pf_number
+                    FROM {table}
+                    WHERE sales_code IS NOT NULL AND TRIM(sales_code) <> ''
+                    ORDER BY UPPER(REPLACE(TRIM(sales_code), ' ', '')),
+                             active DESC NULLS LAST""")
+                for code, name, role, branch, pf in cur.fetchall():
+                    found.setdefault(code, (name, role, branch, pf))
+        except Exception:  # noqa: BLE001 - the List alone is still a card
+            continue
     cache.set("workbook_roster_roles", found, 600)
     return found
 

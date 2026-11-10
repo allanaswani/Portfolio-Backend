@@ -1249,3 +1249,27 @@ class CardWithoutStoredMonthTests(TestCase):
                                 datetime.date(2026, 4, 30))
         self.assertIsNotNone(card)
         self.assertEqual(card["staff"]["sales_code"], holder.sales_code)
+
+
+class RosterBranchTableTests(TestCase):
+    def test_a_branch_manager_only_on_the_branch_table_is_on_the_roster(self):
+        from django.core.cache import cache
+        from django.db import connection
+
+        from .workbook_cards import roster_roles
+
+        cache.delete("workbook_roster_roles")
+        from django.db import models as dm
+
+        from .models import BranchFinalEmployeeDmcData
+
+        fields = {"sales_code": "DG3727", "staff_name": "Dennis Geni", "staff_role": "BBM",
+                  "staff_branch": "NAIVASHA BRANCH", "staff_pf_number": 3727, "active": 1}
+        for f in BranchFinalEmployeeDmcData._meta.concrete_fields:
+            if f.name in fields or f.name == "id" or f.null or f.has_default()                     or getattr(f, "auto_now", False) or getattr(f, "auto_now_add", False):
+                continue
+            fields[f.name] = 0 if isinstance(f, (dm.IntegerField, dm.FloatField,
+                                                  dm.DecimalField)) else "x"
+        BranchFinalEmployeeDmcData.objects.create(**fields)
+        self.assertEqual(roster_roles()["DG3727"],
+                         ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727))
