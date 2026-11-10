@@ -2037,15 +2037,24 @@ def live_card(sales_code, engine_card, as_at):
     code = (sales_code or "").strip()
     latest = (BoScorecard.objects.filter(sales_code__iexact=code)
               .order_by("-month").first())
-    if latest is None:
-        return None
-    spec = SPECS.get(latest.book, SPECS[BACK_OFFICE])
-    book, actuals = saved(spec.files[0]), saved(spec.files[1])
-    if book is None or actuals is None:
-        return None
-    holder = next((h for h in holders(book)
-                   if h.sales_code == code.upper() and h.sheet), None)
-    if holder is None or holder.sheet not in book["cards"]:
+    # Which workbook: the one the desk last sent this person's card from - or,
+    # for somebody the desk never sent one (Dennis Geni, a branch manager the
+    # branch-manager List does not carry), the workbook that holds them now.
+    order = ([latest.book] if latest is not None else []) + [
+        b for b in (BRANCH_BUSINESS, SALES, BACK_OFFICE)
+        if latest is None or b != latest.book]
+    spec = book = actuals = holder = None
+    for name in order if latest is None else order[:1]:
+        spec = SPECS.get(name, SPECS[BACK_OFFICE])
+        book, actuals = saved(spec.files[0]), saved(spec.files[1])
+        if book is None or actuals is None:
+            continue
+        holder = next((h for h in holders(book)
+                       if h.sales_code == code.upper() and h.sheet), None)
+        if holder is not None and holder.sheet in book["cards"]:
+            break
+        holder = None
+    if holder is None or book is None or actuals is None:
         return None
 
     if as_at is None:

@@ -1230,3 +1230,22 @@ class RosterOverridesListTests(TestCase):
             got = {h.sales_code: (h.branch, h.sheet) for h in wc.holders(book)}
         self.assertEqual(got, {"NWK1466": ("Thika", "BM_Scorecard"),
                                "DG3727": ("Naivasha", "BM_Scorecard")})
+
+
+class CardWithoutStoredMonthTests(TestCase):
+    def test_a_holder_the_desk_never_sent_a_card_still_gets_the_live_card(self):
+        """Dennis Geni: on the roster as Naivasha's BBM, never on the desk's
+        branch-manager List, so no stored month - the live card finds him."""
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = sales_book()
+        bo.save_file("sales_scorecards", book)
+        bo.save_file("sales_actuals", SALES_ACTUALS)
+        holder = wc.holders(book)[0]
+        with mock.patch.object(wc, "holders", return_value=[holder]):
+            card = wc.live_card(holder.sales_code, {"perspectives": []},
+                                datetime.date(2026, 4, 30))
+        self.assertIsNotNone(card)
+        self.assertEqual(card["staff"]["sales_code"], holder.sales_code)
