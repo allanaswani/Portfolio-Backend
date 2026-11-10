@@ -1,6 +1,6 @@
 """Targets for somebody the Summary Allocation sheet does not carry, and the
 registration report's digital rule (10 Nov 2026, Valary Simiyu VS3759)."""
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 
 class OffSheetTargetTests(SimpleTestCase):
@@ -52,3 +52,38 @@ class TargetChangeTests(SimpleTestCase):
         self.assertEqual(october[(13, spec.cols["initiative"])], "< 14 Days (Binary 90%)")
         self.assertEqual(wc._target_changes(spec, card, "Mortgage_Business", 2026, 9), {})
         self.assertEqual(wc._target_changes(spec, card, "Personal_Banking", 2026, 10), {})
+
+
+class LastYearIncomeTests(TestCase):
+    """Last year's income is read only when asked, and kept: reading it on
+    every card made cards time out."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+
+    def test_read_once_then_kept(self):
+        from unittest import mock
+
+        from . import live_scorecard
+
+        parts = {"interest_income": 1000.0, "interest_expenses": -700.0,
+                 "nfi": 50.0, "ftp": 300.0, "loan_loss": -20.0}
+        with mock.patch("services.portfolio_service.rm_income_ytd",
+                        return_value=parts) as read:
+            self.assertEqual(live_scorecard.last_year_income("VS3759", 2025), (630.0, ""))
+            self.assertEqual(live_scorecard.last_year_income("vs3759", 2025), (630.0, ""))
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(read.call_args[0][1].isoformat(), "2025-12-31")
+
+    def test_an_empty_year_says_so(self):
+        from unittest import mock
+
+        from . import live_scorecard
+
+        empty = dict.fromkeys(("interest_income", "interest_expenses", "nfi",
+                               "ftp", "loan_loss"), 0.0)
+        with mock.patch("services.portfolio_service.rm_income_ytd", return_value=empty):
+            value, problem = live_scorecard.last_year_income("X1", 2025)
+        self.assertIsNone(value)
+        self.assertIn("2025", problem)

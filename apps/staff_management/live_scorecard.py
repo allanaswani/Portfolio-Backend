@@ -2134,20 +2134,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
 
     # ── Income ────────────────────────────────────────────────────────────
     def revenue():
-        # Last year's Income Contribution, the BASE of the Summary Allocation
-        # sheet's income target ("2024 (Income+(FTP-LoanLoss))" grown 20% for
-        # every role) - for somebody the sheet does not carry (OFF_SHEET_RULES).
-        try:
-            prior = svc.rm_income_ytd(sales_code, datetime.date(year - 1, 12, 31))
-            if any(prior.values()):
-                bases["last_year_income"] = (
-                    prior["interest_income"] - abs(prior["interest_expenses"])
-                    + prior["nfi"] + prior["ftp"] + prior["loan_loss"])
-            else:
-                base_problems["last_year_income"] = (
-                    f"no revenue, FTP or provisions on your book in {year - 1}")
-        except Exception as exc:  # noqa: BLE001 - the figure below still stands
-            base_problems["last_year_income"] = f"{type(exc).__name__}: {exc}"
+        # Last year's income (the off-sheet base) is NOT read here: a full
+        # year of revenue + FTP + IFRS movement on every card made cards time
+        # out. build_card reads it only for somebody off the sheet
+        # (last_year_income below).
         # The card's month, not the year to date as of today (see rm_income_ytd).
         parts = svc.rm_income_ytd(sales_code, monthly)
         gii = parts["interest_income"]
@@ -3048,6 +3038,31 @@ def off_sheet_target(rule, base):
     """(target, how) from an OFF_SHEET_RULES entry and the person's base."""
     _name, sign, how = rule
     return base + sign * 0.2 * abs(base), how.format(b=base)
+
+
+def last_year_income(sales_code, year):
+    """(value, problem): the person's Income Contribution for ``year`` - the
+    base of the off-sheet income target. ``year`` is closed, so the answer is
+    kept for a day; only somebody off the Summary Allocation sheet asks."""
+    from django.core.cache import cache
+
+    from services import portfolio_service as svc
+
+    key = f"last_year_income:{sales_code.strip().upper()}:{year}"
+    kept = cache.get(key)
+    if kept is not None:
+        return tuple(kept)
+    try:
+        prior = svc.rm_income_ytd(sales_code, datetime.date(year, 12, 31))
+    except Exception as exc:  # noqa: BLE001 - reported on the line, not kept
+        return None, f"{type(exc).__name__}: {exc}"
+    if any(prior.values()):
+        found = (prior["interest_income"] - abs(prior["interest_expenses"])
+                 + prior["nfi"] + prior["ftp"] + prior["loan_loss"], "")
+    else:
+        found = (None, f"no revenue, FTP or provisions on your book in {year}")
+    cache.set(key, list(found), 86400)
+    return found
 
 
 def role_target(mapping, bases):
@@ -4323,6 +4338,16 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
         # person's own last year (see OFF_SHEET_RULES).
         if fy_target is None and mapping.kpi_code not in allocations:
             rule = OFF_SHEET_RULES.get(source.actual_key)
+            if (rule and rule[0] == "last_year_income"
+                    and "last_year_income" not in bases
+                    and "last_year_income" not in base_problems):
+                value, problem = last_year_income(
+                    sales_code, (as_at or datetime.date.today()).year - 1)
+                if value is None:
+                    base_problems["last_year_income"] = problem
+                else:
+                    bases["last_year_income"] = value
+                line_bases = {**line_bases, "last_year_income": value}
             if rule and line_bases.get(rule[0]) is not None:
                 fy_target, target_how = off_sheet_target(rule, line_bases[rule[0]])
 
