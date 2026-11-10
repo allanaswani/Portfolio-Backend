@@ -1284,6 +1284,49 @@ def roster_roles():
     return found
 
 
+#: HR job title (employee_table.job_title, folded) -> back-office List role.
+HR_TITLE_ROLES = {
+    "branch service ambassador": "BSA",
+    "teller": "Teller",
+    "customer service officer": "CSO",
+    "branch operations manager": "BOM",
+    "retail back office officer": "RBO",
+}
+#: A List role and the HR title are only at odds across families: the List's
+#: "Cash_Center" is a teller, its "CSO_UB" a customer service officer.
+ROLE_FAMILIES = {"Teller": "teller", "Cash_Center": "teller",
+                 "CSO": "cso", "CSO_UB": "cso", "CSM_DB": "cso",
+                 "RBO": "rbo", "TL_RBO": "rbo", "BOM": "bom", "BSA": "bsa"}
+
+
+def hr_roles():
+    """PF -> back-office List role from HR's employee_table job title, for
+    people still employed. Kept ten minutes; {} where it cannot be read.
+
+    Felix Saigon (PF 3789) was promoted to Branch Service Ambassador on
+    1 Mar 2026; the desk's List still had him as a Teller in November and his
+    profile showed the teller card."""
+    from django.core.cache import cache
+    from django.db import connection, transaction
+
+    found = cache.get("workbook_hr_roles")
+    if found is not None:
+        return found
+    found = {}
+    try:
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute("SELECT staff_id, job_title FROM employee_table "
+                        "WHERE staff_id IS NOT NULL AND COALESCE(exit, 0) = 0")
+            for pf, title in cur.fetchall():
+                role = HR_TITLE_ROLES.get(" ".join(str(title or "").lower().split()))
+                if role:
+                    found[str(int(pf))] = role
+    except Exception:  # noqa: BLE001 - the List alone is still a card
+        found = {}
+    cache.set("workbook_hr_roles", found, 600)
+    return found
+
+
 def _branch_name(branch):
     """'EMBU BRANCH' -> 'Embu', as the back-office List writes branches."""
     text = re.sub(r"\s+branch\s*$", "", str(branch or "").strip(), flags=re.I)
@@ -1333,6 +1376,7 @@ def holders(book, keep_off=False):
     # branch table still named Dennis Geni for Naivasha after he left on
     # 10 March 2026, and adding roster BBMs gave him a card.
     roster = roster_roles() if spec.book == BACK_OFFICE else {}
+    hr = hr_roles() if spec.book == BACK_OFFICE else {}
     by_role = {k.upper(): k for k in spec.role_sheets}
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
@@ -1354,6 +1398,14 @@ def holders(book, keep_off=False):
                 holder.role, holder.sheet = role, spec.role_sheets[role]
             if found[2] and _branch_name(found[2]) != _branch_name(holder.branch):
                 holder.branch = _branch_name(found[2])
+        if spec.book == BACK_OFFICE and holder.pf:
+            # HR's job title, where it puts the person in another role family
+            # than the List - and the workbook has that card.
+            hr_role = hr.get(holder.pf)
+            if (hr_role and hr_role in spec.role_sheets
+                    and ROLE_FAMILIES.get(hr_role) != ROLE_FAMILIES.get(holder.role)
+                    and spec.role_sheets[hr_role] in book.get("cards", {})):
+                holder.role, holder.sheet = hr_role, spec.role_sheets[hr_role]
         out.append(holder)
     return out
 

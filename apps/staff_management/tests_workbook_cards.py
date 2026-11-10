@@ -1217,6 +1217,34 @@ class RosterOverridesListTests(TestCase):
                          ("CSO", "CSO_SCORECARD", "Embu"))
         self.assertEqual((ub.role, ub.sheet), ("CSO_UB", "CSO_UB_SCORECARD"))
 
+    def test_back_office_role_follows_the_hr_job_title(self):
+        """Felix Saigon (PF 3789), promoted to Branch Service Ambassador on
+        1 Mar 2026, was still a Teller on the desk's List."""
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = self._book("back_office", [
+            [3789, "FS3789", "Felix Saigon", "Teller", "Komarock"],
+            [10, "CC10", "Cash Centre", "Cash_Center", "Hurlingham"],
+            [11, "NB11", "No BSA card yet", "Teller", "Thika"],
+        ])
+        book["cards"] = {"BSA_SCORECARD": {}, "TELLER_SCORECARD": {},
+                         "CASH_TELLER_SCORECARD": {}}
+        hr = {"3789": "BSA", "10": "Teller"}
+        with mock.patch.object(wc, "roster_roles", return_value={}), \
+                mock.patch.object(wc, "hr_roles", return_value=hr):
+            felix, cash, other = wc.holders(book)
+        self.assertEqual((felix.role, felix.sheet), ("BSA", "BSA_SCORECARD"))
+        # A Cash_Center teller whose HR title says Teller stays on its card.
+        self.assertEqual((cash.role, cash.sheet), ("Cash_Center", "CASH_TELLER_SCORECARD"))
+        self.assertEqual(other.role, "Teller")
+        # No BSA card in the workbook: nothing to move to.
+        book["cards"].pop("BSA_SCORECARD")
+        with mock.patch.object(wc, "roster_roles", return_value={}), \
+                mock.patch.object(wc, "hr_roles", return_value=hr):
+            self.assertEqual(wc.holders(book)[0].role, "Teller")
+
     def test_branch_managers_come_from_the_list_only(self):
         """The branch table still named Dennis Geni (left 10 March 2026) for
         Naivasha; a roster BBM missing from the List gets no card."""
