@@ -496,7 +496,7 @@ _register(["bo_casa", "bo_new_customers"],
 # the share inside the standard.
 _register(["bo_branch_loan_tat"],
           Source(actual_key="tat_days", higher_is_better=False))
-_register(["bo_weighted_tat"], Source(actual_key="tat_within_sla"))
+_register(["bo_weighted_tat"], Source(actual_key="weighted_tat"))
 
 # Property, from both returns - the HFDI sales return and affordable housing.
 _register(["bo_hfcb_properties_volume"],
@@ -861,9 +861,12 @@ SOURCES["par"] = Source(actual_key="par", higher_is_better=False,
 #: month (see loan_tat_seller), not the year's total bank TAT, which read 80-93
 #: days against the desk's 12-23 on the September 2026 proof.
 SOURCES["tat_loan"] = Source(actual_key="tat_seller_month", higher_is_better=False)
+# Weighted TAT is the desk's Weighted TAT Dashboard (weighted_tat): the ETL's
+# weighted_tat_scores, else a dashboard loaded on Live feeds. Reading the share
+# of loans inside an SLA instead gave 0% on the September 2026 proof.
 for _code in ("weigted_tat",
               "weigted_tat_sla_service_standards_query_response_time"):
-    SOURCES[_code] = Source(actual_key="tat_within_sla")
+    SOURCES[_code] = Source(actual_key="weighted_tat")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2447,6 +2450,19 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 "tat_within_sla": _figure(within, at, label)}
 
     attempt(("tat_days", "tat_within_sla"), turnaround)
+
+    # ── Weighted TAT: the desk's dashboard, by sales code ─────────────────
+    def weighted():
+        from . import weighted_tat
+
+        found = weighted_tat.score(monthly, code=sales_code)
+        if found is None:
+            return _figure(None, problem=(
+                f"no Weighted TAT for this sales code for {monthly:%B %Y}: the "
+                f"dashboard ETL has not run for it and no dashboard was loaded"))
+        return _figure(found, monthly, f"Weighted TAT Dashboard, {monthly:%B %Y}")
+
+    attempt("weighted_tat", weighted)
 
     # ── TAT (Loan), the iApply TAT report's seller view for the card's month ──
     def seller_tat():
