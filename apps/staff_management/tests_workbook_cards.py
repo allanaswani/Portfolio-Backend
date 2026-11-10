@@ -1217,20 +1217,18 @@ class RosterOverridesListTests(TestCase):
                          ("CSO", "CSO_SCORECARD", "Embu"))
         self.assertEqual((ub.role, ub.sheet), ("CSO_UB", "CSO_UB_SCORECARD"))
 
-    def test_a_branch_manager_missing_from_the_list_gets_the_bm_card(self):
+    def test_branch_managers_come_from_the_list_only(self):
+        """The branch table still named Dennis Geni (left 10 March 2026) for
+        Naivasha; a roster BBM missing from the List gets no card."""
         from unittest import mock
 
         from . import workbook_cards as wc
 
-        book = self._book("branch_business", [[1466, "NWK1466", "Naomi Kagiri", "Thika"]])
-        roster = {"DG3727": ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727),
-                  "NWK1466": ("Naomi Kagiri", "BBM", "THIKA BRANCH", 1466),
-                  "X1": ("A Teller", "Teller", "EMBU BRANCH", 9)}
+        book = self._book("branch_business", [[1452, "NJK1452", "Nelly Kibet", "Naivasha"]])
+        roster = {"DG3727": ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727)}
         with mock.patch.object(wc, "roster_roles", return_value=roster):
-            got = {h.sales_code: (h.branch, h.sheet) for h in wc.holders(book)}
-        self.assertEqual(got, {"NWK1466": ("Thika", "BM_Scorecard"),
-                               "DG3727": ("Naivasha", "BM_Scorecard")})
-
+            got = [h.sales_code for h in wc.holders(book)]
+        self.assertEqual(got, ["NJK1452"])
 
 class CardWithoutStoredMonthTests(TestCase):
     def test_a_holder_the_desk_never_sent_a_card_still_gets_the_live_card(self):

@@ -1294,7 +1294,10 @@ def holders(book):
     spec = spec_of(book)
     grid = book["tables"].get("List", [])
     out = []
-    roster = roster_roles() if spec.book in (BACK_OFFICE, BRANCH_BUSINESS) else {}
+    # Branch managers come from the branch-manager workbook's List only: the
+    # branch table still named Dennis Geni for Naivasha after he left on
+    # 10 March 2026, and adding roster BBMs gave him a card.
+    roster = roster_roles() if spec.book == BACK_OFFICE else {}
     by_role = {k.upper(): k for k in spec.role_sheets}
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
@@ -1315,16 +1318,6 @@ def holders(book):
             if found[2] and _branch_name(found[2]) != _branch_name(holder.branch):
                 holder.branch = _branch_name(found[2])
         out.append(holder)
-    if spec.book == BRANCH_BUSINESS:
-        # A branch manager on the roster the desk's List does not carry yet
-        # (Dennis Geni, BBM Naivasha) gets the branch manager's card.
-        listed = {h.sales_code for h in out}
-        for n, (code, (name, role, branch, pf)) in enumerate(sorted(roster.items())):
-            if str(role or "").upper() != "BBM" or code in listed or not name:
-                continue
-            row = [pf, code, name, _branch_name(branch)]
-            holder = Holder(spec, len(grid) + n, row)
-            out.append(holder)
     return out
 
 
