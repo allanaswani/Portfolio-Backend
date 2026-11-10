@@ -13,7 +13,7 @@ class ChooseTests(TestCase):
         candidates = {"PAR: officer": {"A1": 0.5, "B2": 0.5},
                       "PAR: allocated": {"A1": 0.10, "B2": 0.20}}
         people = [("A1", 0.10), ("B2", 0.20)]
-        with mock.patch.dict(rmd.SHEETS, {"par": (lambda y, m: candidates, "par")}):
+        with mock.patch.dict(rmd.CANDIDATES, {"par": (lambda y, m: candidates, "par")}):
             share, name = rmd.choose("par", people, 2026, 9, same, out=lambda *_: None)
             self.assertEqual((share, name), (1.0, "PAR: allocated"))
             self.assertEqual(rmd.chosen()["par"], "PAR: allocated")
@@ -23,7 +23,7 @@ class ChooseTests(TestCase):
         from . import rm_definitions as rmd
         from .sales_live_feeds import same
 
-        with mock.patch.dict(rmd.SHEETS, {"par": (lambda y, m: {"x": {"A1": 9.0}}, "par")}):
+        with mock.patch.dict(rmd.CANDIDATES, {"par": (lambda y, m: {"x": {"A1": 9.0}}, "par")}):
             rmd.choose("par", [("A1", 0.1)], 2026, 9, same, out=lambda *_: None)
         self.assertNotIn("par", rmd.chosen())
 
@@ -76,3 +76,20 @@ class CandidateSqlRunsTests(TestCase):
         self.assertEqual(dep["Deposits: rm_code, all segments"]["MK3445"], 700)
         self.assertEqual(dep["Deposits: rm_code, staff segment out"]["MK3445"], 500)
         self.assertEqual(dep["Deposits: allocated, all segments"]["MK3445"], 500)
+
+
+class BancaCandidatesTests(TestCase):
+    def test_the_book_is_split_by_the_reports_own_classification(self):
+        from unittest import mock
+
+        from . import rm_definitions as rmd
+
+        policies = [("B", "EOO3882", "vic_life", 100.0), ("B", "EOO3882", "vic_non_life", 40.0),
+                    ("B", "EOO3882", "non_vic", 900.0), ("B", "EOO3882", None, 7.0)]
+        with mock.patch("apps.staff_management.bb_live_feeds._banca_policies",
+                        return_value=iter(policies)):
+            found = rmd.banca(2026, 9)
+        self.assertEqual(found["Banca: all paid premiums"]["EOO3882"], 1047.0)
+        self.assertEqual(found["Banca: non-VIC"]["EOO3882"], 900.0)
+        self.assertEqual(found["Banca: VIC (life and non-life)"]["EOO3882"], 140.0)
+        self.assertIn("bancassurancepremiums", rmd.CANDIDATES)

@@ -171,8 +171,10 @@ def probe(year, month, out=print, book=None, store=STORE_KIND):
 
         for key, entry in seen.items():
             sheet = _key(entry["sheet"] or "")
+            if sheet not in rm_definitions.SHEETS:
+                sheet = _key(entry["name"] or "")
             result = results.get(key) or {}
-            if sheet not in rm_definitions.SHEETS or result.get("live") or result.get("few"):
+            if sheet not in rm_definitions.CANDIDATES or result.get("live") or result.get("few"):
                 continue
             people = []
             for who, desk, _warehouse in entry["rows"]:

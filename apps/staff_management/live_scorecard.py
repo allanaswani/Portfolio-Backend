@@ -2648,7 +2648,7 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     from . import rm_definitions
 
     picked = rm_definitions.chosen()
-    for sheet, (_compute, key) in rm_definitions.SHEETS.items():
+    for sheet, (_compute, key) in rm_definitions.CANDIDATES.items():
         if sheet not in picked:
             continue
 

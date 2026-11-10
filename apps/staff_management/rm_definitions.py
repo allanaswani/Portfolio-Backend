@@ -136,10 +136,43 @@ def errors(year, month):
     return out
 
 
+# ── Bancassurance Premiums: which part of the book ──────────────────────────
+def banca(year, month):
+    """{candidate: {CODE: premiums}} from bancassurance_report.py's paid premiums
+    (bb_live_feeds._banca_policies), split by its own VIC / life classification.
+    All paid premiums read 11.6m against the desk's 4.0m for one RM in
+    September, so the desk counts a part of the book."""
+    from .bb_live_feeds import _banca_policies
+
+    parts = {}
+    for _branch, code, kind, value in _banca_policies(year, month, TIMEOUT_MS):
+        if code:
+            row = parts.setdefault(code, {"vic_life": 0.0, "vic_non_life": 0.0,
+                                          "non_vic": 0.0, None: 0.0})
+            row[kind if kind in row else None] += value
+    pick = {
+        "Banca: all paid premiums": lambda r: sum(r.values()),
+        "Banca: non-VIC": lambda r: r["non_vic"],
+        "Banca: non-VIC and unclassified": lambda r: r["non_vic"] + r[None],
+        "Banca: all but VIC life": lambda r: sum(r.values()) - r["vic_life"],
+        "Banca: all but VIC non-life": lambda r: sum(r.values()) - r["vic_non_life"],
+        "Banca: VIC (life and non-life)": lambda r: r["vic_life"] + r["vic_non_life"],
+        "Banca: VIC life and non-VIC": lambda r: r["vic_life"] + r["non_vic"],
+        "Banca: VIC non-life and non-VIC": lambda r: r["vic_non_life"] + r["non_vic"],
+        "Banca: unclassified only": lambda r: r[None],
+    }
+    return {name: {code: fn(row) for code, row in parts.items()}
+            for name, fn in pick.items()}
+
+
 #: Template sheet (as _key gives it) → its candidates, and the card's actual key.
 SHEETS = {"par": (par, "par"),
           "depositgrowthretail": (deposits, "deposit_growth"),
           "loanapplicationerrors": (errors, "loan_application_errors")}
+#: A line that shares its sheet with lines already read correctly (VIC Premium is
+#: live on the same Banca sheet) is keyed by its own measure instead.
+LINES = {"bancassurancepremiums": (banca, "banca_paid_all")}
+CANDIDATES = {**SHEETS, **LINES}
 
 
 def chosen():
@@ -157,7 +190,7 @@ def value(sheet, code, as_at):
     name = chosen().get(sheet)
     if not name:
         return None
-    compute, _key = SHEETS[sheet]
+    compute, _key = CANDIDATES[sheet]
     found = cached(f"rm_definition:{sheet}:{as_at.year}-{as_at.month:02d}",
                    lambda: compute(as_at.year, as_at.month).get(name, {}))
     if found is None:
@@ -171,7 +204,7 @@ def choose(sheet, people, year, month, close, out=print):
     from .bo_live_feeds import PASS_SHARE
     from .workbook_cards import save_file, saved
 
-    compute, _key = SHEETS[sheet]
+    compute, _key = CANDIDATES[sheet]
     try:
         candidates = compute(year, month)
     except Exception as exc:  # noqa: BLE001 - reported, the line keeps its reader
