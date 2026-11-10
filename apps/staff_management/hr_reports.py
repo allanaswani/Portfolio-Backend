@@ -84,9 +84,114 @@ def read(path):
         return (kind,) + _read_leave(path)
     if kind == LISTING:
         return (kind,) + _read_listing(path)
+    if head.startswith(b"PK"):
+        found = _read_liability(path)
+        if found is not None:
+            return (LEAVE,) + found
     raise HrReportError(
-        "That is neither of Aruti's reports - the Employee Leave Balance List "
-        "or the Employee Listing Report, as Aruti exports them.")
+        "That is none of Aruti's reports this reads - the Employee Leave "
+        "Balance List, the Leave Liability Report or the Employee Listing "
+        "Report, as Aruti exports them.")
+
+
+#: The Leave Liability Report's leave types: the heading word -> the code the
+#: Leave Balance List uses, so both land in one table.
+_LIABILITY_TYPES = {"annual": ("AL", "Annual Leave"),
+                    "maternity": ("ML", "Maternity Leave"),
+                    "paternity": ("PL", "Paternity Leave"),
+                    "sick": ("SL", "Sick Leave")}
+
+
+def _read_liability(path):
+    """Aruti's ``Leave_Liability_Report_<stamp>.xlsb`` → ``(as_of, rows,
+    report)``, or None when the file is not that report.
+
+    First sheet "Leave_Liability_Report": "Date : 12-Oct-2026 11:00:03 AM",
+    a heading row naming each leave type's Accrued / Consumed / Balance
+    ("Annual Leave Accrued"), then "Employee ID" and a row per employee. The
+    Leave line reads annual leave: taken (Consumed) over available (Accrued),
+    as it does off the Leave Balance List, where B/F + adjustment + accrued
+    is what this report calls Accrued (31 = 21 consumed + 10 balance).
+    """
+    try:
+        from pyxlsb import open_workbook
+
+        with open_workbook(path) as wb:
+            name = next((n for n in wb.sheets
+                         if n.strip().lower() == "leave_liability_report"), None)
+            if name is None:
+                return None
+            with wb.get_sheet(name) as sheet:
+                grid = [[c.v for c in r] for r in sheet.rows()]
+    except Exception:  # noqa: BLE001 - not an xlsb this reads
+        return None
+
+    as_of, header_at = None, None
+    for r, row in enumerate(grid[:20]):
+        joined = " ".join(str(v) for v in row if v is not None)
+        if as_of is None and joined.strip().startswith("Date"):
+            found = _DATE.search(joined)
+            as_of = _date(found.group(1)) if found else None
+        if row and str(row[0] or "").strip().lower() == "employee id":
+            header_at = r
+            break
+    if as_of is None or header_at is None or header_at == 0:
+        raise HrReportError("That is not Aruti's Leave Liability Report: no "
+                            "'Date :' or 'Employee ID' heading.")
+    heading = [str(v or "").strip().lower() for v in grid[header_at]]
+    kinds = [str(v or "").strip().lower() for v in grid[header_at - 1]]
+    col = {"pf": 0}
+    for c, h in enumerate(heading):
+        if h == "staff name":
+            col["name"] = c
+        elif h == "hire date":
+            col["joined"] = c
+    types = {}
+    for c, k in enumerate(kinds):
+        parts = k.split()
+        if len(parts) == 3 and parts[1] == "leave" and parts[0] in _LIABILITY_TYPES                 and parts[2] in ("accrued", "consumed", "balance"):
+            types.setdefault(parts[0], {})[parts[2]] = c
+    if "annual" not in types or len(types["annual"]) != 3 or "name" not in col:
+        raise HrReportError("The Leave Liability Report is missing its Staff "
+                            "Name or Annual Leave Accrued / Consumed / Balance "
+                            "columns.")
+
+    rows, mismatched = [], 0
+    for row in grid[header_at + 1:]:
+        pf = str(row[0] if row else "").strip().replace(".0", "")
+        if not pf.isdigit():
+            continue
+        for word, cols in types.items():
+            if len(cols) != 3:
+                continue
+            code, label = _LIABILITY_TYPES[word]
+            get = lambda c: _num(row[c]) if c < len(row) and row[c] is not None else 0.0
+            record = {"pf_number": int(pf), "leave_code": code, "leave_name": label,
+                      "name": str(row[col["name"]] or "").strip(),
+                      "joined": _date(row[col["joined"]]) if "joined" in col else None,
+                      "period_start": None, "period_end": None,
+                      "bf": 0.0, "adjustment": 0.0, "encashment": 0.0,
+                      "accrued": get(cols["accrued"]), "issued": get(cols["consumed"]),
+                      "balance": get(cols["balance"])}
+            if None in (record["accrued"], record["issued"], record["balance"]):
+                continue
+            if abs(record["accrued"] - record["issued"] - record["balance"]) > 0.011:
+                mismatched += 1
+            rows.append(record)
+
+    # One row per person and leave type: a PF listed twice keeps its first.
+    seen, unique = set(), []
+    for record in rows:
+        key = (record["pf_number"], record["leave_code"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(record)
+    by_type = {}
+    for record in unique:
+        by_type[record["leave_code"]] = by_type.get(record["leave_code"], 0) + 1
+    return as_of, unique, {"by_leave_type": by_type, "rows": len(unique),
+                           "balance_does_not_add_up": mismatched,
+                           "source": "Leave Liability Report"}
 
 
 def _read_leave(path):

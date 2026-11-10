@@ -608,8 +608,8 @@ class HrReportUploadView(APIView):
         finally:
             os.unlink(path)
 
-        label = ("Leave balance list" if kind == hr.LEAVE
-                 else "Employee listing")
+        label = ((report.get("source") or "Leave balance list")
+                 if kind == hr.LEAVE else "Employee listing")
         held = [d.isoformat() for d in hr.snapshots(kind)]
         body = {
             "report": kind, "label": label, "as_of": as_of.isoformat(),
