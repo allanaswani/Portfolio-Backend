@@ -604,6 +604,10 @@ def rm_growth(table, sales_code, as_at=None):
                             f"{table} has no balance column for {today.year} yet")}
 
     wanted = [c for c, _ in ladder] + [base_column]
+    if table == "daily_balance_movement" and {"cust_cif", "open_date",
+                                              "sale_code"} <= set(columns):
+        return _report_deposit_growth(sales_code, today, ladder, wanted,
+                                      base_column)
     seg = ("AND COALESCE(customer_segment, '') <> ALL(%s)"
            if "customer_segment" in columns else "")
     params = [sales_code] + ([list(_BAL_EXCLUDE)] if seg else [])
@@ -645,6 +649,78 @@ def rm_growth(table, sales_code, as_at=None):
 
     base = float(base)
     return {"position": position, "base": base, "growth": position - base,
+            "as_at": as_at, "as_at_label": as_at_label, "problem": None}
+
+
+def _report_deposit_growth(sales_code, today, ladder, wanted, base_column):
+    """An RM's deposit growth exactly as the bank's daily deposit movement
+    report computes it (datawarehouse-etls daily_balance_movement.py,
+    summarise_rm_portfoio_movement - the report sent every morning):
+
+    * every balance below nought counts as nought (replace_negative_with_zero);
+    * a customer is NEW when the earliest account of their cif opened after
+      1 January of the year (current_yr_check);
+    * existing customers are grouped by rm_code: balance now - December
+      balance (Allocated_Portfolio_Change);
+    * new customers are grouped by the seller's sale_code: their whole
+      balance now (New_Portfolio);
+    * growth = the two added (Portfolio_Change). No segment is left out.
+
+    The base a rate target applies to is the existing customers' December
+    balance - the report's Growth_% denominator.
+    """
+    code = (sales_code or "").strip().upper()
+    year_start = date(today.year, 1, 1)
+    picks = []
+    for c in wanted:
+        picks.append(f"SUM(GREATEST(COALESCE({c}, 0), 0)) FILTER "
+                     f"(WHERE NOT is_new AND UPPER(TRIM(rm_code)) = %(code)s) AS old_{c}")
+        picks.append(f"SUM(GREATEST(COALESCE({c}, 0), 0)) FILTER "
+                     f"(WHERE is_new AND UPPER(TRIM(sale_code)) = %(code)s) AS new_{c}")
+    sql = f"""
+        WITH mine AS (
+            SELECT * FROM daily_balance_movement
+            WHERE UPPER(TRIM(rm_code)) = %(code)s OR UPPER(TRIM(sale_code)) = %(code)s
+        ), firsts AS (
+            SELECT cust_cif, MIN(open_date) AS first_open
+            FROM daily_balance_movement
+            WHERE cust_cif IN (SELECT cust_cif FROM mine)
+            GROUP BY cust_cif
+        ), d AS (
+            SELECT m.*, COALESCE(f.first_open::date > %(year_start)s, FALSE) AS is_new
+            FROM mine m LEFT JOIN firsts f ON f.cust_cif = m.cust_cif
+        )
+        SELECT {", ".join(picks)} FROM d
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, {"code": code, "year_start": year_start})
+        row = dict(zip([c[0] for c in cur.description], cur.fetchone()))
+
+    def total(prefix, column):
+        value = row.get(f"{prefix}_{column}")
+        return float(value) if value is not None else 0.0
+
+    position = as_at_label = as_at = chosen = None
+    for column, label in ladder:
+        held = total("old", column) + total("new", column)
+        if held > 0:
+            position, as_at_label, chosen = held, label, column
+            as_at = (today - timedelta(days=1 if column == "yester_1_bal" else 2)
+                     if column.startswith("yester_") else _month_end(column))
+            break
+    if position is None:
+        return {"position": None, "base": None, "growth": None, "as_at": None,
+                "as_at_label": None,
+                "problem": "this sales code has no balances in "
+                           f"daily_balance_movement for {today.year}"}
+    if row.get(f"old_{base_column}") is None and row.get(f"new_{base_column}") is None:
+        return {"position": position, "base": None, "growth": None,
+                "as_at": as_at, "as_at_label": as_at_label,
+                "problem": f"no {base_column} balance for this sales code, so "
+                           f"this year's growth cannot be worked out"}
+    base = total("old", base_column)
+    growth = (total("old", chosen) - base) + total("new", chosen)
+    return {"position": position, "base": base, "growth": growth,
             "as_at": as_at, "as_at_label": as_at_label, "problem": None}
 
 
