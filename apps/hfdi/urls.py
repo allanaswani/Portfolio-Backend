@@ -212,6 +212,7 @@ urlpatterns = [
     # ── Dashboard aggregation / chart endpoints ───────────────────────────────
     path("hfdi_sales_months_recorded/", views.HfdiSalesMonthsRecordedView.as_view()),
     path("projects_monthly_performance_hfdi_list/", views.ProjectsMonthlyPerformanceView.as_view()),
+    path("projects_monthly_performance_current_year/", views.InventoryMonthlyCurrentYearView.as_view()),
     path("hfdi_api_sales_data_monthly_volume_sumary_api_data/", views.HfdiMonthlyVolumeSummaryView.as_view()),
     path("hfdi_api_sales_data_monthly_value_sumary_api_data/", views.HfdiMonthlyValueSummaryView.as_view()),
     path("hfdi_api_sales_data_monthly_ytd_income_sumary_api_data/", views.HfdiMonthlyYtdIncomeSummaryView.as_view()),

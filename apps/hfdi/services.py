@@ -163,7 +163,7 @@ _REVENUE_POINT_AGG_TAIL = """
     FROM original_target ot
     LEFT JOIN ytd_targets yt ON ot.project_name = yt.project_name
     LEFT JOIN actual_achieved at ON ot.project_name = at.project_name
-    LEFT JOIN actual_revenue ar ON ar.project_name = at.project_name
+    LEFT JOIN actual_revenue ar ON ar.project_name = ot.project_name
 """
 
 _REVENUE_POINT_PER_PROJECT_TAIL = """
@@ -182,7 +182,7 @@ _REVENUE_POINT_PER_PROJECT_TAIL = """
     FROM original_target ot
     LEFT JOIN ytd_targets yt ON ot.project_name = yt.project_name
     LEFT JOIN actual_achieved at ON ot.project_name = at.project_name
-    LEFT JOIN actual_revenue ar ON ar.project_name = at.project_name
+    LEFT JOIN actual_revenue ar ON ar.project_name = ot.project_name
     GROUP BY ot.project_name, ot.target_sales_end_date, ot.target_collections_end_date
 """
 
@@ -224,15 +224,114 @@ def _warn_unparseable_targets():
         )
 
 
+# -- This year's actuals, as the bank's weekly HFCB-Properties report counts them --
+# hfdi_crm_sales_data has been empty since the CRM ETL's last truncate, and the
+# legacy, manual and hfdi_sales_data tables stop in 2024-2025 (checked on the
+# server 11 Nov 2026), so the YTD query's own actuals came back NULL for every
+# 2026 project. The current figures are in hfdi_projects_inventory_sales_data
+# (crm_projects_inventory_table_update.py), which
+# hfcb_properties_reports/projects_weekly_collections_report.py reads:
+#   units sold this year = units with perc_paid >= 0 and sale_month in the year
+#                          (its Sold? and Sale_Year);
+#   collections          = the jan.._paid_amount columns up to this month,
+#                          over every unit (project_monthly_collections_value).
+# Matched to the targets by project name, as that report merges them.
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun",
+           "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def _inventory_ytd(today=None):
+    """{PROJECT NAME: (units sold this year, collections this year)}, or None
+    when the inventory table cannot be read."""
+    import datetime
+
+    from django.db import DatabaseError, transaction
+
+    today = today or datetime.date.today()
+    paid = " + ".join(f"COALESCE({m}_paid_amount, 0)" for m in _MONTHS[:today.month])
+    sql = (
+        "SELECT UPPER(TRIM(project_name)), "
+        "COUNT(*) FILTER (WHERE perc_paid >= 0 AND EXTRACT(YEAR FROM sale_month) = %s), "
+        f"SUM({paid}) "
+        "FROM hfdi_projects_inventory_sales_data GROUP BY 1")
+    try:
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute(sql, [today.year])
+            rows = cursor.fetchall()
+    except DatabaseError as exc:
+        logger.warning("hfdi_projects_inventory_sales_data unreadable: %s", exc)
+        return None
+    return {name: (int(units or 0), float(collected or 0))
+            for name, units, collected in rows if name}
+
+
+def inventory_monthly_current_year(today=None):
+    """This year's months, as the weekly report counts them -> [{dates_months,
+    volume_actual, value_actual, income_actual}]. Income has no current source
+    (hfdi_manual_sales_data stops in Feb 2025), so it is None, never 0."""
+    import datetime
+
+    from django.db import DatabaseError, transaction
+
+    today = today or datetime.date.today()
+    n = today.month
+    starts = [datetime.date(today.year, m, 1) for m in range(1, n + 1)]
+    ends = [datetime.date(today.year + (m == 12), m % 12 + 1, 1) for m in range(1, n + 1)]
+    units = ", ".join(
+        "COUNT(*) FILTER (WHERE perc_paid >= 0 AND sale_month >= %s AND sale_month < %s)"
+        for _ in range(n))
+    paid = ", ".join(f"SUM(COALESCE({_MONTHS[m - 1]}_paid_amount, 0))" for m in range(1, n + 1))
+    params = [d for pair in zip(starts, ends) for d in pair]
+    try:
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute(f"SELECT {units}, {paid} FROM hfdi_projects_inventory_sales_data",
+                           params)
+            row = cursor.fetchone()
+    except DatabaseError as exc:
+        logger.warning("hfdi_projects_inventory_sales_data unreadable: %s", exc)
+        return []
+    return [{"dates_months": starts[m - 1].isoformat(),
+             "volume_actual": int(row[m - 1] or 0),
+             "value_actual": float(row[n + m - 1] or 0),
+             "income_actual": None}
+            for m in range(1, n + 1)]
+
+
+def _with_inventory_actuals(rows, inventory):
+    """Put this year's inventory actuals on each project row it has."""
+    for row in rows:
+        found = inventory.get(str(row.get("project_name") or "").strip().upper())
+        if found is not None:
+            row["actual_ytd_volume"], row["actual_ytd_value"] = found
+            row["actuals_source"] = "hfdi_projects_inventory_sales_data"
+    return rows
+
+
 def revenue_point_ytd():
     _warn_unparseable_targets()
     with connection.cursor() as cursor:
         cursor.execute(_revenue_ctes(per_project=False) + _REVENUE_POINT_AGG_TAIL)
+        rows = _rows_as_dicts(cursor)
+    inventory = _inventory_ytd()
+    if inventory and rows:
+        projects = {str(r.get("project_name") or "").strip().upper()
+                    for r in _revenue_point_ytd_by_project_base()}
+        hits = [inventory[name] for name in projects if name in inventory]
+        if hits:
+            rows[0]["actual_ytd_volume"] = sum(u for u, _c in hits)
+            rows[0]["actual_ytd_value"] = sum(c for _u, c in hits)
+            rows[0]["actuals_source"] = "hfdi_projects_inventory_sales_data"
+    return rows
+
+
+def _revenue_point_ytd_by_project_base():
+    with connection.cursor() as cursor:
+        cursor.execute(_revenue_ctes(per_project=True) + _REVENUE_POINT_PER_PROJECT_TAIL)
         return _rows_as_dicts(cursor)
 
 
 def revenue_point_ytd_by_project():
     _warn_unparseable_targets()
-    with connection.cursor() as cursor:
-        cursor.execute(_revenue_ctes(per_project=True) + _REVENUE_POINT_PER_PROJECT_TAIL)
-        return _rows_as_dicts(cursor)
+    rows = _revenue_point_ytd_by_project_base()
+    inventory = _inventory_ytd()
+    return _with_inventory_actuals(rows, inventory) if inventory else rows

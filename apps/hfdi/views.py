@@ -959,6 +959,16 @@ class ProjectsMonthlyPerformanceView(APIView):
 
 
 @extend_schema(tags=["HFDI — Dashboards"])
+class InventoryMonthlyCurrentYearView(APIView):
+    """This year's units sold and collections per month, as the weekly
+    HFCB-Properties report counts them (hfdi_projects_inventory_sales_data)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(services.inventory_monthly_current_year())
+
+
+@extend_schema(tags=["HFDI — Dashboards"])
 class HfdiMonthlyVolumeSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
