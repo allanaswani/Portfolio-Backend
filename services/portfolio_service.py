@@ -50,10 +50,12 @@ def customers(sales_code):
             -- the multi-DB router a deferred load on this RawQuerySet comes back
             -- null, which the UI renders as "-". Selecting it keeps the name present.
             SELECT rap.cust_id, pn.latin_surname, customer_name, sales_code, total_revenue,
-                   total_depost_balance, total_loans, active,
+                   total_depost_balance, total_loans,
+                   (cl.last_txn IS NOT NULL AND cl.last_txn::date >= CURRENT_DATE - 30) AS active, cl.last_txn AS last_transaction,
                    ROW_NUMBER() OVER (PARTITION BY rap.cust_id ORDER BY rap.cust_id ASC) AS rn
             FROM retail_allocated_portfolio AS rap
             INNER JOIN hf_customer AS pn ON pn.cust_id = rap.cust_id
+                 LEFT JOIN customer_last_transaction cl ON cl.cust_id = pn.cust_id
             WHERE TRIM(rap.sales_code) = %s
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
@@ -126,7 +128,8 @@ def branch_customers(branch):
         """
         WITH retail_allocation AS (
             SELECT pn.cust_id, customer_name, sales_code, rm_name,
-                   total_revenue, total_depost_balance, total_loans, active,
+                   total_revenue, total_depost_balance, total_loans,
+                   (cl.last_txn IS NOT NULL AND cl.last_txn::date >= CURRENT_DATE - 30) AS active, cl.last_txn AS last_transaction,
                    ROW_NUMBER() OVER (PARTITION BY pn.cust_id ORDER BY pn.cust_id ASC) AS rn
             FROM hf_customer AS pn
             LEFT OUTER JOIN (
@@ -135,6 +138,7 @@ def branch_customers(branch):
                 WHERE cust_id IS NOT NULL
                 ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
             ) rap ON pn.cust_id = rap.cust_id
+                 LEFT JOIN customer_last_transaction cl ON cl.cust_id = pn.cust_id
             WHERE pn.branch = %s
         )
         SELECT cust_id AS id, * FROM retail_allocation WHERE rn = 1
@@ -148,7 +152,7 @@ def rM_total_customers(sales_code):
     qs = RetailAllocatedPortfolio.objects.raw(
         """
         SELECT 1 id, sales_code,
-               COUNT(DISTINCT hf_customer.cust_id) FILTER (WHERE hf_customer.active = TRUE) AS active_customers,
+               COUNT(DISTINCT hf_customer.cust_id) FILTER (WHERE EXISTS (SELECT 1 FROM customer_last_transaction clt WHERE clt.cust_id = hf_customer.cust_id AND clt.last_txn::date >= CURRENT_DATE - 30)) AS active_customers,
                COUNT(DISTINCT hf_customer.cust_id) AS total_customers
         FROM hf_customer
         LEFT JOIN (

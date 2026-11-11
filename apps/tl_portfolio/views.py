@@ -149,10 +149,13 @@ class TlTotalCustomersView(APIView):
 
     def get(self, request):
         profile = _get_profile(request.user)
+        from apps.portfolio.activity import active_count
+
         qs = HfCustomer.objects.filter(segment_q(_segment(profile)))
         return Response({
             "total_customers": qs.count(),
-            "active_customers": qs.filter(active=True).count(),
+            # From the last transaction, not hf_customer's flag.
+            "active_customers": active_count(qs),
             "segment": profile.segment,
         })
 
@@ -265,11 +268,14 @@ class TlTotalSummaryView(APIView):
         qs = HfCustomer.objects.filter(segment_q(_segment(profile)))
         agg = qs.aggregate(
             total_customers=Count("cust_id"),
-            active_customers=Count("cust_id", filter=Q(active=True)),
             total_deposits=Sum("total_depost_balance"),
             total_loans=Sum("total_loans"),
             total_revenue=Sum("total_revenue"),
         )
+        # From the last transaction, not hf_customer's flag (portfolio.activity).
+        from apps.portfolio.activity import active_count
+
+        agg["active_customers"] = active_count(qs)
         return Response(agg)
 
 

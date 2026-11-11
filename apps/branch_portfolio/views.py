@@ -274,11 +274,14 @@ class BranchTotalCustomersView(APIView):
         # BranchDashboardSummaryView).
         agg = qs.aggregate(
             total_customers=Count("cust_id"),
-            active_customers=Count("cust_id", filter=Q(active=True)),
             total_deposits=Sum("total_depost_balance"),
             total_loans=Sum("total_loans"),
             total_revenue=Sum("total_revenue"),
         )
+        # From the last transaction, not hf_customer's flag (portfolio.activity).
+        from apps.portfolio.activity import active_count
+
+        agg["active_customers"] = active_count(qs)
         return Response({
             "total_customers": agg["total_customers"] or 0,
             "active_customers": agg["active_customers"] or 0,
@@ -721,11 +724,14 @@ class BranchDashboardSummaryView(APIView):
         qs = HfCustomer.objects.filter(branch__icontains=_branch_filter(profile))
         agg = qs.aggregate(
             total_customers=Count("cust_id"),
-            active_customers=Count("cust_id", filter=Q(active=True)),
             total_deposits=Sum("total_depost_balance"),
             total_loans=Sum("total_loans"),
             total_revenue=Sum("total_revenue"),
         )
+        # From the last transaction, not hf_customer's flag (portfolio.activity).
+        from apps.portfolio.activity import active_count
+
+        agg["active_customers"] = active_count(qs)
         agg["branch"] = profile.branch
         return Response(agg)
 

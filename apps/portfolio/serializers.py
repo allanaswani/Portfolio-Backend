@@ -84,9 +84,20 @@ class SafeDecimalField(serializers.Field):
 
 
 class HfCustomerSerializer(WarehouseModelSerializer):
+    #: From customer_last_transaction: when the customer last transacted.
+    #: ``active`` on the list queries is computed from it (in the last 30
+    #: days) - hf_customer's own flag is set upstream and does not follow
+    #: transactions (11 Nov 2026: a customer who transacted on 5 Nov showed
+    #: Inactive).
+    last_transaction = serializers.SerializerMethodField()
+
     class Meta:
         model = HfCustomer
         fields = "__all__"
+
+    def get_last_transaction(self, obj):
+        value = getattr(obj, "last_transaction", None)
+        return value.isoformat() if value is not None else None
 
     def build_standard_field(self, field_name, model_field):
         # HfCustomer's numeric columns are DecimalField(65535, 65535) from inspectdb.
@@ -131,6 +142,7 @@ class SegmentCustomerSerializer(serializers.ModelSerializer):
     branch = serializers.SerializerMethodField('get_branch')
     banking_segment = serializers.SerializerMethodField('get_banking_segment')
     active = serializers.BooleanField()
+    last_transaction = serializers.SerializerMethodField()
     sales_code = serializers.SerializerMethodField('get_sales_code')
     rm_name = serializers.SerializerMethodField('get_rm_name')
 
@@ -141,7 +153,12 @@ class SegmentCustomerSerializer(serializers.ModelSerializer):
                   'product_map', 'asset_finance', 'cash_cover', 'ipf', 'overdraft',
                   'project', 'staff', 'trade', 'unsecured',
                   'registered_mobile', 'total_depost_balance', 'total_loans', 'total_revenue',
-                  'active', 'branch', 'banking_segment', 'sales_code', 'rm_name']
+                  'active', 'last_transaction', 'branch', 'banking_segment',
+                  'sales_code', 'rm_name']
+
+    def get_last_transaction(self, obj):
+        value = getattr(obj, "last_transaction", None)
+        return value.isoformat() if value is not None else None
 
     def get_cust_id(self, obj):        return str(obj.cust_id)
     def get_fd(self, obj):             return str(obj.fd)
