@@ -1386,6 +1386,8 @@ class YearToDateCannotFallTests(TestCase):
                 {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 5.48}])
         self.assertAlmostEqual(nps["ytd_actual"], 0.7241379310344828)
         self.assertIn("(Sep 2026)", nps["as_at"])
+        # A month's own rate, not a year to date.
+        self.assertTrue(nps["as_at"].startswith("latest month"), nps["as_at"])
 
     def test_account_opening_tat_reads_the_desks_report_for_the_month(self):
         from unittest.mock import patch

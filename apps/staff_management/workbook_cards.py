@@ -2671,6 +2671,7 @@ def live_card(sales_code, engine_card, as_at):
                 # Every template sheet is year to date except turnaround
                 # time, which is the month's own rate.
                 kind = ("latest month" if "tat" in _key(wl["feed"])
+                        or _key(wl["feed"]) in BO_DESK_TAT_SHEETS
                         else "year to date")
                 ln["as_at"] = (
                     f"{kind}, the desk's latest figure "
