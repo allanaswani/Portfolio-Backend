@@ -98,7 +98,7 @@ class TheResidualTests(TestCase):
 
 class TheLineIsNoLongerPendingTests(TestCase):
     def test_both_cards_that_carry_it_now_read_a_figure(self):
-        for code, key in (("bancassurance_premiums", "banca_paid_all"),
+        for code, key in (("bancassurance_premiums", "banca_non_vic"),
                           ("other_bancassurance_premiums", "banca_other")):
             with self.subTest(code):
                 source = SOURCES[code]

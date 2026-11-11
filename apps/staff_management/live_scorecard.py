@@ -374,14 +374,14 @@ _register(
     ["other_bancassurance_premiums"],
     Source(target_field="target_banca_value", actual_key="banca_other"))
 
-# "Bancassurance Premiums" is the whole book, not the residual: the desk's
-# figure is bancassurance_report.py's RMs_and_BBCs_paid_premiums table (paid
-# premiums, every product, by code), on the same target_banca_value roster
-# column. Read as the residual it was 0.00 for all 62 people on the September
-# 2026 proof while the desk had up to 4,032,094.
+# "Bancassurance Premiums - Renewals and other banca products": the
+# NON-VIC paid premiums only (stated by the business 11 Nov 2026). The VIC
+# premiums have their own lines; all products read 11.6m against the desk's
+# 4.0m for Eubert Ogaro in September, and non-VIC was the closest of the
+# candidate definitions the September proof tried.
 _register(
     ["bancassurance_premiums"],
-    Source(target_field="target_banca_value", actual_key="banca_paid_all"))
+    Source(target_field="target_banca_value", actual_key="banca_non_vic"))
 
 # ── Active customers, and digital adoption ───────────────────────────────────
 # Both are a COUNT over the RM's own book, and both state their target as a
@@ -2281,7 +2281,8 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                 upto.year, upto.month, 120_000, as_at=upto)
             cache.set(key, sellers, 3600)
         row = sellers.get(sales_code.strip().replace(" ", "").upper(),
-                          {"vic_life": 0.0, "vic_non_life": 0.0, "all": 0.0})
+                          {"vic_life": 0.0, "vic_non_life": 0.0, "non_vic": 0.0,
+                           "all": 0.0})
         label = f"VIC (Britam) paid premiums, as at {upto.day} {upto:%b %Y}"
         return {
             "vic_life": _figure(row["vic_life"], upto, label),
@@ -2291,9 +2292,13 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             "banca_paid_all": _figure(
                 row["all"], upto,
                 f"paid premiums, all products, as at {upto.day} {upto:%b %Y}"),
+            "banca_non_vic": _figure(
+                row.get("non_vic", 0.0), upto,
+                f"paid premiums, non-VIC products, as at {upto.day} {upto:%b %Y}"),
         }
 
-    attempt(("vic_life", "vic_non_life", "vic_total", "banca_paid_all"), vic)
+    attempt(("vic_life", "vic_non_life", "vic_total", "banca_paid_all",
+             "banca_non_vic"), vic)
 
     # ── Trade finance ─────────────────────────────────────────────────────
     def trade():
@@ -3052,8 +3057,13 @@ def last_year_income(sales_code, year):
     kept = cache.get(key)
     if kept is not None:
         return tuple(kept)
+    from django.db import transaction
+
     try:
-        prior = svc.rm_income_ytd(sales_code, datetime.date(year, 12, 31))
+        # Its own savepoint: this runs outside live_actuals' guarded reads, and
+        # a failed read must not leave the whole request's transaction aborted.
+        with transaction.atomic():
+            prior = svc.rm_income_ytd(sales_code, datetime.date(year, 12, 31))
     except Exception as exc:  # noqa: BLE001 - reported on the line, not kept
         return None, f"{type(exc).__name__}: {exc}"
     if any(prior.values()):

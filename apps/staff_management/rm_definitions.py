@@ -173,7 +173,7 @@ SHEETS = {"par": (par, "par"),
           "loanapplicationerrors": (errors, "loan_application_errors")}
 #: A line that shares its sheet with lines already read correctly (VIC Premium is
 #: live on the same Banca sheet) is keyed by its own measure instead.
-LINES = {"bancassurancepremiums": (banca, "banca_paid_all")}
+LINES = {"bancassurancepremiums": (banca, "banca_non_vic")}
 CANDIDATES = {**SHEETS, **LINES}
 
 

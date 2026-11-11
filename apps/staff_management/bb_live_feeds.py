@@ -506,7 +506,7 @@ def _banca(year, month, part, timeout_ms, as_at=None):
 
 def banca_by_seller(year, month, timeout_ms, as_at=None):
     """bancassurance_report.py's premiums per seller, keyed by the policy's code
-    → {sales code: {"vic_life": x, "vic_non_life": y, "all": z}}.
+    → {sales code: {"vic_life": x, "vic_non_life": y, "non_vic": n, "all": z}}.
 
     ``vic_life`` and ``vic_non_life`` are its RMs_and_BBCs_VIC tables. ``all`` is
     its RMs_and_BBCs_paid_premiums table: roles_all_premiums over paid_premiums,
@@ -517,9 +517,9 @@ def banca_by_seller(year, month, timeout_ms, as_at=None):
         if not code:
             continue
         row = out.setdefault(code, {"vic_life": 0.0, "vic_non_life": 0.0,
-                                    "all": 0.0})
+                                    "non_vic": 0.0, "all": 0.0})
         row["all"] += value
-        if kind in ("vic_life", "vic_non_life"):
+        if kind in ("vic_life", "vic_non_life", "non_vic"):
             row[kind] += value
     return out
 
