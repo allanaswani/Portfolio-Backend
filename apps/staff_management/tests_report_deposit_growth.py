@@ -46,3 +46,23 @@ class ReportDepositGrowthTests(TestCase):
         self.assertEqual(g["base"], 165.0)
         self.assertEqual(g["as_at"], datetime.date(2026, 9, 30))
         self.assertIsNone(g["problem"])
+
+    def test_the_open_month_reads_yesterday_as_the_daily_report_does(self):
+        from unittest.mock import patch
+
+        with connection.cursor() as cur:
+            cur.execute("UPDATE daily_balance_movement SET yester_1_bal = sep_26_bal + 1")
+        today = datetime.date(2026, 11, 11)
+
+        class Now(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.datetime(2026, 11, 11, 9, 0)
+
+        with patch.object(svc, "datetime", Now):
+            g = svc.rm_growth("daily_balance_movement", "RM1", as_at=today)
+        self.assertEqual(g["as_at_label"], "yesterday")
+        # 75 at the month end; one more on each of RM1's five existing accounts
+        # above nought and on the new customer's: the overdrawn one stays 0
+        # (-29), so 75 + 4 + 1 = 80.
+        self.assertEqual(g["growth"], 80.0)

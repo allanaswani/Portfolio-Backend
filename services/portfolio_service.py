@@ -586,6 +586,11 @@ def rm_growth(table, sales_code, as_at=None):
     # a negative "growth" for a book that has not shrunk.
     months = [(c, lbl) for c, lbl in _closed_months()
               if c in columns and c.endswith(f"_{str(today.year)[-2:]}_bal")]
+    # The OPEN month (the card asked for today) reads yesterday's balance, as
+    # the daily deposit movement report does; only a closed month is held to
+    # its month-end column. Before this the November card read 31 October.
+    if as_at is not None and as_at >= datetime.now().date() - timedelta(days=1):
+        as_at = None
     if as_at is not None:
         # No "yesterday" rung, and no month AFTER the one asked for: either
         # would answer with a balance from outside the card's period.
