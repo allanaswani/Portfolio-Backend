@@ -1374,11 +1374,29 @@ class YearToDateCannotFallTests(TestCase):
             {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 0.5}])
         self.assertEqual(nps["ytd_actual"], 0.5)
 
-    def test_account_opening_tat_keeps_the_desks_month(self):
+    def test_account_opening_tat_never_takes_the_engines_figure(self):
         from unittest.mock import patch
 
-        with patch.object(bo, "BO_DESK_TAT_SHEETS", {"nps"}):
+        from . import account_opening as ao
+
+        # Nothing actioned this month: the desk's latest month stands, never
+        # the engine's branch-wide 5.48.
+        with patch.object(bo, "BO_DESK_TAT_SHEETS", {"nps"}),                 patch.object(ao, "desk_turnaround", return_value=(None, 0)):
             _, _, nps = self._card([
                 {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 5.48}])
         self.assertAlmostEqual(nps["ytd_actual"], 0.7241379310344828)
         self.assertIn("(Sep 2026)", nps["as_at"])
+
+    def test_account_opening_tat_reads_the_desks_report_for_the_month(self):
+        from unittest.mock import patch
+
+        from . import account_opening as ao
+
+        with patch.object(bo, "BO_DESK_TAT_SHEETS", {"nps"}),                 patch.object(ao, "desk_turnaround", return_value=(0.2255, 63)) as read:
+            _, _, nps = self._card([
+                {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 5.48}])
+        self.assertEqual(nps["ytd_actual"], 0.2255)
+        self.assertIn("the accounts TAT report", nps["as_at"])
+        # The user is the template row's code column; the month is November's.
+        self.assertEqual(read.call_args.args[0], "X")
+        self.assertEqual(read.call_args.args[2], datetime.date(2026, 11, 1))

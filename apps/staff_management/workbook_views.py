@@ -687,3 +687,146 @@ class CardLayoutUploadView(APIView):
             plans, who=getattr(request.user, "username", ""))
         body["applied"] = True
         return Response(body, status=201)
+
+
+def _card_reads(book, sheet):
+    """The List columns a card's formulas look up (VLOOKUP into List)."""
+    found = set()
+    for tokens in book["cards"][sheet]["f"].values():
+        for i, t in enumerate(tokens):
+            if (t[:2] == ["a", "List"] and i + 3 < len(tokens)
+                    and tokens[i + 1][0] == "n"
+                    and tokens[i + 3][:2] == ["f", "VLOOKUP"]):
+                found.add(int(t[3]) + int(tokens[i + 1][1]) - 1)
+    return found
+
+
+def _proration_effect(code):
+    """Where this person has a card, and which proration columns it reads."""
+    from apps.staff_management import workbook_cards as wc
+
+    out = []
+    for spec in wc.SPECS.values():
+        book = wc.saved(spec.files[0])
+        if book is None:
+            continue
+        holder = next((h for h in wc.holders(book, keep_off=True)
+                       if h.sales_code == code and h.sheet in book["cards"]), None)
+        if holder is None:
+            continue
+        columns = wc.proration_columns(book)
+        reads = _card_reads(book, holder.sheet)
+        out.append({"book": spec.label, "name": holder.name, "card": holder.sheet,
+                    "role": holder.role,
+                    "columns_on_list": sorted(columns),
+                    "columns_the_card_reads": sorted(
+                        name for name, i in columns.items() if i in reads)})
+    return out
+
+
+@extend_schema(tags=[_TAG])
+class ProrationView(APIView):
+    """Targets prorated for one person: joining, a new role, promotion,
+    acting, sick or maternity leave. Fills the workbook List's own proration
+    column for that person, month by month, so the card's formulas apply it
+    as if the desk had typed it. See ``workbook_cards.PRORATION``.
+
+    GET lists the entries. POST adds one: {sales_code, reason, from, to,
+    note} - ``from`` alone (YYYY-MM, the start month) for joined /
+    role_change / promotion; ``from`` and ``to`` for acting and leave.
+    DELETE ?sales_code=&id= removes one. Either change recomputes that
+    person's stored months.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.staff_management import workbook_cards as wc
+
+        if not may_load(request.user):
+            return Response({"detail": "Only an administrator can see "
+                                       "proration."}, status=403)
+        entries = wc.saved(wc.PRORATION) or {}
+        return Response({
+            "reasons": [{"reason": k, "column": v[0], "span": v[1], "label": v[2]}
+                        for k, v in wc.PRORATION_REASONS.items()],
+            "people": [{"sales_code": code, "entries": rows,
+                        "cards": _proration_effect(code)}
+                       for code, rows in sorted(entries.items()) if rows],
+        })
+
+    def post(self, request):
+        import datetime
+        import uuid
+
+        from django.core.cache import cache
+
+        from apps.staff_management import workbook_cards as wc
+
+        if not may_load(request.user):
+            return Response({"detail": "Only an administrator can prorate "
+                                       "targets."}, status=403)
+        data = request.data
+        code = str(data.get("sales_code") or "").replace(" ", "").upper()
+        reason = str(data.get("reason") or "")
+        spec = wc.PRORATION_REASONS.get(reason)
+        start = str(data.get("from") or "").strip()
+        end = str(data.get("to") or "").strip()
+        if not code:
+            return Response({"sales_code": "Give the sales code."}, status=400)
+        if spec is None:
+            return Response({"reason": "Choose one of: "
+                             + ", ".join(wc.PRORATION_REASONS)}, status=400)
+        if wc._ym(start) is None:
+            return Response({"from": "The month is YYYY-MM."}, status=400)
+        if spec[1]:
+            if wc._ym(end) is None:
+                return Response({"to": "The last month away is YYYY-MM."},
+                                status=400)
+            if wc._ym(end) < wc._ym(start):
+                return Response({"to": "The last month is before the first."},
+                                status=400)
+        else:
+            end = ""
+        cards = _proration_effect(code)
+        if not cards:
+            return Response({"sales_code": f"{code} is not on any loaded "
+                             f"scorecard workbook's List."}, status=400)
+        entry = {"id": uuid.uuid4().hex[:8], "reason": reason, "from": start,
+                 "to": end, "note": str(data.get("note") or "")[:300],
+                 "by": getattr(request.user, "username", ""),
+                 "at": datetime.datetime.now().isoformat(timespec="seconds")}
+        entries = dict(wc.saved(wc.PRORATION) or {})
+        entries[code] = list(entries.get(code) or []) + [entry]
+        wc.save_file(wc.PRORATION, entries, "proration",
+                     getattr(request.user, "username", ""))
+        cache.delete(wc.PRORATION)
+        stored = wc.rescore(code)
+        warnings = [
+            f"{c['name']}'s {c['card']} card does not read {spec[0]}, so this "
+            f"entry changes nothing on it."
+            for c in cards if spec[0] not in c["columns_the_card_reads"]]
+        return Response({"entry": entry, "cards": cards,
+                         "months_recomputed": stored, "warnings": warnings},
+                        status=201)
+
+    def delete(self, request):
+        from django.core.cache import cache
+
+        from apps.staff_management import workbook_cards as wc
+
+        if not may_load(request.user):
+            return Response({"detail": "Only an administrator can prorate "
+                                       "targets."}, status=403)
+        code = str(request.query_params.get("sales_code") or "").replace(
+            " ", "").upper()
+        ident = str(request.query_params.get("id") or "")
+        entries = dict(wc.saved(wc.PRORATION) or {})
+        rows = [e for e in entries.get(code) or [] if e.get("id") != ident]
+        if len(rows) == len(entries.get(code) or []):
+            return Response({"detail": "No such entry."}, status=404)
+        entries[code] = rows
+        wc.save_file(wc.PRORATION, entries, "proration",
+                     getattr(request.user, "username", ""))
+        cache.delete(wc.PRORATION)
+        return Response({"removed": ident, "months_recomputed": wc.rescore(code)})

@@ -79,6 +79,10 @@ urlpatterns = [
     # Aruti's leave balance list or employee listing - a snapshot per date.
     path("manual-figures/hr-report/",
          workbook_views.HrReportUploadView.as_view()),
+    # Targets prorated for one person (joining, new role, acting, leave):
+    # the workbook List's own proration columns, filled by an administrator.
+    path("manual-figures/proration/",
+         workbook_views.ProrationView.as_view()),
     # Card layouts - lines, order, perspective, wording, weight - from the
     # sales or back-office scorecard workbook, so a new year's template
     # changes the cards by upload.

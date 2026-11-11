@@ -622,6 +622,10 @@ class Evaluator:
                        for cell, field in self.spec.inputs.items()}
         self.memo, self.busy = {}, set()
         self.array = False
+        # The admin's proration (see PRORATION): List column -> months, for
+        # this person's own List row, which the card reaches by name.
+        self.list_name = _txt(holder.name).lower()
+        self.list_override = proration_cells(book, holder, month)
 
     # -- cells --------------------------------------------------------------
     def value(self, sheet, r, c):
@@ -634,6 +638,10 @@ class Evaluator:
         grid = self.book["tables"].get(sheet)
         if grid is None:
             return REF
+        if (sheet == "List" and c in self.list_override and r > 0
+                and _txt(_at(grid, r, self.spec.list_cols["name"])).lower()
+                == self.list_name):
+            return self.list_override[c]
         return _plain(_at(grid, r, c))
 
     def cell(self, r, c):
@@ -1442,6 +1450,126 @@ TARGET_CHANGES = (
 )
 
 
+#: Proration an administrator sets for one person (asked 11 Nov 2026; Joseph
+#: Kinuthia JKK3227, acting BOM May-Aug 2026, scored as a CSO after it).
+#:
+#: The workbook already prorates: its List carries prorate_new,
+#: prorate_role_change, prorate_promotion and prorate_acting_other, and a
+#: card's target formulas subtract them from the months elapsed. Read off
+#: the BO workbook (Q2 with updated targets):
+#:   * every card's monthly and yearly lines: months - prorate_new;
+#:   * the CSO card's monthly lines (Digital Onboarding, CRM, KYC, CASA):
+#:     months - prorate_new - IF(role_change>0, role_change,
+#:     IF(acting_other>0, acting_other, 0));
+#:   * the RBO card reads role_change, promotion and acting_other too.
+#: So an entry here fills that List column for that person, and the card's
+#: own formulas decide which lines it moves - exactly as if the desk had
+#: typed it. The value is month by month: the months excluded up to the
+#: card's month, so an earlier month is never cut by a later absence.
+#:
+#: Rule from the business: a joiner or new role is counted from the month
+#: AFTER the start (joined in July -> target from August); acting, sick
+#: leave and maternity leave exclude the months away.
+PRORATION = "proration"
+PRORATION_REASONS = {
+    # reason: (List column, a span of months?, wording)
+    "joined": ("prorate_new", False, "joined"),
+    "role_change": ("prorate_role_change", False, "moved to a new role"),
+    "promotion": ("prorate_promotion", False, "promoted"),
+    "acting": ("prorate_acting_other", True, "acting in another role"),
+    "sick_leave": ("prorate_acting_other", True, "on sick leave"),
+    "maternity_leave": ("prorate_acting_other", True, "on maternity leave"),
+}
+
+
+def proration():
+    """{sales code: [entry]}, kept five minutes."""
+    from django.core.cache import cache
+
+    found = cache.get(PRORATION)
+    if found is None:
+        found = saved(PRORATION) or {}
+        cache.set(PRORATION, found, 300)
+    return found
+
+
+def _ym(text):
+    """'2026-07' -> (2026, 7), or None."""
+    try:
+        y, m = (int(p) for p in str(text or "").split("-")[:2])
+    except ValueError:
+        return None
+    return (y, m) if 1 <= m <= 12 else None
+
+
+def excluded_months(entry, year, month):
+    """How many months of ``year``, up to ``month``, the entry takes out."""
+    reason = PRORATION_REASONS.get(entry.get("reason"))
+    if reason is None:
+        return 0
+    if reason[1]:
+        start, end = _ym(entry.get("from")), _ym(entry.get("to"))
+        if start is None or end is None:
+            return 0
+    else:
+        # Counted from the month after the start: that month and everything
+        # before it in the year are out.
+        start, end = (0, 1), _ym(entry.get("from"))
+        if end is None:
+            return 0
+    return sum(1 for m in range(1, month + 1) if start <= (year, m) <= end)
+
+
+def proration_columns(book):
+    """List column header -> its index, for the proration columns this
+    workbook's List has."""
+    header = (book["tables"].get("List") or [[]])[0]
+    wanted = {r[0] for r in PRORATION_REASONS.values()}
+    return {str(v).strip().lower(): i for i, v in enumerate(header)
+            if str(v or "").strip().lower() in wanted}
+
+
+def proration_cells(book, holder, month):
+    """{List column index: months} for this person and month, from the admin's
+    entries; {} when there are none."""
+    entries = proration().get((holder.sales_code or "").upper())
+    if not entries:
+        return {}
+    columns = proration_columns(book)
+    year = book_year(book)
+    out = {}
+    for entry in entries:
+        column = PRORATION_REASONS.get(entry.get("reason"), (None,))[0]
+        if column not in columns:
+            continue
+        index = columns[column]
+        out[index] = out.get(index, 0.0) + float(excluded_months(entry, year, month))
+    return out
+
+
+def proration_note(book, holder, month):
+    """The sentence a card carries when the admin's proration applies, or ""."""
+    entries = proration().get((holder.sales_code or "").upper()) or []
+    columns = proration_columns(book)
+    year = book_year(book)
+    parts = []
+    for entry in entries:
+        reason = PRORATION_REASONS.get(entry.get("reason"))
+        if reason is None or reason[0] not in columns:
+            continue
+        months = excluded_months(entry, year, month)
+        end = _ym(entry.get("to") if reason[1] else entry.get("from"))
+        # A month inside the absence (or the start month) is not this card's:
+        # the desk's own record for it stands.
+        if not months or end is None or (year, month) <= end:
+            continue
+        when = (f"{entry.get('from')} to {entry.get('to')}" if reason[1]
+                else f"from {entry.get('from')}")
+        parts.append(f"{reason[2]} ({when}): {months} month(s) out of the "
+                     f"target")
+    return ("Targets prorated: " + "; ".join(parts) + ".") if parts else ""
+
+
 def _target_changes(spec, card, sheet, year, month):
     """{(row, col): value} for the TARGET_CHANGES in force for ``month``."""
     out = {}
@@ -1518,6 +1646,10 @@ def compute(book, actuals, holder, month, overrides=None):
     score = ev.cell(*spec.score)
     out = {"sheet": holder.sheet, "month": month, "lines": lines,
            "role": holder.role, "total": _out(score)}
+    if ev.list_override:
+        note = proration_note(book, holder, month)
+        if note:
+            out["prorated"] = note
     if spec.book != BACK_OFFICE:
         # E3 and E4 of the sales and branch cards: "Reports to:" (the BBM the
         # macro types) and "Report to Title:", as the card itself shows them.
@@ -1627,8 +1759,25 @@ def running_totals_filled(actuals, month):
     return out
 
 
-def compute_all(book, actuals, months=None):
-    """Every holder × every month with figures → [(holder, month, card)]."""
+def rescore(sales_code):
+    """Recompute and store one person's months in every loaded workbook, after
+    their proration changed → how many months were stored."""
+    code = (sales_code or "").replace(" ", "").upper()
+    stored = 0
+    for spec in SPECS.values():
+        book, actuals = saved(spec.files[0]), saved(spec.files[1])
+        if book is None or actuals is None:
+            continue
+        results = compute_all(book, actuals, only={code})
+        if results:
+            stored += store(results, book_year(book), recorded_scores(book),
+                            loaded_by="proration")
+    return stored
+
+
+def compute_all(book, actuals, months=None, only=None):
+    """Every holder × every month with figures → [(holder, month, card)].
+    ``only``: a set of sales codes, to recompute just those people."""
     months = months or template_months(actuals)
     by_month = {month: running_totals_filled(actuals, month) for month in months}
     changed = {month: any(by_month[month][k] is not actuals[k]
@@ -1638,6 +1787,8 @@ def compute_all(book, actuals, months=None):
     year = book_year(book)
     for holder in holders(book, keep_off=True):
         if holder.sheet is None or holder.sheet not in book["cards"]:
+            continue
+        if only is not None and holder.sales_code not in only:
             continue
         for month in months:
             if off_card(holder.sales_code, datetime.date(year, month, 1)):
@@ -1881,6 +2032,14 @@ def card_payload(record, asked=None):
                 f"year-to-date figure. With it, the workbook gives "
                 f"{total:.1%}, which is the score shown.")
         recorded = None
+    if data.get("prorated"):
+        # The admin's proration postdates the desk's run, which had none.
+        notes.append(data["prorated"])
+        if _num(recorded) and _num(total) and abs(recorded - total) >= 1e-9:
+            notes.append(f"The desk's scorecard run recorded {recorded:.1%} for "
+                         f"{record.month:%B %Y} without it; prorated, the "
+                         f"workbook gives {total:.1%}, which is the score shown.")
+        recorded = None
     if _num(recorded) and not (_num(total) and abs(recorded - total) < 1e-9):
         notes.append(
             f"The desk's scorecard run recorded {recorded:.1%} for "
@@ -2026,12 +2185,13 @@ ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
 
 
 #: Back-office account-opening turnaround: the desk's figure is the month's
-#: own rate (accounts_tat.py, per action, by month), keyed on the BOM's AD
-#: username. The engine's reader is the branch's whole-year average span
-#: per application: Joseph Kinuthia (Embu) read 5.48 and 18.97 days in
-#: November against the desk's 0.23 and 0.6 for September, with no account
-#: on his own queue. Until a reader matches the desk, the desk's latest
-#: month stands on these lines.
+#: own rate (accounts_tat.py, per iApply user, by month), keyed on the
+#: person's AD username in the template's code column. The engine's reader
+#: was the branch's whole-year average span per application: Joseph
+#: Kinuthia (Embu) read 5.48 and 18.97 days in November against the desk's
+#: 0.23 and 0.6 for September. These lines read
+#: account_opening.desk_turnaround instead, which gave the desk's own Jul-Sep
+#: figures for him; with no step in the month the desk's latest month stands.
 BO_DESK_TAT_SHEETS = {"accountopeningpb", "accountopeningbb"}
 
 
@@ -2290,6 +2450,7 @@ def live_card(sales_code, engine_card, as_at):
     prior = {}
     beside = {}     # row -> scored on the warehouse's figure, not yet matched to the desk
     dashboard = {}  # row -> the month of the Weighted TAT Dashboard it read
+    tat_report = {}  # row -> (iApply user, month) read off the accounts TAT report
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -2354,8 +2515,31 @@ def live_card(sales_code, engine_card, as_at):
         # desk filled kept its figure above. A line not yet matched to the desk
         # says so on the card.
         if spec.book == BACK_OFFICE and _key(wl["feed"]) in BO_DESK_TAT_SHEETS:
-            # See BO_DESK_TAT_SHEETS: the engine's reader measures something
-            # else, so the desk's latest month stands.
+            # The desk's own measure (account_opening.desk_turnaround), for the
+            # iApply user the desk keys this person's row on. No step that
+            # month, or no row: the desk's latest month stands.
+            from . import account_opening as ao
+
+            row = _template_row(template_live if template_live is not None
+                                else actuals, wl["feed"], code, 0, person)
+            user = str(row[1] or "").strip() if row and len(row) > 1 else ""
+            try:
+                value, _steps = ao.desk_turnaround(user, _key(wl["feed"]),
+                                                   as_at.replace(day=1))
+            except ao.AccountOpeningUnavailable:
+                value = None
+            if value is not None:
+                if template_live is None:
+                    import copy
+
+                    template_live = copy.deepcopy(actuals)
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    tat_report[wl["row"]] = (user, as_at.replace(day=1))
             continue
         unproven = (wl["row"] in carried
                     and sales_live_feeds.line_key(wl) not in bo_engine)
@@ -2498,6 +2682,10 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["row"] in dashboard:
                 ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
                                f"{dashboard[wl['row']]:%B %Y}")
+            elif wl["row"] in tat_report:
+                user, then = tat_report[wl["row"]]
+                ln["as_at"] = (f"the accounts TAT report, your iApply steps "
+                               f"({user}), {then:%B %Y}, to {as_at:%d %b %Y}")
             else:
                 ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
                 if spec.book == SALES:

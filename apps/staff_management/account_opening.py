@@ -223,3 +223,51 @@ def _why(exc):
         return ("the account-opening trail (iapply_accounts_tat) is not on "
                 "this database")
     return "the account-opening trail could not be read"
+
+
+#: The desk's back-office account-opening TAT, ported from accounts_tat.py
+#: (its "tat_vol_rts_user_view"): per iApply ActionUser and banking segment,
+#: the month of each action, the mean of the non-zero step TATs. The ETL
+#: saves those steps to this table. Checked on 11 Nov 2026 against the BO
+#: template for Joseph Kinuthia (JKKINUTHIA): BB 0.8241 / 5.5519 / 0.6036 and
+#: personal 0.1367 / 0.5369 / 0.2255 for Jul / Aug / Sep, the template's
+#: own figures; Embu branch's figures (0.87 / 0.72 / 0.47 ...) do not match.
+DESK_SEGMENTS = {"accountopeningpb": "PERSONAL BANKING",
+                 "accountopeningbb": "BB"}
+
+
+def desk_turnaround(action_user, sheet_key, month_start):
+    """(days, steps) for one iApply user, segment and month, as the desk's
+    report gives it; (None, 0) when the user actioned nothing that month.
+    Raises AccountOpeningUnavailable when the table cannot be read."""
+    import datetime
+
+    from django.core.cache import cache
+    from django.db import connection, transaction
+
+    segment = DESK_SEGMENTS[sheet_key]
+    user = str(action_user or "").strip().upper()
+    if not user:
+        return None, 0
+    key = f"ao_desk_tat:{user}:{segment}:{month_start:%Y-%m}"
+    kept = cache.get(key)
+    if kept is not None:
+        return tuple(kept)
+    end = (month_start.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    try:
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
+            cur.execute("""
+                SELECT AVG(tat_days) FILTER (WHERE tat_days <> 0), COUNT(*)
+                FROM account_tat_individuals_application_data_dump
+                WHERE UPPER(TRIM(action_user)) = %s AND banking_segment = %s
+                  AND action_date >= %s AND action_date < %s""",
+                        [user, segment, month_start, end])
+            average, steps = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 - the card says why
+        raise AccountOpeningUnavailable(_why(exc)) from exc
+    # mean_non_zero gives 0 when every step was nought.
+    found = ((float(average) if average is not None else 0.0), int(steps)) \
+        if steps else (None, 0)
+    cache.set(key, list(found), 3600)
+    return found
