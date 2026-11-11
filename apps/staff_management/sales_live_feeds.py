@@ -161,6 +161,10 @@ def probe(year, month, out=print, book=None, store=STORE_KIND):
                         "match": share, "people": len(rows),
                         "live": share >= PASS_SHARE,
                         "warehouse_read": True,
+                        # Nothing at all for the month (Weighted Sales: its
+                        # scores table starts in Oct 2026) is no comparison,
+                        # not a 0% match.
+                        "untested": none == len(rows),
                         "month": f"{year}-{month:02d}"}
 
     # Lines no report computes: try each candidate definition against the
@@ -248,5 +252,8 @@ def note(results, wl):
         return ("warehouse figure - too few RMs carry this line to compare "
                 "it with the desk's")
     when = datetime.date(*map(int, found["month"].split("-")), 1)
+    if found.get("untested"):
+        return (f"warehouse figure - the warehouse has nothing for "
+                f"{when:%b %Y} to compare with the desk's")
     return (f"warehouse definition, differs from the desk's (matched "
             f"{found['match']:.0%} of RMs for {when:%b %Y})")

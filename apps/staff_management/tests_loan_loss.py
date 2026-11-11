@@ -139,13 +139,18 @@ class TheFormulaIsStillInTheQueryTests(SimpleTestCase):
             "the loan-loss expression has changed. It must stay the "
             "workbook's own arithmetic: P&L charge less interest adjustment, "
             "negated because this query returns income categories.")
-        # Five statements carry it - the customer list, the customer revenue
-        # read, the RM revenue read the card's ACTUAL uses, the top-customers
-        # read, and rm_loan_loss, which reads the prior year because that is
-        # what the card's TARGET is built on - and they have to agree with
-        # each other.
+        # Four statements carry it - the customer list, the customer revenue
+        # read, the RM revenue read, the top-customers read. The card's actual
+        # and rm_loan_loss (the prior year the TARGET is built on) both go
+        # through _ifrs_loss since 11 Nov 2026, which attributes by Finance's
+        # customer -> RM map; its two statements carry the same arithmetic
+        # inside COALESCE (checked below).
+        shared = re.findall(
+            r"-COALESCE\(SUM\(COALESCE\(l\.pl_charge, 0\) "
+            r"- COALESCE\(l\.int_adj, 0\)\), 0\)", text)
+        self.assertEqual(len(shared), 2, "_ifrs_loss lost the loan-loss arithmetic")
         self.assertEqual(
-            len(found), 5,
+            len(found), 4,
             "the loan-loss expression appears in a different number of "
             "statements than it did. If one was added, it must carry the "
             "same arithmetic; if one was dropped, something stopped "

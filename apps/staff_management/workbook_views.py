@@ -561,6 +561,11 @@ class IfrsMovementUploadView(APIView):
                                                               "yes"):
             return Response(body)
         body["written"] = im.replace_month(month, rows)
+        # Finance's customer -> RM map, which the Loan Loss line is attributed by.
+        year, mapping = im.read_rm_map(path)
+        if mapping:
+            im.save_rm_map(year, mapping, getattr(request.user, "username", ""))
+            body["rm_map_customers"] = len(mapping)
         body["applied"] = True
         return Response(body, status=201)
 

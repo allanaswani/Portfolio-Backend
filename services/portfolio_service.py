@@ -669,6 +669,57 @@ _BOOK_IDS = f"""
 """
 
 
+def finance_rm_cifs(sales_code, year):
+    """The customers Finance's IFRS workbook attributes to this RM for
+    ``year`` -> [cif], or None when no map is loaded for that year (see
+    staff_management.ifrs_movement.read_rm_map). Finance writes rm_code as the
+    sales code (AKL3116) or the staff number alone (4310)."""
+    import re
+
+    from apps.staff_management import ifrs_movement, workbook_cards
+
+    stored = workbook_cards.saved(ifrs_movement.RM_MAP_KIND.format(year=year))
+    if not stored or not stored.get("map"):
+        return None
+    code = (sales_code or "").replace(" ", "").upper()
+    digits = re.search(r"(\d+)$", code)
+    pf = digits.group(1) if digits else None
+    # One entry per listing: a cif Finance lists twice under the RM counts
+    # twice, as its rm_summary pivot counts it.
+    return [int(cif) for cif, rms in stored["map"].items()
+            for rm in (rms if isinstance(rms, list) else [rms])
+            if rm == code or (pf and rm == pf)]
+
+
+def _ifrs_loss(sales_code, start, end):
+    """-(P&L charge - interest adjustment) over [start, end), on the customers
+    Finance attributes to the RM when its map for that year is loaded, else on
+    the RM's allocated book -> (loss, rows seen)."""
+    cifs = finance_rm_cifs(sales_code, start.year)
+    with connection.cursor() as cursor:
+        if cifs is not None:
+            cursor.execute("""
+                SELECT -COALESCE(SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)), 0),
+                       COUNT(*)
+                FROM loans_mom_ifrs_movement l
+                JOIN unnest(%s::bigint[]) AS listed(cif)
+                  ON l.cust_code_strategy ~ '^[0-9]+$'
+                 AND l.cust_code_strategy::bigint = listed.cif
+                WHERE l.eom_date >= %s AND l.eom_date < %s""",
+                           [cifs or [-1], start, end])
+        else:
+            cursor.execute(f"""
+                SELECT -COALESCE(SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)), 0),
+                       COUNT(*)
+                FROM loans_mom_ifrs_movement l
+                WHERE l.eom_date >= %s AND l.eom_date < %s
+                  AND l.cust_code_strategy ~ '^[0-9]+$'
+                  AND l.cust_code_strategy::bigint IN ({_BOOK_IDS})""",
+                           [start, end, sales_code])
+        loss, rows = cursor.fetchone()
+    return float(loss or 0), int(rows or 0)
+
+
 def rm_income_ytd(sales_code, as_at):
     """The parts of an RM's Income Contribution, 1 January to the end of
     ``as_at``'s month → {interest_income, interest_expenses, nfi, ftp, loan_loss}.
@@ -704,14 +755,7 @@ def rm_income_ytd(sales_code, as_at):
             WHERE f.current_year = %s AND f.cust_cif IN ({_BOOK_IDS})""",
                        [as_at.year, sales_code])
         ftp = cursor.fetchone()[0]
-        cursor.execute(f"""
-            SELECT -COALESCE(SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)), 0)
-            FROM loans_mom_ifrs_movement l
-            WHERE l.eom_date >= %s AND l.eom_date < %s
-              AND l.cust_code_strategy ~ '^[0-9]+$'
-              AND l.cust_code_strategy::bigint IN ({_BOOK_IDS})""",
-                       [start, end, sales_code])
-        loan_loss = cursor.fetchone()[0]
+    loan_loss, _rows = _ifrs_loss(sales_code, start, end)
     return {"interest_income": float(interest_income or 0),
             "interest_expenses": float(interest_expenses or 0),
             "nfi": float(nfi or 0), "ftp": float(ftp or 0),
@@ -963,19 +1007,8 @@ def rm_loan_loss(sales_code, year=None):
     """
     if year is None:
         year = date.today().year - 1
-    query = f"""
-        WITH valid_portfolio AS ({RM_BOOK})
-        SELECT -SUM(COALESCE(l.pl_charge, 0) - COALESCE(l.int_adj, 0)) AS loss,
-               COUNT(*) AS rows_seen
-        FROM loans_mom_ifrs_movement l
-        JOIN valid_portfolio vp ON l.cust_code_strategy::int = vp.cust_id
-        WHERE EXTRACT(YEAR FROM l.eom_date) = %s
-          AND l.cust_code_strategy ~ '^[0-9]+$'
-    """
-    with connection.cursor() as cursor:
-        cursor.execute(query, [sales_code, year])
-        row = cursor.fetchone()
-    loss, rows_seen = (row or (None, 0))
+    # Finance's attribution when its map for that year is loaded, else the book.
+    loss, rows_seen = _ifrs_loss(sales_code, date(year, 1, 1), date(year + 1, 1, 1))
     if not rows_seen:
         # No rows at all is NOT a nil provision. Either this RM's book had no
         # movement that year or the IFRS movement table does not go back that

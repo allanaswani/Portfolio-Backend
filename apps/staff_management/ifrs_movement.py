@@ -169,6 +169,61 @@ def replace_month(month, rows):
     return len(rows)
 
 
+#: Finance's own customer -> RM attribution for loan loss. Its rm_summary
+#: sheet ("Sum of YTD Loan Loss" by rm_code) is what the desk's PL_Charge
+#: carries: AKL3116 79.3M, LJB1656 27.6M, ANK3886 17.0M to Aug 2026 against
+#: the desk's 59.2M / 36.7M / 19.6M at Sep, where adding the IFRS rows of the
+#: RM's ALLOCATED book gave 0.7M / 0.05M / 1.0M. The map is the
+#: "CUSTOMER SUMMARY_<year>" sheet: cif, rm_code.
+RM_MAP_KIND = "ifrs_rm_map_{year}"
+_RM_MAP_SHEET = re.compile(r"^customer summary_(?P<year>\d{4})$", re.I)
+#: Not an RM: Finance's "Unmanaged", and #N/A (pyxlsb gives the error code).
+_NOT_AN_RM = {"", "UNMANAGED", "0X2A", "#N/A", "NONE", "NAN"}
+
+
+def read_rm_map(path):
+    """The workbook's CUSTOMER SUMMARY_<year> sheet -> (year, {cif: [rm_code]}),
+    or (None, {}) when the workbook has no such sheet.
+
+    A list, not one code: a cif listed twice is counted twice by Finance's
+    rm_summary pivot (4 such rows in the Aug 2026 file - ANK3886, JM4191,
+    AL3199, AWM1991), and the desk copies that pivot."""
+    from pyxlsb import open_workbook
+
+    with open_workbook(str(path)) as book:
+        sheet = next((n for n in book.sheets if _RM_MAP_SHEET.match(str(n).strip())), None)
+        if sheet is None:
+            return None, {}
+        year = int(_RM_MAP_SHEET.match(str(sheet).strip()).group("year"))
+        with book.get_sheet(sheet) as ws:
+            rows = [[cell.v for cell in row] for row in ws.rows()]
+    if not rows:
+        return year, {}
+    header = [str(v or "").strip().lower() for v in rows[0]]
+    if "cif" not in header or "rm_code" not in header:
+        raise IfrsWorkbookError(f"{sheet} has no cif / rm_code columns")
+    ci, ri = header.index("cif"), header.index("rm_code")
+    out = {}
+    for raw in rows[1:]:
+        cif = raw[ci] if ci < len(raw) else None
+        code = raw[ri] if ri < len(raw) else None
+        if isinstance(cif, float) and cif.is_integer():
+            cif = int(cif)
+        if isinstance(code, float) and code.is_integer():
+            code = int(code)
+        cif, code = str(cif or "").strip(), str(code or "").strip().upper()
+        if cif.isdigit() and code not in _NOT_AN_RM:
+            out.setdefault(cif, []).append(code)
+    return year, out
+
+
+def save_rm_map(year, mapping, who=""):
+    from . import workbook_cards as wc
+
+    wc.save_file(RM_MAP_KIND.format(year=year), {"year": year, "map": mapping},
+                 "IFRS CUSTOMER SUMMARY", who)
+
+
 def months_held():
     """The months the table already holds → [date], newest last."""
     from apps.portfolio.models import LoansMomIFRSMovement

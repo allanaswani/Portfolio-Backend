@@ -2184,6 +2184,14 @@ ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
                        "hfcbpropertiesvalue", "hfcbpropertiesvolume"}
 
 
+#: Year-to-date figures the business holds at what the person already
+#: achieved (11 Nov 2026), higher-is-better only: an RM at 0.82 on the desk's
+#: September Weighted Sales (102.2% of 0.8) read 0.79 live in November; Asset
+#: Growth 63,969,185 at September read 62,221,053 at October. A live figure
+#: replaces the desk's once it is higher.
+STICKY_SHEETS = {"weightedsales", "assetgrowth", "depositgrowthretail"}
+
+
 #: Back-office sheets that are running COUNTS, measured on the BO template:
 #: CASA (accounts opened, 4 a month; never falls for 67 of 74 people),
 #: Digital_Customers (61/61), KYC (85/89), CRM (27/32 - complaints logged).
@@ -2593,7 +2601,7 @@ def live_card(sales_code, engine_card, as_at):
 
     def accumulates(wl):
         key = _key(wl["feed"])
-        return key in ACCUMULATING_SHEETS or (
+        return key in ACCUMULATING_SHEETS or key in STICKY_SHEETS or (
             spec.book == BACK_OFFICE and key in BO_ACCUMULATING_SHEETS)
 
     dropped = []
