@@ -12,10 +12,14 @@ The ETL now also saves one row per seller per run into
 
 The score is a FRACTION, the way the workbook's cards carry it: 0.263 on the
 Business_Banking card is 26.3% of the dashboard, scored against an 80%
-target (0.8) as 0.263 / 0.8. ``weighted_score`` is the dashboard's own
-headline column - the one it ranks on - so that is the figure, not the month
-or the YTD half on its own.
+target (0.8) as 0.263 / 0.8.
+
+The card's actual is ``ytd_weighted_score`` - the year-to-date score - not
+``weighted_score``, which blends the month and the YTD halves (stated by the
+business 11 Nov 2026; on ``weighted_score`` the live line matched 0% of RMs
+against the desk's September figures).
 """
+
 
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ import datetime
 
 #: Written by the ETL. The name is the contract between the two repos.
 TABLE = "weighted_sales_seller_scores"
+#: The column that IS the card's actual.
+SCORE_COLUMN = "ytd_weighted_score"
 
 
 def seller_score(sales_code, upto=None):
@@ -51,12 +57,12 @@ def seller_score(sales_code, upto=None):
             "and one run after it")
 
     sql = f"""
-        SELECT weighted_score, report_date, role_group
+        SELECT {SCORE_COLUMN}, report_date, role_group
         FROM {TABLE}
         WHERE UPPER(TRIM(sales_code)) = UPPER(TRIM(%s))
-          AND weighted_score IS NOT NULL
+          AND {SCORE_COLUMN} IS NOT NULL
           AND (%s::date IS NULL OR report_date <= %s::date)
-        ORDER BY report_date DESC, weighted_score DESC
+        ORDER BY report_date DESC, {SCORE_COLUMN} DESC
         LIMIT 1
     """
     with transaction.atomic(), connection.cursor() as cur:
@@ -70,5 +76,6 @@ def seller_score(sales_code, upto=None):
     score, as_at, group = row
     if isinstance(as_at, datetime.datetime):
         as_at = as_at.date()
-    label = f"weighted sales dashboard ({group}), as at {as_at:%d %b %Y}"
+    label = (f"weighted sales dashboard ({group}), year-to-date score, "
+             f"as at {as_at:%d %b %Y}")
     return float(score), as_at, label, None

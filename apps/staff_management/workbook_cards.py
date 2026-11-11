@@ -2184,6 +2184,13 @@ ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
                        "hfcbpropertiesvalue", "hfcbpropertiesvolume"}
 
 
+#: Back-office sheets that are running COUNTS, measured on the BO template:
+#: CASA (accounts opened, 4 a month; never falls for 67 of 74 people),
+#: Digital_Customers (61/61), KYC (85/89), CRM (27/32 - complaints logged).
+#: Back office only: the sales template's CASA is a deposit BALANCE, which falls.
+BO_ACCUMULATING_SHEETS = {"casa", "digitalcustomers", "kyc", "crm"}
+
+
 #: Back-office account-opening turnaround: the desk's figure is the month's
 #: own rate (accounts_tat.py, per iApply user, by month), keyed on the
 #: person's AD username in the template's code column. The engine's reader
@@ -2566,11 +2573,11 @@ def live_card(sales_code, engine_card, as_at):
     # recorded for the year. Where a live reader gives less - property put
     # on nobody because the seller's name is spelt differently, a register
     # not yet reloaded - the desk's figure stands.
-    # A line counts up through the year when its sheet is one that only grows,
-    # or when the workbook's own year-to-date target is larger now than in the
-    # month the desk's figure is from: CASA reads 4 a month, 36 at September
-    # and 44 at November, so it is a running count. Joseph Kinuthia's
-    # September 28 accounts read 15 on his November card.
+    # A line counts up through the year when its sheet is one that only grows
+    # (ACCUMULATING_SHEETS, and on a back-office card BO_ACCUMULATING_SHEETS).
+    # NOT inferred from a growing YTD target: a balance-growth target is
+    # prorated too, and a balance can fall - Asset Growth's live figure was
+    # thrown away for the desk's September one on that inference.
     by_month = {}
 
     def at_month(then):
@@ -2585,14 +2592,9 @@ def live_card(sales_code, engine_card, as_at):
         return by_month[then]
 
     def accumulates(wl):
-        if _key(wl["feed"]) in ACCUMULATING_SHEETS:
-            return True
-        then = carried.get(wl["row"])
-        if not then or then >= month:
-            return False
-        earlier = at_month(then).get(wl["row"]) or {}
-        return (_num(earlier.get("ytd_target")) and _num(wl.get("ytd_target"))
-                and wl["ytd_target"] > earlier["ytd_target"] + 1e-9)
+        key = _key(wl["feed"])
+        return key in ACCUMULATING_SHEETS or (
+            spec.book == BACK_OFFICE and key in BO_ACCUMULATING_SHEETS)
 
     dropped = []
     for wl in card["lines"]:

@@ -34,12 +34,14 @@ def make_scores_table():
         """)
 
 
-def score(on, value, code=CODE, group="SME RM"):
+def score(on, value, code=CODE, group="SME RM", blended=0.99):
+    """``value`` is the YTD score; the blended weighted_score is set to
+    something else so a reader of the wrong column fails."""
     with connection.cursor() as cur:
         cur.execute(
             f"INSERT INTO {ws.TABLE} (report_date, sales_code, role_group, "
-            f"weighted_score) VALUES (%s, %s, %s, %s)",
-            [on, code, group, value])
+            f"ytd_weighted_score, weighted_score) VALUES (%s, %s, %s, %s, %s)",
+            [on, code, group, value, blended])
 
 
 class ReaderTests(TestCase):
@@ -81,6 +83,11 @@ class ReaderTests(TestCase):
         score(on, 0.2, group="SME RM")
         score(on, 0.4, group="PB RM")
         self.assertAlmostEqual(ws.seller_score(CODE)[0], 0.4)
+
+    def test_the_actual_is_the_ytd_score_not_the_blend(self):
+        make_scores_table()
+        score(datetime.date(2026, 10, 31), 0.4893, blended=0.61)
+        self.assertAlmostEqual(ws.seller_score(CODE)[0], 0.4893)
 
     def test_nobody_on_the_dashboard_is_told_so(self):
         make_scores_table()

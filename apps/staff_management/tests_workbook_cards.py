@@ -1368,6 +1368,17 @@ class YearToDateCannotFallTests(TestCase):
         self.assertEqual(opening["ytd_actual"], 30.0)
         self.assertIn("live, as at 11 Nov 2026", opening["as_at"])
 
+    def test_a_growing_target_alone_does_not_make_a_running_count(self):
+        """Asset Growth: a prorated growth target grows month by month, but the
+        balance behind it can fall, so the lower live figure stands."""
+        from unittest.mock import patch
+
+        with patch.object(bo, "BO_ACCUMULATING_SHEETS", set()):
+            opening, _, _ = self._card([
+                {"kpi_code": "t_ao", "kpi_name": "Account Opening", "ytd_actual": 15.0}])
+        self.assertEqual(opening["ytd_actual"], 15.0)
+        self.assertIn("live, as at 11 Nov 2026", opening["as_at"])
+
     def test_a_level_may_fall(self):
         # NPS's target is the same every month, so a lower month is a result.
         _, _, nps = self._card([
