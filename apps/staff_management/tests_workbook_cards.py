@@ -1333,3 +1333,52 @@ class NoCardListTests(TestCase):
         self.assertFalse(card["has_card"])
         self.assertEqual(card["reason"], "no_card")
         self.assertIn("CX Manager, Head Office", card["detail"])
+
+
+class YearToDateCannotFallTests(TestCase):
+    """Joseph Kinuthia JKK3227 (11 Nov 2026): 28 accounts at September read 15
+    on his November card, and both account-opening TATs read the branch's
+    whole-year average with no account on his own queue."""
+
+    def _card(self, engine_lines):
+        from .scorecard_automation.models import ScKpi
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        for code, name, sheet in (("t_ao", "Account Opening", "CASA"),
+                                  ("t_nps", "NPS", "NPS")):
+            ScKpi.objects.update_or_create(kpi_code=code, defaults=dict(kpi_name=name, score_cap=1.2,
+                                 actuals_sheet=sheet))
+        engine = {"perspectives": [{"lines": engine_lines}]}
+        return [ln for p in bo.live_card(
+            "BCK3783", engine, datetime.date(2026, 11, 11))["perspectives"]
+            for ln in p["lines"]]
+
+    def test_a_running_count_below_the_desks_keeps_the_desks(self):
+        # CASA's target is 4 a month: 36 at September, 44 at November - a
+        # running count, though CASA is not on ACCUMULATING_SHEETS.
+        opening, _, _ = self._card([
+            {"kpi_code": "t_ao", "kpi_name": "Account Opening", "ytd_actual": 15.0}])
+        self.assertEqual((opening["ytd_target"], opening["ytd_actual"]), (36.0, 26))
+        self.assertIn("(Sep 2026)", opening["as_at"])
+
+    def test_a_running_count_above_the_desks_reads_live(self):
+        opening, _, _ = self._card([
+            {"kpi_code": "t_ao", "kpi_name": "Account Opening", "ytd_actual": 30.0}])
+        self.assertEqual(opening["ytd_actual"], 30.0)
+        self.assertIn("live, as at 11 Nov 2026", opening["as_at"])
+
+    def test_a_level_may_fall(self):
+        # NPS's target is the same every month, so a lower month is a result.
+        _, _, nps = self._card([
+            {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 0.5}])
+        self.assertEqual(nps["ytd_actual"], 0.5)
+
+    def test_account_opening_tat_keeps_the_desks_month(self):
+        from unittest.mock import patch
+
+        with patch.object(bo, "BO_DESK_TAT_SHEETS", {"nps"}):
+            _, _, nps = self._card([
+                {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 5.48}])
+        self.assertAlmostEqual(nps["ytd_actual"], 0.7241379310344828)
+        self.assertIn("(Sep 2026)", nps["as_at"])

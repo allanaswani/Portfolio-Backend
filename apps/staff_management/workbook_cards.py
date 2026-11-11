@@ -2025,6 +2025,16 @@ ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
                        "hfcbpropertiesvalue", "hfcbpropertiesvolume"}
 
 
+#: Back-office account-opening turnaround: the desk's figure is the month's
+#: own rate (accounts_tat.py, per action, by month), keyed on the BOM's AD
+#: username. The engine's reader is the branch's whole-year average span
+#: per application: Joseph Kinuthia (Embu) read 5.48 and 18.97 days in
+#: November against the desk's 0.23 and 0.6 for September, with no account
+#: on his own queue. Until a reader matches the desk, the desk's latest
+#: month stands on these lines.
+BO_DESK_TAT_SHEETS = {"accountopeningpb", "accountopeningbb"}
+
+
 def _get_template(actuals, sheet, code, month, block=0, person=None):
     """One person's figure for one month on the template, or None."""
     from .bb_live_feeds import BLOCK_WIDTH
@@ -2343,6 +2353,10 @@ def live_card(sales_code, engine_card, as_at):
         # after read live, as of the month the person asks for). A month the
         # desk filled kept its figure above. A line not yet matched to the desk
         # says so on the card.
+        if spec.book == BACK_OFFICE and _key(wl["feed"]) in BO_DESK_TAT_SHEETS:
+            # See BO_DESK_TAT_SHEETS: the engine's reader measures something
+            # else, so the desk's latest month stands.
+            continue
         unproven = (wl["row"] in carried
                     and sales_live_feeds.line_key(wl) not in bo_engine)
         match = (next((p for p in pool if p["feed"] and
@@ -2368,14 +2382,42 @@ def live_card(sales_code, engine_card, as_at):
     # recorded for the year. Where a live reader gives less - property put
     # on nobody because the seller's name is spelt differently, a register
     # not yet reloaded - the desk's figure stands.
+    # A line counts up through the year when its sheet is one that only grows,
+    # or when the workbook's own year-to-date target is larger now than in the
+    # month the desk's figure is from: CASA reads 4 a month, 36 at September
+    # and 44 at November, so it is a running count. Joseph Kinuthia's
+    # September 28 accounts read 15 on his November card.
+    by_month = {}
+
+    def at_month(then):
+        if then not in by_month:
+            # With that month's unfilled running totals given the person's last
+            # figure, as the stored cards are: Naomi Kagiri's November card
+            # carried 38m Value of Property Sales, then re-scored it at September
+            # off the template's unfilled September cell and showed 0.
+            by_month[then] = {w["row"]: w for w in compute(
+                book, running_totals_filled(template_live or actuals, then),
+                holder, then)["lines"]}
+        return by_month[then]
+
+    def accumulates(wl):
+        if _key(wl["feed"]) in ACCUMULATING_SHEETS:
+            return True
+        then = carried.get(wl["row"])
+        if not then or then >= month:
+            return False
+        earlier = at_month(then).get(wl["row"]) or {}
+        return (_num(earlier.get("ytd_target")) and _num(wl.get("ytd_target"))
+                and wl["ytd_target"] > earlier["ytd_target"] + 1e-9)
+
     dropped = []
     for wl in card["lines"]:
         r = wl["row"]
         is_live = (r - 1, actual_col) in overrides or r in live_rows
         shrank = (is_live and r in carried
-                  and _key(wl["feed"]) in ACCUMULATING_SHEETS
                   and _num(wl["actual"]) and _num(desk.get(r))
-                  and wl["actual"] < desk[r])
+                  and wl["actual"] < desk[r]
+                  and accumulates(wl))
         # A back-office line is live only if the card's own formula found the
         # figure: never a "live" label on the desk's number.
         unread = (spec.book == BACK_OFFICE and r in written and not (
@@ -2396,22 +2438,13 @@ def live_card(sales_code, engine_card, as_at):
     # against ten months of target reads a month short. The workbook's own
     # formulas, run for the month the figure is from, give the target,
     # score and weighted score the desk itself would have shown.
-    by_month = {}
     for wl in card["lines"]:
         r = wl["row"]
         then = carried.get(r)
         if (wl["typed"] or not then or then >= month
                 or (r - 1, actual_col) in overrides or r in live_rows):
             continue
-        if then not in by_month:
-            # With that month's unfilled running totals given the person's last
-            # figure, as the stored cards are: Naomi Kagiri's November card
-            # carried 38m Value of Property Sales, then re-scored it at September
-            # off the template's unfilled September cell and showed 0.
-            by_month[then] = {w["row"]: w for w in compute(
-                book, running_totals_filled(template_live or actuals, then),
-                holder, then)["lines"]}
-        earlier = by_month[then].get(r)
+        earlier = at_month(then).get(r)
         if earlier is not None:
             for field in ("ytd_target", "actual", "score", "weighted"):
                 wl[field] = earlier[field]
