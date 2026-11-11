@@ -2459,9 +2459,11 @@ def live_card(sales_code, engine_card, as_at):
                 None)
             carried[wl["row"]] = own or latest
     # The desk's year to date per line, before anything live is put in.
-    desk = ({wl["row"]: wl["actual"] for wl in
-             compute(book, template_live, holder, month)["lines"]}
-            if carried else {})
+    desk_card = (compute(book, template_live, holder, month)["lines"]
+                 if carried else [])
+    desk = {wl["row"]: wl["actual"] for wl in desk_card}
+    # What the desk's latest figure scores against THIS month's target.
+    desk_score = {wl["row"]: wl["score"] for wl in desk_card}
     prior = {}
     beside = {}     # row -> scored on the warehouse's figure, not yet matched to the desk
     dashboard = {}  # row -> the month of the Weighted TAT Dashboard it read
@@ -2612,6 +2614,22 @@ def live_card(sales_code, engine_card, as_at):
                   and _num(wl["actual"]) and _num(desk.get(r))
                   and wl["actual"] < desk[r]
                   and accumulates(wl))
+        # A definition never proven against the desk cannot make a line WORSE
+        # than the figure the desk already recorded (11 Nov 2026: PAR 0.02 ->
+        # 1, Leave 1 -> 0.71 on an RM card). Compared on the score at this
+        # month's target, so direction (PAR lower-is-better) and a target that
+        # grew (VIC: same premiums, higher target) are both handled by the
+        # card's own formula. Proven lines, the desk's Weighted TAT dashboard
+        # and the accounts TAT report still move both ways.
+        if spec.book == SALES:
+            proven_line = not sales_live_feeds.note(sales_proven, wl)
+        else:
+            proven_line = r not in beside
+        worse = (is_live and r in carried and not proven_line
+                 and r not in dashboard and r not in tat_report
+                 and _num(wl.get("score")) and _num(desk_score.get(r))
+                 and wl["score"] < desk_score[r] - 1e-9)
+        shrank = shrank or worse
         # A back-office line is live only if the card's own formula found the
         # figure: never a "live" label on the desk's number.
         unread = (spec.book == BACK_OFFICE and r in written and not (

@@ -1368,22 +1368,46 @@ class YearToDateCannotFallTests(TestCase):
         self.assertEqual(opening["ytd_actual"], 30.0)
         self.assertIn("live, as at 11 Nov 2026", opening["as_at"])
 
-    def test_a_growing_target_alone_does_not_make_a_running_count(self):
-        """Asset Growth: a prorated growth target grows month by month, but the
-        balance behind it can fall, so the lower live figure stands."""
+    def _proven(self, *keys):
         from unittest.mock import patch
 
-        with patch.object(bo, "BO_ACCUMULATING_SHEETS", set()):
+        from . import bo_live_feeds
+
+        return patch.object(bo_live_feeds, "engine_proven",
+                            return_value={k: {"live": True} for k in keys})
+
+    def test_a_growing_target_alone_does_not_make_a_running_count(self):
+        """A prorated growth target grows month by month, but the balance
+        behind it can fall: on a PROVEN line the lower live figure stands."""
+        from unittest.mock import patch
+
+        with patch.object(bo, "BO_ACCUMULATING_SHEETS", set()), \
+                self._proven("casa|accountopening"):
             opening, _, _ = self._card([
                 {"kpi_code": "t_ao", "kpi_name": "Account Opening", "ytd_actual": 15.0}])
         self.assertEqual(opening["ytd_actual"], 15.0)
         self.assertIn("live, as at 11 Nov 2026", opening["as_at"])
 
-    def test_a_level_may_fall(self):
-        # NPS's target is the same every month, so a lower month is a result.
+    def test_a_proven_level_may_fall(self):
+        # NPS's target is the same every month, so a lower month is a result -
+        # once the reader has been shown to give the desk's figures.
+        with self._proven("nps|nps"):
+            _, _, nps = self._card([
+                {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 0.5}])
+        self.assertEqual(nps["ytd_actual"], 0.5)
+
+    def test_an_unproven_figure_cannot_score_worse_than_the_desks(self):
+        """11 Nov 2026: PAR 0.02 -> 1 and Leave 1 -> 0.71 on an RM card, from
+        definitions never matched to the desk. The desk's figure stands."""
         _, _, nps = self._card([
             {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 0.5}])
-        self.assertEqual(nps["ytd_actual"], 0.5)
+        self.assertAlmostEqual(nps["ytd_actual"], 0.7241379310344828)
+        self.assertIn("(Sep 2026)", nps["as_at"])
+
+    def test_an_unproven_figure_that_scores_better_reads_live(self):
+        _, _, nps = self._card([
+            {"kpi_code": "t_nps", "kpi_name": "NPS", "ytd_actual": 0.75}])
+        self.assertEqual(nps["ytd_actual"], 0.75)
 
     def test_account_opening_tat_never_takes_the_engines_figure(self):
         from unittest.mock import patch
