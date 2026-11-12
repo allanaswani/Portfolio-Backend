@@ -719,6 +719,7 @@ class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
     ASSISTED_BY_OVERRIDES = {
         "AH-6JNXXXV6": "Stephen Mwenda Mitabari",
         "AH-YJ3Z7DXQ": "Juspher Muriithi",
+        "AH-4ZZ259Y4": "Doreen ntiritu", # Email approval Nov 12 2026
     }
 
     def amend_row(self, row):
