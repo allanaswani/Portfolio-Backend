@@ -97,6 +97,20 @@ class WhizzOnboardingTests(TestCase):
             ("Tabitha  Muita", 2026, 1, 1), ("Tabitha Muita", 2026, 3, 2),
             ("BCK3783", 2026, 10, 4)], 2026))
 
+    def test_a_login_names_the_officer(self):
+        officers = self.wo.counts([
+            ("christopher.shema@hfcb.co.ke", 2026, 1, 3),
+            ("Christopher.Shema@hfcb.co.ke", 2026, 2, 1),
+            ("82", 2026, 1, 6)], 2026)
+        self.assertEqual(officers, {"CHRISTOPHER SHEMA": {"1": 3, "2": 1}, "82": {"1": 6}})
+        self.assertEqual(self.wo.mine(officers, names=("Christopher Shema",)),
+                         ["CHRISTOPHER SHEMA"])
+        # Three names on the template, two in the login: still him.
+        self.assertEqual(self.wo.mine({"LIZA KAMUNYU": {}}, names=("Liza Wamaitha Kamunyu",)),
+                         ["LIZA KAMUNYU"])
+        # A bare id names nobody.
+        self.assertEqual(self.wo.mine({"82": {}}, codes=("XX9999",), names=("Somebody",)), [])
+
     def test_last_years_rows_are_not_this_years_count(self):
         officers = self.wo._loaded(2026)["officers"]
         self.assertEqual(officers["LMUTWA"], {"1": 2, "2": 6})

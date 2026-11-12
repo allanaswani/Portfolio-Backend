@@ -16,9 +16,13 @@ the workbook-file store, never on the card's path: a lake read on every page
 view is how the active-customers lines once timed out. The card reads the
 running total of the person's months up to the card's month.
 
-Whose row is whose: ``created_by`` is matched to the person by sales code, by
-the AD login the desk keys their account-opening rows on, or by name
-(:func:`live_scorecard.names_agree`). Somebody the report does not name has
+Whose row is whose: ``created_by`` is a numeric Whizz user id. The report
+never names it; ``delta.gold_db.res_users`` does (``id`` -> ``login``, the
+staff mailbox: 77 of the 79 ids onboarding in 2026 resolve, 12 Nov 2026, and
+the CSOs among them are the template's own - christopher.shema, lee.kamau,
+liza.kamunyu, jane.karathe). The login's name part ("christopher.shema" ->
+"CHRISTOPHER SHEMA") is then matched to the person by name
+(:func:`live_scorecard.names_agree`), or by sales code / AD login. Somebody the report does not name has
 no figure here - never a nought - and keeps the desk's.
 """
 from __future__ import annotations
@@ -35,16 +39,24 @@ QUERY = """
                                   ORDER BY date_created) AS rn
         FROM delta.gold_db.customers_whizz
         WHERE date_created >= DATE '{since}' AND customer_id IS NOT NULL)
-    SELECT created_by, year(date_created) AS y, month(date_created) AS m,
-           count(*) AS n
-    FROM c WHERE rn = 1
+    SELECT COALESCE(r.login, CAST(c.created_by AS varchar)) AS created_by,
+           year(c.date_created) AS y, month(c.date_created) AS m, count(*) AS n
+    FROM c
+    LEFT JOIN delta.gold_db.res_users r
+           ON CAST(r.id AS varchar) = trim(CAST(c.created_by AS varchar))
+    WHERE c.rn = 1
     GROUP BY 1, 2, 3
 """
 
 
 def officer_key(value):
-    """The report's own tidy (spaces collapsed), upper case."""
-    return " ".join(str(value or "").split()).upper()
+    """An officer's name, upper case: a login's mailbox name with its dots as
+    spaces ("christopher.shema@hfcb.co.ke" -> "CHRISTOPHER SHEMA"), else the
+    value itself (an id no login names stays its id)."""
+    text = str(value or "").strip()
+    if "@" in text:
+        text = text.split("@", 1)[0].replace(".", " ").replace("_", " ")
+    return " ".join(text.split()).upper()
 
 
 def fetch(year):
