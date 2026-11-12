@@ -69,6 +69,21 @@ class MirrorTradeFinanceTests(APITestCase):
         self.assertEqual(parse_tf_date("12-Nov-2026"), date(2026, 11, 12))
         self.assertEqual(parse_tf_date("2026-11-12 00:00:00"), date(2026, 11, 12))
         self.assertIsNone(parse_tf_date("OPEN ENDED"))
+        # The desk's upload format, as found on 785 production rows.
+        self.assertEqual(parse_tf_date("2025-Sep-02"), date(2025, 9, 2))
+        self.assertEqual(parse_tf_date("2026-Sept-07"), date(2026, 9, 7))
+        self.assertEqual(parse_tf_date("2030-Jul-31"), date(2030, 7, 31))
+
+    def test_upload_format_rows_are_mirrored_with_their_dates(self):
+        tf = _tf(issue_date="2026-Sept-07", expiry_date="2027-Mar-31")
+        oe = _tf(guarantee_ref="HF1", issue_date="2025-Feb-11", expiry_date="Open ended")
+        out = mirror_trade_finance()
+        self.assertEqual((out["created"], out["skipped"]), (2, 0))
+        e = TradeRegisterEntry.objects.get(tf=tf)
+        self.assertEqual((e.issue_date, e.expiry_date), (date(2026, 9, 7), date(2027, 3, 31)))
+        e = TradeRegisterEntry.objects.get(tf=oe)
+        self.assertTrue(e.is_open_ended)
+        self.assertIsNone(e.expiry_date)
 
 
 class FinanceViewListsTheWholeBookTests(APITestCase):

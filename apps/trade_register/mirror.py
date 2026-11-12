@@ -20,6 +20,7 @@ one such entry exists. Otherwise a new entry is created. Nothing is deleted and
 no TF row is changed.
 """
 
+import re
 from datetime import date, datetime
 
 from django.db import transaction
@@ -30,6 +31,9 @@ from django.db import transaction
 DATE_FORMATS = (
     "%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S",
     "%d-%m-%Y", "%d.%m.%Y", "%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%d/%m/%y",
+    # The desk's upload writes 2025-Sep-02 (785 of the 856 rows on 12 Nov
+    # 2026), and September sometimes as "Sept" - normalised before parsing.
+    "%Y-%b-%d",
 )
 
 
@@ -41,7 +45,7 @@ def parse_tf_date(value):
         return value.date()
     if isinstance(value, date):
         return value
-    text = str(value).strip()
+    text = re.sub(r"(?i)-sept-", "-Sep-", str(value).strip())
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(text[:19] if "%H" in fmt else text, fmt).date()

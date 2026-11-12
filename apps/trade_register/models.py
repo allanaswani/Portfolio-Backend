@@ -963,17 +963,9 @@ class TradeRegisterEntry(models.Model):
         wipe what the register already holds (its extra fields — product FK,
         amendment, is_open_ended — are never touched here). Amounts sync as-is
         (0 is a real value); text fields only overwrite when non-empty."""
-        from datetime import datetime
-
-        def _parse_date(value):
-            if not value:
-                return None
-            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S"):
-                try:
-                    return datetime.strptime(str(value)[:19], fmt).date()
-                except ValueError:
-                    continue
-            return None
+        # The same reader as the mirror, so an Administration edit of a row
+        # dated 2025-Sep-02 moves the register's dates too.
+        from .mirror import parse_tf_date as _parse_date
 
         open_ended = str(tf.expiry_date or "").strip().upper() == "OPEN ENDED"
 
