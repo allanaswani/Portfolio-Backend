@@ -2524,6 +2524,31 @@ def live_card(sales_code, engine_card, as_at):
                     written[wl["row"]] = float(value)
                     dashboard[wl["row"]] = as_at.replace(day=1)
                     continue
+        if spec.book == BACK_OFFICE and _key(wl["feed"]) == "digitalcustomers":
+            # Customers onboarded on Whizz (whizz_onboarding): the person's
+            # own officer rows by sales code, AD login or name.
+            from . import whizz_onboarding as wo
+            from .management.commands.load_whizz_onboarding import logins_for
+
+            row = _template_row(template_live, wl["feed"], code, 0, person)
+            names = (holder.name, row[2] if row and len(row) > 2 else None)
+            logins = set()
+            for n in names:
+                if n:
+                    logins |= logins_for(template_live, str(n))
+            value, loaded = wo.running_total(as_at.year, month,
+                                             codes=(code, *logins), names=names)
+            if value is not None:
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    measured[wl["row"]] = (f"customers you onboarded on Whizz "
+                                           f"(Whizz onboarding report, loaded "
+                                           f"{loaded})")
+                    continue
         if spec.book == BACK_OFFICE and (
                 _key(wl["feed"]) == "reactivation"
                 or (_key(wl["feed"]) == "casa"

@@ -85,3 +85,50 @@ class VicVolumeTests(TestCase):
         self.assertEqual(SOURCES["bo_vic"].actual_key, "vic_count")
         self.assertEqual(SOURCES["bo_vic_life"].actual_key, "vic_life_count")
         self.assertEqual(SOURCES["bo_vic_non_life"].actual_key, "vic_non_life_count")
+
+
+class WhizzOnboardingTests(TestCase):
+    def setUp(self):
+        from . import whizz_onboarding as wo
+
+        self.wo = wo
+        wo.save(2026, wo.counts([
+            ("lmutwa", 2026, 1, 2), ("LMUTWA", 2026, 2, 6), ("lmutwa", 2025, 12, 9),
+            ("Tabitha  Muita", 2026, 1, 1), ("Tabitha Muita", 2026, 3, 2),
+            ("BCK3783", 2026, 10, 4)], 2026))
+
+    def test_last_years_rows_are_not_this_years_count(self):
+        officers = self.wo._loaded(2026)["officers"]
+        self.assertEqual(officers["LMUTWA"], {"1": 2, "2": 6})
+        self.assertEqual(officers["TABITHA MUITA"], {"1": 1, "3": 2})
+
+    def test_found_by_login_name_or_code_and_never_a_nought(self):
+        self.assertEqual(self.wo.running_total(2026, 2, codes=("LM3280", "LMUTWA"))[0], 8)
+        self.assertEqual(self.wo.running_total(2026, 3, names=("Tabitha Muita",))[0], 3)
+        self.assertEqual(self.wo.running_total(2026, 10, codes=("BCK3783",))[0], 4)
+        self.assertEqual(self.wo.running_total(2026, 10, codes=("XX9999",),
+                                               names=("Somebody Else",)), (None, None))
+
+    def test_the_card_reads_it(self):
+        scorecards = book()
+        scorecards["cards"]["TELLER_SCORECARD"]["grid"][9][11] = "Digital_Customers"
+        bo.save_file("scorecards", scorecards)
+        bo.save_file("actuals", template({
+            "Digital_Customers": {"Bob Waigwa": [0, 0, 0, 0, 0, 0, 0, 1, 2]},
+            "Training_hours": {"Bob Waigwa": [0, 6, 11, 15, 18, 22, 22, 22, 40]},
+            "NPS": {"Bob Waigwa": [0.5] * 9}}))
+        line = bo.live_card("BCK3783", None, NOV)["perspectives"][0]["lines"][0]
+        self.assertEqual(line["ytd_actual"], 4)
+        self.assertIn("Whizz", line["as_at"])
+
+    def test_check_compares_with_the_desk(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        bo.save_file("actuals", template({
+            "Digital_Customers": {"Bob Waigwa": [0, 0, 0, 0, 0, 0, 0, 0, 0, 4]}}))
+        out = StringIO()
+        call_command("load_whizz_onboarding", "--check", "--no-load", "--year", "2026",
+                     stdout=out)
+        self.assertIn("NOT IN REPORT", out.getvalue())  # the fixture's code is "X"
