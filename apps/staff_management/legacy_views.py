@@ -11,6 +11,8 @@ Views for the legacy staff_management tables ported from hf_group_project-master
   backend's per-dataset semantics — see the upload views at the bottom.
 """
 
+import logging
+
 import django_filters.rest_framework
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -48,6 +50,8 @@ from .serializers import (
     OperatingExpenseMappingSerializer,
     PremiumTypeMappingSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 TAG = ["Staff Management — Legacy Data"]
 DjangoFilterBackend = django_filters.rest_framework.DjangoFilterBackend
@@ -401,6 +405,19 @@ class TradeFinanceCsvUploadView(AmendingCsvUploadView):
         for field in self._MONEY:
             row[field] = self.to_float(row.get(field))
         row["fx_rate"] = self.to_float(row.get("fx_rate"), default=1.0)
+
+    def post(self, request, *args, **kwargs):
+        # The upload replaces the year's rows with new ones, and the Trade
+        # Register reads its own entries: without this the register kept only
+        # what was typed into it (77 rows against Administration's 856).
+        response = super().post(request, *args, **kwargs)
+        if response.status_code < 400:
+            from apps.trade_register.mirror import mirror_trade_finance
+            try:
+                mirror_trade_finance()
+            except Exception:  # noqa: BLE001 - the upload itself succeeded
+                logger.exception("Trade register mirror after TF upload failed")
+        return response
 
 
 # ── Customer monthly FTP (managed) ────────────────────────────────────────────
