@@ -1452,10 +1452,19 @@ def _layout(spec, card):
 #: 10 Nov 2026). The row's score is IF(actual <= YTD target, 1,
 #: IF(actual <= YTD target + 1, 0.5, 0)) over the typed 7 in GROWTH, 2026 FY
 #: and YTD Target.
+#:
+#: Branch Service Ambassador (BSA_SCORECARD), Leave Management: the sheet's
+#: FY target was 48 - the Training hours target on the row above, copied
+#: down - so a fully adherent BSA (actual 1.0) scored 1/24 = 4.2% (Felix
+#: Saigon, Komarock, Nov 2026). The RBO and TL_RBO cards' identical row
+#: carries 1.0, a share. Only the FY cell is set: the YTD cell is the sheet's
+#: own FY * (months - prorated months) / 12 and recomputes from it.
 TARGET_CHANGES = (
     {"sheet": "Mortgage_Business", "measure": "TAT (Loan)", "from": (2026, 10),
      "cells": {"growth": 14.0, "fy": 14.0, "ytd": 14.0},
      "initiative": "< 14 Days (Binary 90%)"},
+    {"sheet": "BSA_SCORECARD", "measure": "Leave Management", "from": (2026, 1),
+     "cells": {"fy": 1.0}},
 )
 
 

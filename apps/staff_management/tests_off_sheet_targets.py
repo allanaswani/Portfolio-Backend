@@ -54,6 +54,34 @@ class TargetChangeTests(SimpleTestCase):
         self.assertEqual(wc._target_changes(spec, card, "Personal_Banking", 2026, 10), {})
 
 
+class BsaLeaveTargetTests(SimpleTestCase):
+    """BSA Leave Management carried Training's 48; RBO/TL_RBO carry 1.0."""
+
+    def _book(self):
+        from . import workbook_cards as wc
+
+        spec = wc.SPECS[wc.BACK_OFFICE]
+        row = [None] * 13
+        row[2], row[3] = "Leave Management", "Ensure adherence to the leave policy"
+        row[4], row[5], row[7] = 0.025, 48.0, 1.0
+        card = {"grid": [[None] * 13] * 19 + [row],
+                # YTD = FY * (Constants!B2 - prorate) / 12; score = MIN(actual/YTD, 1.2)
+                "f": {"19,6": [["r", None, 19, 5], ["r", "Constants", 1, 1],
+                               ["r", None, 19, 12], ["b", "-"], ["n", 12.0],
+                               ["b", "/"], ["b", "*"]],
+                      "19,8": [["r", None, 19, 7], ["r", None, 19, 6], ["b", "/"],
+                               ["n", 1.2], ["f", "MIN", 2]]}}
+        return spec, card
+
+    def test_fy_is_one_and_the_sheets_formula_gives_the_ytd(self):
+        from . import workbook_cards as wc
+
+        spec, card = self._book()
+        changes = wc._target_changes(spec, card, "BSA_SCORECARD", 2026, 11)
+        self.assertEqual(changes, {(19, spec.cols["fy"]): 1.0})
+        self.assertEqual(wc._target_changes(spec, card, "RBO_SCORECARD", 2026, 11), {})
+
+
 class LastYearIncomeTests(TestCase):
     """Last year's income is read only when asked, and kept: reading it on
     every card made cards time out."""
