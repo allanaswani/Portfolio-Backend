@@ -56,7 +56,7 @@ class CardTests(TestCase):
         with patch.object(bm, "funded_accounts", return_value={"BCK3783": 27}):
             line = self._card("CASA", [0, 1, 2, 2, 3, 4, 12, 20, 22])
         self.assertEqual(line["ytd_actual"], 27)
-        self.assertIn("take-on accounts left out", line["as_at"])
+        self.assertIn("take-on and staff accounts left out", line["as_at"])
 
     def test_dormancy_reads_the_branch_rate(self):
         with patch.object(bm, "_live_dormant", return_value={"kitengela": 1500}), \

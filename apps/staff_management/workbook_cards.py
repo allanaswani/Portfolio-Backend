@@ -2564,8 +2564,8 @@ def live_card(sales_code, engine_card, as_at):
                 opened = bm.funded_accounts(as_at.year, month)
                 value = (None if opened is None
                          else opened.get(str(code or "").strip().upper(), 0))
-                how = ("funded accounts you opened, take-on accounts left out "
-                       "(daily sales report)")
+                how = ("funded accounts you opened, take-on and staff "
+                       "accounts left out (daily sales report)")
             if value is not None:
                 prior[wl["row"]] = (wl["feed"], 0, _get_template(
                     template_live, wl["feed"], code, month, 0, person))

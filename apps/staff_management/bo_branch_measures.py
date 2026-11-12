@@ -19,7 +19,8 @@ CSM their segment's, as the template's RE_activation row puts them
 count has been matched to it yet, so the month being lived through has none.
 
 **CASA** ("Open 4 funded accounts") - accounts the person opened this year
-that are funded and are not take-on accounts (the business, 12 Nov 2026), from
+that are funded, are not take-on accounts and are not on the STAFF customer
+segment (the business, 12 Nov 2026), from
 ``daily_sales`` + ``product_mapping`` as the daily sales report reads them
 (``daily_sales_report.py``: funded = this year's month-end balances and the
 recent daily ones not all nought). Against the desk's August figures for
@@ -129,7 +130,7 @@ def dormancy(as_at, places, today=None):
 
 
 def funded_accounts(year, month):
-    """Funded, non-take-on accounts opened in ``year`` to ``month``'s end,
+    """Funded, non-take-on, non-staff accounts opened in ``year`` to ``month``'s end,
     per sales code -> {CODE: n}, or None when the table cannot be read."""
     from django.core.cache import cache
     from django.db import connection
@@ -150,6 +151,7 @@ def funded_accounts(year, month):
             LEFT JOIN product_mapping p ON p.code::text = d.prod_id::text
             WHERE d.open_date >= %s AND d.open_date < %s
               AND upper(trim(COALESCE(p.product_description, ''))) <> 'TAKE ON ACCOUNT'
+              AND COALESCE(d.customer_segment, '') NOT ILIKE '%%STAFF%%'
               AND (SELECT COALESCE(sum(v::numeric), 0)
                    FROM jsonb_each_text(to_jsonb(d)) e(k, v)
                    WHERE (k ~ '^[a-z]{{3}}_{yy}_bal$' OR k ~ '^yester_[0-9]+_bal$')
