@@ -92,8 +92,8 @@ class FinanceViewListsTheWholeBookTests(APITestCase):
         self.client.force_authenticate(self.user)
 
     def test_archived_all_includes_expired(self):
-        _tf()
-        _tf(guarantee_ref="HFCB/GTE/250102/02")
+        _tf(expiry_date="2099-12-31")
+        _tf(guarantee_ref="HFCB/GTE/250102/02", expiry_date="2099-12-31")
         mirror_trade_finance()
         TradeRegisterEntry.objects.filter(
             guarantee_ref="HFCB/GTE/250102/02").update(is_archived=True)
@@ -105,18 +105,73 @@ class FinanceViewListsTheWholeBookTests(APITestCase):
 
 
 class CashCoverCurrencyTests(APITestCase):
-    def test_cover_currency_defaults_to_the_transaction_and_can_differ(self):
+    def test_cover_currency_is_never_assumed(self):
         product = TradeProduct.objects.get(code="14116")
         base = dict(
             product=product, originating_branch="X", rm_name="R", segment="C",
             our_customer="Z", currency="USD", amount_fcy=1000, fx_rate=130,
             customer_id=1, issue_date=date(2026, 11, 6),
         )
+        # A cover amount with no currency stated stays unstated: a USD letter
+        # of credit covered in shillings must not read as USD.
         same = TradeRegisterEntry.objects.create(cash_cover_amount=500, **base)
-        self.assertEqual(same.cash_cover_currency, "USD")
+        self.assertEqual(same.cash_cover_currency, "")
         other = TradeRegisterEntry.objects.create(
             cash_cover_amount=115000, cash_cover_currency="KES", **base)
         other.refresh_from_db()
         self.assertEqual(other.cash_cover_currency, "KES")
         none = TradeRegisterEntry.objects.create(**base)
         self.assertEqual(none.cash_cover_currency, "")
+
+
+class MirroredEntriesReadAsTheirOwnDatesTests(APITestCase):
+    """12 Nov 2026: every mirrored row showed as reported that day, in USD
+    cover and as an issuance, whatever its reference said."""
+
+    def test_new_entries_take_the_issue_date_and_their_action(self):
+        _tf(guarantee_ref="HFC/GTE/240521/02", issue_date="2024-May-21",
+            expiry_date="2099-12-31", currency="USD", cash_cover_amount=1000)
+        _tf(guarantee_ref="HFC/GTE/240521/02 - EXT", issue_date="2025-Apr-07",
+            expiry_date="2099-12-31", currency="USD")
+        _tf(guarantee_ref="HFCB/GTE/250102/09", expiry_date="2025-06-30")
+        mirror_trade_finance()
+        original = TradeRegisterEntry.objects.get(guarantee_ref="HFC/GTE/240521/02")
+        self.assertEqual(original.reporting_date, date(2024, 5, 21))
+        self.assertEqual(original.action, "ISSUANCE")
+        self.assertEqual(original.cash_cover_currency, "")
+        ext = TradeRegisterEntry.objects.get(guarantee_ref="HFC/GTE/240521/02 - EXT")
+        self.assertEqual((ext.action, ext.parent_ref, ext.parent_id),
+                         ("EXT", "HFC/GTE/240521/02", original.pk))
+        self.assertEqual(ext.reporting_date, date(2025, 4, 7))
+        # Long expired: filed straight away, not left on this week's diary.
+        expired = TradeRegisterEntry.objects.get(guarantee_ref="HFCB/GTE/250102/09")
+        self.assertTrue(expired.is_archived)
+
+    def test_repair_fixes_untouched_entries_only(self):
+        from django.utils import timezone
+
+        from .mirror import repair_mirrored
+
+        a = _tf(guarantee_ref="HFC/GTE/240521/02 - EXT", issue_date="2025-Apr-07",
+                expiry_date="2099-12-31", currency="USD", cash_cover_amount=5)
+        b = _tf(guarantee_ref="HFCB/GTE/250102/05", expiry_date="2099-12-31",
+                currency="USD", cash_cover_amount=5)
+        mirror_trade_finance()
+        today = timezone.localdate()
+        # What the first mirror wrote.
+        TradeRegisterEntry.objects.update(reporting_date=today,
+                                          cash_cover_currency="USD",
+                                          action="ISSUANCE", parent_ref="")
+        # Somebody has since saved b by hand: theirs stands.
+        user = User.objects.create_user("desk")
+        entry_b = TradeRegisterEntry.objects.get(tf=b)
+        entry_b._history_user = user
+        entry_b.save()
+        fixed = repair_mirrored()
+        self.assertEqual(fixed, {"reporting_date": 1, "cover_currency": 1, "action": 1})
+        entry_a = TradeRegisterEntry.objects.get(tf=a)
+        self.assertEqual(
+            (entry_a.reporting_date, entry_a.cash_cover_currency, entry_a.action),
+            (date(2025, 4, 7), "", "EXT"))
+        entry_b.refresh_from_db()
+        self.assertEqual(entry_b.reporting_date, today)

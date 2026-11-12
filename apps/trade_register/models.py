@@ -655,7 +655,7 @@ class TradeRegisterEntry(models.Model):
     )
     # The currency the cash cover is held in. A USD letter of credit can be
     # covered in shillings, so it is the desk's choice, not the transaction's;
-    # left blank it is taken to be the transaction currency (on save).
+    # blank means nobody has said - it is never assumed to be the transaction's.
     cash_cover_currency = models.CharField(max_length=3, blank=True, default="")
     cash_cover_percentage = models.DecimalField(
         max_digits=10, decimal_places=6, null=True, blank=True,
@@ -876,8 +876,6 @@ class TradeRegisterEntry(models.Model):
             # silently delivers nothing, because the failure is on the host.
             self.month = self.issue_date.strftime("%m")
             self.year = str(self.issue_date.year)
-        if self.cash_cover_amount is not None and not self.cash_cover_currency:
-            self.cash_cover_currency = self.currency or "KES"
         if not self.action:
             self.action = refs.ACTION_ISSUANCE
         self.resolve_parent()

@@ -10,7 +10,8 @@ now runs this itself, so it is only needed once, for rows already loaded.
 
 from django.core.management.base import BaseCommand
 
-from ...mirror import mirror_trade_finance
+from ...mirror import (file_expired, link_parents, mirror_trade_finance,
+                       repair_mirrored)
 
 
 class Command(BaseCommand):
@@ -29,6 +30,15 @@ class Command(BaseCommand):
             f"{out['relinked']} re-linked, {out['skipped']} skipped "
             f"(issue date not readable)."
         ))
+        fixed = repair_mirrored()
+        linked = link_parents()
+        file_expired()
+        self.stdout.write(
+            f"Mirrored entries nobody has edited: reporting date set to the issue "
+            f"date on {fixed['reporting_date']}, cash cover currency cleared on "
+            f"{fixed['cover_currency']}, action read from the reference on "
+            f"{fixed['action']}; {linked} actions linked to their issuance; "
+            f"expired instruments filed.")
         if out["skipped_ids"]:
             self.stdout.write(
                 "trade_finance_data ids skipped: "
