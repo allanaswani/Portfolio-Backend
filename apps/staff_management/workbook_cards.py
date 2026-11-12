@@ -2485,6 +2485,7 @@ def live_card(sales_code, engine_card, as_at):
     prior = {}
     beside = {}     # row -> scored on the warehouse's figure, not yet matched to the desk
     dashboard = {}  # row -> the month of the Weighted TAT Dashboard it read
+    cx_return = {}  # row -> which CX return (CRM logs / data update) it read
     tat_report = {}  # row -> (iApply user, month) read off the accounts TAT report
     for wl in base["lines"]:
         if wl["typed"]:
@@ -2514,6 +2515,32 @@ def live_card(sales_code, engine_card, as_at):
                     live_rows.add(wl["row"])
                     written[wl["row"]] = float(value)
                     dashboard[wl["row"]] = as_at.replace(day=1)
+                    continue
+        if spec.book == BACK_OFFICE and _key(wl["feed"]) in ("crm", "kyc"):
+            # The CX team's returns (see cx_returns): CRM logs by the person,
+            # data-update forms by branch, as running totals. The template's
+            # own row says which branch (and spelling) the desk used for them.
+            from . import cx_returns
+
+            kind = _key(wl["feed"])
+            if template_live is None:
+                import copy
+
+                template_live = copy.deepcopy(actuals)
+            row = _template_row(template_live, wl["feed"], code, 0, person)
+            value = cx_returns.running_total(
+                kind, as_at.year, month,
+                names=(holder.name, row[2] if row and len(row) > 2 else None),
+                branches=(row[4] if row and len(row) > 4 else None,
+                          holder.branch))
+            if value is not None:
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    cx_return[wl["row"]] = cx_returns.LABELS[kind]
                     continue
         feed = feeds_live.get(_key(wl["feed"]))
         block = 0
@@ -2729,6 +2756,9 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["row"] in dashboard:
                 ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
                                f"{dashboard[wl['row']]:%B %Y}")
+            elif wl["row"] in cx_return:
+                ln["as_at"] = (f"the CX team's {cx_return[wl['row']]} return, "
+                               f"year to {as_at:%B %Y}")
             elif wl["row"] in tat_report:
                 user, then = tat_report[wl["row"]]
                 ln["as_at"] = (f"the accounts TAT report, your iApply steps "

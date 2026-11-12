@@ -2193,3 +2193,54 @@ class WeightedTatView(APIView):
                          "branches": len(found["branches"]),
                          "sheets": found["sheets"], "skipped": found["skipped"]},
                         status=201)
+
+
+class CxReturnsView(APIView):
+    """The CX team's CRM LOGS and Data Update workbooks: which are loaded, and
+    loading one. The back-office CRM and KYC lines read them (cx_returns)."""
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        from apps.staff_management import cx_returns
+        from apps.staff_management.models import BoWorkbookFile
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can open this."}, status=403)
+        rows = (BoWorkbookFile.objects.filter(kind__startswith="cx_return:")
+                .order_by("kind"))
+        out = []
+        for r in rows:
+            data = r.payload or {}
+            filled = [int(m) for row in data.get("rows") or []
+                      for m in (row.get("months") or {})]
+            out.append({"kind": data.get("kind"),
+                        "label": cx_returns.LABELS.get(data.get("kind"), r.kind),
+                        "year": data.get("year"), "file_name": r.file_name,
+                        "loaded_by": r.loaded_by, "loaded_at": r.loaded_at,
+                        "rows": len(data.get("rows") or []),
+                        "latest_month": max(filled) if filled else None})
+        return Response({"returns": out})
+
+    def post(self, request):
+        from apps.staff_management import cx_returns
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can load this."}, status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"detail": "Choose the CRM LOGS or Data Update file."}, status=400)
+        try:
+            found = cx_returns.read(upload)
+        except Exception as exc:  # noqa: BLE001 - said back to the person loading it
+            return Response({"detail": f"This file could not be read: {exc}"}, status=400)
+        if not found["rows"]:
+            return Response({"detail": "No monthly figures were found in this file."},
+                            status=400)
+        cx_returns.save(found, upload.name, request.user.username)
+        filled = [int(m) for row in found["rows"] for m in row["months"]]
+        return Response({"kind": found["kind"], "label": cx_returns.LABELS[found["kind"]],
+                         "year": found["year"], "rows": len(found["rows"]),
+                         "latest_month": max(filled), "skipped": found["skipped"]},
+                        status=201)
