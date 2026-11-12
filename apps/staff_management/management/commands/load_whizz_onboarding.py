@@ -61,7 +61,19 @@ class Command(BaseCommand):
             found = wo.mine(officers, (code, *logins_for(actuals, name)), (name,))
             if not found:
                 unnamed += 1
-                self.stdout.write(f"  NOT IN REPORT  {code:<10} {name}")
+                # created_by is a numeric Whizz user id with no name beside
+                # it. An id whose running totals equal this person's desk
+                # figures in EVERY filled month is evidence, not a guess -
+                # printed for a person to confirm, never used by the card.
+                same_series = [
+                    o for o, months in officers.items()
+                    if any(d for _, d in desk)
+                    and all(abs(sum(n for mm, n in months.items() if int(mm) <= m) - d) < 1e-9
+                            for m, d in desk)]
+                hint = (f"  ids matching every desk month: {', '.join(same_series)}"
+                        if same_series else "")
+                self.stdout.write(f"  NOT IN REPORT  {code:<10} {name}  "
+                                  f"desk {[int(d) for _, d in desk]}{hint}")
                 continue
             got = [sum(n for o in found for mm, n in officers[o].items() if int(mm) <= m)
                    for m, _ in desk]
