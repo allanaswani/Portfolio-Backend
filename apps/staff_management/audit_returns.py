@@ -361,6 +361,28 @@ def latest_period(as_at=None):
     return period_at_or_before(list(periods), as_at)
 
 
+def latest_for_branch(branch, as_at=None):
+    """The branch's most recent audit that had closed by ``as_at``, or None.
+
+    A branch is not audited every quarter, so the newest return often does
+    not name it. Its score stands until Internal Audit audit it again (the
+    business, 12 Nov 2026: "if unchanged retain previous") - so the newest
+    closed return that DOES name the branch is its figure, not a blank.
+    """
+    from .live_scorecard import period_at_or_before
+    from .models import ScAuditReturn
+
+    periods = list(ScAuditReturn.objects.order_by("-period")
+                   .values_list("period", flat=True).distinct())
+    for period in periods:
+        if as_at is not None and period_at_or_before([period], as_at) != period:
+            continue
+        found = for_branch(branch, period)
+        if found is not None:
+            return found
+    return None
+
+
 def for_branch(branch, period=None):
     """This branch's audit figures, or None.
 

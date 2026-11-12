@@ -2113,7 +2113,10 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         # newest. Internal Audit report quarterly and load late, so a
         # September card was being given a Q4 return the moment one arrived.
         period = audit_returns.latest_period(as_at=as_at)
-        found = audit_returns.for_branch(branch, period) if period else None
+        # The branch's latest audit stands until it is audited again: the
+        # newest closed return that names it, which need not be the newest.
+        found = (audit_returns.latest_for_branch(branch, as_at=as_at)
+                 if period else None)
         if found is None:
             if not period:
                 why = ("Internal Audit's return has not been loaded yet. "
@@ -2136,6 +2139,9 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
                     "audit_implementation": _figure(None, problem=why)}
 
         label = f"{found['branch']} audit, {found['period']}"
+        if found["period"] != period:
+            label += (f" - the latest audit of this branch; the {period} "
+                      f"return does not include it, so this score stands")
         return {
             "audit_score": _figure(
                 found["audit_score"], None, label,

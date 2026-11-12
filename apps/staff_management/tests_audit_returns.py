@@ -258,6 +258,26 @@ class WhatTheCardReadsTests(TestCase):
         self.assertIn("Kitengela", line["pending"])
         self.assertIn("spelt differently", line["pending"])
 
+    def test_an_unaudited_branch_keeps_its_last_audit(self):
+        """A branch the newest return does not name keeps the score of its
+        latest audit ("if unchanged retain previous", 12 Nov 2026)."""
+        ar.save([{"branch": "Kitengela", "branch_key": ar.fold_branch("Kitengela"),
+                  "audit_score": 1.60, "implementation": 0.93}],
+                "2026-Q2", who="audit")
+        ar.save([{"branch": "Eldoret", "branch_key": ar.fold_branch("Eldoret"),
+                  "audit_score": 1.70, "implementation": 0.80}],
+                "2026-Q3", who="audit")
+        line = self.lines()["bo_branch_audit_branch_audit"]
+        self.assertIsNotNone(line["score"])
+        self.assertIn("2026-Q2", line["as_at"])
+        self.assertIn("this score stands", line["as_at"])
+        found = ar.latest_for_branch("Kitengela")
+        self.assertEqual((found["period"], found["audit_score"]), ("2026-Q2", 1.60))
+        # Nor does a return from after the card's month count.
+        import datetime
+        self.assertIsNone(ar.latest_for_branch("Kitengela",
+                                               as_at=datetime.date(2026, 3, 31)))
+
     def test_the_diaspora_card_reproduces_its_stated_score(self):
         """The one calibration point this line has: an actual of 1.6337
         against a target of 1.65 scores 1.0 on the Diaspora card."""
