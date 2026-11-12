@@ -124,6 +124,9 @@ class WhizzOnboardingTests(TestCase):
                                                names=("Somebody Else",)), (None, None))
 
     def test_the_card_reads_it(self):
+        from unittest.mock import patch as _p
+        _p.object(bo, "WHIZZ_ON_CARDS", True).start()
+        self.addCleanup(_p.stopall)
         scorecards = book()
         scorecards["cards"]["TELLER_SCORECARD"]["grid"][9][11] = "Digital_Customers"
         bo.save_file("scorecards", scorecards)

@@ -2216,6 +2216,13 @@ STICKY_SHEETS = {"weightedsales", "assetgrowth", "depositgrowthretail"}
 #: Back office only: the sales template's CASA is a deposit BALANCE, which falls.
 BO_ACCUMULATING_SHEETS = {"casa", "digitalcustomers", "kyc", "crm"}
 
+#: Off until the desk's Digital_Customers source is known. The 12 Nov 2026
+#: check found the Whizz onboarding report (created_by, named via res_users)
+#: is NOT it: 3 of 36 months agreed, most CSOs with desk figures never appear
+#: as a Whizz creator, and the desk's totals fall in places (a current count,
+#: not onboardings). The card keeps the desk's figures meanwhile.
+WHIZZ_ON_CARDS = False
+
 
 #: Back-office account-opening turnaround: the desk's figure is the month's
 #: own rate (accounts_tat.py, per iApply user, by month), keyed on the
@@ -2524,7 +2531,8 @@ def live_card(sales_code, engine_card, as_at):
                     written[wl["row"]] = float(value)
                     dashboard[wl["row"]] = as_at.replace(day=1)
                     continue
-        if spec.book == BACK_OFFICE and _key(wl["feed"]) == "digitalcustomers":
+        if (WHIZZ_ON_CARDS and spec.book == BACK_OFFICE
+                and _key(wl["feed"]) == "digitalcustomers"):
             # Customers onboarded on Whizz (whizz_onboarding): the person's
             # own officer rows by sales code, AD login or name.
             from . import whizz_onboarding as wo
