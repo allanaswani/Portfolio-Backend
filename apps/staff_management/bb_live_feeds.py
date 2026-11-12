@@ -517,10 +517,16 @@ def banca_by_seller(year, month, timeout_ms, as_at=None):
         if not code:
             continue
         row = out.setdefault(code, {"vic_life": 0.0, "vic_non_life": 0.0,
-                                    "non_vic": 0.0, "all": 0.0})
+                                    "non_vic": 0.0, "all": 0.0,
+                                    "vic_life_n": 0, "vic_non_life_n": 0})
         row["all"] += value
         if kind in ("vic_life", "vic_non_life", "non_vic"):
             row[kind] += value
+        # The back-office VIC lines count POLICIES ("Gross volume"), and only
+        # paid ones: the BO template's VIC sheet is VIC_Life + VIC_Non_Life
+        # in policies (2 for a Buru Buru CSO at August), never premiums.
+        if kind in ("vic_life", "vic_non_life") and value > 0:
+            row[kind + "_n"] += 1
     return out
 
 

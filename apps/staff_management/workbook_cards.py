@@ -2228,6 +2228,13 @@ BO_ACCUMULATING_SHEETS = {"casa", "digitalcustomers", "kyc", "crm"}
 BO_DESK_TAT_SHEETS = {"accountopeningpb", "accountopeningbb"}
 
 
+#: Cards whose CASA line is not the person's own accounts: the RBOs' counts
+#: accounts processed (hundreds a month), and the Ultimate CSO's and Diaspora
+#: CSM's is an average over their RMs (42.93, 25.32 on the template).
+BO_CASA_NOT_OWN = {"RBO_SCORECARD", "TL_RBO_SCORECARD", "CSO_UB_SCORECARD",
+                   "CSM_DB_SCORECARD"}
+
+
 def _get_template(actuals, sheet, code, month, block=0, person=None):
     """One person's figure for one month on the template, or None."""
     from .bb_live_feeds import BLOCK_WIDTH
@@ -2486,6 +2493,7 @@ def live_card(sales_code, engine_card, as_at):
     beside = {}     # row -> scored on the warehouse's figure, not yet matched to the desk
     dashboard = {}  # row -> the month of the Weighted TAT Dashboard it read
     cx_return = {}  # row -> which CX return (CRM logs / data update) it read
+    measured = {}   # row -> how a back-office dormancy / CASA figure was read
     tat_report = {}  # row -> (iApply user, month) read off the accounts TAT report
     for wl in base["lines"]:
         if wl["typed"]:
@@ -2515,6 +2523,32 @@ def live_card(sales_code, engine_card, as_at):
                     live_rows.add(wl["row"])
                     written[wl["row"]] = float(value)
                     dashboard[wl["row"]] = as_at.replace(day=1)
+                    continue
+        if spec.book == BACK_OFFICE and (
+                _key(wl["feed"]) == "reactivation"
+                or (_key(wl["feed"]) == "casa"
+                    and holder.sheet not in BO_CASA_NOT_OWN)):
+            # Dormancy and CASA as the desk measures them (bo_branch_measures).
+            from . import bo_branch_measures as bm
+
+            row = _template_row(template_live, wl["feed"], code, 0, person)
+            if _key(wl["feed"]) == "reactivation":
+                value, how = bm.dormancy(as_at, (
+                    row[4] if row and len(row) > 4 else None, holder.branch))
+            else:
+                opened = bm.funded_accounts(as_at.year, month)
+                value = (None if opened is None
+                         else opened.get(str(code or "").strip().upper(), 0))
+                how = ("funded accounts you opened, take-on accounts left out "
+                       "(daily sales report)")
+            if value is not None:
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    measured[wl["row"]] = how
                     continue
         if spec.book == BACK_OFFICE and _key(wl["feed"]) in ("crm", "kyc"):
             # The CX team's returns (see cx_returns): CRM logs by the person,
@@ -2756,6 +2790,8 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["row"] in dashboard:
                 ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
                                f"{dashboard[wl['row']]:%B %Y}")
+            elif wl["row"] in measured:
+                ln["as_at"] = f"{measured[wl['row']]}, {as_at:%B %Y}"
             elif wl["row"] in cx_return:
                 ln["as_at"] = (f"the CX team's {cx_return[wl['row']]} return, "
                                f"year to {as_at:%B %Y}")

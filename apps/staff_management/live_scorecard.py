@@ -507,9 +507,15 @@ _register(["bo_hfcb_properties_value"], Source(actual_key="property_value"))
 # the life/non-life pair is the axis premium_types_mapping can express - the
 # same reading as the RM cards, and the same open question about whether VIC
 # means Britam rather than life.
-_register(["bo_vic"], Source(actual_key="banca_total"))
-_register(["bo_vic_life"], Source(actual_key="banca_life"))
-_register(["bo_vic_non_life"], Source(actual_key="banca_non_life"))
+# The back-office VIC lines are "Gross volume": the number of VIC (Britam)
+# policies with paid premiums, as the BO template's VIC, VIC_Life and
+# VIC_Non_Life sheets record them (policies, 0-9 a person by August). They
+# read every banca premium's VALUE before (99,736.63 against a target of 4),
+# which scored 200% on any sale. The RM and branch cards keep their premium
+# values - those lines are written in premiums.
+_register(["bo_vic"], Source(actual_key="vic_count"))
+_register(["bo_vic_life"], Source(actual_key="vic_life_count"))
+_register(["bo_vic_non_life"], Source(actual_key="vic_non_life_count"))
 
 # ── measured, but not for a person ───────────────────────────────────────
 # Account-opening turnaround, from iApply's ACCOUNTS trail.
@@ -2340,7 +2346,9 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             cache.set(key, sellers, 3600)
         row = sellers.get(sales_code.strip().replace(" ", "").upper(),
                           {"vic_life": 0.0, "vic_non_life": 0.0, "non_vic": 0.0,
-                           "all": 0.0})
+                           "all": 0.0, "vic_life_n": 0, "vic_non_life_n": 0})
+        count_label = (f"VIC (Britam) policies with paid premiums, as at "
+                       f"{upto.day} {upto:%b %Y}")
         label = f"VIC (Britam) paid premiums, as at {upto.day} {upto:%b %Y}"
         return {
             "vic_life": _figure(row["vic_life"], upto, label),
@@ -2353,10 +2361,16 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             "banca_non_vic": _figure(
                 row.get("non_vic", 0.0), upto,
                 f"paid premiums, non-VIC products, as at {upto.day} {upto:%b %Y}"),
+            "vic_life_count": _figure(row.get("vic_life_n", 0), upto, count_label),
+            "vic_non_life_count": _figure(row.get("vic_non_life_n", 0), upto,
+                                          count_label),
+            "vic_count": _figure(row.get("vic_life_n", 0)
+                                 + row.get("vic_non_life_n", 0), upto, count_label),
         }
 
     attempt(("vic_life", "vic_non_life", "vic_total", "banca_paid_all",
-             "banca_non_vic"), vic)
+             "banca_non_vic", "vic_life_count", "vic_non_life_count",
+             "vic_count"), vic)
 
     # ── Trade finance ─────────────────────────────────────────────────────
     def trade():
