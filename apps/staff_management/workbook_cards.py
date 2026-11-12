@@ -1260,13 +1260,15 @@ def spec_of(book):
 
 
 def roster_roles():
-    """sales code -> (name, role, branch, pf) off branch_employee_dmc_data, the
-    active row first - the roster the platform's employee list shows. Kept ten
-    minutes; {} where the table cannot be read."""
+    """sales code -> (name, role, branch, pf, active) off
+    branch_employee_dmc_data, the active row first - the roster the platform's
+    employee list shows. ``active`` is False when the only row the roster has
+    for the code is an inactive one. Kept ten minutes; {} where the table
+    cannot be read."""
     from django.core.cache import cache
     from django.db import connection, transaction
 
-    found = cache.get("workbook_roster_roles")
+    found = cache.get("workbook_roster_roles_v2")
     if found is not None:
         return found
     found = {}
@@ -1279,16 +1281,17 @@ def roster_roles():
                 cur.execute(f"""
                     SELECT DISTINCT ON (UPPER(REPLACE(TRIM(sales_code), ' ', '')))
                            UPPER(REPLACE(TRIM(sales_code), ' ', '')), staff_name,
-                           TRIM(staff_role), staff_branch, staff_pf_number
+                           TRIM(staff_role), staff_branch, staff_pf_number,
+                           COALESCE(active::text, '') IN ('1', 'true', 't')
                     FROM {table}
                     WHERE sales_code IS NOT NULL AND TRIM(sales_code) <> ''
                     ORDER BY UPPER(REPLACE(TRIM(sales_code), ' ', '')),
                              active DESC NULLS LAST""")
-                for code, name, role, branch, pf in cur.fetchall():
-                    found.setdefault(code, (name, role, branch, pf))
+                for code, name, role, branch, pf, active in cur.fetchall():
+                    found.setdefault(code, (name, role, branch, pf, active))
         except Exception:  # noqa: BLE001 - the List alone is still a card
             continue
-    cache.set("workbook_roster_roles", found, 600)
+    cache.set("workbook_roster_roles_v2", found, 600)
     return found
 
 
@@ -1393,6 +1396,12 @@ def holders(book, keep_off=False):
         if not keep_off and off_card(holder.sales_code):
             continue
         found = roster.get(holder.sales_code)
+        # An inactive roster row is a past posting, not a correction: Felix
+        # Saigon's only DMC row (TELLER, MACHAKOS, active 0) replaced the
+        # List's BSA at Komarock with Machakos, so his branch lines read
+        # Machakos's figures.
+        if found and not found[4]:
+            found = None
         if spec.book == BACK_OFFICE and found:
             # The desk's List lags the roster: Joseph Kinuthia, a CSO at Embu
             # on the roster, still had the List's BOM card for Naivasha.

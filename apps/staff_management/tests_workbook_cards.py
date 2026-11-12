@@ -1209,13 +1209,30 @@ class RosterOverridesListTests(TestCase):
             [3227, "JKK3227", "Joseph Kinuthia", "BOM", "Naivasha"],
             [1, "UB1", "Ultimate CSO", "CSO_UB", "Westlands"],
         ])
-        roster = {"JKK3227": ("Joseph Kinuthia", "CSO", "EMBU BRANCH", 3227),
-                  "UB1": ("Ultimate CSO", "CSO", "WESTLANDS BRANCH", 1)}
+        roster = {"JKK3227": ("Joseph Kinuthia", "CSO", "EMBU BRANCH", 3227, True),
+                  "UB1": ("Ultimate CSO", "CSO", "WESTLANDS BRANCH", 1, True)}
         with mock.patch.object(wc, "roster_roles", return_value=roster):
             joseph, ub = wc.holders(book)
         self.assertEqual((joseph.role, joseph.sheet, joseph.branch),
                          ("CSO", "CSO_SCORECARD", "Embu"))
         self.assertEqual((ub.role, ub.sheet), ("CSO_UB", "CSO_UB_SCORECARD"))
+
+    def test_an_inactive_roster_row_does_not_override_the_list(self):
+        """Felix Saigon: the List has BSA at Komarock; his only DMC row is an
+        old posting (TELLER, MACHAKOS BRANCH, active 0). His card said
+        Machakos and his branch lines read Machakos's figures."""
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = self._book("back_office", [
+            [3789, "FOS3789", "Felix Saigon", "BSA", "Komarock"]])
+        book["cards"] = {"BSA_SCORECARD": {}, "TELLER_SCORECARD": {}}
+        roster = {"FOS3789": ("Felix Saigon", "TELLER", "MACHAKOS BRANCH", 3789, False)}
+        with mock.patch.object(wc, "roster_roles", return_value=roster),                 mock.patch.object(wc, "hr_roles", return_value={"3789": "BSA"}):
+            (felix,) = wc.holders(book)
+        self.assertEqual((felix.role, felix.sheet, felix.branch),
+                         ("BSA", "BSA_SCORECARD", "Komarock"))
 
     def test_back_office_role_follows_the_hr_job_title(self):
         """Felix Saigon (PF 3789), promoted to Branch Service Ambassador on
@@ -1253,7 +1270,7 @@ class RosterOverridesListTests(TestCase):
         from . import workbook_cards as wc
 
         book = self._book("branch_business", [[1452, "NJK1452", "Nelly Kibet", "Naivasha"]])
-        roster = {"DG3727": ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727)}
+        roster = {"DG3727": ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727, True)}
         with mock.patch.object(wc, "roster_roles", return_value=roster):
             got = [h.sales_code for h in wc.holders(book)]
         self.assertEqual(got, ["NJK1452"])
@@ -1284,7 +1301,7 @@ class RosterBranchTableTests(TestCase):
 
         from .workbook_cards import roster_roles
 
-        cache.delete("workbook_roster_roles")
+        cache.delete("workbook_roster_roles_v2")
         from django.db import models as dm
 
         from .models import BranchFinalEmployeeDmcData
@@ -1298,7 +1315,7 @@ class RosterBranchTableTests(TestCase):
                                                   dm.DecimalField)) else "x"
         BranchFinalEmployeeDmcData.objects.create(**fields)
         self.assertEqual(roster_roles()["DG3727"],
-                         ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727))
+                         ("Dennis Geni", "BBM", "NAIVASHA BRANCH", 3727, True))
 
 
 class NoCardListTests(TestCase):

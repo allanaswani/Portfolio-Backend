@@ -1351,48 +1351,106 @@ def _property_sales_ytd(staff_name, year, sales_code="", staff_pf=""):
     return (int(units or 0), float(value or 0), bool(ever), latest, near)
 
 
-def _afh_property_ytd(sales_code, staff_name, year):
-    """Affordable-housing units this person assisted → (units, value, known).
+#: Statuses the bank's AFH Applications report does not count as submitted
+#: (``afh_applications.py``: ``submitted = status not in cancelled/declined``).
+AFH_NOT_SUBMITTED = {"cancelled", "declined"}
+#: The report's HFCB Limited subsidiary, before and after its own renaming.
+AFH_BANK_SUBSIDIARY = {"HFC", "HFCB LIMITED"}
+
+
+def _afh_branch_key(text):
+    """'River Road', 'Riverroad', 'RIVER ROAD BRANCH' -> 'RIVERROAD'."""
+    text = re.sub(r"\bbranch\b", " ", str(text or ""), flags=re.I)
+    return re.sub(r"[^A-Z]", "", text.upper())
+
+
+def _afh_counted_applications(year):
+    """Affordable-housing applications as the bank's AFH Applications report
+    counts them (``hfcb_properties_reports/afh_applications.py``):
+
+    * one row per applicant - names compared lower-case with spaces
+      collapsed, keeping the latest timestamp and then the highest deposit;
+    * only applications from ``year`` (the de-duplication comes first);
+    * cancelled and declined applications left out.
+
+    -> [(assisted_by lower-case, unit_price)].
+    """
+    from apps.hfdi.models import AffordableHousingApplication
+
+    latest = {}
+    for name, ts, deposits, price, status, by in (
+            AffordableHousingApplication.objects.values_list(
+                "name", "timestamp", "deposits", "unit_price", "status",
+                "assisted_by")):
+        key = " ".join(str(name or "").strip().lower().split())
+        rank = (ts is not None, ts.timestamp() if ts else 0.0,
+                deposits is not None, float(deposits or 0))
+        if key not in latest or rank >= latest[key][0]:
+            latest[key] = (rank, ts, price, status, by)
+    out = []
+    for _, ts, price, status, by in latest.values():
+        if ts is None or ts.year != year:
+            continue
+        if str(status or "").strip().lower() in AFH_NOT_SUBMITTED:
+            continue
+        out.append((str(by or "").lower(), float(price or 0)))
+    return out
+
+
+def _afh_property_ytd(sales_code, staff_name, year, staff_pf="", branch=""):
+    """Affordable-housing units this person assisted -> (units, value, known).
 
     The second half of the property line, and the half that reaches bank
     staff. The HFDI sales return names the property ADVISOR who sold the unit;
     affordable housing names whoever ASSISTED the buyer, which is how a branch
     RM earns the Group Synergies credit.
 
-    The chain is the bank's own: ``affordable_housing_applications.assisted_by``
-    is free text typed into the form, and ``afh_seller_mapping`` is the table
-    that resolves it to a member of staff - the same join the affordable
-    housing report uses (``hfcb_properties_reports/afh_applications.py``). The
-    mapping is matched on the staff id against the sales code or the PF number,
-    and on the name, because which of those the mapping carries varies.
+    Counted exactly as the bank's AFH Applications report counts them - see
+    :func:`_afh_counted_applications` - and credited the way it credits them:
+    ``assisted_by`` is free text, and ``afh_seller_mapping`` resolves it to a
+    member of staff on ``lower(afh_name) = lower(assisted_by)``.
 
-    ``known`` says whether this person is on the mapping at all, for the same
-    reason the HFDI reader checks the name: somebody missing from the mapping
-    reads as nil, and so does somebody who assisted nobody.
-    """
-    from django.db import connection
+    Which mapping rows are this person's: the ``staff_id`` against the sales
+    code or the PF number; failing that, the mapping's ``name`` agreeing with
+    the roster name word for word in any order (:func:`names_agree`), and only
+    when it points at one person. Jackline Ariya (River Road) had two
+    October applications on the report and 0 on her card: her row's name is
+    "Jackline Ariya" against the roster's longer name, and Luke Murimi Njagi's
+    four were lost to a double space in his row's name.
 
-    name = " ".join((staff_name or "").split()).strip()
-    code = sales_code.strip()
-    sql = """
-        WITH me AS (
-            SELECT LOWER(TRIM(afh_name)) AS afh_name
-            FROM afh_seller_mapping
-            WHERE UPPER(TRIM(COALESCE(staff_id, ''))) = UPPER(%s)
-               OR UPPER(TRIM(COALESCE(name, ''))) = UPPER(%s)
-        )
-        SELECT COUNT(*) FILTER (
-                   WHERE EXTRACT(YEAR FROM a.timestamp) = %s),
-               COALESCE(SUM(a.unit_price) FILTER (
-                   WHERE EXTRACT(YEAR FROM a.timestamp) = %s), 0),
-               (SELECT COUNT(*) FROM me)
-        FROM affordable_housing_applications a
-        JOIN me ON me.afh_name = LOWER(TRIM(COALESCE(a.assisted_by, '')))
+    ``branch`` (a branch manager's card) counts the branch instead, as the
+    report's branch table does: applications credited to mapping rows whose
+    ``org_unit`` is the branch, HFCB Limited staff only. River Road's six.
+
+    ``known`` says whether the person (or branch) is on the mapping at all:
+    somebody missing from it reads as nil, and so does somebody who assisted
+    nobody.
     """
-    with connection.cursor() as cur:
-        cur.execute(sql, [code, name, year, year])
-        units, value, mapped = cur.fetchone()
-    return int(units or 0), float(value or 0), bool(mapped)
+    from apps.hfdi.models import AFHSellerMapping
+
+    maps = list(AFHSellerMapping.objects.values_list(
+        "staff_id", "afh_name", "name", "staff_subsidiary", "org_unit"))
+    if branch:
+        want = _afh_branch_key(branch)
+        mine = [m for m in maps
+                if want and _afh_branch_key(m[4]) == want
+                and str(m[3] or "").strip().upper() in AFH_BANK_SUBSIDIARY]
+    else:
+        pf = str(staff_pf or "").strip()
+        keys = {k.upper() for k in (sales_code.strip(), pf,
+                                    f"{pf}.0" if pf.isdigit() else "") if k}
+        mine = [m for m in maps
+                if str(m[0] or "").strip().upper() in keys]
+        if not mine and staff_name:
+            agree = [m for m in maps if names_agree(m[2], staff_name)]
+            people = {frozenset(name_tokens(m[2])) for m in agree}
+            mine = agree if len(people) == 1 else []
+    names = {str(m[1] or "").lower() for m in mine if m[1]}
+    if not names:
+        return 0, 0.0, False
+    hits = [price for by, price in _afh_counted_applications(year)
+            if by in names]
+    return len(hits), float(sum(hits)), True
 
 
 def _new_accounts_ytd(sales_code, year, turnover_floor=None,
@@ -2326,8 +2384,12 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         # a feed with no code column is still keyed on the code.
         hfdi_units, hfdi_value, on_return, latest, near = _property_sales_ytd(
             staff_name, year, sales_code=sales_code, staff_pf=staff_pf)
+        # A branch manager's card counts the branch, as the AFH report's
+        # branch table does; everyone else counts their own.
+        afh_branch = branch if role_code == "bbm" else ""
         afh_units, afh_value, mapped = _afh_property_ytd(
-            sales_code, staff_name, year)
+            sales_code, staff_name, year, staff_pf=staff_pf,
+            branch=afh_branch)
 
         if not on_return and not mapped:
             # Absent from all three. That used to be reported as "no figure",
@@ -2384,7 +2446,8 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
         where = " and ".join(
             part for part in (
                 "HFDI sales" if on_return else "",
-                "affordable housing" if mapped else "") if part)
+                (f"affordable housing ({branch} branch)" if afh_branch
+                 else "affordable housing") if mapped else "") if part)
         label = f"{where}, as at {at.day} {at:%b %Y}"
         return {"property_units": _figure(units, at, label),
                 "property_value": _figure(value, at, label)}

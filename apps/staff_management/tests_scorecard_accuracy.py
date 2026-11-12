@@ -659,6 +659,88 @@ class PropertySalesTests(TestCase):
         self.assertEqual(units["score"], 0.0)
 
 
+class AffordableHousingReportRulesTests(TestCase):
+    """The card counts affordable housing the way the bank's AFH Applications
+    report does (hfcb_properties_reports/afh_applications.py). River Road,
+    10 Nov 2026: the report showed 6 (Jackline Ariya 2, Luke Murimi Njagi 4)
+    and the cards showed none."""
+
+    def app(self, app_id, name, by, status="Submitted", price=2_400_000,
+            deposits=120_000, when=None):
+        from apps.hfdi.models import AffordableHousingApplication
+
+        AffordableHousingApplication.objects.create(
+            application_id=app_id, name=name, assisted_by=by,
+            preferred_typology="2 Bedroom", typology="2 Bedroom",
+            house_type="Affordable housing", mode_of_payment="Cash",
+            need_deposit_assitance="No", unit_price=price, deposits=deposits,
+            status=status, timestamp=when or timezone.now())
+
+    def setUp(self):
+        from apps.hfdi.models import AFHSellerMapping
+
+        AFHSellerMapping.objects.create(
+            staff_id="3329", name="Jackline Ariya",
+            afh_name="Jacklyne akoth ariya", staff_subsidiary="HFC",
+            staff_unit="Branch Business", org_unit="Riverroad")
+        AFHSellerMapping.objects.create(
+            staff_id="", name="Luke  Murimi  Njagi",
+            afh_name="Luke murimi njagi", staff_subsidiary="HFC",
+            staff_unit="Branch Business", org_unit="Riverroad")
+        AFHSellerMapping.objects.create(
+            staff_id="9999", name="Somebody Else", afh_name="somebody else",
+            staff_subsidiary="HFC", org_unit="Rehani")
+        self.year = timezone.now().year
+
+    def test_the_mapping_is_found_on_the_pf(self):
+        """Her row's staff_id is the PF; the reader compared the sales code."""
+        from .live_scorecard import _afh_property_ytd
+
+        self.app("A1", "Buyer One", "Jacklyne akoth ariya")
+        self.app("A2", "Buyer Two", "Jacklyne akoth ariya")
+        self.assertEqual(
+            _afh_property_ytd("JAA3329", "Jackline Akoth Ariya", self.year,
+                              staff_pf="3329")[:1], (2,))
+
+    def test_a_double_space_in_the_mapping_name_still_matches(self):
+        from .live_scorecard import _afh_property_ytd
+
+        self.app("L1", "Buyer Three", "Luke murimi njagi")
+        units, value, known = _afh_property_ytd("LMN1", "Luke Murimi Njagi",
+                                                self.year)
+        self.assertEqual((units, value, known), (1, 2_400_000.0, True))
+
+    def test_one_per_applicant_and_no_cancelled_or_declined(self):
+        from .live_scorecard import _afh_property_ytd
+
+        earlier = timezone.now() - datetime.timedelta(days=3)
+        self.app("D1", "Repeat Buyer", "Jacklyne akoth ariya", when=earlier)
+        self.app("D2", "repeat  buyer", "Jacklyne akoth ariya")   # same person
+        self.app("D3", "Gone Buyer", "Jacklyne akoth ariya", status="Cancelled")
+        self.app("D4", "No Buyer", "Jacklyne akoth ariya", status=" declined ")
+        self.assertEqual(_afh_property_ytd("JAA3329", "Jackline Ariya",
+                                           self.year, staff_pf="3329")[0], 1)
+
+    def test_a_branch_manager_counts_the_branch(self):
+        """The report's branch table: River Road = Jackline's + Luke's."""
+        from .live_scorecard import _afh_property_ytd
+
+        self.app("B1", "Buyer A", "Jacklyne akoth ariya")
+        self.app("B2", "Buyer B", "Luke murimi njagi")
+        self.app("B3", "Buyer C", "Luke murimi njagi")
+        self.app("B4", "Buyer D", "somebody else")              # Rehani
+        self.assertEqual(_afh_property_ytd("BBM1", "Silas X", self.year,
+                                           branch="RIVER ROAD")[:1], (3,))
+
+    def test_last_year_is_not_counted(self):
+        from .live_scorecard import _afh_property_ytd
+
+        self.app("Y1", "Old Buyer", "Luke murimi njagi",
+                 when=timezone.now() - datetime.timedelta(days=400))
+        self.assertEqual(_afh_property_ytd("LMN1", "Luke Murimi Njagi",
+                                           self.year)[0], 0)
+
+
 class ThresholdScoringTests(TestCase):
     def test_par_is_met_or_not_met(self):
         self.assertAlmostEqual(
