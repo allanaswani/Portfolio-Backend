@@ -27,7 +27,8 @@ def make_drawdowns():
                 id bigserial PRIMARY KEY,
                 drawdown_dt date, salesperson varchar(255),
                 loan_officer_id varchar(50), final_interest double precision,
-                net_drawdown double precision, id_product bigint
+                net_drawdown double precision, id_product bigint,
+                customer_segment text, product_desc varchar(255)
             )
         """)
         cur.execute("""
@@ -87,6 +88,37 @@ class MortgageSplitTests(TestCase):
         self.assertEqual(commercial, 7_000_000)
         self.assertEqual(non_commercial, 1_000_000)
         self.assertEqual(latest, datetime.date(YEAR, 3, 1))
+
+    def test_the_drawdown_reports_rules(self):
+        """Credited on SALESPERSON only, staff loans out, the report's code
+        corrections applied (drawdown_report_correct.py)."""
+        drawn(13.5, 4_000_000)
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO drawdown_daily (drawdown_dt, salesperson, loan_officer_id, "
+                "final_interest, net_drawdown, id_product, customer_segment, product_desc) "
+                "VALUES (%s, 'X1', %s, 13.5, 9000000, 40001, 'MASS', 'HOME LOAN'), "
+                "(%s, %s, '', 13.5, 2000000, 40001, 'STAFF', 'HOME LOAN'), "
+                "(%s, %s, '', 13.5, 3000000, 40001, 'MASS', 'STAFF MORTGAGE'), "
+                "(%s, 'AL3116', '', 13.5, 5000000, 40001, 'MASS', 'HOME LOAN')",
+                [datetime.date(YEAR, 3, 2), CODE, datetime.date(YEAR, 3, 2), CODE,
+                 datetime.date(YEAR, 3, 2), CODE, datetime.date(YEAR, 3, 2)])
+        self.assertEqual(_mortgage_split_ytd(CODE, YEAR)[0], 4_000_000)
+        self.assertEqual(_mortgage_split_ytd("AKL3116", YEAR)[0], 5_000_000)
+
+    def test_the_check_command_prints_the_months(self):
+        import io
+
+        from django.core.management import call_command
+
+        drawn(13.5, 4_000_000)
+        drawn(9.0, 1_000_000)
+        out = io.StringIO()
+        call_command("check_mortgage_sales", CODE, "--year", str(YEAR), "--rows", stdout=out)
+        text = out.getvalue()
+        self.assertIn("Mar", text)
+        self.assertIn("4,000,000", text)
+        self.assertIn("1,000,000", text)
 
     def test_the_lines_read_it_and_are_no_longer_pending(self):
         drawn(13.5, 4_000_000)

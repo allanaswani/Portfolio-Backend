@@ -930,27 +930,63 @@ def _mortgage_split_ytd(sales_code, year, up_to=None):
     as :func:`_drawdowns_ytd`. A drawdown with no rate recorded is in neither
     half rather than guessed into one.
     """
+    rows = mortgage_drawdowns(sales_code, year, up_to=up_to)
+    commercial = sum(r["net"] for r in rows if r["market"])
+    non_commercial = sum(r["net"] for r in rows if not r["market"])
+    latest = max((r["on"] for r in rows), default=None)
+    return float(commercial), float(non_commercial), latest
+
+
+#: drawdown_report_correct.py's own sales-code corrections, applied to
+#: SALESPERSON before anything is credited.
+DRAWDOWN_CODE_FIXES = {"AL3116": "AKL3116", "SK3539": "SKK3539",
+                       "DI3498": "DKI3498", "PK3453": "PMK3453",
+                       "SC3568": "SJC3568", "DWN3998": "DN3998"}
+
+
+def mortgage_drawdowns(sales_code, year, up_to=None):
+    """One seller's mortgage drawdowns this year, exactly as the drawdown
+    report's Mortgage_Mrkt_Rate_Sales / Mortgage_Non_Mrkt_Rate_Sales sheets
+    take them (drawdown_report_correct.py) → [{on, net, rate, market,
+    product, salesperson, loan_officer}]:
+
+    * staff loans out - ``customer_segment`` or ``product_desc`` containing
+      STAFF, and GLK1744's rows;
+    * credited on SALESPERSON (trimmed, with the report's code corrections)
+      only - never the loan officer;
+    * MORTGAGE by product_mapping.loan_category on the product id, compared
+      as numbers (the report's merge), market rate from 10%.
+    """
     from django.db import connection
 
-    sql = """
-        SELECT COALESCE(SUM(d.net_drawdown) FILTER (
-                   WHERE d.final_interest >= %s), 0),
-               COALESCE(SUM(d.net_drawdown) FILTER (
-                   WHERE d.final_interest < %s), 0),
-               MAX(d.drawdown_dt)
+    code = sales_code.strip().upper()
+    spelt = [code] + [k for k, v in DRAWDOWN_CODE_FIXES.items() if v == code]
+    sql = r"""
+        SELECT d.drawdown_dt, d.net_drawdown, d.final_interest, d.id_product,
+               d.salesperson, d.loan_officer_id
         FROM drawdown_daily d
-        JOIN product_mapping pm ON pm.code::text = d.id_product::text
-        WHERE UPPER(TRIM(pm.loan_category)) = 'MORTGAGE'
-          AND EXTRACT(YEAR FROM d.drawdown_dt) = %s
-          AND (TRIM(d.salesperson) ILIKE %s OR TRIM(d.loan_officer_id) ILIKE %s)
-          AND (%s IS NULL OR d.drawdown_dt <= %s)
+        JOIN product_mapping pm
+          ON regexp_replace(TRIM(pm.code::text), '\.0+$', '')
+           = regexp_replace(TRIM(d.id_product::text), '\.0+$', '')
+        WHERE TRIM(pm.loan_category) = 'MORTGAGE'
+          AND d.drawdown_dt >= %s AND d.drawdown_dt < %s
+          AND UPPER(TRIM(d.salesperson)) = ANY(%s)
+          AND UPPER(TRIM(d.salesperson)) <> 'GLK1744'
+          AND COALESCE(d.customer_segment, 'MASS') NOT ILIKE '%%STAFF%%'
+          AND COALESCE(d.product_desc, '') NOT ILIKE '%%STAFF%%'
+          AND (%s::date IS NULL OR d.drawdown_dt <= %s::date)
+        ORDER BY d.drawdown_dt
     """
-    code = sales_code.strip()
-    rate = MARKET_RATE_FROM
     with connection.cursor() as cur:
-        cur.execute(sql, [rate, rate, year, code, code, up_to, up_to])
-        commercial, non_commercial, latest = cur.fetchone()
-    return float(commercial or 0), float(non_commercial or 0), latest
+        cur.execute(sql, [datetime.date(year, 1, 1), datetime.date(year + 1, 1, 1),
+                          spelt, up_to, up_to])
+        found = cur.fetchall()
+    return [{"on": on, "net": float(net or 0), "rate": rate,
+             "market": rate is not None and float(rate) >= MARKET_RATE_FROM,
+             "product": product, "salesperson": sp, "loan_officer": lo}
+            for on, net, rate, product, sp, lo in found
+            # A drawdown with no rate is in neither half, as in the report.
+            if rate is not None]
 
 
 def _premiums_ytd(sales_code, year, up_to=None):
