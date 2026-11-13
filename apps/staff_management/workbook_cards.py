@@ -2779,8 +2779,13 @@ def live_card(sales_code, engine_card, as_at):
             continue
         unproven = (wl["row"] in carried
                     and sales_live_feeds.line_key(wl) not in bo_engine)
-        match = (next((p for p in pool if p["feed"] and
-                       p["feed"] == _key(wl["feed"])), None)
+        # Sheet and name together first: both mortgage lines read
+        # Asset_Drawdown, and only the name tells commercial from not.
+        match = (next((p for p in pool if p["feed"] and p["name"]
+                       and p["feed"] == _key(wl["feed"])
+                       and p["name"] == _key(wl["measure"])), None)
+                 or next((p for p in pool if p["feed"] and
+                          p["feed"] == _key(wl["feed"])), None)
                  or next((p for p in pool if p["name"] and
                           p["name"] == _key(wl["measure"])), None))
         if match is None:
@@ -2865,7 +2870,51 @@ def live_card(sales_code, engine_card, as_at):
                 live_rows.discard(r)
                 sheet, block, old = prior[r]
                 _put_template(template_live, sheet, code, month, old, block, person)
-    if dropped:
+
+    # A running total whose warehouse year to date reads below the desk's is a
+    # definition that counts differently, not sales that vanished. What was
+    # sold AFTER the desk's month still counts: the desk's year to date plus
+    # the warehouse's movement since then (13 Nov 2026: Michael Odhiambo's
+    # commercial-rate mortgages stuck at the desk's September 120.2m although
+    # he drew more in October).
+    topped = {}
+    earlier_engine = {}
+    for wl in card["lines"]:
+        r = wl["row"]
+        line = found.get(r)
+        then = carried.get(r)
+        key = _key(wl["feed"])
+        # Sums of what was sold only - not a weighted-sales ratio or a balance.
+        sums = key in ACCUMULATING_SHEETS or (
+            spec.book == BACK_OFFICE and key in BO_ACCUMULATING_SHEETS)
+        if (r not in dropped or line is None or not then or then >= month
+                or r in written or not sums or not _num(desk.get(r))
+                or (kpis.get(line.get("kpi_code")) or ("", False))[1]):
+            continue
+        if then not in earlier_engine:
+            from .live_scorecard import _engine_card
+
+            end = (datetime.date(as_at.year, then, 28)
+                   + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
+            try:
+                eng = _engine_card(code, as_at=end, warehouse_only=True)
+            except Exception:  # noqa: BLE001 - no movement read: the desk's figure stands
+                eng = {}
+            earlier_engine[then] = {ln.get("kpi_code"): ln.get("ytd_actual")
+                                    for p in eng.get("perspectives", [])
+                                    for ln in p["lines"]}
+        now_value, then_value = line.get("ytd_actual"), earlier_engine[then].get(
+            line.get("kpi_code"))
+        if not (_num(now_value) and _num(then_value)):
+            continue
+        movement = float(now_value) - float(then_value)
+        if movement <= 0:
+            continue
+        overrides[(r - 1, actual_col)] = float(desk[r]) + movement
+        topped[r] = (float(desk[r]), movement, then)
+        refused.pop(r, None)
+        dropped.remove(r)
+    if dropped or topped:
         card = compute(book, template_live or actuals, holder, month,
                        overrides)
 
@@ -2948,6 +2997,13 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["row"] in cx_return:
                 ln["as_at"] = (f"the CX team's {cx_return[wl['row']]} return, "
                                f"year to {as_at:%B %Y}")
+            elif wl["row"] in topped:
+                base, moved, then = topped[wl["row"]]
+                ln["as_at"] = (
+                    f"the desk's year to date to "
+                    f"{datetime.date(as_at.year, then, 1):%b %Y} ({base:,.0f}) "
+                    f"plus {moved:,.0f} from the warehouse since, to "
+                    f"{as_at:%d %b %Y}")
             elif wl["row"] in tat_report:
                 user, then = tat_report[wl["row"]]
                 ln["as_at"] = (f"the accounts TAT report, your iApply steps "

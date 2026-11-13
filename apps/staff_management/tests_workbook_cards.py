@@ -234,6 +234,38 @@ class StoredCardTests(TestCase):
         self.assertIn("2 show the desk's latest figure (up to September 2026)",
                       card["how_scored"])
 
+    def test_what_was_added_after_the_desks_month_still_counts(self):
+        """The warehouse's year to date reads below the desk's (a definition
+        that counts differently), but October still added to it: the card
+        shows the desk's September plus the warehouse's October movement."""
+        from unittest.mock import patch
+
+        from . import live_scorecard
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+
+        def engine(ytd):
+            return {"perspectives": [{"lines": [
+                {"kpi_code": "training", "kpi_name": "Training hours",
+                 "ytd_actual": ytd}]}]}
+
+        with patch.object(live_scorecard, "_engine_card",
+                          return_value=engine(25.0)) as earlier:
+            card = bo.live_card("BCK3783", engine(30.0), datetime.date(2026, 10, 31))
+        self.assertEqual(earlier.call_args.kwargs["as_at"], datetime.date(2026, 9, 30))
+        training = card["perspectives"][0]["lines"][1]
+        self.assertEqual(training["ytd_actual"], 45.0)        # 40 + (30 - 25)
+        self.assertIn("the desk's year to date to Sep 2026 (40) plus 5 from the "
+                      "warehouse since", training["as_at"])
+
+        # Nothing added since: the desk's figure stands, and says why.
+        with patch.object(live_scorecard, "_engine_card", return_value=engine(30.0)):
+            card = bo.live_card("BCK3783", engine(30.0), datetime.date(2026, 10, 31))
+        training = card["perspectives"][0]["lines"][1]
+        self.assertEqual(training["ytd_actual"], 40)
+        self.assertIn("the warehouse reads 30", training["as_at"])
+
     def test_nothing_proven_says_so_rather_than_calling_the_card_live(self):
         bo.save_file("scorecards", book())
         bo.save_file("actuals", ACTUALS)
