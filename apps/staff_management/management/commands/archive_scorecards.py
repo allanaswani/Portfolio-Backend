@@ -4,10 +4,10 @@
     manage.py archive_scorecards --period 2026-10 --final --no-send
                                                   # archive a past month as it stands
 
-Daily cron on the host that serves the site, e.g. 06:30:
+Daily at 06:30 on the OLD host, through scripts/archive_scorecards.sh, from
+the backend repo directory:
 
-    30 6 * * * docker exec hf-backend python manage.py archive_scorecards \
-        >> /data/apps/datascience/logs/archive_scorecards.log 2>&1
+    echo "30 6 * * * root sh $PWD/scripts/archive_scorecards.sh" > /etc/cron.d/hf-scorecard-archive
 
 See apps/staff_management/scorecard_archive.py for the timeline and the files.
 """

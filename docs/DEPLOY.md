@@ -474,11 +474,12 @@ container's user (uid 10001), and add the daily job to root's crontab:
 
 ```bash
 mkdir -p /data/apps/datascience/scorecard_archive && chown 10001 /data/apps/datascience/scorecard_archive
-(crontab -l 2>/dev/null | grep -v archive_scorecards; echo '30 6 * * * docker exec hf-backend python manage.py archive_scorecards >> /data/apps/datascience/logs/archive_scorecards.log 2>&1') | crontab -
+echo "30 6 * * * root sh $PWD/scripts/archive_scorecards.sh" > /etc/cron.d/hf-scorecard-archive
 ```
 
-The cron line goes INTO the crontab (the command above adds it); typed at the
-prompt it only runs once and fails.
+Run it from the backend repo directory ($PWD goes into the line). It is a short
+/etc/cron.d file on purpose: a long crontab line wrapped while pasting fails
+with "bad minute". The log is /data/apps/datascience/logs/archive_scorecards.log.
 
 The `scorecard_share` mount (13 Nov 2026) is the shared Windows folder: each run
 copies to it every archived file it does not have yet (never overwriting;
