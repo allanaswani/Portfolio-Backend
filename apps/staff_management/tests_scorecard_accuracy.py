@@ -732,6 +732,19 @@ class AffordableHousingReportRulesTests(TestCase):
         self.assertEqual(_afh_property_ytd("BBM1", "Silas X", self.year,
                                            branch="RIVER ROAD")[:1], (3,))
 
+    def test_a_named_month_counts_to_its_end(self):
+        """October's branch-manager card counts applications made by 31 Oct."""
+        from .live_scorecard import _afh_property_ytd
+
+        now = timezone.now()
+        self.app("M1", "Buyer A", "Luke murimi njagi", when=now - datetime.timedelta(days=10))
+        self.app("M2", "Buyer B", "Luke murimi njagi", when=now)
+        cut = (now - datetime.timedelta(days=5)).date()
+        if cut.year != now.year:
+            self.skipTest("the cut falls in last year")
+        self.assertEqual(_afh_property_ytd("BBM1", "Silas X", now.year,
+                                           branch="Riverroad", up_to=cut)[:1], (1,))
+
     def test_last_year_is_not_counted(self):
         from .live_scorecard import _afh_property_ytd
 

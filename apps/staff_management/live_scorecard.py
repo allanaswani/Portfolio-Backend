@@ -1370,7 +1370,7 @@ def _afh_branch_key(text):
     return re.sub(r"[^A-Z]", "", text.upper())
 
 
-def _afh_counted_applications(year):
+def _afh_counted_applications(year, up_to=None):
     """Affordable-housing applications as the bank's AFH Applications report
     counts them (``hfcb_properties_reports/afh_applications.py``):
 
@@ -1397,13 +1397,17 @@ def _afh_counted_applications(year):
     for _, ts, price, status, by in latest.values():
         if ts is None or ts.year != year:
             continue
+        # A named month's card counts the applications made by its end.
+        if up_to is not None and ts.date() > up_to:
+            continue
         if str(status or "").strip().lower() in AFH_NOT_SUBMITTED:
             continue
         out.append((str(by or "").lower(), float(price or 0)))
     return out
 
 
-def _afh_property_ytd(sales_code, staff_name, year, staff_pf="", branch=""):
+def _afh_property_ytd(sales_code, staff_name, year, staff_pf="", branch="",
+                      up_to=None):
     """Affordable-housing units this person assisted -> (units, value, known).
 
     The second half of the property line, and the half that reaches bank
@@ -1454,7 +1458,7 @@ def _afh_property_ytd(sales_code, staff_name, year, staff_pf="", branch=""):
     names = {str(m[1] or "").lower() for m in mine if m[1]}
     if not names:
         return 0, 0.0, False
-    hits = [price for by, price in _afh_counted_applications(year)
+    hits = [price for by, price in _afh_counted_applications(year, up_to)
             if by in names]
     return len(hits), float(sum(hits)), True
 

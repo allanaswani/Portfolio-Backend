@@ -2679,6 +2679,43 @@ def live_card(sales_code, engine_card, as_at):
                     written[wl["row"]] = float(value)
                     cx_return[wl["row"]] = cx_returns.LABELS[kind]
                     continue
+        if (spec.book == BRANCH_BUSINESS
+                and _key(wl["feed"]) in ("plotsalesvolume", "plotsalesvalue")):
+            # A branch's property = HFDI units sold by its staff (the proven
+            # branch feed, else the desk's latest figure) PLUS the branch's
+            # affordable-housing applications as the AFH Applications report's
+            # branch table counts them. The branch feeds read HFDI only, so
+            # River Road's six AFH applications reached its RMs' cards but
+            # never the branch manager's (13 Nov 2026).
+            from .live_scorecard import _afh_property_ytd
+
+            proven_feed = (feeds_live.get(_key(wl["feed"])) or {}).get(0)
+            hfdi = reader(proven_feed) if proven_feed is not None else None
+            hfdi_how = "HFDI sales" if hfdi is not None else None
+            if hfdi is None:
+                hfdi = _get_template(template_live, wl["feed"], code, month, 0, person)
+                if _num(hfdi) and wl["row"] in carried:
+                    hfdi_how = (f"HFDI sales to "
+                                f"{datetime.date(as_at.year, carried[wl['row']], 1):%b %Y} "
+                                f"(the desk's figure)")
+            afh_units, afh_value, mapped = _afh_property_ytd(
+                code, holder.name, as_at.year, branch=holder.branch, up_to=as_at)
+            afh = afh_units if _key(wl["feed"]) == "plotsalesvolume" else afh_value
+            if mapped and afh and _num(hfdi):
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                value = float(hfdi) + float(afh)
+                if _put_template(template_live, wl["feed"], code, month,
+                                 value, 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = value
+                    carried.pop(wl["row"], None)
+                    measured[wl["row"]] = (
+                        f"{hfdi_how or 'HFDI sales'} plus {afh_units} affordable-"
+                        f"housing application{'s' if afh_units != 1 else ''} at "
+                        f"{holder.branch} (AFH Applications report), to "
+                        f"{as_at:%d %b %Y}")
+                    continue
         feed = feeds_live.get(_key(wl["feed"]))
         block = 0
         if feed is not None and spec.book == BRANCH_BUSINESS:
@@ -2788,10 +2825,10 @@ def live_card(sales_code, engine_card, as_at):
         return key in ACCUMULATING_SHEETS or key in STICKY_SHEETS or (
             spec.book == BACK_OFFICE and key in BO_ACCUMULATING_SHEETS)
 
-    dropped = []
+    dropped, refused = [], {}
     for wl in card["lines"]:
         r = wl["row"]
-        is_live = (r - 1, actual_col) in overrides or r in live_rows
+        is_live =(r - 1, actual_col) in overrides or r in live_rows
         shrank = (is_live and r in carried
                   and _num(wl["actual"]) and _num(desk.get(r))
                   and wl["actual"] < desk[r]
@@ -2811,11 +2848,16 @@ def live_card(sales_code, engine_card, as_at):
                  and r not in dashboard and r not in tat_report
                  and _num(wl.get("score")) and _num(desk_score.get(r))
                  and wl["score"] < desk_score[r] - 1e-9)
-        shrank = shrank or worse
         # A back-office line is live only if the card's own formula found the
         # figure: never a "live" label on the desk's number.
         unread = (spec.book == BACK_OFFICE and r in written and not (
             _num(wl["actual"]) and abs(wl["actual"] - written[r]) < 1e-6))
+        if (shrank or worse) and _num(wl["actual"]):
+            # Said on the card, so "why is this not live" answers itself.
+            refused[r] = (wl["actual"], "below the desk's" if shrank
+                          else "scores lower on a definition not yet matched "
+                               "to the desk's")
+        shrank = shrank or worse
         if shrank or unread:
             dropped.append(r)
             overrides.pop((r - 1, actual_col), None)
@@ -2886,6 +2928,14 @@ def live_card(sales_code, engine_card, as_at):
                 ln["as_at"] = (
                     f"{kind}, the desk's latest figure "
                     f"({datetime.date(as_at.year, wl['carried'], 1):%b %Y})")
+                if wl["row"] in refused:
+                    got, why = refused[wl["row"]]
+                    ln["as_at"] += (f" - the warehouse reads {got:,.4g} to "
+                                    f"{as_at:%d %b %Y}, {why}, so the desk's "
+                                    f"figure stands" if abs(got) < 10
+                                    else f" - the warehouse reads {got:,.0f} to "
+                                    f"{as_at:%d %b %Y}, {why}, so the desk's "
+                                    f"figure stands")
 
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
