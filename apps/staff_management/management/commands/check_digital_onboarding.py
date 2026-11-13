@@ -133,6 +133,39 @@ def weighted_candidates(year, out):
     return found
 
 
+def conversion_candidate(year, out):
+    """Whizz customers taken into a branch, by the user who did it.
+
+    ``conversion_of_whizz_to_branch`` (the Profits ETL of the same name) holds
+    customer transfers out of unit 109 (HF WHIZZ) into a branch, with the
+    Profits user who made each (``trx_usr``, ``employee_name``). A customer
+    counts once, for the user and month of its FIRST transfer.
+    -> ({user: {month: n}}, {user: employee name})"""
+    start, end = datetime.date(year, 1, 1), datetime.date(year + 1, 1, 1)
+    with connection.cursor() as cur:
+        cur.execute("""
+            WITH firsts AS (
+                SELECT DISTINCT ON (cust_id) cust_id, trx_usr, employee_name,
+                       trx_date::date AS d
+                FROM conversion_of_whizz_to_branch
+                WHERE cust_id IS NOT NULL
+                ORDER BY cust_id, trx_date::date, trx_usr)
+            SELECT upper(trim(trx_usr::text)), max(employee_name),
+                   extract(month FROM d)::int, count(*)
+            FROM firsts WHERE d >= %s AND d < %s
+            GROUP BY 1, 3""", [start, end])
+        rows = cur.fetchall()
+    by, names = {}, {}
+    for user, name, month, n in rows:
+        by.setdefault(user or "", {})[month] = n
+        names[user or ""] = name or ""
+    top = sorted(by.items(), key=lambda kv: -sum(kv[1].values()))[:12]
+    out.write(f"whizz conversions {year}: {sum(sum(m.values()) for m in by.values())} "
+              f"customers by {len(by)} users; most: "
+              + ", ".join(f"{names[u].strip()} {sum(m.values())}" for u, m in top) + chr(10))
+    return by, names
+
+
 class Command(BaseCommand):
     help = "Score attributions of mobile-app registrations against the desk."
 
@@ -140,6 +173,8 @@ class Command(BaseCommand):
         parser.add_argument("--year", type=int, default=datetime.date.today().year)
         parser.add_argument("--show", type=int, default=15,
                             help="People to print per candidate.")
+        parser.add_argument("--only", default="",
+                            help="Run just this candidate, e.g. whizz_conversion.")
 
     def handle(self, *args, **opts):
         from apps.staff_management.management.commands.load_whizz_onboarding import logins_for
@@ -160,14 +195,18 @@ class Command(BaseCommand):
         self.stdout.write(f"{len(people)} people with desk figures on Digital_Customers")
 
         params = {"start": datetime.date(year, 1, 1), "end": datetime.date(year + 1, 1, 1)}
-        with connection.cursor() as cur:
-            cur.execute(BASE + "SELECT count(*), count(*) FILTER (WHERE registered >= %(start)s "
-                        "AND registered < %(end)s) FROM reg", params)
-            total, this_year = cur.fetchone()
-        self.stdout.write(f"registrations (unique cust_id): {total} in all, {this_year} in {year}\n")
+        if not opts["only"]:
+            with connection.cursor() as cur:
+                cur.execute(BASE + "SELECT count(*), count(*) FILTER (WHERE registered >= "
+                            "%(start)s AND registered < %(end)s) FROM reg", params)
+                total, this_year = cur.fetchone()
+            self.stdout.write(f"registrations (unique cust_id): {total} in all, "
+                              f"{this_year} in {year}")
 
-        results = {}
-        for label, sql in CANDIDATES.items():
+        results, staff_names = {}, {}
+        by, names = conversion_candidate(year, self.stdout)
+        results["whizz_conversion"], staff_names["whizz_conversion"] = by, names
+        for label, sql in ({} if opts["only"] else CANDIDATES).items():
             with connection.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
@@ -175,13 +214,22 @@ class Command(BaseCommand):
             for who, month, n in rows:
                 by.setdefault(who or "", {})[month] = n
             results[label] = by
-        results.update(weighted_candidates(year, self.stdout))
+        if not opts["only"]:
+            results.update(weighted_candidates(year, self.stdout))
+
+        from apps.staff_management.live_scorecard import names_agree
 
         for label, by in results.items():
+            if opts["only"] and label != opts["only"]:
+                continue
+            named = staff_names.get(label, {})
             agree = differ = found = 0
             lines = []
             for code, name, keys, desk in people:
-                mine = [by[k] for k in keys if k in by]
+                hits = {k for k in keys if k in by}
+                # Users this candidate names: matched by name as well.
+                hits |= {u for u, n in named.items() if n and names_agree(n, name)}
+                mine = [by[k] for k in hits]
                 if not mine:
                     continue
                 found += 1
