@@ -170,11 +170,14 @@ def compose(card, signoff=None):
                                 frozen=frozen, closing=closing)
 
 
-def send_card(card, signoff=None, extra_to=(), who="", request_user=None):
+def send_card(card, signoff=None, extra_to=(), who="", request_user=None,
+              period=None):
     """E-mail one card → the dispatch record.
 
     Raises ``ValueError`` with the reason when there is nobody to send it to.
     An address that cannot be found is never substituted for another.
+    ``period`` (YYYY-MM) is the month the card is for; by default the month
+    just closed, which is right for a send made the month after.
     """
     from django.conf import settings
     from django.core.mail import EmailMessage
@@ -199,8 +202,8 @@ def send_card(card, signoff=None, extra_to=(), who="", request_user=None):
         from_email=settings.DEFAULT_FROM_EMAIL, to=to, cc=cc)
 
     name = (staff.get("name") or staff.get("sales_code") or "scorecard")
-    period = (card.get("period") or {}).get("label") or period_for(card)
-    filename = (f"HFCB scorecard - {name} - {period}.xlsx"
+    label = (card.get("period") or {}).get("label") or period_for(card)
+    filename = (f"HFCB scorecard - {name} - {label}.xlsx"
                 .replace("/", "-").replace("\\", "-"))
     message.attach(
         filename, build_card_workbook(card, signoff).getvalue(),
@@ -214,7 +217,7 @@ def send_card(card, signoff=None, extra_to=(), who="", request_user=None):
 
     return ScScorecardDispatch.objects.create(
         sales_code=staff.get("sales_code") or "",
-        period=period_for(card),
+        period=period or period_for(card),
         sent_to=", ".join(to), sent_cc=", ".join(cc),
         sent_by=request_user if getattr(request_user, "pk", None) else None,
         sent_by_name=who or "",

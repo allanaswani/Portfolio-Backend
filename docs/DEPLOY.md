@@ -462,10 +462,20 @@ Backend — from the backend repo directory:
 git pull
 docker build -t hf-backend:latest .
 docker stop hf-backend && docker rm hf-backend
-docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/prod.env -v /data/apps/datascience/etl_requests:/app/etl_requests hf-backend:latest
+docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/prod.env -v /data/apps/datascience/etl_requests:/app/etl_requests -v /data/apps/datascience/scorecard_archive:/app/scorecard_archive hf-backend:latest
 ```
 
 No explicit gunicorn arguments here — the image's own `CMD` runs.
+
+The `scorecard_archive` mount (13 Nov 2026) is where every month's scorecards
+are kept as files - the evidence copy that survives a database outage (see
+`apps/staff_management/scorecard_archive.py`). Create it once, owned by the
+container's user (uid 10001), and add the daily job to root's crontab:
+
+```bash
+mkdir -p /data/apps/datascience/scorecard_archive && chown 10001 /data/apps/datascience/scorecard_archive
+30 6 * * * docker exec hf-backend python manage.py archive_scorecards >> /data/apps/datascience/logs/archive_scorecards.log 2>&1
+```
 
 The `etl_requests` mount is not optional. It is what the Trade Finance and
 scorecard "send report" buttons write into, and a host cron watcher picks the
