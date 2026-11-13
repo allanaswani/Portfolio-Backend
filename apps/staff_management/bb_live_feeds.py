@@ -85,6 +85,8 @@ TOLERANCE = 0.02
 PROBE_TIMEOUT_MS = 600_000
 LIVE_TIMEOUT_MS = 60_000
 STORE_KIND = "bb_live_feeds"
+#: Each sheet's best attempt in the last probe, passing or not.
+TRIED_KIND = "bb_live_feeds_tried"
 
 MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
           "oct", "nov", "dec")
@@ -725,7 +727,7 @@ def probe(year, month, out=print):
             "actuals template (2026_Actual_Template.xlsx) first - the probe "
             "compares against them.")
         return {}
-    found, tested = {}, set()
+    found, tested, tried = {}, set(), {}
     for key, definitions in DEFINITIONS.items():
         sheet = key.split("#")[0]
         block = int(key.split("#")[1]) if "#" in key else 0
@@ -783,6 +785,9 @@ def probe(year, month, out=print):
             # The best passing definition for the sheet: most branches
             # within tolerance, then the smallest median miss.
             rank = (share, -(median if median is not None else 1.0))
+            if key not in tried or rank > tried[key]["rank"]:
+                tried[key] = {"rank": rank, "match": share, "median": median,
+                              "label": label, "month": f"{year}-{month:02d}"}
             if passes and (key not in found or rank > found[key]["rank"]):
                 found[key] = dict(feed, match=share, median=median,
                                   rank=rank, month=f"{year}-{month:02d}")
@@ -798,6 +803,13 @@ def probe(year, month, out=print):
     if dropped:
         out(f"No longer passing, back to the desk's figure: {', '.join(dropped)}.")
     save_file(STORE_KIND, stored, f"probe {year}-{month:02d}", "probe")
+    # Every sheet's best attempt, passing or not, so a card line still on the
+    # desk's figure can say how close the warehouse came.
+    for v in tried.values():
+        v.pop("rank", None)
+    attempts = dict(saved(TRIED_KIND) or {})
+    attempts.update(tried)
+    save_file(TRIED_KIND, attempts, f"probe {year}-{month:02d}", "probe")
     out(f"{len(found)} branch sheet(s) now read live: "
         f"{', '.join(sorted(found)) or 'none'}. The rest stay waiting on "
         f"the live card.")
@@ -829,6 +841,30 @@ def live_value(feed, branch, as_at):
     value = _branch_total(totals, branch, feed)
     cache.set(key, value if value is not None else "none", 6 * 3600)
     return value
+
+
+def why_not_live(sheet, block=0):
+    """Why a branch card line still shows the desk's figure → a phrase."""
+    from .workbook_cards import saved
+
+    def norm(text):
+        return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+    def parts(key):
+        name, _, b = key.partition("#")
+        return norm(name), int(b or 0)
+
+    keys = [k for k in DEFINITIONS if parts(k) == (norm(sheet), int(block or 0))]
+    if not keys:
+        return "no warehouse source is wired for this line on branch cards yet"
+    attempts = saved(TRIED_KIND) or {}
+    best = max((attempts[k] for k in keys if k in attempts),
+               key=lambda v: v.get("match") or 0, default=None)
+    if best is None:
+        return "not yet compared with the desk's (branch proof not run)"
+    when = datetime.date(*map(int, best["month"].split("-")), 1)
+    return (f"the closest warehouse definition matched {best['match']:.0%} of "
+            f"branches for {when:%b %Y}, {PASS_SHARE:.0%} needed")
 
 
 def proven():

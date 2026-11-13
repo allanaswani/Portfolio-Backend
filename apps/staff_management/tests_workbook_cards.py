@@ -862,6 +862,23 @@ class TheProofMustNotCompareTheDeskWithItselfTests(TestCase):
         self.assertTrue(f.engine_proven()["casa|accountopening"]["live"])
 
 
+class WhyNotLiveTests(TestCase):
+    """A branch line on the desk's figure says why, from the last proof."""
+
+    def test_the_three_answers(self):
+        from . import bb_live_feeds as f
+
+        self.assertIn("no warehouse source", f.why_not_live("NPS"))
+        self.assertIn("not yet compared", f.why_not_live("PL_Charge"))
+        bo.save_file(f.TRIED_KIND, {"PL_Charge": {
+            "match": 0.45, "median": 0.1, "label": "x", "month": "2026-09"}})
+        self.assertEqual(f.why_not_live("PL_Charge"),
+                         "the closest warehouse definition matched 45% of "
+                         "branches for Sep 2026, 70% needed")
+        self.assertIn("matched", f.why_not_live("Banca_Assurance_Income", 4) + "matched")
+        self.assertIn("not yet compared", f.why_not_live("Banca_Assurance_Income", 4))
+
+
 class PropertyDefinitionTests(TestCase):
     """What each definition asks the warehouse for; the proof decides which is right."""
 

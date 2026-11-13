@@ -2985,6 +2985,11 @@ def live_card(sales_code, engine_card, as_at):
                                     else f" - the warehouse reads {got:,.0f} to "
                                     f"{as_at:%d %b %Y}, {why}, so the desk's "
                                     f"figure stands")
+                elif spec.book == BRANCH_BUSINESS and not wl["typed"]:
+                    from . import bb_live_feeds
+
+                    ln["as_at"] += " - " + bb_live_feeds.why_not_live(
+                        wl["feed"], blocks.get(wl["row"]) or 0)
 
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
