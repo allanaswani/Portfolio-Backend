@@ -106,6 +106,21 @@ class MortgageSplitTests(TestCase):
         self.assertEqual(_mortgage_split_ytd(CODE, YEAR)[0], 4_000_000)
         self.assertEqual(_mortgage_split_ytd("AKL3116", YEAR)[0], 5_000_000)
 
+    def test_secured_loans_count_only_once_the_proof_says_so(self):
+        """Michael Odhiambo: the desk's commercial figure carried his secured
+        business loans; check_mortgage_rule decides, the cards follow."""
+        from .live_scorecard import MORTGAGE_RULE_KIND
+        from .workbook_cards import save_file
+
+        with connection.cursor() as cur:
+            cur.execute("INSERT INTO product_mapping VALUES (40050, 'TERM LOAN', 'SECURED')")
+        drawn(13.5, 4_000_000)
+        drawn(14.0, 40_000_000, product=40050)
+        drawn(16.26, 9_000_000, product=40065)              # unsecured: never
+        self.assertEqual(_mortgage_split_ytd(CODE, YEAR)[0], 4_000_000)
+        save_file(MORTGAGE_RULE_KIND, {"secured_loans": True})
+        self.assertEqual(_mortgage_split_ytd(CODE, YEAR)[0], 44_000_000)
+
     def test_the_check_command_prints_the_months(self):
         import io
 

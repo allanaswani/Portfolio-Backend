@@ -29,7 +29,12 @@ class Command(BaseCommand):
         from apps.staff_management.live_scorecard import mortgage_drawdowns
 
         code, year, w = o["code"].strip().upper(), o["year"], self.stdout.write
+        from apps.staff_management.live_scorecard import mortgage_counts_secured_loans
+
         rows = mortgage_drawdowns(code, year)
+        self.stdout.write("Rule in use: MORTGAGE products" + (
+            " plus SECURED loans (check_mortgage_rule)" if mortgage_counts_secured_loans()
+            else " only"))
         months = {}
         for r in rows:
             m = months.setdefault(r["on"].month, [0.0, 0.0])
@@ -65,7 +70,11 @@ class Command(BaseCommand):
             officer = cur.fetchall()
             cur.execute(r"""
                 SELECT d.id_product, MAX(d.product_desc), MAX(pm.loan_category),
-                       COUNT(*), SUM(d.net_drawdown)
+                       COUNT(*), SUM(d.net_drawdown), MAX(pm.loan_security),
+                       string_agg(to_char(d.drawdown_dt, 'DD Mon') || ' '
+                                  || to_char(d.net_drawdown, 'FM999,999,999,990')
+                                  || ' @' || COALESCE(d.final_interest::text, '?'),
+                                  '; ' ORDER BY d.drawdown_dt)
                 FROM drawdown_daily d
                 LEFT JOIN product_mapping pm
                   ON regexp_replace(TRIM(pm.code::text), '\.0+$', '')
@@ -79,6 +88,7 @@ class Command(BaseCommand):
             for month, total in officer:
                 w(f"  {datetime.date(year, month, 1):%b}  {float(total or 0):>18,.0f}")
         w("\nEvery product this code drew this year (salesperson or officer):")
-        for pid, desc, cat, n, total in products:
+        for pid, desc, cat, n, total, security, each in products:
             w(f"  {pid!s:>8}  {str(desc or '')[:40]:<40} {str(cat or 'NOT MAPPED'):<12}"
-              f" {n:>4} drawdowns {float(total or 0):>18,.0f}")
+              f" {str(security or ''):<10} {n:>4} drawdowns {float(total or 0):>18,.0f}")
+            w(f"            {each}")

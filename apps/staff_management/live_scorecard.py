@@ -944,7 +944,20 @@ DRAWDOWN_CODE_FIXES = {"AL3116": "AKL3116", "SK3539": "SKK3539",
                        "SC3568": "SJC3568", "DWN3998": "DN3998"}
 
 
-def mortgage_drawdowns(sales_code, year, up_to=None):
+#: Where check_mortgage_rule stores which products the desk counts as a
+#: mortgage sale: {"secured_loans": bool, ...}.
+MORTGAGE_RULE_KIND = "mortgage_rule"
+
+
+def mortgage_counts_secured_loans():
+    """True when the proof found the desk counts SECURED loans (a secured
+    business loan, say) in the mortgage lines, not only MORTGAGE products."""
+    from .workbook_cards import saved
+
+    return bool((saved(MORTGAGE_RULE_KIND) or {}).get("secured_loans"))
+
+
+def mortgage_drawdowns(sales_code, year, up_to=None, secured_loans=None):
     """One seller's mortgage drawdowns this year, exactly as the drawdown
     report's Mortgage_Mrkt_Rate_Sales / Mortgage_Non_Mrkt_Rate_Sales sheets
     take them (drawdown_report_correct.py) → [{on, net, rate, market,
@@ -959,6 +972,8 @@ def mortgage_drawdowns(sales_code, year, up_to=None):
     """
     from django.db import connection
 
+    if secured_loans is None:
+        secured_loans = mortgage_counts_secured_loans()
     code = sales_code.strip().upper()
     spelt = [code] + [k for k, v in DRAWDOWN_CODE_FIXES.items() if v == code]
     sql = r"""
@@ -968,7 +983,8 @@ def mortgage_drawdowns(sales_code, year, up_to=None):
         JOIN product_mapping pm
           ON regexp_replace(TRIM(pm.code::text), '\.0+$', '')
            = regexp_replace(TRIM(d.id_product::text), '\.0+$', '')
-        WHERE TRIM(pm.loan_category) = 'MORTGAGE'
+        WHERE (TRIM(pm.loan_category) = 'MORTGAGE'
+               OR (%s AND UPPER(TRIM(COALESCE(pm.loan_security, ''))) = 'SECURED'))
           AND d.drawdown_dt >= %s AND d.drawdown_dt < %s
           AND UPPER(TRIM(d.salesperson)) = ANY(%s)
           AND UPPER(TRIM(d.salesperson)) <> 'GLK1744'
@@ -978,8 +994,8 @@ def mortgage_drawdowns(sales_code, year, up_to=None):
         ORDER BY d.drawdown_dt
     """
     with connection.cursor() as cur:
-        cur.execute(sql, [datetime.date(year, 1, 1), datetime.date(year + 1, 1, 1),
-                          spelt, up_to, up_to])
+        cur.execute(sql, [bool(secured_loans), datetime.date(year, 1, 1),
+                          datetime.date(year + 1, 1, 1), spelt, up_to, up_to])
         found = cur.fetchall()
     return [{"on": on, "net": float(net or 0), "rate": rate,
              "market": rate is not None and float(rate) >= MARKET_RATE_FROM,
