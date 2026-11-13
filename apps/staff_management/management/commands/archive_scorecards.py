@@ -22,10 +22,15 @@ class Command(BaseCommand):
         parser.add_argument("--final", action="store_true",
                             help="Archive every card as it stands, complete or not.")
         parser.add_argument("--no-send", action="store_true", help="Archive only; e-mail nobody.")
+        parser.add_argument("--sync-share", action="store_true",
+                            help="Only copy the archive to the shared folder; build nothing.")
 
     def handle(self, *args, **opts):
         from apps.staff_management import scorecard_archive as sa
 
+        if opts["sync_share"]:
+            sa.sync_share(out=self.stdout.write)
+            return
         summary = sa.run(period=opts["period"], send=not opts["no_send"],
                          final=True if opts["final"] else None,
                          out=self.stdout.write)

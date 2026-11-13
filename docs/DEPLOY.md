@@ -462,7 +462,7 @@ Backend — from the backend repo directory:
 git pull
 docker build -t hf-backend:latest .
 docker stop hf-backend && docker rm hf-backend
-docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/prod.env -v /data/apps/datascience/etl_requests:/app/etl_requests -v /data/apps/datascience/scorecard_archive:/app/scorecard_archive hf-backend:latest
+docker run -d --name hf-backend --restart unless-stopped --network=host --env-file /etc/hf/prod.env -v /data/apps/datascience/etl_requests:/app/etl_requests -v /data/apps/datascience/scorecard_archive:/app/scorecard_archive -v /mnt/scorecard_share:/app/scorecard_share hf-backend:latest
 ```
 
 No explicit gunicorn arguments here — the image's own `CMD` runs.
@@ -474,7 +474,25 @@ container's user (uid 10001), and add the daily job to root's crontab:
 
 ```bash
 mkdir -p /data/apps/datascience/scorecard_archive && chown 10001 /data/apps/datascience/scorecard_archive
-30 6 * * * docker exec hf-backend python manage.py archive_scorecards >> /data/apps/datascience/logs/archive_scorecards.log 2>&1
+(crontab -l 2>/dev/null | grep -v archive_scorecards; echo '30 6 * * * docker exec hf-backend python manage.py archive_scorecards >> /data/apps/datascience/logs/archive_scorecards.log 2>&1') | crontab -
+```
+
+The cron line goes INTO the crontab (the command above adds it); typed at the
+prompt it only runs once and fails.
+
+The `scorecard_share` mount (13 Nov 2026) is the shared Windows folder: each run
+copies to it every archived file it does not have yet (never overwriting;
+`manifest.csv` refreshed), so the cards open from any PC when the portal or its
+login is down. Mount the share on the host at `/mnt/scorecard_share`, owned by
+uid 10001, before starting the container (without the share mounted, docker
+makes an empty local folder there and the copy stays on the server):
+
+```bash
+mkdir -p /mnt/scorecard_share /etc/hf
+printf 'username=<service account>\npassword=<its password>\ndomain=<DOMAIN>\n' > /etc/hf/share.cred && chmod 600 /etc/hf/share.cred
+echo '//<server>/<share>/<folder> /mnt/scorecard_share cifs credentials=/etc/hf/share.cred,uid=10001,gid=10001,file_mode=0664,dir_mode=0775,vers=3.0,_netdev,nofail 0 0' >> /etc/fstab
+mount /mnt/scorecard_share && findmnt /mnt/scorecard_share
+docker exec hf-backend python manage.py archive_scorecards --sync-share
 ```
 
 The `etl_requests` mount is not optional. It is what the Trade Finance and

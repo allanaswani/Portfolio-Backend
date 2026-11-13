@@ -54,6 +54,26 @@ class ArchiveTests(TestCase):
         self.assertEqual([r["version"] for r in rows], ["1", "2"])
         self.assertEqual(len(rows[0]["xlsx_sha256"]), 64)
 
+    def test_archive_is_copied_to_the_share_without_overwriting(self):
+        share = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(share, ignore_errors=True))
+        with patch.dict(os.environ, {"SCORECARD_SHARE_DIR": share}):
+            sa.archive_card("2026-10", PERSON, card())
+            self.assertEqual(sa.sync_share(out=lambda *_: None)["copied"], 3)   # xlsx, json, manifest
+            copy = os.path.join(share, "2026-10", "Back office", "BCK3783 - Bob Waigwa.json")
+            with open(copy) as f:
+                self.assertEqual(json.load(f)["performance_score"], 0.8)
+            # Nothing new: nothing copied.
+            self.assertEqual(sa.sync_share(out=lambda *_: None)["copied"], 0)
+            # A second version: its two files plus the grown manifest.
+            sa.archive_card("2026-10", PERSON, card(score=0.9))
+            self.assertEqual(sa.sync_share(out=lambda *_: None)["copied"], 3)
+            with open(os.path.join(share, "2026-10", "manifest.csv"), newline="") as f:
+                self.assertEqual(len(list(csv.DictReader(f))), 2)
+        # No share mounted: the archive stays on the server, nothing fails.
+        with patch.dict(os.environ, {"SCORECARD_SHARE_DIR": os.path.join(share, "absent")}):
+            self.assertIsNone(sa.sync_share(out=lambda *_: None)["share"])
+
     def test_complete_means_no_line_waiting(self):
         self.assertTrue(sa.is_complete(card()))
         self.assertFalse(sa.is_complete(card(pending=True)))

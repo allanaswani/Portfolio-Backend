@@ -9,7 +9,9 @@ years later. The database is not a safe single home for that: an outage, a
 lost server or a careless edit would take the evidence with it. So each month
 every card is written to a folder on disk - by default the host's shared
 ``/data/apps/datascience/scorecard_archive``, mounted into the container -
-alongside the reports the ETLs write:
+alongside the reports the ETLs write - and copied to the shared Windows folder
+when the host mounts it (``/app/scorecard_share``, see ``sync_share``) so it
+can be opened from any PC even when the portal or its login is down:
 
     <archive>/<YYYY-MM>/<workbook>/<CODE> - <Name>.xlsx   the card as sent
     <archive>/<YYYY-MM>/<workbook>/<CODE> - <Name>.json   its exact figures
@@ -46,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 
 #: Day of the following month from which complete cards are sent.
 SEND_FROM_DAY = int(os.environ.get("SCORECARD_SEND_FROM_DAY", "5"))
@@ -61,6 +64,54 @@ def archive_dir():
     return (os.environ.get("SCORECARD_ARCHIVE_DIR")
             or getattr(settings, "SCORECARD_ARCHIVE_DIR", "")
             or os.path.join(str(settings.BASE_DIR), "scorecard_archive"))
+
+
+def share_dir():
+    """The shared (Windows) folder the archive is copied to, or None.
+
+    The host mounts the share and binds it into the container at
+    /app/scorecard_share; SCORECARD_SHARE_DIR overrides that path."""
+    from django.conf import settings
+
+    path = (os.environ.get("SCORECARD_SHARE_DIR")
+            or getattr(settings, "SCORECARD_SHARE_DIR", "")
+            or os.path.join(str(settings.BASE_DIR), "scorecard_share"))
+    return path if os.path.isdir(path) else None
+
+
+def sync_share(out=print):
+    """Copy every archived file the share does not have yet → summary dict.
+
+    Files already on the share are never overwritten - except manifest.csv,
+    which only ever grows on the server and is refreshed when it differs.
+    Anything missed (share down, outage) is caught up on the next run."""
+    target = share_dir()
+    summary = {"share": target, "copied": 0, "failed": []}
+    if target is None:
+        out("No shared folder mounted (/app/scorecard_share) - archive kept on the server only.")
+        return summary
+    source = archive_dir()
+    if not os.path.isdir(source):
+        return summary
+    for root, _dirs, files in os.walk(source):
+        rel = os.path.relpath(root, source)
+        dest_dir = target if rel == "." else os.path.join(target, rel)
+        for name in sorted(files):
+            src, dest = os.path.join(root, name), os.path.join(dest_dir, name)
+            try:
+                if os.path.exists(dest) and not (
+                        name == "manifest.csv" and os.path.getsize(dest) != os.path.getsize(src)):
+                    continue
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.copyfile(src, dest)
+                summary["copied"] += 1
+            except OSError as exc:
+                summary["failed"].append((os.path.join(rel, name), str(exc)))
+    out(f"Shared folder {target}: {summary['copied']} file(s) copied, "
+        f"{len(summary['failed'])} could not be copied.")
+    for path, why in summary["failed"][:20]:
+        out(f"  NOT COPIED  {path}: {why}")
+    return summary
 
 
 def month_end(period):
@@ -203,6 +254,7 @@ def run(period=None, today=None, send=True, final=None, out=print):
     if not sending_open:
         out(f"{period}: before day {SEND_FROM_DAY} of the next month - the month's "
             f"data is still being loaded; nothing archived or sent.")
+        summary["share"] = sync_share(out)     # catch up anything the share missed
         return summary
 
     for person in people():
@@ -238,6 +290,7 @@ def run(period=None, today=None, send=True, final=None, out=print):
         f"already archived unchanged, {summary['sent']} sent; "
         f"{summary['complete']} complete, {len(summary['incomplete'])} incomplete, "
         f"{len(summary['failed'])} problem(s). Archive: {archive_dir()}")
+    summary["share"] = sync_share(out)
     if final and send:
         notify_administration(summary, out)
     return summary
