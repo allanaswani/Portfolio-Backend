@@ -149,3 +149,31 @@ class WhizzOnboardingTests(TestCase):
         call_command("load_whizz_onboarding", "--check", "--no-load", "--year", "2026",
                      stdout=out)
         self.assertIn("NOT IN REPORT", out.getvalue())  # the fixture's code is "X"
+
+
+class DigitalOnboardingWeightedTests(TestCase):
+    """Digital Onboarding: weighted-sales customers registered on the app."""
+
+    def test_running_total_by_cleaned_sales_code(self):
+        with patch.object(bm, "digital_onboarded",
+                          return_value={"BCK3783": {"1": 2, "3": 4, "11": 9},
+                                        "AKL3116": {"2": 1}}):
+            self.assertEqual(bm.digital_onboarded_to(2026, 10, "BCK 3783"), 6)
+            # The weighted report's own sales-code correction applies.
+            self.assertEqual(bm.digital_onboarded_to(2026, 10, "AL3116"), 1)
+            self.assertEqual(bm.digital_onboarded_to(2026, 10, "XX1"), 0)
+        with patch.object(bm, "digital_onboarded", return_value=None):
+            self.assertIsNone(bm.digital_onboarded_to(2026, 10, "BCK3783"))
+
+    def test_the_card_reads_it(self):
+        scorecards = book()
+        scorecards["cards"]["TELLER_SCORECARD"]["grid"][9][11] = "Digital_Customers"
+        bo.save_file("scorecards", scorecards)
+        bo.save_file("actuals", template({
+            "Digital_Customers": {"Bob Waigwa": [0, 0, 0, 0, 0, 0, 0, 1, 2]},
+            "Training_hours": {"Bob Waigwa": [0, 6, 11, 15, 18, 22, 22, 22, 40]},
+            "NPS": {"Bob Waigwa": [0.5] * 9}}))
+        with patch.object(bm, "digital_onboarded", return_value={"BCK3783": {"10": 3, "11": 4}}):
+            line = bo.live_card("BCK3783", None, NOV)["perspectives"][0]["lines"][0]
+        self.assertEqual(line["ytd_actual"], 7)
+        self.assertIn("registered on the mobile app", line["as_at"])

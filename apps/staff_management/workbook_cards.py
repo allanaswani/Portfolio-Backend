@@ -2610,6 +2610,23 @@ def live_card(sales_code, engine_card, as_at):
                                            f"(Whizz onboarding report, loaded "
                                            f"{loaded})")
                     continue
+        if spec.book == BACK_OFFICE and _key(wl["feed"]) == "digitalcustomers":
+            # Digital Onboarding: your weighted-sales customers registered on
+            # the mobile app (bo_branch_measures.digital_onboarded).
+            from . import bo_branch_measures as bm
+
+            value = bm.digital_onboarded_to(as_at.year, month, code)
+            if value is not None:
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    measured[wl["row"]] = (
+                        "your weighted-sales customers registered on the "
+                        "mobile app, each counted once (registration data)")
+                    continue
         if spec.book == BACK_OFFICE and (
                 _key(wl["feed"]) == "reactivation"
                 or (_key(wl["feed"]) == "casa"

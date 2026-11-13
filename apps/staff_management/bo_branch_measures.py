@@ -162,3 +162,82 @@ def funded_accounts(year, month):
         return None
     cache.set(key, found, 3600)
     return found
+
+
+# ── Digital Onboarding (the Digital_Customers sheet) ────────────────────────
+# The CSO card: "Digital Onboarding - Onboard 15 Digital customers monthly".
+# A CSO's digital customers are the customers mapped to them on weighted sales
+# (daily_sales_accounts_with_cto - the report's accounts data: a customer
+# belongs to the seller on its FIRST row this year, STAFF and INTERNAL
+# ACCOUNTS out, the report's sales-code corrections) who are registered on
+# the mobile app (routine_registration_data.py: mobile_customers_table joined
+# to customers on national ID, one row per cust_id, earliest registration,
+# HF WHIZZ / DUMMY UNIT out). A customer counts once, in the month both had
+# happened - onboarded and registered.
+
+DIGITAL_ONBOARDING_SQL = """
+WITH reg AS (
+    SELECT c.cust_id, MIN(m.datecreated) AS registered
+    FROM mobile_customers_table m
+    JOIN customers c
+      ON REPLACE(trim(LEADING '0' FROM trim(m.docunumber)), ' ', '')
+       = REPLACE(trim(LEADING '0' FROM trim(c.national_id)), ' ', '')
+    WHERE c.branch IS NOT NULL AND c.branch NOT IN ('HF WHIZZ', 'DUMMY UNIT')
+    GROUP BY c.cust_id
+), w AS (
+    SELECT DISTINCT ON (cust_cif) cust_cif, sale_code, cust_open_date
+    FROM daily_sales_accounts_with_cto
+    WHERE acc_open_date >= %(start)s
+      AND COALESCE(customer_segment, '') NOT IN ('STAFF', 'INTERNAL ACCOUNTS')
+    ORDER BY cust_cif, ctid
+)
+SELECT w.sale_code,
+       extract(month FROM greatest(w.cust_open_date::date, r.registered::date))::int,
+       count(*)
+FROM w JOIN reg r ON r.cust_id::text = w.cust_cif::text
+WHERE w.cust_open_date::date >= %(start)s AND w.cust_open_date::date < %(end)s
+  AND greatest(w.cust_open_date::date, r.registered::date) < %(end)s
+GROUP BY 1, 2
+"""
+
+
+def _clean_sale_code(code):
+    from .weighted_sales_new_customers import SALE_CODE_FIXES
+
+    code = str(code or "").replace(" ", "")
+    return SALE_CODE_FIXES.get(code, code).strip().upper()
+
+
+def digital_onboarded(year):
+    """{SALES CODE: {"month": customers}} for ``year``, or None while it is
+    first read (in the background) or when the tables cannot be read."""
+    from .feed_cache import cached
+
+    def compute():
+        from django.db import connection, transaction
+
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = 600000")
+            cur.execute(DIGITAL_ONBOARDING_SQL, {"start": datetime.date(year, 1, 1),
+                                                 "end": datetime.date(year + 1, 1, 1)})
+            rows = cur.fetchall()
+        out = {}
+        for code, month, n in rows:
+            months = out.setdefault(_clean_sale_code(code), {})
+            months[str(int(month))] = months.get(str(int(month)), 0) + int(n)
+        return out
+
+    try:
+        return cached(f"bo_digital_onboarded:{year}", compute)
+    except Exception:  # noqa: BLE001 - no registration data, no live figure
+        return None
+
+
+def digital_onboarded_to(year, month, code):
+    """The person's running total January to ``month`` -> int, or None when
+    the figures are not read yet."""
+    found = digital_onboarded(year)
+    if found is None:
+        return None
+    months = found.get(_clean_sale_code(code), {})
+    return sum(n for m, n in months.items() if int(m) <= month)
