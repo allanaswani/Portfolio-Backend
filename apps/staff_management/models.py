@@ -2004,7 +2004,10 @@ class BoWorkbookFile(models.Model):
     SCORECARDS = "scorecards"
     ACTUALS = "actuals"
 
-    kind = models.CharField(max_length=20, unique=True)
+    # A year's scorecards workbook or actuals template is "<kind>@<year>"
+    # (workbook_cards.YEARLY_KINDS), so next year's KPIs never re-score this
+    # year's cards. 40: "sales_scorecards@2027" is 21.
+    kind = models.CharField(max_length=40, unique=True)
     file_name = models.CharField(max_length=255, blank=True, default="")
     payload = models.JSONField(default=dict)
     loaded_by = models.CharField(max_length=150, blank=True, default="")

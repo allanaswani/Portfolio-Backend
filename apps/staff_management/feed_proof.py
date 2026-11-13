@@ -39,7 +39,7 @@ def closed_months(book):
                        for r in SchemeScorecard.objects.filter(month__year=year)
                        if scheme_cards.has_desk_figures(r)})
     kind = "actuals" if book == "back_office" else "sales_actuals"
-    actuals = saved(kind)
+    actuals = saved(kind, year)
     if not actuals:
         return []
     return [f"{year}-{m:02d}" for m in template_months(actuals)]

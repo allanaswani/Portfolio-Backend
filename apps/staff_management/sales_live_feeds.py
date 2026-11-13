@@ -101,7 +101,7 @@ def probe(year, month, out=print, book=None, store=STORE_KIND):
     from .workbook_cards import SALES, SPECS, _month_end, _num, save_file, saved
 
     spec = SPECS[book or SALES]
-    book, actuals = saved(spec.files[0]), saved(spec.files[1])
+    book, actuals = saved(spec.files[0], year), saved(spec.files[1], year)
     if book is None or actuals is None:
         out("Load the scorecards workbook and actuals template first - "
             "the probe compares against them.")
@@ -209,7 +209,7 @@ def explain(year, month, who, out=print):
     from .workbook_cards import SALES, SPECS, _month_end, _num, saved
 
     spec = SPECS[SALES]
-    book, actuals = saved(spec.files[0]), saved(spec.files[1])
+    book, actuals = saved(spec.files[0], year), saved(spec.files[1], year)
     if book is None or actuals is None:
         out("Load the sales scorecards workbook and actuals template first.")
         return

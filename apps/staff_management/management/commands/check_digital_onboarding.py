@@ -146,7 +146,7 @@ class Command(BaseCommand):
         from apps.staff_management.workbook_cards import saved
 
         year = opts["year"]
-        actuals = saved("actuals") or {}
+        actuals = saved("actuals", year) or {}
         people = []
         for row in (actuals.get("Digital_Customers") or [])[1:]:
             if len(row) < 7 or not row[1]:

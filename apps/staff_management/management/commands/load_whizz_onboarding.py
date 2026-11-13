@@ -47,7 +47,7 @@ class Command(BaseCommand):
         if not opts["check"]:
             return
         officers = (wo._loaded(year).get("officers") or {})
-        actuals = saved("actuals") or {}
+        actuals = saved("actuals", year) or {}
         rows = (actuals.get("Digital_Customers") or [])[1:]
         agree = differ = unnamed = 0
         for row in rows:

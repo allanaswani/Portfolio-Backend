@@ -1782,8 +1782,10 @@ def rescore(sales_code):
     their proration changed → how many months were stored."""
     code = (sales_code or "").replace(" ", "").upper()
     stored = 0
-    for spec in SPECS.values():
-        book, actuals = saved(spec.files[0]), saved(spec.files[1])
+    pairs = [(spec, year) for spec in SPECS.values()
+             for year in stored_years(spec.files[0])]
+    for spec, year in pairs:
+        book, actuals = saved(spec.files[0], year), saved(spec.files[1], year)
         if book is None or actuals is None:
             continue
         results = compute_all(book, actuals, only={code})
@@ -1849,17 +1851,66 @@ def store(results, year, recorded=None, loaded_by=""):
     return len(results)
 
 
-def save_file(kind, payload, file_name="", loaded_by=""):
+#: The workbooks a year's cards are computed from. Each is kept per year
+#: ("scorecards@2026"), because the KPIs - lines, weights, targets - can change
+#: from one year to the next: loading 2027's workbook must not re-score a 2026
+#: card. Every other kind is one row, as before.
+YEARLY_KINDS = frozenset({"scorecards", "actuals", "sales_scorecards",
+                          "sales_actuals", "bb_scorecards"})
+
+
+def year_kind(kind, year):
+    return f"{kind}@{int(year)}"
+
+
+def stored_years(kind):
+    """The years ``kind`` is loaded for → sorted list."""
     from .models import BoWorkbookFile
 
+    years = []
+    for name in BoWorkbookFile.objects.filter(
+            kind__startswith=f"{kind}@").values_list("kind", flat=True):
+        tail = name.rsplit("@", 1)[1]
+        if tail.isdigit():
+            years.append(int(tail))
+    return sorted(years)
+
+
+def _year_for(kind, year):
+    """Which loaded year serves ``year``: that year's own; else the latest
+    before it (January, before the new year's workbook is in, still runs on
+    last year's); else the earliest there is. None when nothing is loaded."""
+    years = stored_years(kind)
+    if not years:
+        return None
+    if year in years:
+        return year
+    earlier = [y for y in years if y < year]
+    return earlier[-1] if earlier else years[0]
+
+
+def save_file(kind, payload, file_name="", loaded_by="", year=None):
+    """Store a file. A :data:`YEARLY_KINDS` file is stored for ``year``
+    (default this year)."""
+    from .models import BoWorkbookFile
+
+    if kind in YEARLY_KINDS:
+        kind = year_kind(kind, year or datetime.date.today().year)
     BoWorkbookFile.objects.update_or_create(
         kind=kind, defaults={"payload": payload, "file_name": file_name,
                              "loaded_by": loaded_by})
 
 
-def saved(kind):
+def saved(kind, year=None):
+    """A stored file's payload, or None. A :data:`YEARLY_KINDS` file is the
+    one for ``year`` (default this year) - see :func:`_year_for`."""
     from .models import BoWorkbookFile
 
+    if kind in YEARLY_KINDS:
+        found = _year_for(kind, int(year or datetime.date.today().year))
+        if found is None:
+            return None
+        kind = year_kind(kind, found)
     row = BoWorkbookFile.objects.filter(kind=kind).first()
     return row.payload if row is not None else None
 
@@ -2388,7 +2439,9 @@ def live_card(sales_code, engine_card, as_at):
     spec = book = actuals = holder = None
     for name in order if latest is None else order[:1]:
         spec = SPECS.get(name, SPECS[BACK_OFFICE])
-        book, actuals = saved(spec.files[0]), saved(spec.files[1])
+        # The card's own year's workbook and template, never a later year's.
+        book = saved(spec.files[0], as_at.year)
+        actuals = saved(spec.files[1], as_at.year)
         if book is None or actuals is None:
             continue
         holder = next((h for h in holders(book)

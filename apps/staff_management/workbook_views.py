@@ -257,8 +257,15 @@ class BoActualsUploadView(APIView):
         upload.seek(0)
         kind = workbook_cards.actuals_book(actuals_book)
         spec = workbook_cards.SPECS[kind]
-        cards = self._cards_report(workbook_cards.saved(spec.files[0]),
+        # Which year's template: the template does not say, so the desk does
+        # (the page sends it). Without one, the year of the newest scorecards
+        # workbook loaded for it, else this year.
+        year = self._year(request, spec)
+        if isinstance(year, Response):
+            return year
+        cards = self._cards_report(workbook_cards.saved(spec.files[0], year),
                                    actuals_book, spec)
+        cards["year"] = year
 
         if kind == workbook_cards.SALES:
             # The sales template: the sales workbook's cards, every closed
@@ -269,13 +276,13 @@ class BoActualsUploadView(APIView):
                                  "detail": "Read the sales actuals template. "
                                            "Nothing has been saved yet."})
             workbook_cards.save_file(spec.files[1], actuals_book, upload.name,
-                                     who)
+                                     who, year=year)
             # The branch business workbook reads this same template.
-            details = []
+            details = [f"Saved as the {year} template."]
             for other in workbook_cards.SPECS.values():
                 if other.files[1] != spec.files[1]:
                     continue
-                book = workbook_cards.saved(other.files[0])
+                book = workbook_cards.saved(other.files[0], year)
                 if book is None:
                     continue
                 stored = workbook_cards.rebuild(book, actuals_book, who)
@@ -321,16 +328,32 @@ class BoActualsUploadView(APIView):
             })
 
         written = bo_actuals.save(entries, who=who)
-        workbook_cards.save_file(spec.files[1], actuals_book, upload.name, who)
-        book = workbook_cards.saved(spec.files[0])
+        workbook_cards.save_file(spec.files[1], actuals_book, upload.name, who,
+                                 year=year)
+        book = workbook_cards.saved(spec.files[0], year)
         if book is not None:
             cards["stored"] = workbook_cards.rebuild(book, actuals_book, who)
         return Response({
             "applied": True, "report": report, "written": written,
             "cards": cards,
-            "detail": f"Saved {written:,} figure(s). "
+            "detail": f"Saved {written:,} figure(s) as the {year} template. "
                       + self._stored_detail(cards, spec),
         })
+
+    @staticmethod
+    def _year(request, spec):
+        """The year a template is for → int, or a 400 Response."""
+        import datetime
+
+        from . import workbook_cards
+
+        raw = str(request.data.get("year") or "").strip()
+        if raw:
+            if not raw.isdigit() or not 2000 < int(raw) < 2100:
+                return Response({"year": f"{raw} is not a year."}, status=400)
+            return int(raw)
+        years = workbook_cards.stored_years(spec.files[0])
+        return years[-1] if years else datetime.date.today().year
 
     @staticmethod
     def _stored_detail(cards, spec):
@@ -364,20 +387,28 @@ class BoActualsUploadView(APIView):
             return Response({"file": f"That workbook could not be read: "
                                      f"{exc}"}, status=400)
         spec = workbook_cards.spec_of(book)
-        actuals_book = workbook_cards.saved(spec.files[1])
+        # A scorecards workbook says its own year (Constants), and is kept as
+        # that year's: loading 2027's leaves every 2026 card as it was.
+        year = workbook_cards.book_year(book)
+        actuals_book = workbook_cards.saved(spec.files[1], year)
+        if actuals_book is not None and year not in workbook_cards.stored_years(
+                spec.files[1]):
+            actuals_book = None  # another year's template is not this book's
         cards = self._cards_report(book, actuals_book, spec)
+        cards["year"] = year
         if not apply:
             return Response({
                 "applied": False, "cards": cards,
-                "detail": (f"Read the {spec.label} scorecards workbook. "
-                           f"Nothing has been saved yet.")})
-        workbook_cards.save_file(spec.files[0], book, upload.name, who)
+                "detail": (f"Read the {spec.label} scorecards workbook for "
+                           f"{year}. Nothing has been saved yet.")})
+        workbook_cards.save_file(spec.files[0], book, upload.name, who,
+                                 year=year)
         if actuals_book is not None:
             cards["stored"] = workbook_cards.rebuild(book, actuals_book, who)
         return Response({
             "applied": True, "cards": cards,
-            "detail": (f"Saved the {spec.label} scorecards workbook. "
-                       + self._stored_detail(cards, spec))})
+            "detail": (f"Saved the {spec.label} scorecards workbook for "
+                       f"{year}. " + self._stored_detail(cards, spec))})
 
 
 @extend_schema(tags=[_TAG])
