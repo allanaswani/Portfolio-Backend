@@ -62,6 +62,77 @@ CANDIDATES = {
 }
 
 
+def weighted_candidates(year, out):
+    """Registrations credited as the weighted sales report credits accounts.
+
+    ``daily_sales_accounts_with_cto`` (accounts opened this year) - the report's
+    accounts data - names the seller (``sale_code``, the report's four hand
+    corrections) of every customer onboarded this year; a customer belongs to
+    the seller on its FIRST row (``cust_cif`` duplicated, table order), STAFF
+    and INTERNAL ACCOUNTS out. A registered customer (unique cust_id, earliest
+    registration) is then credited to that seller:
+
+      weighted_reg_month   counted in the month it registered (this year)
+      weighted_both_month  counted once both have happened: the later of the
+                           customer's open month and its registration month
+      weighted_new_rule    as weighted_both_month, only customers the report
+                           counts as New Customers (new, funded, not closed)
+    """
+    import numpy as np
+    import pandas as pd
+
+    from apps.staff_management.weighted_sales_new_customers import (
+        RENAMES, SALE_CODE_FIXES)
+
+    start, end = datetime.date(year, 1, 1), datetime.date(year + 1, 1, 1)
+    with connection.cursor() as cur:
+        cur.execute(BASE + "SELECT cust_id, registered FROM reg", {})
+        reg = {int(c): r for c, r in cur.fetchall() if c is not None and r is not None}
+        cur.execute("SELECT * FROM daily_sales_accounts_with_cto "
+                    "WHERE acc_open_date >= %s ORDER BY ctid", [start])
+        names = [d[0] for d in cur.description]
+        df = pd.DataFrame(cur.fetchall(), columns=names)
+    df.columns = [str(c).lower() for c in df.columns]
+    df = df.rename(columns=RENAMES)
+    df["sale_code"] = (df["sale_code"].astype(str).str.replace(" ", "", regex=False)
+                       .replace(SALE_CODE_FIXES).str.strip().str.upper())
+    df = df[(df["customer_segment"] != "STAFF")
+            & (df["customer_segment"] != "INTERNAL ACCOUNTS")].fillna(0)
+    new = df["total_accounts_before_current_year"] == 0
+    funded = ((pd.to_numeric(df["cust_cto"], errors="coerce").fillna(0) > 0)
+              | (pd.to_numeric(df["current_year_bal"], errors="coerce").fillna(0) > 0))
+    first = ~df["cust_cif"].duplicated()
+    opened = pd.to_datetime(df["cust_open_date"], errors="coerce")
+    cif = pd.to_numeric(df["cust_cif"], errors="coerce")
+    df = df.assign(_cif=cif, _opened=opened, _new_rule=new & funded
+                   & (df["account_status"] != "CLOSED"))[first]
+
+    matched = 0
+    found = {"weighted_reg_month": {}, "weighted_both_month": {}, "weighted_new_rule": {}}
+    for code, c, op, new_rule in df[["sale_code", "_cif", "_opened", "_new_rule"]].values:
+        if pd.isna(c) or int(c) not in reg:
+            continue
+        matched += 1
+        registered = pd.Timestamp(reg[int(c)])
+        if registered.tzinfo is not None:
+            registered = registered.tz_localize(None)
+        if start <= registered.date() < end:
+            m = found["weighted_reg_month"].setdefault(code, {})
+            m[registered.month] = m.get(registered.month, 0) + 1
+        if pd.isna(op) or op.year != year:
+            continue
+        both = max(op, registered)
+        if both.year != year:
+            continue
+        for label, wanted in (("weighted_both_month", True), ("weighted_new_rule", new_rule)):
+            if wanted:
+                m = found[label].setdefault(code, {})
+                m[both.month] = m.get(both.month, 0) + 1
+    out.write(f"weighted accounts: {df.shape[0]} customers onboarded {year}, "
+              f"{matched} of them registered on the app\n")
+    return found
+
+
 class Command(BaseCommand):
     help = "Score attributions of mobile-app registrations against the desk."
 
@@ -95,6 +166,7 @@ class Command(BaseCommand):
             total, this_year = cur.fetchone()
         self.stdout.write(f"registrations (unique cust_id): {total} in all, {this_year} in {year}\n")
 
+        results = {}
         for label, sql in CANDIDATES.items():
             with connection.cursor() as cur:
                 cur.execute(sql, params)
@@ -102,6 +174,10 @@ class Command(BaseCommand):
             by = {}
             for who, month, n in rows:
                 by.setdefault(who or "", {})[month] = n
+            results[label] = by
+        results.update(weighted_candidates(year, self.stdout))
+
+        for label, by in results.items():
             agree = differ = found = 0
             lines = []
             for code, name, keys, desk in people:
