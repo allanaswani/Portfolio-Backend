@@ -615,17 +615,25 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
                     " segment, total_depost_balance, total_loans, total_revenue)"
                     " VALUES (%s, %s, %s, 'MASS', %s, 0, 0)",
                     [cust_id, name, branch, cust_id * 1000])
+                # The bank's own daily accrual (a justification the report
+                # leaves out) lands on every account, yesterday included. It
+                # is not the customer transacting and must change no answer
+                # (16 Nov 2026: it made every customer Active).
+                cur.execute(
+                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp,"
+                    " i_id_justific) VALUES (%s, now() - INTERVAL '1 day', 99988)",
+                    [cust_id])
                 if days is None:
                     continue
                 cur.execute(
-                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp)"
-                    " VALUES (%s, now() - (%s * INTERVAL '1 day'))",
+                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp,"
+                    " i_id_justific) VALUES (%s, now() - (%s * INTERVAL '1 day'), 1)",
                     [cust_id, days])
                 # A second, OLDER transaction. The figure is the MOST RECENT
                 # one, so this must not change any answer.
                 cur.execute(
-                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp)"
-                    " VALUES (%s, now() - (%s * INTERVAL '1 day'))",
+                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp,"
+                    " i_id_justific) VALUES (%s, now() - (%s * INTERVAL '1 day'), 1)",
                     [cust_id, days + 200])
 
         # The page reads the MIRROR, never transaction_diary - that live read

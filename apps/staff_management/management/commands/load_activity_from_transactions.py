@@ -56,6 +56,31 @@ TIMEOUT_MS = 600_000
 #: gets for each customer, which is by definition their most recent
 #: transaction. No GREATEST, no upsert, and every statement is bounded by one
 #: month of rows.
+#: Transactions the BANK makes on an account, not the customer: interest
+#: accruals and capitalisation, charges, fees, system sweeps. Copied verbatim
+#: from routine_registration_data.py (its ``any_transaction`` CTE, the "total
+#: transactions" activity the desk reports), which leaves exactly these out.
+#: Without them, 16 Nov 2026: ~267,000 customers "transacted" on every
+#: weekday - the daily interest accrual - and every customer read Active.
+NOT_CUSTOMER_JUSTIFIC = (
+    43008, 32799, 31810, 31811, 99988, 16042, 39058, 1301, 1195, 1201,
+    37001, 32037, 32033, 32036, 99099, 99095, 99893, 31636, 92521, 39041,
+    31807, 31806, 39039, 31622, 80023, 80017, 80004, 31634, 31639, 31637,
+    31638, 33107, 92501, 99897, 31633, 31629, 31632, 99891, 16041, 93036,
+    99001, 99989, 99098, 32035, 32034, 32039, 32038, 99973, 31627, 31619,
+    31808, 31809, 39066, 31003, 32029, 39042, 40065, 40064, 40063, 40062,
+    31818, 35502, 39065, 99896, 44121, 99101, 99100, 99986, 99890, 99990,
+    74013, 43007, 99987, 99991, 34001, 33100, 43001, 34002, 33102, 49012,
+    99892, 33101, 31631, 31605, 99097, 32012, 99096, 93916, 34007, 31021,
+    31023, 39101, 39100, 34038, 16006, 99977, 99998, 16051, 39037, 39044,
+    31623, 33011, 31606, 31630, 99968, 40606, 40483, 40461, 99969, 3892,
+    3891, 99967, 99895, 31804, 34003, 31805, 99971, 31617, 31624, 39038,
+    21962, 99009, 16044, 16444, 16441, 32014, 32010, 31607, 32007, 16007,
+    16001, 34011, 34012, 39064, 74008, 31609, 32002, 39067, 16053, 16061,
+    16112, 74393, 31640, 31626, 99008, 99006, 99007, 39001, 35501, 31625,
+    31321, 44122, 99894, 31610, 31603, 31604, 32011, 0, 21973, 21999,
+)
+
 LAST_TXN_MONTH_SQL = """
     SELECT t.fk_customercust_id AS cust_id, MAX(t.tmstamp) AS last_txn
     FROM transaction_diary t
@@ -145,6 +170,11 @@ class Command(BaseCommand):
             help="Ask Trino which tables the lake holds whose name contains "
                  "this text, and stop. Nothing is read or written - this is "
                  "for finding the right table instead of guessing one.")
+        parser.add_argument(
+            "--last-transaction-reset", action="store_true",
+            help="Empty the last-transaction mirror first and rebuild it day by "
+                 "day over --last-transaction-days (dates written under an "
+                 "earlier rule cannot otherwise be taken out).")
         parser.add_argument(
             "--last-transaction-rebuild", action="store_true",
             help="Rebuild the last-transaction mirror wholesale, month by month, "
@@ -279,6 +309,13 @@ class Command(BaseCommand):
             return self._rebuild_last_transaction(options, write)
         days = int(options.get("last_transaction_days") or 0)
         today = datetime.date.today()
+        if options.get("last_transaction_reset"):
+            # The mirror only ever moves forward, so dates written under a wrong
+            # rule (16 Nov 2026: the bank's own accruals counted as customer
+            # transactions) can only be taken out by starting again.
+            gone = CustomerLastTransaction.objects.all().delete()[0]
+            write(f"  last-transaction mirror emptied ({gone:,} rows) - rebuilding "
+                  f"from {today - datetime.timedelta(days=days or 400):%d %b %Y}")
         newest = CustomerLastTransaction.objects.order_by("-last_txn").values_list(
             "last_txn", flat=True).first()
         if newest is not None:
@@ -292,6 +329,8 @@ class Command(BaseCommand):
             FROM transaction_diary t
             WHERE t.tmstamp >= %s AND t.tmstamp < %s
               AND t.fk_customercust_id IS NOT NULL
+              -- As the report's NOT IN: a row with no justification is left out too.
+              AND t.i_id_justific IS NOT NULL AND NOT (t.i_id_justific = ANY(%s))
             GROUP BY t.fk_customercust_id
             ON CONFLICT (cust_id) DO UPDATE
                SET last_txn = GREATEST(customer_last_transaction.last_txn, EXCLUDED.last_txn),
@@ -306,7 +345,8 @@ class Command(BaseCommand):
             try:
                 with connection.cursor() as cur:
                     cur.execute(f"SET statement_timeout = {TIMEOUT_MS}")
-                    cur.execute(sql, [days, day, day + datetime.timedelta(days=1)])
+                    cur.execute(sql, [days, day, day + datetime.timedelta(days=1),
+                                      list(NOT_CUSTOMER_JUSTIFIC)])
                     count = cur.rowcount
                 moved += max(count, 0)
                 write(f"      {day:%d %b %Y}  {count:>9,} customer(s) transacted")
