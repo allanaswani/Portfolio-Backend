@@ -2610,9 +2610,15 @@ def live_card(sales_code, engine_card, as_at):
                                            f"(Whizz onboarding report, loaded "
                                            f"{loaded})")
                     continue
-        if spec.book == BACK_OFFICE and _key(wl["feed"]) == "digitalcustomers":
+        if (spec.book == BACK_OFFICE and _key(wl["feed"]) == "digitalcustomers"
+                and _num(wl.get("ytd_target")) and wl["ytd_target"] >= 1):
             # Digital Onboarding: your weighted-sales customers registered on
-            # the mobile app (bo_branch_measures.digital_onboarded).
+            # the mobile app (bo_branch_measures.digital_onboarded) - a COUNT,
+            # so only on a card whose target is a count (a CSO's 15 a month).
+            # A teller's Digital Onboarding target is a RATE (0.8, Francis
+            # Ochieng FO4213, 16 Nov 2026): a count written there would score
+            # 120% on nothing like the desk's measure, so that line keeps the
+            # desk's figure until the rate's own definition is known.
             from . import bo_branch_measures as bm
 
             value = bm.digital_onboarded_to(as_at.year, month, code)
