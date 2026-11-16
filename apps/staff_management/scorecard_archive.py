@@ -243,6 +243,10 @@ def run(period=None, today=None, send=True, final=None, out=print):
 
     today = today or datetime.date.today()
     period = period or closed_period(today)
+    if send and os.environ.get("SCORECARD_AUTO_SEND", "1").strip() == "0":
+        # Paused in /etc/hf/prod.env: archive as usual, e-mail nobody.
+        out("SCORECARD_AUTO_SEND=0 - archiving only; no card e-mailed.")
+        send = False
     after_month = today > month_end(period)
     if final is None:
         final = after_month and (today.day >= FINAL_DAY or

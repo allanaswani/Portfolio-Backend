@@ -114,6 +114,11 @@ class TimelineTests(TestCase):
             sa.run(today=datetime.date(2026, 11, 7), out=lambda *_: None)
         self.assertEqual(len(self.sent), 1)
 
+    def test_auto_send_can_be_paused(self):
+        with patch.dict(os.environ, {"SCORECARD_AUTO_SEND": "0"}):
+            out = sa.run(today=datetime.date(2026, 11, 6), out=lambda *_: None)
+        self.assertEqual((out["archived"], self.sent), (1, []))
+
     def test_final_day_archives_everything_and_reports(self):
         with patch.object(sa, "notify_administration") as notify:
             out = sa.run(today=datetime.date(2026, 11, 10), out=lambda *_: None)
