@@ -1932,6 +1932,34 @@ class SchemeScorecard(models.Model):
         return f"{self.sales_code} {self.month:%Y-%m} {self.sheet}"
 
 
+class BancaScorecard(models.Model):
+    """One Banca DSR's scorecard for one month, as the desk's Banca DSR
+    workbook computes it - see :mod:`apps.staff_management.banca_cards`.
+    Stored on load (like the Scheme cards): ``card`` is the whole computed
+    card, so what was signed can be shown again exactly."""
+
+    sales_code = models.CharField(max_length=40, db_index=True)
+    staff_name = models.CharField(max_length=200, blank=True, default="")
+    #: First day of the review month.
+    month = models.DateField(db_index=True)
+    #: The List sheet's prorate: months of the year before joining.
+    joined = models.FloatField(default=0)
+    reports_to = models.CharField(max_length=200, blank=True, default="")
+    card = models.JSONField(default=dict)
+    total = models.FloatField(null=True, blank=True)
+    loaded_by = models.CharField(max_length=150, blank=True, default="")
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "staff_management"
+        db_table = "banca_scorecard"
+        unique_together = [("sales_code", "month")]
+        ordering = ["month", "sales_code"]
+
+    def __str__(self):
+        return f"{self.sales_code} {self.month:%Y-%m} banca"
+
+
 class HrLeaveBalance(models.Model):
     """Aruti's Employee Leave Balance List, a snapshot per "As On Date" - see
     :mod:`apps.staff_management.hr_reports`."""

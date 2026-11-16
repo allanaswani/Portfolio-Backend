@@ -296,6 +296,21 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
                                 status=400)
             files[field] = upload
 
+        # The Banca DSR workbook comes through the same screen: two workbooks,
+        # the desk's template and its actuals, scored exactly as the template.
+        try:
+            formulas = openpyxl.load_workbook(files["template"], data_only=False)
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": f"Those workbooks could not be read: {exc}"},
+                            status=400)
+        from apps.staff_management import banca_cards as bc
+
+        if bc.is_banca_template(formulas):
+            for f in files.values():
+                f.seek(0)
+            return self._banca(request, formulas, files)
+        files["template"].seek(0)
+
         try:
             template = openpyxl.load_workbook(files["template"], data_only=True,
                                               read_only=True)
@@ -364,6 +379,70 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
         from apps.staff_management import scheme_live_feeds
 
         body["drawdown_list_rows"] = scheme_live_feeds.capture(actuals, who)
+        return Response(body, status=201)
+
+    def _banca(self, request, formulas, files):
+        """The Banca DSR template and the insurance actuals workbook → every
+        month's cards, each checked against the desk's own monthly_summary
+        score; any card that differs refuses the whole load."""
+        import datetime
+
+        import openpyxl
+
+        from apps.staff_management import banca_cards as bc
+
+        try:
+            values = openpyxl.load_workbook(files["template"], data_only=True)
+            template = bc.read_template(formulas, values)
+            actuals = bc.read_actuals(openpyxl.load_workbook(files["actuals"],
+                                                             data_only=True))
+            only = None
+            raw = str(request.data.get("month", "")).strip()
+            if raw:
+                try:
+                    asked = datetime.datetime.strptime(raw[:7], "%Y-%m").date()
+                except ValueError:
+                    return Response({"month": "Which month? e.g. 2026-10"}, status=400)
+                only = asked.month
+            by_month, mismatches = bc.compute_months(
+                template, actuals, bc.desk_scores(values), only=only)
+        except bc.BancaCardError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        except Exception as exc:  # noqa: BLE001 - the message is for the reader
+            return Response({"detail": f"Those workbooks could not be read: {exc}"},
+                            status=400)
+        year = template["year"]
+        compared = sum(1 for cards in by_month.values() for _p, c in cards
+                       if c.get("desk_score") is not None)
+        body = {
+            "applied": False, "book": "banca",
+            "template_month": (datetime.date(year, int(template["month_count"]), 1)
+                               .isoformat() if bc._num(template["month_count"]) else None),
+            "months": [{"month": datetime.date(year, m, 1).isoformat(),
+                        "cards": [{"sales_code": p.sales_code, "name": p.name,
+                                   "card": "BANCA DSR", "joined": p.joined or 0,
+                                   "total": c["total"], "total_error": "",
+                                   "desk_score": c.get("desk_score"),
+                                   "empty_lines": sum(1 for ln in c["lines"]
+                                                      if ln.get("empty") and ln["weight"]),
+                                   "not_loaded": []}
+                                  for p, c in cards]}
+                       for m, cards in by_month.items()],
+            "not_placed": [],
+            "desk_check": {"compared": compared, "differ": len(mismatches),
+                           "differences": mismatches},
+        }
+        if mismatches:
+            body["detail"] = (f"{len(mismatches)} card(s) do not give the score the "
+                              f"desk's monthly_summary records, so nothing can be "
+                              f"stored: " + "; ".join(mismatches[:5]))
+            return Response(body, status=400)
+        if not self._asked_to_apply(request):
+            return Response(body)
+        who = (request.user.get_full_name() or request.user.username).strip()
+        body["saved"] = sum(bc.store(cards, datetime.date(year, m, 1), loaded_by=who)
+                            for m, cards in by_month.items())
+        body["applied"] = True
         return Response(body, status=201)
 
 

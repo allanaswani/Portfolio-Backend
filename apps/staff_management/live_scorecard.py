@@ -3470,6 +3470,21 @@ def resolve_person(sales_code):
             branch="Head Office",
             roster="the Scheme scorecard workbook")
 
+    # 0a. the Banca DSR scorecard workbook, for the same reason: its List is
+    # who holds a Banca DSR card.
+    from . import banca_cards
+
+    try:
+        with transaction.atomic():      # before migration 0068: no table yet
+            banca = banca_cards.stored_for(code)
+    except Exception:  # noqa: BLE001
+        banca = None
+    if banca is not None:
+        return Person(
+            sales_code=code, name=banca.staff_name,
+            role_code=banca_cards.ROLE_CODE, branch="Insurance",
+            roster="the Banca DSR scorecard workbook")
+
     # 0b. the back-office scorecards workbook, for the same reason: its List
     # is what the desk's macro walks, and it names a teller's branch as the
     # desk does (Bob Waigwa is Kitengela there and Komarock on the DMC
@@ -4235,6 +4250,20 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                               "Scorecards."}
         live = scheme_cards.live_payload(record, as_at or datetime.date.today())
         return live or scheme_cards.card_payload(record, asked=as_at)
+
+    # The Banca DSR cards likewise: the desk's workbook, stored per month.
+    from . import banca_cards
+
+    if role_code == banca_cards.ROLE_CODE:
+        record = banca_cards.stored_for(sales_code, as_at=as_at)
+        if record is None:
+            return {"has_card": False, "reason": "banca_month_not_loaded",
+                    "sales_code": sales_code,
+                    "detail": "Your Banca DSR scorecard for this month has not "
+                              "been loaded yet. Administration loads the Banca "
+                              "DSR template and the insurance actuals workbook "
+                              "under Scorecards."}
+        return banca_cards.card_payload(record, asked=as_at)
 
     # The back-office cards likewise, for whoever the workbook's List holds:
     # its own formulas over the actuals template, stored per month on load.
