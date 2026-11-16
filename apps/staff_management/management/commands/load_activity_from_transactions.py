@@ -331,12 +331,30 @@ class Command(BaseCommand):
                 "empty read must not wipe one that has figures in it."))
             return
         if failed:
-            # A month that failed is a month of customers who would silently
-            # look dormant. Said plainly rather than buried above.
+            # A month that failed is a month of customers who would look
+            # dormant. Replacing the mirror wholesale then is what made every
+            # customer Inactive (16 Nov 2026: May-Nov unread, the mirror's
+            # newest transaction 30 Apr). So a run with a failed month only
+            # MOVES customers forward - a newer transaction replaces an older
+            # one - and nobody becomes quieter than yesterday's mirror said.
             write(self.style.WARNING(
-                f"  {len(failed)} month(s) could not be read. Customers whose "
-                f"last transaction falls in them will read as quieter than "
-                f"they are."))
+                f"  {len(failed)} month(s) could not be read: "
+                + "; ".join(f"{m:%b %Y} ({why})" for m, why in failed)))
+            existing = dict(CustomerLastTransaction.objects.values_list(
+                "cust_id", "last_txn"))
+            new = [CustomerLastTransaction(cust_id=c, last_txn=t, lookback_days=days)
+                   for c, t in latest.items() if c not in existing]
+            newer = [(c, t) for c, t in latest.items()
+                     if c in existing and (existing[c] is None or t > existing[c])]
+            with transaction.atomic():
+                CustomerLastTransaction.objects.bulk_create(new, batch_size=5000)
+                for c, t in newer:
+                    CustomerLastTransaction.objects.filter(cust_id=c).update(last_txn=t)
+            write(self.style.WARNING(
+                f"  Mirror kept and moved forward only: {len(new):,} added, "
+                f"{len(newer):,} with a newer transaction. Fix the month(s) above "
+                f"and run again for a full refresh."))
+            return
 
         with transaction.atomic():
             CustomerLastTransaction.objects.all().delete()

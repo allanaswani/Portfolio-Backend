@@ -375,6 +375,12 @@ EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="reports.analytics@hfgroup.co.ke")
+
+# Password reset for accounts with no usable password too. 229 active users
+# (16 Nov 2026) - created by the legacy migration without one - got no reset
+# mail at all: django-rest-passwordreset skips them by default, silently. The
+# link still goes only to the address on the account; following it sets one.
+DJANGO_REST_MULTITOKENAUTH_REQUIRE_USABLE_PASSWORD = False
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
 
 # Branding + access links baked into outgoing emails (OTP, password reset,
