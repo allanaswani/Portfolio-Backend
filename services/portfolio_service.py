@@ -156,15 +156,20 @@ def rM_total_customers(sales_code):
                COUNT(DISTINCT hf_customer.cust_id) AS total_customers
         FROM hf_customer
         LEFT JOIN (
+            -- Each customer's LATEST allocation, as before - but only for the
+            -- customers this RM was ever allocated: the same answer without
+            -- sorting the whole allocation table on every call (42 s seen in
+            -- pg_stat_activity, 16 Nov 2026).
             SELECT DISTINCT ON (cust_id) *
             FROM retail_allocated_portfolio
-            WHERE cust_id IS NOT NULL
+            WHERE cust_id IN (SELECT cust_id FROM retail_allocated_portfolio
+                              WHERE sales_code = %s AND cust_id IS NOT NULL)
             ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
         ) rap ON hf_customer.cust_id = rap.cust_id
         WHERE sales_code = %s
         GROUP BY sales_code
         """,
-        [sales_code],
+        [sales_code, sales_code],
     )
     rows = list(qs)
     if not rows:

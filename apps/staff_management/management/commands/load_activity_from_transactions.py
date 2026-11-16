@@ -146,6 +146,10 @@ class Command(BaseCommand):
                  "this text, and stop. Nothing is read or written - this is "
                  "for finding the right table instead of guessing one.")
         parser.add_argument(
+            "--last-transaction-rebuild", action="store_true",
+            help="Rebuild the last-transaction mirror wholesale, month by month, "
+                 "instead of moving it forward day by day.")
+        parser.add_argument(
             "--only-last-transaction", action="store_true",
             help="Refresh ONLY that mirror and skip the monthly rebuild. The "
                  "form for a nightly cron: the monthly feed moves once a "
@@ -249,6 +253,83 @@ class Command(BaseCommand):
         write("")
 
     def _refresh_last_transaction(self, options, write):
+        """Move the per-customer last-transaction mirror forward, ONE DAY at a
+        time, from the day of its newest transaction to today.
+
+        16 Nov 2026: a month of ``transaction_diary`` (93 GB, indexed on
+        tmstamp) no longer reads inside the ten-minute limit - November and
+        October both timed out - so the monthly rebuild could not run and the
+        mirror stopped at 30 April: every customer read Inactive. A day is a
+        small index range; each night now reads the day or two since the last
+        run, and the first run walks the days since 30 April.
+
+        Done in the database, one statement per day: the day's last
+        transaction per customer, upserted keeping the later of old and new
+        (``GREATEST``). Nothing is deleted - "active" is worked out from the
+        date at read time, so a customer who goes quiet simply ages out of the
+        30-day window. ``--last-transaction-rebuild`` still runs the old
+        wholesale month-by-month rebuild.
+        """
+        from django.conf import settings
+        from django.db import connection
+
+        from apps.staff_management.models import CustomerLastTransaction
+
+        if options.get("last_transaction_rebuild"):
+            return self._rebuild_last_transaction(options, write)
+        days = int(options.get("last_transaction_days") or 0)
+        today = datetime.date.today()
+        newest = CustomerLastTransaction.objects.order_by("-last_txn").values_list(
+            "last_txn", flat=True).first()
+        if newest is not None:
+            start = djtimezone.localtime(newest).date()
+        else:
+            start = today - datetime.timedelta(days=days or 400)
+        zone = settings.TIME_ZONE
+        sql = f"""
+            INSERT INTO customer_last_transaction (cust_id, last_txn, lookback_days, loaded_at)
+            SELECT t.fk_customercust_id, MAX(t.tmstamp) AT TIME ZONE '{zone}', %s, now()
+            FROM transaction_diary t
+            WHERE t.tmstamp >= %s AND t.tmstamp < %s
+              AND t.fk_customercust_id IS NOT NULL
+            GROUP BY t.fk_customercust_id
+            ON CONFLICT (cust_id) DO UPDATE
+               SET last_txn = GREATEST(customer_last_transaction.last_txn, EXCLUDED.last_txn),
+                   loaded_at = now()
+        """
+        write("")
+        write(f"  last-transaction mirror: day by day from {start:%d %b %Y} to "
+              f"{today:%d %b %Y}")
+        failed, moved = [], 0
+        day = start
+        while day <= today:
+            try:
+                with connection.cursor() as cur:
+                    cur.execute(f"SET statement_timeout = {TIMEOUT_MS}")
+                    cur.execute(sql, [days, day, day + datetime.timedelta(days=1)])
+                    count = cur.rowcount
+                moved += max(count, 0)
+                write(f"      {day:%d %b %Y}  {count:>9,} customer(s) transacted")
+            except Exception as exc:  # noqa: BLE001 - one day must not cost the rest
+                failed.append((day, str(exc)[:120]))
+                write(self.style.WARNING(f"      {day:%d %b %Y}  could not be read: "
+                                         f"{str(exc)[:90]}"))
+            day += datetime.timedelta(days=1)
+        with connection.cursor() as cur:
+            cur.execute("SET statement_timeout = 0")
+        newest = CustomerLastTransaction.objects.order_by("-last_txn").values_list(
+            "last_txn", flat=True).first()
+        write(self.style.SUCCESS(
+            f"  {moved:,} customer row(s) written; newest transaction now "
+            f"{djtimezone.localtime(newest):%d %b %Y %H:%M}" if newest else
+            f"  {moved:,} customer row(s) written"))
+        if failed:
+            write(self.style.WARNING(
+                f"  {len(failed)} day(s) could not be read: "
+                + "; ".join(f"{d:%d %b} ({why})" for d, why in failed)
+                + ". The next run starts from the mirror's newest day again."))
+
+    def _rebuild_last_transaction(self, options, write):
         """Rebuild the per-customer last-transaction mirror, a month at a time.
 
         Replaced wholesale rather than merged: the window moves forward every
