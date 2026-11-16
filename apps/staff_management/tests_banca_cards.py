@@ -225,7 +225,36 @@ class ProbeTests(TestCase):
                 "accounts": {"DSR1": np.float64(3.0)}}):
             found = f.probe(2026, 10, out=lambda *_: None)
         self.assertIs(found["gwp_collection"]["live"], True)
-        self.assertEqual(set(f.proven()), {"gwp_collection", "accounts"})
+        self.assertEqual(set(f.proven()), {"gwp_collection", "accounts", "nawiri_imarika"})
+
+
+class DecidedSheetTests(TestCase):
+    def test_nawiri_is_live_by_decision_without_the_desk_floor(self):
+        """16 Nov 2026: Nawiri & Imarika reads the warehouse (the desk's sheet is a
+        copy of Elimu & Akiba) - even a card stored before cards kept growth."""
+        from unittest.mock import patch
+
+        from . import banca_live_feeds as f
+        from .live_scorecard import build_card
+        from .models import BancaScorecard
+
+        tpl, act, _ = load(template(), actuals(ann={"nawiri_imarika": 9238}))
+        ann = next(p for p in tpl["people"] if p.sales_code == "DSR1")
+        card = bc.compute_card(tpl, act, ann, 10)
+        card.pop("growth")                       # stored before 3365165
+        BancaScorecard.objects.create(sales_code="DSR1", staff_name="Ann One",
+                                      month=datetime.date(2026, 10, 1), card=card,
+                                      total=card["total"])
+        from django.core.cache import cache
+        cache.clear()
+        with patch.object(f, "figures", return_value={"nawiri_imarika": {"DSR1": 3000.0}}):
+            live = build_card("DSR1", as_at=datetime.date(2026, 11, 30))
+        self.assertTrue(live["live"])
+        line = next(ln for p in live["perspectives"] for ln in p["lines"]
+                    if ln["kpi_code"].startswith("banca_nawiri"))
+        self.assertEqual(line["ytd_actual"], 3000.0)          # not the desk's 9,238
+        growth = 500000 * 0.5 / (1.5 ** 12 - 1) * sum(1.5 ** (11 - i) for i in range(1, 12))
+        self.assertAlmostEqual(line["ytd_target"], growth)
 
 
 class StoredCardTests(TestCase):
@@ -265,6 +294,8 @@ class StoredCardTests(TestCase):
         from .workbook_cards import save_file
 
         save_file(f.STORE_KIND, {"accounts": {"match": 1.0, "live": True}})
+        from django.core.cache import cache
+        cache.clear()          # the live read is cached per day
         with patch.object(f, "figures", return_value={"accounts": {"DSR1": 5.0}}):
             live = build_card("DSR1", as_at=datetime.date(2026, 11, 30))
         self.assertTrue(live["live"])

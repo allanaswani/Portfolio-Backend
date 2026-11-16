@@ -252,10 +252,27 @@ def probe(year, month, out=print, who=None):
     return found
 
 
+#: Sheets read live by decision, not by the proof - with why. The desk's
+#: figure for these is known to be wrong, so it is neither the test nor a floor.
+DECIDED = {
+    "nawiri_imarika": ("16 Nov 2026, Administration: the desk's nawiri_imarika "
+                       "sheet is a copy of hfcb_elimu_akiba for all 35 DSRs (the "
+                       "products do not overlap), so the warehouse figure by the "
+                       "insurance report's rule is used"),
+}
+#: The template's own life-premium growth constants (constants!G1, G2), read
+#: and checked against all 35 October cards on 16 Nov 2026. Used only for a
+#: card stored before the cards kept them.
+TEMPLATE_GROWTH = (1.5, 12.0)
+
+
 def proven():
     from .workbook_cards import saved
 
-    return {k: v for k, v in (saved(STORE_KIND) or {}).items() if v.get("live")}
+    found = {k: v for k, v in (saved(STORE_KIND) or {}).items() if v.get("live")}
+    for sheet, why in DECIDED.items():
+        found[sheet] = {"live": True, "decided": why}
+    return found
 
 
 def live_payload(record, as_at):
@@ -272,9 +289,7 @@ def live_payload(record, as_at):
             or as_at.replace(day=1) <= record.month):
         return None
     data = copy.deepcopy(record.card or {})
-    rate, months = data.get("growth") or (None, None)
-    if rate is None:
-        return None
+    rate, months = data.get("growth") or TEMPLATE_GROWTH
     key = f"banca_live:{as_at.isoformat()}"
     read = cache.get(key)
     if read is None:
@@ -287,8 +302,8 @@ def live_payload(record, as_at):
             continue
         value = read.get(sheet, {}).get(record.sales_code.upper(), 0.0)
         # A running total cannot fall below what the desk recorded.
-        if sheet != "gwp_collection" and bc._num(line.get("actual")) \
-                and value < line["actual"]:
+        if sheet != "gwp_collection" and sheet not in DECIDED \
+                and bc._num(line.get("actual")) and value < line["actual"]:
             value = line["actual"]
         rule = bc.YTD_RULE[line["row"]]
         spec = bc.Line(row=line["row"], perspective="", category="", description="",
