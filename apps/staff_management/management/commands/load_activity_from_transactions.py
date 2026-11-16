@@ -79,6 +79,15 @@ NOT_CUSTOMER_JUSTIFIC = (
     16001, 34011, 34012, 39064, 74008, 31609, 32002, 39067, 16053, 16061,
     16112, 74393, 31640, 31626, 99008, 99006, 99007, 39001, 35501, 31625,
     31321, 44122, 99894, 31610, 31603, 31604, 32011, 0, 21973, 21999,
+    # Not in the report's list, read off transaction_diary for 13 Nov 2026
+    # (a Friday) after the rebuild above still showed ~237,000 customers
+    # every weekday:
+    #   93997 FIRST DEMAND ACCRUED INTEREST   237,673 customers (system user)
+    #   93996 T/D ACCRUED INTEREST              2,122 customers (system user)
+    #   39005 OVERDUE LOAN ACCOUNT(S) SNIFFING    211 customers
+    # The next largest that day were real customer actions (KOCE mobile
+    # app, M-Pesa, till deposits, cash) at 3,500 and below.
+    93997, 93996, 39005,
 )
 
 LAST_TXN_MONTH_SQL = """

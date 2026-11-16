@@ -618,11 +618,14 @@ class BranchCustomerActivitySqlTests(TransactionTestCase):
                 # The bank's own daily accrual (a justification the report
                 # leaves out) lands on every account, yesterday included. It
                 # is not the customer transacting and must change no answer
-                # (16 Nov 2026: it made every customer Active).
-                cur.execute(
-                    "INSERT INTO transaction_diary (fk_customercust_id, tmstamp,"
-                    " i_id_justific) VALUES (%s, now() - INTERVAL '1 day', 99988)",
-                    [cust_id])
+                # (16 Nov 2026: it made every customer Active). 93997 is
+                # FIRST DEMAND ACCRUED INTEREST, the one actually found on
+                # 237,673 customers on 13 Nov 2026; 99988 is from the report.
+                for accrual in (93997, 99988):
+                    cur.execute(
+                        "INSERT INTO transaction_diary (fk_customercust_id, tmstamp,"
+                        " i_id_justific) VALUES (%s, now() - INTERVAL '1 day', %s)",
+                        [cust_id, accrual])
                 if days is None:
                     continue
                 cur.execute(
