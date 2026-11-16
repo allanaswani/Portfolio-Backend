@@ -165,7 +165,7 @@ def figures(as_at):
         g = p[p["sales_code"].notna()].groupby("sales_code")[
             ["paid_premiums", "total_premiums"]].sum()
         out["gwp_collection"] = {
-            str(k): round(r.paid_premiums / r.total_premiums * 100, 2) / 100
+            str(k): float(round(r.paid_premiums / r.total_premiums * 100, 2) / 100)
             for k, r in g.iterrows() if r.total_premiums}
 
     a = _frame("""SELECT sale_code, customer_segment, cust_cto, account_cto, curr_24_bal,
@@ -229,11 +229,14 @@ def probe(year, month, out=print, who=None):
                 continue
             desk = float(line["actual"])
             got = read[sheet].get(c.sales_code.upper(), 0.0)
-            rows.append((c.sales_code, c.staff_name, desk, got, same(sheet, desk, got)))
+            rows.append((c.sales_code, c.staff_name, desk, float(got),
+                         bool(same(sheet, desk, float(got)))))
         if not rows:
             continue
-        share = sum(r[4] for r in rows) / len(rows)
-        live = share >= PASS_SHARE and any(r[2] for r in rows)
+        # Plain Python numbers: the result is stored as JSON (a numpy bool
+        # from a pandas figure crashed the first save, 16 Nov 2026).
+        share = float(sum(1 for r in rows if r[4]) / len(rows))
+        live = bool(share >= PASS_SHARE and any(r[2] for r in rows))
         found[sheet] = {"match": share, "live": live, "month": f"{year}-{month:02d}",
                         "people": len(rows)}
         out(f"  {sheet:26} {share:6.1%} of {len(rows)} DSRs give the desk's figure "

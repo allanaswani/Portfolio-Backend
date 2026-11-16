@@ -206,6 +206,28 @@ class LiveReaderTests(TestCase):
         self.assertAlmostEqual(got["gwp_collection"]["DSR1"], round(1950 / 3000 * 100, 2) / 100)
 
 
+class ProbeTests(TestCase):
+    def test_numpy_figures_are_stored_as_json(self):
+        """16 Nov 2026: a numpy bool from the GWP ratio crashed the save."""
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from . import banca_live_feeds as f
+        from .models import BancaScorecard
+
+        BancaScorecard.objects.create(
+            sales_code="DSR1", staff_name="Ann One", month=datetime.date(2026, 10, 1),
+            card={"lines": [{"sheet": "gwp_collection", "actual": 0.95},
+                            {"sheet": "accounts", "actual": 3}]})
+        with patch.object(f, "figures", return_value={
+                "gwp_collection": {"DSR1": np.float64(0.95)},
+                "accounts": {"DSR1": np.float64(3.0)}}):
+            found = f.probe(2026, 10, out=lambda *_: None)
+        self.assertIs(found["gwp_collection"]["live"], True)
+        self.assertEqual(set(f.proven()), {"gwp_collection", "accounts"})
+
+
 class StoredCardTests(TestCase):
     def test_upload_stores_and_the_card_page_shows_it(self):
         from .live_scorecard import build_card
