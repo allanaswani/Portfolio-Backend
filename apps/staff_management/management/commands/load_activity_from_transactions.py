@@ -314,6 +314,16 @@ class Command(BaseCommand):
                 failed.append((day, str(exc)[:120]))
                 write(self.style.WARNING(f"      {day:%d %b %Y}  could not be read: "
                                          f"{str(exc)[:90]}"))
+                # Three days in a row that cannot be read is the database, not
+                # the days: stop, rather than spend ten minutes on each of 200.
+                if len(failed) >= 3 and all(
+                        (day - d).days == i for i, (d, _w) in
+                        enumerate(reversed(failed[-3:]))):
+                    write(self.style.ERROR(
+                        "  Three days in a row timed out - stopped. A single day of "
+                        "transaction_diary should read in seconds; check its "
+                        "tmstamp index is valid and used (EXPLAIN)."))
+                    break
             day += datetime.timedelta(days=1)
         with connection.cursor() as cur:
             cur.execute("SET statement_timeout = 0")
