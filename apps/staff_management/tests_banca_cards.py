@@ -142,6 +142,70 @@ class DeskCheckTests(TestCase):
         self.assertIn("DSR1", bad[0])
 
 
+class LiveReaderTests(TestCase):
+    """banca_live_feeds follows the insurance weighted sales report's rules."""
+
+    def _fake(self):
+        import pandas as pd
+
+        policies = pd.DataFrame([
+            # r_number, insured, product, starting_date, total, paid, code
+            ("R1", "X", "LIFEPLUS INSURANCE", datetime.date(2026, 3, 5), 1000, 900, "DSR1"),
+            ("R1", "X", "LIFEPLUS INSURANCE", datetime.date(2026, 4, 5), 1000, 100, "DSR1"),
+            ("R2", "Y", "NAWIRI", datetime.date(2026, 10, 2), 500, 500, "DSR1"),
+            ("R3", "Z", "HFCB ELIMU", datetime.date(2026, 11, 2), 300, 300, "DSR1"),
+            ("R4", "W", "Medical", datetime.date(2026, 6, 1), 200, 150, "DSR 1"),
+            ("R5", "V", "Motor", datetime.date(2026, 6, 1), 400, 400, "NOTONROSTER"),
+        ], columns=["r_number", "insured", "product", "starting_date", "total_premiums",
+                    "paid_premiums", "code"])
+        types = pd.DataFrame([("LIFEPLUS INSURANCE", "life"), ("NAWIRI", "life"),
+                              ("HFCB ELIMU", "life"), ("Medical", "non-life"),
+                              ("Motor", "non-life")],
+                             columns=["product", "life_policy_check"])
+        accounts = pd.DataFrame([
+            ("DSR1", "MASS", 10, 5000, 0, "ACTIVE", datetime.date(2026, 5, 1)),
+            ("DSR1", "MASS", 10, 1000, 0, "ACTIVE", datetime.date(2026, 5, 1)),   # CTO < 2k
+            ("DSR1", "STAFF", 10, 5000, 0, "ACTIVE", datetime.date(2026, 5, 1)),
+            ("DSR1", "MASS", 10, 5000, 0, "CLOSED", datetime.date(2026, 5, 1)),
+        ], columns=["sale_code", "customer_segment", "cust_cto", "account_cto",
+                    "curr_24_bal", "account_status", "acc_open_date"])
+        drawdowns = pd.DataFrame([
+            ("DSR1", "MASS", "TERM LOAN", datetime.date(2026, 7, 1), 100.0),
+            ("DSR1", "STAFF", "TERM LOAN", datetime.date(2026, 7, 1), 100.0),
+            ("DSR1", "MASS", "TERM LOAN", datetime.date(2026, 11, 3), 100.0),
+        ], columns=["salesperson", "customer_segment", "description", "drawdown_dt",
+                    "net_drawdown"])
+
+        def frame(sql, params=None):
+            if "insurance_policies" in sql:
+                return policies.copy()
+            if "premium_types_mapping" in sql:
+                return types.copy()
+            if "daily_sales_accounts_with_cto" in sql:
+                return accounts.copy()
+            return drawdowns.copy()
+        return frame
+
+    def test_the_reports_rules(self):
+        from unittest.mock import patch
+
+        from . import banca_live_feeds as f
+
+        with patch.object(f, "_frame", side_effect=self._fake()), \
+                patch.object(f, "_roster_codes", return_value={"DSR1"}):
+            got = f.figures(datetime.date(2026, 10, 31))
+        self.assertEqual(got["life_volume"]["DSR1"], 2)       # R1 once, R2
+        self.assertEqual(got["life_excl_nawiri_imarika"]["DSR1"], 1000)
+        self.assertEqual(got["nawiri_imarika"]["DSR1"], 500)
+        self.assertNotIn("DSR1", got["hfcb_elimu_akiba"])    # November
+        self.assertEqual(got["medical_insurance"]["DSR1"], 150)   # "DSR 1" -> DSR1
+        self.assertEqual(got["accounts"]["DSR1"], 1)
+        self.assertEqual(got["disbursements"]["DSR1"], 1)
+        self.assertNotIn("NOTONROSTER", got["gi_insurance"])
+        # GWP over the whole year: (900+100+500+300+150) / (1000+1000+500+300+200)
+        self.assertAlmostEqual(got["gwp_collection"]["DSR1"], round(1950 / 3000 * 100, 2) / 100)
+
+
 class StoredCardTests(TestCase):
     def test_upload_stores_and_the_card_page_shows_it(self):
         from .live_scorecard import build_card
@@ -171,3 +235,27 @@ class StoredCardTests(TestCase):
         self.assertTrue(card["banca"])
         expected = 3 / (6 * 10 / 12) * 0.25          # accounts line only
         self.assertAlmostEqual(card["performance_score"], round(expected, 4))
+
+        # November, with the accounts sheet proven: read live, scored at November.
+        from unittest.mock import patch
+
+        from . import banca_live_feeds as f
+        from .workbook_cards import save_file
+
+        save_file(f.STORE_KIND, {"accounts": {"match": 1.0, "live": True}})
+        with patch.object(f, "figures", return_value={"accounts": {"DSR1": 5.0}}):
+            live = build_card("DSR1", as_at=datetime.date(2026, 11, 30))
+        self.assertTrue(live["live"])
+        line = next(ln for p in live["perspectives"] for ln in p["lines"]
+                    if ln["kpi_code"].startswith("banca_accounts"))
+        self.assertEqual(line["ytd_actual"], 5.0)
+        self.assertAlmostEqual(line["ytd_target"], 6 * 11 / 12)
+        self.assertIn("live", line["as_at"])
+        # A live reading below the desk's running total keeps the desk's.
+        with patch.object(f, "figures", return_value={"accounts": {"DSR1": 1.0}}):
+            from django.core.cache import cache
+            cache.clear()
+            live = build_card("DSR1", as_at=datetime.date(2026, 11, 30))
+        line = next(ln for p in live["perspectives"] for ln in p["lines"]
+                    if ln["kpi_code"].startswith("banca_accounts"))
+        self.assertEqual(line["ytd_actual"], 3.0)

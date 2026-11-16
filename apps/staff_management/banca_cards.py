@@ -278,7 +278,9 @@ def compute_card(template, actuals, person, month):
             "score": s, "weighted": weighted, "sheet": line.sheet,
         })
     return {"lines": out, "total": total / total_w if total_w else 0.0,
-            "month": month}
+            "month": month,
+            # Kept so a later month can be scored live (banca_live_feeds).
+            "growth": [rate, months]}
 
 
 def _cell_empty(actuals, sheet, name, month):

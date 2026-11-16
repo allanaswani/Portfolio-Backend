@@ -4263,7 +4263,19 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                               "been loaded yet. Administration loads the Banca "
                               "DSR template and the insurance actuals workbook "
                               "under Scorecards."}
-        return banca_cards.card_payload(record, asked=as_at)
+        # A month after the desk's newest card: the proven lines read live by
+        # the insurance report's rules (banca_live_feeds), the rest the desk's.
+        from . import banca_live_feeds
+
+        try:
+            live = banca_live_feeds.live_payload(record, as_at or datetime.date.today())
+        except Exception:  # noqa: BLE001 - never lose the card over a live read
+            import logging
+
+            logging.getLogger(__name__).exception("live Banca card failed for %s",
+                                                  sales_code)
+            live = None
+        return live or banca_cards.card_payload(record, asked=as_at)
 
     # The back-office cards likewise, for whoever the workbook's List holds:
     # its own formulas over the actuals template, stored per month on load.
