@@ -684,18 +684,87 @@ def explain(year, month, who, out=print):
             f"({n_orig} original)")
 
 
+#: How long a kept whole-bank read counts as current; an older one is still
+#: shown while a fresh read runs behind it (feed_cache).
+KEPT_SECONDS = 6 * 3600
+
+
+def _kept(key, compute):
+    """A whole-bank read, kept in the database by feed_cache - or None while the
+    first read of ``key`` is still running.
+
+    17 Nov 2026: FM4424's card took 3½ minutes and the page gave up. Each line
+    read transaction_diary for that one person while the page waited, up to 20
+    seconds a line (60 for iApply), and a read that ran out of time was
+    remembered nowhere, so every "Try again" paid it all again. Now each
+    measure is read once for the whole bank, in the background or by
+    ``warm_scorecard_feeds``, and a card only looks the person up in it.
+    """
+    from . import feed_cache
+
+    return feed_cache.cached(key, compute, KEPT_SECONDS)
+
+
+def _iapply_kept(as_at):
+    """[[user, month, *IAPPLY_FIELDS]] for the year up to ``as_at``, kept."""
+    from . import feed_cache
+
+    end = as_at + datetime.timedelta(days=1)
+    # Wrapped in a dict: feed_cache turns a kept list back into a dict of pairs.
+    kept = _kept(f"bo_iapply_rows:{as_at.isoformat()}", lambda: {"rows": [
+        [str(r[0]), int(r[1]), *[float(v or 0) for v in r[2:]]]
+        for r in _iapply_rows(as_at.year, end,
+                              feed_cache.timeout(IAPPLY_LIVE_TIMEOUT_MS))]})
+    return None if kept is None else kept.get("rows", [])
+
+
+def _measures_kept(first, end):
+    """{user: {measure: value}} for the whole bank over [first, end), kept."""
+    from . import feed_cache
+
+    return _kept(f"bo_measures:{first.isoformat()}:{end.isoformat()}",
+                 lambda: {u: {k: float(v or 0) for k, v in m.items()}
+                          for u, m in _measures(
+                              first, end, feed_cache.timeout(LIVE_TIMEOUT_MS)).items()
+                          if u})
+
+
+def _counts_kept(codes, start, end, original):
+    """{user: count} of ``codes`` over [start, end) for the whole bank, kept."""
+    from . import feed_cache
+
+    codes = sorted(codes or [], key=str)
+    key = (f"bo_count:{','.join(str(c) for c in codes)}:{start.isoformat()}:"
+           f"{end.isoformat()}:{'o' if original else 'a'}")
+
+    def read():
+        rows = _rows(f"""SELECT upper(trim(trx_usr)), count(*) FROM transaction_diary
+                         WHERE trx_code = ANY(%s)
+                           AND trx_date >= %s AND trx_date < %s
+                           {"AND coalesce(reverse_flag, 'Original')"
+                            " = 'Original'" if original else ""}
+                         GROUP BY 1""",
+                     [codes, start, end], feed_cache.timeout(LIVE_TIMEOUT_MS))
+        return {u: int(n) for u, n in rows if u}
+
+    return _kept(key, read)
+
+
 def _iapply_live(feed, sales_code, name, as_at):
     from django.core.cache import cache
 
     key = f"bo_iapply:{as_at.isoformat()}"
     by_user = cache.get(key)
-    end = as_at + datetime.timedelta(days=1)
     if by_user is None:
         try:
-            by_user = _iapply_by_user(_iapply_rows(as_at.year, end, IAPPLY_LIVE_TIMEOUT_MS))
-        except Exception:  # noqa: BLE001 - a slow read leaves the desk's figure
+            rows = _iapply_kept(as_at)
+        except Exception:  # noqa: BLE001 - a failed read leaves the desk's figure
             return None
-        cache.set(key, by_user, 6 * 3600)
+        if rows is None:  # the first read is still running
+            return None
+        by_user = _iapply_by_user(rows)
+        cache.set(key, by_user, 600)
+    end = as_at + datetime.timedelta(days=1)
     if feed["identity"] == "login":
         # The sign-ins the proof checked; nobody new is worked out here unchecked.
         user = (feed.get("logins") or {}).get(str(name or "").strip().lower())
@@ -725,34 +794,60 @@ def live_value(feed, sales_code, as_at, branch=None, name=None):
         return hit if hit != "none" else None
     first, nxt = _month_bounds(as_at.year, as_at.month)
     end = min(nxt, as_at + datetime.timedelta(days=1))
+    # The same SQL as before, read once for the whole bank and grouped by
+    # user (see _kept): the figure for one person is unchanged.
     try:
-        if feed["kind"] == "ratio":
-            values = _measures(first, end, LIVE_TIMEOUT_MS, code).get(code)
-            value = (_ratio(values, feed["num"], feed["den"], _weekdays(first, end))
-                     if values else None)
-        elif feed["kind"] == "per_day_worked":
-            row = _rows("""SELECT count(*), count(DISTINCT trx_date::date)
-                           FROM transaction_diary
-                           WHERE upper(trim(trx_usr)) = %s
-                             AND trx_date >= %s AND trx_date < %s""",
-                        [code, first, end], LIVE_TIMEOUT_MS)[0]
-            value = (row[0] / row[1]) if row[1] else None
+        if feed["kind"] in ("ratio", "per_day_worked"):
+            bank = _measures_kept(first, end)
+            if bank is None:  # the first read is still running
+                return None
+            values = bank.get(code)
+            if feed["kind"] == "ratio":
+                value = (_ratio(values, feed["num"], feed["den"],
+                                _weekdays(first, end)) if values else None)
+            else:
+                # count(*) over count(DISTINCT trx_date::date): MEASURES'
+                # "rows" and "days" are exactly those two.
+                days = (values or {}).get("days")
+                value = values["rows"] / days if days else None
         else:
             start = (datetime.date(as_at.year, 1, 1) if feed["cumulative"]
                      else first)
-            original = feed.get("rows") == "original"
-            row = _rows(f"""SELECT count(*) FROM transaction_diary
-                            WHERE upper(trim(trx_usr)) = %s
-                              AND trx_code = ANY(%s)
-                              AND trx_date >= %s AND trx_date < %s
-                              {"AND coalesce(reverse_flag, 'Original')"
-                               " = 'Original'" if original else ""}""",
-                        [code, feed["codes"], start, end], LIVE_TIMEOUT_MS)[0]
-            value = float(row[0])
-    except Exception:  # noqa: BLE001 - a slow warehouse is a waiting line
+            bank = _counts_kept(feed["codes"], start, end,
+                                feed.get("rows") == "original")
+            if bank is None:
+                return None
+            value = float(bank.get(code, 0))
+    except Exception:  # noqa: BLE001 - a failed read is a waiting line
         return None
-    cache.set(key, value if value is not None else "none", 6 * 3600)
+    cache.set(key, value if value is not None else "none", 600)
     return value
+
+
+def warm(as_at, write=None):
+    """Read every proven back-office feed for the whole bank as at ``as_at``
+    and keep it - for warm_scorecard_feeds, inside feed_cache.fresh()."""
+    first, nxt = _month_bounds(as_at.year, as_at.month)
+    end = min(nxt, as_at + datetime.timedelta(days=1))
+    done = []
+    feeds = list(proven().values())
+    if any(f.get("kind") in ("ratio", "per_day_worked") for f in feeds):
+        done.append(("transactions per person", len(_measures_kept(first, end) or {})))
+    seen = set()
+    for f in feeds:
+        if f.get("kind") in (None, "ratio", "per_day_worked", "bb_branch", "iapply"):
+            continue
+        start = datetime.date(as_at.year, 1, 1) if f.get("cumulative") else first
+        sig = (tuple(sorted(f.get("codes") or [], key=str)), start,
+               f.get("rows") == "original")
+        if sig in seen:
+            continue
+        seen.add(sig)
+        done.append((f"{f.get('sheet') or 'count'} codes",
+                     len(_counts_kept(f.get("codes"), start, end, sig[2]) or {})))
+    if any(f.get("kind") == "iapply" for f in feeds):
+        done.append(("iApply actions", len(_iapply_kept(as_at) or [])))
+    return done
 
 
 def proven():

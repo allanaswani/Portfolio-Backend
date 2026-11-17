@@ -27,7 +27,7 @@ class Command(BaseCommand):
                             help="YYYY-MM; repeatable. Default: this month and last.")
 
     def handle(self, *args, **opts):
-        from apps.staff_management import (feed_cache, loan_tat_seller,
+        from apps.staff_management import (bo_live_feeds, feed_cache, loan_tat_seller,
                                            rm_definitions,
                                            weighted_sales_drawdowns as wsd,
                                            weighted_sales_new_customers as wnc)
@@ -51,6 +51,9 @@ class Command(BaseCommand):
                 ("Focus accounts (CASA)", lambda: wnc.focus_accounts_by_seller(end)),
                 ("Drawdowns", lambda: wsd.net_drawdowns_by_seller(end)),
                 ("TAT Loan", lambda: loan_tat_seller.seller_month_tat(year, month)),
+                # The back-office cards' proven lines, read for the whole bank
+                # so a card never reads transaction_diary itself (17 Nov 2026).
+                ("Back office live feeds", lambda: bo_live_feeds.warm(end)),
             ]
             for sheet in chosen:
                 if sheet in rm_definitions.CANDIDATES:
