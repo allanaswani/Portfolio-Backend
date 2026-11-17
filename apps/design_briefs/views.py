@@ -41,7 +41,7 @@ from .serializers import (
 )
 
 User = get_user_model()
-TAG = ["Marketing Briefs"]
+TAG = ["MCS Briefs"]
 
 
 class BriefPagination(PageNumberPagination):

@@ -33,8 +33,8 @@ from .rbac import ADMIN_GROUP
 
 log = logging.getLogger(__name__)
 
-BOARD_NAME = "HFCB Marketing Briefs"
-SUBJECT_PREFIX = "[HFCB Marketing]"
+BOARD_NAME = "HFCB MCS Briefs"
+SUBJECT_PREFIX = "[HFCB MCS]"
 
 TEAL = "#1996A9"
 INK = "#0B2D3D"
@@ -134,7 +134,7 @@ def _handler(brief):
     if brief.assigned_designer:
         return (brief.assigned_designer.get_full_name()
                 or brief.assigned_designer.username)
-    return "Marketing team - a designer is being assigned"
+    return "MCS team - a designer is being assigned"
 
 
 def _facts(brief):
@@ -213,7 +213,7 @@ def received(brief, actor=None):
         _ticket_addresses(brief),
         f"{brief.reference} received: {brief.design_item}",
         brief,
-        "Your request has been received by Marketing. The details are below; "
+        "Your request has been received by MCS. The details are below; "
         "you will be e-mailed as it moves - when a designer takes it on and "
         "when it is ready for you to review.")
 
@@ -227,7 +227,7 @@ def assigned(brief, actor=None):
         _address(who, actor),
         f"You have been given a brief: {brief.design_item}",
         brief,
-        "A marketing brief has been allocated to you.")
+        "An MCS brief has been allocated to you.")
     sent += _one(
         [a for a in _ticket_addresses(brief)
          if a.lower() != (getattr(who, "email", "") or "").lower()],
