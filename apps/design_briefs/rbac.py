@@ -166,6 +166,12 @@ def can_work(user, brief) -> bool:
     return is_admin(user)
 
 
+def can_agree(user, brief) -> bool:
+    """Set the agreed delivery date - the promise. MCS's team leads (the
+    marketing admins) or the designer the brief is with."""
+    return can_reorder(user, brief)
+
+
 def can_reorder(user, brief) -> bool:
     """Move a brief up or down its queue.
 

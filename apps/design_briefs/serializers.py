@@ -181,11 +181,25 @@ class DesignBriefListSerializer(serializers.ModelSerializer):
     proof_version = serializers.SerializerMethodField()
     deliverables_done = serializers.SerializerMethodField()
     deliverables_total = serializers.SerializerMethodField()
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
+    business_area_display = serializers.CharField(
+        source="get_business_area_display", read_only=True)
+    priority_reason_display = serializers.CharField(
+        source="get_priority_reason_display", read_only=True)
+    promise_due = serializers.DateField(read_only=True)
+    promise_kept = serializers.BooleanField(read_only=True, allow_null=True)
+    days_past_agreed = serializers.IntegerField(read_only=True)
+    is_escalated = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = DesignBrief
         fields = [
             "id", "reference", "design_item", "item_type", "item_type_display",
+            "category", "category_display", "business_area", "business_area_display",
+            "owner", "priority_reason", "priority_reason_display",
+            "agreed_date", "promise_due", "promise_kept", "days_past_agreed",
+            "delivered_at",
+            "is_escalated", "escalated_at", "escalation_reason",
             "department", "addressed_to",
             "raised_by", "raised_by_display",
             "requester_name", "requester_email", "requester_display",
@@ -253,7 +267,7 @@ class DesignBriefDetailSerializer(DesignBriefListSerializer):
 
     class Meta(DesignBriefListSerializer.Meta):
         fields = DesignBriefListSerializer.Meta.fields + [
-            "brief",
+            "brief", "support_required", "agreed_by_display", "agreed_at",
             "proofs", "comments", "deliverables",
             "assigned_by", "assigned_by_display", "assigned_at",
             "started_at", "submitted_at",
@@ -262,6 +276,11 @@ class DesignBriefDetailSerializer(DesignBriefListSerializer):
             "closing_note",
             "events", "can",
         ]
+
+    agreed_by_display = serializers.SerializerMethodField()
+
+    def get_agreed_by_display(self, obj):
+        return _person(obj.agreed_by)
 
     def get_assigned_by_display(self, obj):
         return _person(obj.assigned_by)
@@ -292,6 +311,10 @@ class DesignBriefDetailSerializer(DesignBriefListSerializer):
             "reopen": rbac.is_admin(user) and obj.is_closed,
             "note": rbac.can_view(user, obj),
             "reorder": rbac.can_reorder(user, obj) and not obj.is_closed,
+            "agree": rbac.can_agree(user, obj) and not obj.is_closed,
+            "escalate": rbac.can_view(user, obj) and not obj.is_closed
+                        and not obj.is_escalated,
+            "resolve_escalation": rbac.is_admin(user) and obj.is_escalated,
         }
 
 
@@ -308,7 +331,20 @@ class DesignBriefCreateSerializer(serializers.ModelSerializer):
         fields = [
             "design_item", "item_type", "brief", "department", "addressed_to",
             "priority", "release_date", "requester_name", "requester_email",
+            "category", "business_area", "owner", "support_required",
+            "priority_reason",
         ]
+        # MCS: "a brief will be considered ready for Execute Fast action once
+        # the requisite briefing template is completed" - so the template's
+        # fields are required to send one.
+        extra_kwargs = {
+            "category": {"required": True, "allow_blank": False},
+            "business_area": {"required": True, "allow_blank": False},
+            "owner": {"required": True, "allow_blank": False},
+            "support_required": {"required": True, "allow_blank": False},
+            "priority_reason": {"required": True, "allow_blank": False},
+            "release_date": {"required": True, "allow_null": False},
+        }
 
     def validate(self, data):
         # A name with no address cannot be sent the ticket; say so now rather
@@ -360,7 +396,14 @@ class DesignBriefUpdateSerializer(serializers.ModelSerializer):
         fields = [
             "design_item", "item_type", "brief", "department", "addressed_to",
             "priority", "release_date", "requester_name", "requester_email",
+            "category", "business_area", "owner", "support_required",
+            "priority_reason",
         ]
+
+
+class AgreeSerializer(serializers.Serializer):
+    agreed_date = serializers.DateField()
+    note = serializers.CharField(required=False, allow_blank=True)
 
 
 class QueueMoveSerializer(serializers.Serializer):

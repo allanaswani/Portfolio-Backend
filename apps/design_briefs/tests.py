@@ -21,6 +21,13 @@ from .models import BriefEvent, DesignBrief
 
 BASE = "/design_briefs/"
 
+#: The MCS briefing template's required fields (Nov 2026).
+TEMPLATE = {
+    "category": "graphic", "business_area": "banking_insurance",
+    "owner": "Head of Bancassurance", "support_required": "Copy and 5 posts",
+    "priority_reason": "business", "release_date": "2026-12-01",
+}
+
 
 def user(username, group=None, email=None, superuser=False):
     u = get_user_model().objects.create_user(
@@ -72,7 +79,7 @@ class RaisingTests(BoardTestCase):
         brief = self.raise_brief()
         self.assertEqual(brief.status, DesignBrief.STATUS_NEW)
         self.assertIsNone(brief.assigned_designer_id)
-        self.assertTrue(brief.reference.startswith("DB-"))
+        self.assertTrue(brief.reference.startswith("MCS-"))
 
     def test_raising_writes_the_first_timeline_step(self):
         brief = self.raise_brief()
@@ -97,6 +104,7 @@ class RaisingTests(BoardTestCase):
             "design_item": "Branch opening banner",
             "department": "Branch Network",
             "addressed_to": "Nakuru branch",
+            **TEMPLATE,
         }, format="json")
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(r.data["status"], DesignBrief.STATUS_NEW)
@@ -1321,7 +1329,8 @@ class TicketMailTests(BoardTestCase):
         self.client.force_authenticate(self.requester)
         r = self.client.post(BASE + "briefs/", {
             "design_item": "Branch banner", "department": "Marketing",
-            "addressed_to": "Branches", "requester_name": "Stella"})
+            "addressed_to": "Branches", "requester_name": "Stella", **TEMPLATE},
+            format="json")
         self.assertEqual(r.status_code, 400)
         self.assertIn("requester_email", r.data)
 
@@ -1417,3 +1426,98 @@ class PurgeCommandTests(BoardTestCase):
         self.assertFalse(DesignBrief.objects.filter(reference=ref).exists())
         self.assertFalse(DesignBrief.history.model.objects.filter(reference=ref).exists())
         self.assertFalse(BriefEvent.objects.filter(brief_id=brief.id).exists())
+
+
+class McsTemplateTests(BoardTestCase):
+    """MCS's "Decide Clearly so that we can Execute Fast" notice (Nov 2026):
+    routing by business area, the template, the agreed date as the promise,
+    escalation to the helpdesk, and mail from the helpdesk."""
+
+    def setUp(self):
+        super().setUp()
+        mail.outbox = []
+
+    def test_the_template_is_required_to_send_a_brief(self):
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(BASE + "briefs/", {
+            "design_item": "Branch banner", "department": "Marketing",
+            "addressed_to": "Branches"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        for field in ("category", "business_area", "owner",
+                      "support_required", "priority_reason", "release_date"):
+            self.assertIn(field, r.data)
+
+    def test_a_brief_goes_to_its_areas_lead_with_the_copy(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.raise_brief(business_area="properties", category="video")
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, [self.requester.email])
+        self.assertEqual(sorted(a.lower() for a in msg.cc),
+                         ["brian.angiro@hfcb.co.ke", "nyambura.mburu@hfcb.co.ke"])
+        self.assertIn("Video Production", msg.body)
+
+    def test_mail_comes_as_the_helpdesk_and_replies_go_there(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.raise_brief(business_area="banking_insurance")
+        msg = mail.outbox[0]
+        self.assertIn("MCS Helpdesk", msg.from_email)
+        self.assertEqual(msg.reply_to, ["marketinghelpdesk@hfcb.co.ke"])
+        with mock.patch.dict("os.environ", {"MCS_SEND_AS_HELPDESK": "1"}):
+            self.assertEqual(notifications.sender()[0],
+                             "MCS Helpdesk <marketinghelpdesk@hfcb.co.ke>")
+
+    def test_the_agreed_date_is_the_promise_kept_or_not(self):
+        today = timezone.localdate()
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.agree_date(brief, today + timedelta(days=2), actor=self.admin)
+        self.assertTrue(any("delivery agreed" in m.subject for m in mail.outbox))
+        workflow.submit(brief, actor=self.designer)
+        workflow.approve(brief, actor=self.requester)
+        brief.refresh_from_db()
+        self.assertTrue(brief.promise_kept)
+
+        late = self.raise_brief(design_item="Late flyer")
+        workflow.assign(late, self.designer, actor=self.admin)
+        workflow.agree_date(late, today - timedelta(days=3), actor=self.admin)
+        self.assertEqual(late.days_past_agreed, 3)
+        workflow.submit(late, actor=self.designer)
+        workflow.approve(late, actor=self.requester)
+        late.refresh_from_db()
+        self.assertFalse(late.promise_kept)
+
+        self.client.force_authenticate(self.admin)
+        p = self.client.get(BASE + "board/").data["promises"]
+        self.assertEqual((p["kept"], p["delivered"], p["late"]), (1, 2, 1))
+
+    def test_escalation_mails_the_helpdesk_and_shows_on_the_board(self):
+        brief = self.raise_brief(business_area="internal_comms")
+        mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.escalate(brief, actor=self.requester,
+                              reason="Printer needs the artwork Thursday")
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, ["marketinghelpdesk@hfcb.co.ke"])
+        self.assertIn("dorine.karanja@hfcb.co.ke", [a.lower() for a in msg.cc])
+        self.assertIn("Printer needs the artwork Thursday", msg.body)
+        self.client.force_authenticate(self.admin)
+        board = self.client.get(BASE + "board/").data
+        self.assertEqual([e["reference"] for e in board["escalations"]], [brief.reference])
+        with self.assertRaises(workflow.TransitionError):
+            workflow.escalate(brief, actor=self.requester, reason="again")
+        workflow.resolve_escalation(brief, actor=self.admin)
+        self.assertEqual(self.client.get(BASE + "board/").data["escalations"], [])
+
+    def test_only_a_lead_or_the_designer_agrees_the_date(self):
+        brief = self.raise_brief()
+        workflow.assign(brief, self.designer, actor=self.admin)
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(BASE + f"briefs/{brief.reference}/agree/",
+                             {"agreed_date": "2026-12-05"}, format="json")
+        self.assertEqual(r.status_code, 403)
+        self.client.force_authenticate(self.designer)
+        r = self.client.post(BASE + f"briefs/{brief.reference}/agree/",
+                             {"agreed_date": "2026-12-05"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["agreed_date"], "2026-12-05")

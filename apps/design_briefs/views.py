@@ -26,7 +26,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import images, rbac, workflow
+from . import images, rbac, routing, workflow
 from .models import (
     BriefComment, BriefDeliverable, BriefEvent, BriefProof, DesignBrief,
 )
@@ -37,7 +37,7 @@ from .serializers import (
     ResolveSerializer,
     DesignBriefCreateSerializer, DesignBriefDetailSerializer,
     DesignBriefListSerializer, DesignBriefUpdateSerializer, NoteSerializer,
-    PersonSerializer, QueueMoveSerializer, ReasonSerializer,
+    PersonSerializer, QueueMoveSerializer, ReasonSerializer, AgreeSerializer,
 )
 
 User = get_user_model()
@@ -431,6 +431,49 @@ class BriefReopenView(_TransitionView):
 
 
 @extend_schema(tags=TAG)
+class BriefAgreeView(_TransitionView):
+    """Agree the delivery date - the promise the screen measures."""
+
+    serializer_class = AgreeSerializer
+
+    def check(self, user, brief):
+        if not rbac.can_agree(user, brief):
+            return False, ("Only the MCS team lead, or the designer the brief "
+                           "is with, agrees the delivery date.")
+        return True, ""
+
+    def act(self, brief, user, data):
+        workflow.agree_date(brief, data["agreed_date"], actor=user,
+                            note=data.get("note", ""))
+
+
+@extend_schema(tags=TAG)
+class BriefEscalateView(_TransitionView):
+    """Escalate to the MCS Helpdesk - anyone who can see the brief."""
+
+    serializer_class = ReasonSerializer
+
+    def check(self, user, brief):
+        return True, ""  # visibility was already checked by _get_or_none
+
+    def act(self, brief, user, data):
+        workflow.escalate(brief, actor=user, reason=data["reason"])
+
+
+@extend_schema(tags=TAG)
+class BriefResolveEscalationView(_TransitionView):
+    serializer_class = NoteSerializer
+
+    def check(self, user, brief):
+        if not rbac.is_admin(user):
+            return False, "Only an MCS team lead closes an escalation."
+        return True, ""
+
+    def act(self, brief, user, data):
+        workflow.resolve_escalation(brief, actor=user, note=data.get("note", ""))
+
+
+@extend_schema(tags=TAG)
 class BriefQueueView(_TransitionView):
     """Move a brief up or down its queue - "this came in and must be cleared
     now", or "this can wait". The admin for any queue, a designer for their
@@ -525,6 +568,11 @@ class MetaView(APIView):
             "closed_statuses": sorted(DesignBrief.CLOSED_STATUSES),
             "priorities": [{"value": v, "label": l} for v, l in DesignBrief.PRIORITY],
             "item_types": [{"value": v, "label": l} for v, l in DesignBrief.ITEM_TYPES],
+            "categories": [{"value": v, "label": l} for v, l in DesignBrief.CATEGORIES],
+            "areas": routing.routes_for_ui(),
+            "priority_reasons": [{"value": v, "label": l}
+                                 for v, l in DesignBrief.PRIORITY_REASONS],
+            "helpdesk": routing.helpdesk(),
             "role": rbac.role_of(request.user),
             "can_assign": rbac.can_assign(request.user),
             "sees_whole_board": rbac.can_see_board(request.user),
@@ -655,11 +703,48 @@ class BoardView(APIView):
         }
         wip["over"] = bool(wip["limit"]) and wip["in_progress"] > wip["limit"]
 
+        # -- Promises (MCS notice, point 3: "progress against promises made") --
+        # A promise is the AGREED delivery date. This month's kept rate counts
+        # briefs approved this month that had one, kept when the accepted work
+        # was handed over on or before it. Per designer too, for each lane.
+        month_start = today.replace(day=1)
+        delivered = list(
+            _visible(request).filter(
+                status=DesignBrief.STATUS_APPROVED, agreed_date__isnull=False,
+                approved_at__date__gte=month_start)
+            .select_related("assigned_designer"))
+        kept_by = {}
+        for b in delivered:
+            k = kept_by.setdefault(b.assigned_designer_id or 0, [0, 0])
+            k[1] += 1
+            k[0] += 1 if b.promise_kept else 0
+        kept = sum(v[0] for v in kept_by.values())
+        promises = {
+            "month": month_start,
+            "kept": kept,
+            "delivered": len(delivered),
+            "late": len(delivered) - kept,
+            "rate": round(kept / len(delivered), 4) if delivered else None,
+            "past_agreed": sum(1 for r in rows if r.days_past_agreed > 0),
+            "not_agreed": sum(1 for r in rows if not r.agreed_date),
+            "escalated": sum(1 for r in rows if r.is_escalated),
+        }
+        for p in pipelines:
+            k = kept_by.get(p["designer_id"] or 0, [0, 0])
+            p["kept"], p["delivered"] = k[0], k[1]
+            # From every row, not the capped "briefs" list.
+            p["past_agreed"] = sum(
+                1 for r in rows if (r.assigned_designer_id or 0) == (p["designer_id"] or 0)
+                and r.days_past_agreed > 0)
+        escalations = [by_ref[r.reference] for r in rows if r.is_escalated]
+
         return Response({
             "as_of": timezone.now(),
             "today": today,
             "counts": counts,
             "wip": wip,
+            "promises": promises,
+            "escalations": escalations,
             "columns": columns,
             "pipelines": pipelines,
         })

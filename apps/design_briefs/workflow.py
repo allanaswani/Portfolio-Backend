@@ -59,7 +59,9 @@ def record(brief, kind, actor=None, note="", from_status="", to_status="", at=No
 @transaction.atomic
 def create(*, design_item, department, addressed_to, raised_by=None, brief="",
            item_type="other", priority=DesignBrief.PRIORITY_NORMAL,
-           release_date=None, requester_name="", requester_email=""):
+           release_date=None, requester_name="", requester_email="",
+           category="", business_area="", owner="", support_required="",
+           priority_reason=""):
     """Raise a brief. It starts in ``new`` with no designer, by design.
 
     Nothing here auto-assigns. Who does the work is the department admin's
@@ -77,6 +79,11 @@ def create(*, design_item, department, addressed_to, raised_by=None, brief="",
         release_date=release_date,
         requester_name=(requester_name or "").strip(),
         requester_email=(requester_email or "").strip(),
+        category=category or "",
+        business_area=business_area or "",
+        owner=(owner or "").strip(),
+        support_required=(support_required or "").strip(),
+        priority_reason=priority_reason or "",
         status=DesignBrief.STATUS_NEW,
     )
     on_behalf = (f" on behalf of {obj.requester_name}"
@@ -243,9 +250,15 @@ def approve(brief, actor=None, satisfaction=None, note=""):
     brief.satisfaction = int(satisfaction) if satisfaction is not None else None
     brief.closing_note = note or ""
     brief.archived_at = now  # closed means archived; the row is never deleted
+    # The promise is judged on when the accepted work was handed over - the
+    # last submission - not on when the requester got round to approving it.
+    brief.delivered_at = brief.submitted_at or now
+    # Delivered: an open escalation has nothing left to chase.
+    if brief.is_escalated:
+        brief.escalation_resolved_at = now
     brief.save(update_fields=[
         "status", "approved_by", "approved_at", "satisfaction", "closing_note",
-        "archived_at", "updated_at"])
+        "archived_at", "delivered_at", "escalation_resolved_at", "updated_at"])
     record(brief, BriefEvent.KIND_APPROVED, actor=actor, note=note,
            from_status=from_status, to_status=brief.status)
     _after_commit(notifications.approved, brief, actor)
@@ -305,6 +318,73 @@ def reopen(brief, actor=None, reason=""):
         "last_rework_at", "last_rework_reason", "updated_at"])
     record(brief, BriefEvent.KIND_REOPENED, actor=actor, note=reason,
            from_status=from_status, to_status=brief.status)
+    return brief
+
+
+# ── The promise and escalation (MCS "Decide Clearly", Nov 2026) ──────────────
+
+@transaction.atomic
+def agree_date(brief, date, actor=None, note=""):
+    """Record the delivery date agreed with the requester - the promise.
+
+    "The delivery timelines will be mutually agreed upon once the brief is
+    fully understood." It can be moved (a re-agreed date is a new promise and
+    the timeline says from what to what), never on a closed brief.
+    """
+    if brief.is_closed:
+        raise TransitionError("This brief is closed.")
+    if date is None:
+        raise TransitionError("Give the agreed delivery date.")
+    if brief.agreed_date == date:
+        return brief
+    was = brief.agreed_date
+    brief.agreed_date = date
+    brief.agreed_by = actor if (actor and actor.is_authenticated) else None
+    brief.agreed_at = timezone.now()
+    brief.save(update_fields=["agreed_date", "agreed_by", "agreed_at", "updated_at"])
+    text = (f"Delivery agreed for {date:%d %b %Y}" if was is None else
+            f"Delivery re-agreed from {was:%d %b %Y} to {date:%d %b %Y}")
+    if (note or "").strip():
+        text += f". {note.strip()}"
+    record(brief, BriefEvent.KIND_AGREED, actor=actor, note=text,
+           from_status=brief.status, to_status=brief.status)
+    _after_commit(notifications.agreed, brief, actor)
+    return brief
+
+
+@transaction.atomic
+def escalate(brief, actor=None, reason=""):
+    """Escalate to the MCS Helpdesk: "kindly escalate any matters not
+    effectively addressed". It shows on the office screen until resolved."""
+    if brief.is_closed:
+        raise TransitionError("This brief is closed.")
+    reason = (reason or "").strip()
+    if not reason:
+        raise TransitionError("Say what is not being addressed - the helpdesk "
+                              "acts on the reason.")
+    if brief.is_escalated:
+        raise TransitionError("This brief is already escalated.")
+    brief.escalated_at = timezone.now()
+    brief.escalated_by = actor if (actor and actor.is_authenticated) else None
+    brief.escalation_reason = reason
+    brief.escalation_resolved_at = None
+    brief.save(update_fields=["escalated_at", "escalated_by", "escalation_reason",
+                              "escalation_resolved_at", "updated_at"])
+    record(brief, BriefEvent.KIND_ESCALATED, actor=actor, note=reason,
+           from_status=brief.status, to_status=brief.status)
+    _after_commit(notifications.escalated, brief, actor, reason)
+    return brief
+
+
+@transaction.atomic
+def resolve_escalation(brief, actor=None, note=""):
+    if not brief.is_escalated:
+        raise TransitionError("This brief is not escalated.")
+    brief.escalation_resolved_at = timezone.now()
+    brief.save(update_fields=["escalation_resolved_at", "updated_at"])
+    record(brief, BriefEvent.KIND_DEESCALATED, actor=actor,
+           note=(note or "").strip() or "Escalation resolved.",
+           from_status=brief.status, to_status=brief.status)
     return brief
 
 

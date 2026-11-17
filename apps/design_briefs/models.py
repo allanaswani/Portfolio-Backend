@@ -41,7 +41,9 @@ def _ref() -> str:
     on, and a gap in it invites a question whose answer is a rolled-back
     transaction.
     """
-    return f"DB-{uuid.uuid4().hex[:8].upper()}"
+    # MCS- since Nov 2026 (the module became MCS Briefs); briefs raised before
+    # keep their DB- reference, which is what people quote.
+    return f"MCS-{uuid.uuid4().hex[:8].upper()}"
 
 
 class TimeStamped(models.Model):
@@ -124,7 +126,61 @@ class DesignBrief(TimeStamped):
         ("other", "Other"),
     ]
 
+    # -- MCS's briefing template (the "Decide Clearly" notice, Nov 2026) -------
+    #: The five categories MCS receives briefs under (notice, point 4).
+    CATEGORIES = [
+        ("graphic", "Image / Graphic Design"),
+        ("video", "Video Production"),
+        ("event", "Event / Sponsorship"),
+        ("campaign", "Marketing Campaign"),
+        ("internal_comms", "Internal Communications"),
+    ]
+    #: The business area decides which team lead receives it (see routing.py).
+    AREAS = [
+        ("banking_insurance", "Banking & Insurance"),
+        ("properties", "Properties"),
+        ("internal_comms", "Internal Communications"),
+    ]
+    #: "Priority for output is based on Customer Outcomes, Regulatory
+    #: Requirements, Business Impact & other requisite deadlines."
+    PRIORITY_REASONS = [
+        ("customer", "Customer outcome"),
+        ("regulatory", "Regulatory requirement"),
+        ("business", "Business impact"),
+        ("deadline", "Deadline"),
+    ]
+
     reference = models.CharField(max_length=20, unique=True, blank=True, db_index=True)
+
+    category = models.CharField(max_length=20, choices=CATEGORIES, blank=True, db_index=True)
+    business_area = models.CharField(max_length=20, choices=AREAS, blank=True, db_index=True)
+    #: Decide Clearly: "we put commitments in writing; owner, deadline and
+    #: support required". The deadline is ``release_date`` (needed by).
+    owner = models.CharField(max_length=150, blank=True)
+    support_required = models.TextField(blank=True)
+    priority_reason = models.CharField(max_length=12, choices=PRIORITY_REASONS, blank=True)
+
+    #: THE PROMISE. "Delivery timelines will be mutually agreed upon once the
+    #: brief is fully understood" - set by the team lead, separate from what
+    #: the requester asked for (``release_date``). Kept / late is measured
+    #: against this and nothing else.
+    agreed_date = models.DateField(null=True, blank=True, db_index=True)
+    agreed_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="design_briefs_agreed")
+    agreed_at = models.DateTimeField(null=True, blank=True)
+    #: When the work that was finally approved was handed over - the date a
+    #: promise is judged on. Stamped at approval from the last submission.
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    #: Escalation to the MCS Helpdesk. Open while ``escalated_at`` is set and
+    #: ``escalation_resolved_at`` is not.
+    escalated_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    escalated_by = models.ForeignKey(
+        USER, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="design_briefs_escalated")
+    escalation_reason = models.TextField(blank=True)
+    escalation_resolved_at = models.DateTimeField(null=True, blank=True)
 
     # -- The brief itself ----------------------------------------------------
     #: What is being asked for, in the requester's words. The board's headline.
@@ -244,6 +300,30 @@ class DesignBrief(TimeStamped):
     # -- Derived state the board reads ---------------------------------------
 
     @property
+    def is_escalated(self) -> bool:
+        return bool(self.escalated_at) and not self.escalation_resolved_at
+
+    @property
+    def promise_due(self):
+        """The date the board holds the team to: the agreed date, else (until
+        one is agreed) what the requester asked for."""
+        return self.agreed_date or self.release_date
+
+    @property
+    def promise_kept(self):
+        """True / False once delivered against an agreed date; None otherwise."""
+        if not (self.agreed_date and self.delivered_at):
+            return None
+        return timezone.localtime(self.delivered_at).date() <= self.agreed_date
+
+    @property
+    def days_past_agreed(self):
+        """Whole days an OPEN brief is past its agreed date, else 0."""
+        if self.is_closed or not self.agreed_date:
+            return 0
+        return max((timezone.localdate() - self.agreed_date).days, 0)
+
+    @property
     def requester_display(self) -> str:
         """Who asked: the named requester, else whoever raised it."""
         return (self.requester_name or self.raised_by_name
@@ -300,6 +380,9 @@ class BriefEvent(models.Model):
     KIND_PROOF = "proof"
     KIND_COMMENT = "comment"
     KIND_REORDERED = "reordered"
+    KIND_AGREED = "agreed"
+    KIND_ESCALATED = "escalated"
+    KIND_DEESCALATED = "deescalated"
 
     KIND = [
         (KIND_RAISED, "Raised"),
@@ -316,6 +399,9 @@ class BriefEvent(models.Model):
         (KIND_PROOF, "Artwork uploaded"),
         (KIND_COMMENT, "Comment"),
         (KIND_REORDERED, "Queue reordered"),
+        (KIND_AGREED, "Delivery date agreed"),
+        (KIND_ESCALATED, "Escalated"),
+        (KIND_DEESCALATED, "Escalation resolved"),
     ]
 
     brief = models.ForeignKey(

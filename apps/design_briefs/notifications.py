@@ -42,17 +42,47 @@ MUTED = "#6B8A96"
 CORAL = "#C23530"
 
 
-def send(to, subject, text_body, html_body=None):
+def sender():
+    """(From, Reply-To) for every MCS mail.
+
+    MCS wants these to come from the MCS Helpdesk. Office 365 only lets the
+    portal's mail account send AS that mailbox once IT grants it "Send As"; set
+    MCS_SEND_AS_HELPDESK=1 after they have. Until then the mail goes from the
+    portal's own address under the name "MCS Helpdesk", and replies go to the
+    helpdesk - a refused From would otherwise lose every message.
+    """
+    import os
+    from email.utils import formataddr, parseaddr
+
+    from .routing import helpdesk
+
+    desk = helpdesk()
+    if (os.environ.get("MCS_SEND_AS_HELPDESK") or "").strip() == "1":
+        return formataddr(("MCS Helpdesk", desk)), [desk]
+    default = getattr(settings, "DEFAULT_FROM_EMAIL", None) or ""
+    address = parseaddr(default)[1] or default
+    if not address:
+        return None, [desk]
+    return formataddr(("MCS Helpdesk", address)), [desk]
+
+
+def send(to, subject, text_body, html_body=None, cc=None):
     """Send one message. Returns how many addresses it went to; never raises."""
     addresses = sorted({str(a).strip() for a in (to or []) if a and "@" in str(a)})
     if not addresses:
         return 0
+    lower = {a.lower() for a in addresses}
+    copies = sorted({str(a).strip() for a in (cc or [])
+                     if a and "@" in str(a) and str(a).strip().lower() not in lower})
     try:
+        from_email, reply_to = sender()
         message = EmailMultiAlternatives(
             subject=f"{SUBJECT_PREFIX} {subject}"[:250],
             body=text_body,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            from_email=from_email,
             to=addresses,
+            cc=copies,
+            reply_to=reply_to,
             connection=get_connection(fail_silently=False),
         )
         if html_body:
@@ -137,18 +167,36 @@ def _handler(brief):
     return "MCS team - a designer is being assigned"
 
 
+def _date(d):
+    return d.strftime("%d %b %Y") if d else ""
+
+
 def _facts(brief):
     rows = [
         ("Reference", brief.reference),
-        ("Item", f"{brief.design_item} ({brief.get_item_type_display()})"),
+        ("Item", brief.design_item),
+    ]
+    if brief.category:
+        rows.append(("Category", brief.get_category_display()))
+    if brief.business_area:
+        rows.append(("Business area", brief.get_business_area_display()))
+    rows += [
         ("Status", brief.get_status_display()),
         ("Handled by", _handler(brief)),
-        ("Priority", brief.get_priority_display()),
-        ("Needed by", brief.release_date.strftime("%d %b %Y")
-                      if brief.release_date else "No date set"),
+    ]
+    if brief.owner:
+        rows.append(("Owner", brief.owner))
+    rows += [
+        ("Needed by", _date(brief.release_date) or "No date set"),
+        ("Agreed delivery", _date(brief.agreed_date)
+         or "To be agreed with you once the brief is understood"),
+        ("Priority", brief.get_priority_display()
+         + (f" ({brief.get_priority_reason_display()})" if brief.priority_reason else "")),
         ("Requested by", f"{brief.requester_display or '—'} ({brief.department})"),
         ("For", brief.addressed_to),
     ]
+    if brief.support_required:
+        rows.append(("Support required", brief.support_required))
     if brief.rework_count:
         rows.append(("Sent back", f"{brief.rework_count} time(s) so far"))
     link = _link(brief)
@@ -162,7 +210,10 @@ def _text(brief, lead, note=None):
     lines += [f"{k}: {v}" for k, v in _facts(brief)]
     if note:
         lines += ["", note]
-    lines += ["", f"Quote {brief.reference} in any reply.", f"— {BOARD_NAME}"]
+    from .routing import helpdesk
+
+    lines += ["", f"Quote {brief.reference} in any reply. Anything not "
+                  f"addressed: {helpdesk()}", f"— {BOARD_NAME}"]
     return "\n".join(lines)
 
 
@@ -197,25 +248,70 @@ def _html(brief, lead, note=None, accent=TEAL):
         f'<table cellpadding="0" cellspacing="0">{rows}</table>'
         f"{extra}"
         f'<p style="color:{MUTED};font-size:11.5px;margin-top:22px">'
-        f"{escape(BOARD_NAME)}</p></div>"
+        f"Quote {escape(brief.reference)} in any reply. Anything not addressed: "
+        f"{escape(_helpdesk())}<br>{escape(BOARD_NAME)}</p></div>"
     )
 
 
-def _one(to, subject, brief, lead, note=None, accent=TEAL):
+def _helpdesk():
+    from .routing import helpdesk
+
+    return helpdesk()
+
+
+def _one(to, subject, brief, lead, note=None, accent=TEAL, cc=None):
     return send(to, subject, _text(brief, lead, note),
-                _html(brief, lead, note, accent))
+                _html(brief, lead, note, accent), cc=cc)
+
+
+def _route(brief):
+    """[lead], [copy] for the brief's business area."""
+    from .routing import route
+
+    to, cc = route(brief.business_area)
+    return ([to] if to else []), ([cc] if cc else [])
 
 
 def received(brief, actor=None):
     """The ticket receipt: the request is in, here is its reference, here is
-    who is handling it. Sent on every new brief."""
-    return _one(
-        _ticket_addresses(brief),
+    who is handling it. Sent on every new brief, with the area's team lead and
+    their copy person on it (the routing in the MCS notice)."""
+    lead, copy = _route(brief)
+    to = _ticket_addresses(brief)
+    sent = _one(
+        to or lead,
         f"{brief.reference} received: {brief.design_item}",
         brief,
-        "Your request has been received by MCS. The details are below; "
-        "you will be e-mailed as it moves - when a designer takes it on and "
-        "when it is ready for you to review.")
+        "Your brief has been received by MCS. The details are below. The "
+        "delivery date will be agreed with you once the brief is understood, "
+        "and you will be e-mailed as it moves.",
+        cc=(lead + copy) if to else copy)
+    return sent
+
+
+def agreed(brief, actor=None):
+    """The promise: the delivery date the team lead has agreed."""
+    lead, copy = _route(brief)
+    return _one(
+        _ticket_addresses(brief),
+        f"{brief.reference}: delivery agreed for {_date(brief.agreed_date)}",
+        brief,
+        f"MCS has agreed to deliver this by {_date(brief.agreed_date)}.",
+        cc=lead + copy)
+
+
+def escalated(brief, actor=None, reason=""):
+    """To the MCS Helpdesk and the area's lead - and on the office screen."""
+    lead, copy = _route(brief)
+    return _one(
+        [_helpdesk()],
+        f"ESCALATED {brief.reference}: {brief.design_item}",
+        brief,
+        f"This brief has been escalated by "
+        f"{(actor.get_full_name() or actor.username) if actor else 'someone'}.",
+        note=(reason or "").strip() or None,
+        accent=CORAL,
+        cc=lead + copy + _ticket_addresses(brief))
 
 
 def assigned(brief, actor=None):
