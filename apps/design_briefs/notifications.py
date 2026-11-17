@@ -33,8 +33,8 @@ from .rbac import ADMIN_GROUP
 
 log = logging.getLogger(__name__)
 
-BOARD_NAME = "HFCB Design Board"
-SUBJECT_PREFIX = "[HFCB Design]"
+BOARD_NAME = "HFCB Marketing Briefs"
+SUBJECT_PREFIX = "[HFCB Marketing]"
 
 TEAL = "#1996A9"
 INK = "#0B2D3D"
@@ -94,27 +94,66 @@ def admin_addresses(exclude=None):
 
 
 def _requester_addresses(brief, exclude=None):
-    """Whoever raised it, or the admins when there is nobody to reach."""
+    """The person who asked - the named requester when the brief was captured
+    for somebody, else whoever raised it - or the admins when there is nobody
+    to reach."""
+    named = (brief.requester_email or "").strip()
+    if named and "@" in named:
+        if exclude is None or (getattr(exclude, "email", "") or "").strip().lower() \
+                != named.lower():
+            return [named]
+        return []
     direct = _address(brief.raised_by, exclude)
     return direct or admin_addresses(exclude)
 
 
+def _ticket_addresses(brief):
+    """Where a ticket update goes: the requester, ALWAYS - including when they
+    raised it themselves. A receipt is the one mail that is about your own
+    action on purpose: it is the proof the request landed and the reference
+    to quote (Marketing asked for exactly this, 17 Nov 2026)."""
+    named = (brief.requester_email or "").strip()
+    if named and "@" in named:
+        return [named]
+    return _address(brief.raised_by)
+
+
+def _link(brief):
+    try:
+        from core.email_links import primary_url
+
+        base = primary_url()
+    except Exception:  # noqa: BLE001
+        base = ""
+    return f"{base.rstrip('/')}/design-briefs/{brief.reference}" if base else ""
+
+
 # ── The messages ─────────────────────────────────────────────────────────────
+
+def _handler(brief):
+    if brief.assigned_designer:
+        return (brief.assigned_designer.get_full_name()
+                or brief.assigned_designer.username)
+    return "Marketing team - a designer is being assigned"
+
 
 def _facts(brief):
     rows = [
-        ("Item", brief.design_item),
-        ("From", f"{brief.department} ({brief.raised_by_name or '—'})"),
-        ("For", brief.addressed_to),
-        ("Designer", (brief.assigned_designer.get_full_name()
-                      or brief.assigned_designer.username)
-                     if brief.assigned_designer else "Not yet assigned"),
+        ("Reference", brief.reference),
+        ("Item", f"{brief.design_item} ({brief.get_item_type_display()})"),
+        ("Status", brief.get_status_display()),
+        ("Handled by", _handler(brief)),
+        ("Priority", brief.get_priority_display()),
         ("Needed by", brief.release_date.strftime("%d %b %Y")
                       if brief.release_date else "No date set"),
-        ("Reference", brief.reference),
+        ("Requested by", f"{brief.requester_display or '—'} ({brief.department})"),
+        ("For", brief.addressed_to),
     ]
     if brief.rework_count:
         rows.append(("Sent back", f"{brief.rework_count} time(s) so far"))
+    link = _link(brief)
+    if link:
+        rows.append(("Track it", link))
     return rows
 
 
@@ -123,16 +162,22 @@ def _text(brief, lead, note=None):
     lines += [f"{k}: {v}" for k, v in _facts(brief)]
     if note:
         lines += ["", note]
-    lines += ["", f"— {BOARD_NAME}"]
+    lines += ["", f"Quote {brief.reference} in any reply.", f"— {BOARD_NAME}"]
     return "\n".join(lines)
 
 
 def _html(brief, lead, note=None, accent=TEAL):
+    def cell(k, v):
+        if k == "Track it":
+            return (f'<a href="{escape(str(v))}" style="color:{TEAL}">'
+                    f"Open {escape(brief.reference)}</a>")
+        return escape(str(v))
+
     rows = "".join(
         f'<tr><td style="padding:4px 14px 4px 0;color:{MUTED};font-size:13px;'
         f'white-space:nowrap">{escape(k)}</td>'
         f'<td style="padding:4px 0;color:{INK};font-size:13px;font-weight:600">'
-        f"{escape(str(v))}</td></tr>"
+        f"{cell(k, v)}</td></tr>"
         for k, v in _facts(brief)
     )
     extra = ""
@@ -161,16 +206,50 @@ def _one(to, subject, brief, lead, note=None, accent=TEAL):
                 _html(brief, lead, note, accent))
 
 
+def received(brief, actor=None):
+    """The ticket receipt: the request is in, here is its reference, here is
+    who is handling it. Sent on every new brief."""
+    return _one(
+        _ticket_addresses(brief),
+        f"{brief.reference} received: {brief.design_item}",
+        brief,
+        "Your request has been received by Marketing. The details are below; "
+        "you will be e-mailed as it moves - when a designer takes it on and "
+        "when it is ready for you to review.")
+
+
 def assigned(brief, actor=None):
-    """The designer has new work. Nobody else needs this one."""
+    """The designer has new work - and the requester hears who has it."""
+    who = brief.assigned_designer
+    if who is None:
+        return 0
+    sent = _one(
+        _address(who, actor),
+        f"You have been given a brief: {brief.design_item}",
+        brief,
+        "A marketing brief has been allocated to you.")
+    sent += _one(
+        [a for a in _ticket_addresses(brief)
+         if a.lower() != (getattr(who, "email", "") or "").lower()],
+        f"{brief.reference}: now handled by {_handler(brief)}",
+        brief,
+        f"{_handler(brief)} is now handling your request.")
+    return sent
+
+
+def moved_up(brief, actor=None, reason=""):
+    """Somebody else put this at the top of a designer's queue: the designer
+    needs to know what to pick up next, and why."""
     who = brief.assigned_designer
     if who is None:
         return 0
     return _one(
         _address(who, actor),
-        f"You have been given a brief: {brief.design_item}",
+        f"Do this next: {brief.design_item}",
         brief,
-        "A design brief has been allocated to you.")
+        "This brief has been moved to the top of your queue.",
+        note=(reason or "").strip() or None,
+        accent=CORAL)
 
 
 def submitted(brief, actor=None):

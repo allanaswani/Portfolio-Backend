@@ -154,7 +154,22 @@ class DesignBrief(TimeStamped):
         max_length=150,
         help_text="Who the brief is to — a person, team or audience.")
 
+    #: The person who ASKED, when somebody else typed the brief in. Marketing
+    #: often captures a request that came by email or in a meeting; the ticket
+    #: e-mails (received, who is handling it, ready for review) go to this
+    #: address. Blank means the person who raised it is the requester.
+    requester_name = models.CharField(max_length=150, blank=True)
+    requester_email = models.EmailField(blank=True)
+
     priority = models.CharField(max_length=10, choices=PRIORITY, default=PRIORITY_NORMAL)
+
+    #: Position in its lane's queue (the designer's open work, or the
+    #: unassigned pile): 1 is worked first. Set when somebody reorders the
+    #: queue - "this has just come in and must be cleared now" - and cleared
+    #: when the brief moves to another designer. Unranked briefs follow the
+    #: ranked ones, in release-date order, as the board always sorted them.
+    queue_rank = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+
     status = models.CharField(
         max_length=15, choices=STATUS, default=STATUS_NEW, db_index=True)
 
@@ -229,6 +244,13 @@ class DesignBrief(TimeStamped):
     # -- Derived state the board reads ---------------------------------------
 
     @property
+    def requester_display(self) -> str:
+        """Who asked: the named requester, else whoever raised it."""
+        return (self.requester_name or self.raised_by_name
+                or (self.raised_by.get_full_name() if self.raised_by_id else "")
+                or "").strip()
+
+    @property
     def is_closed(self) -> bool:
         return self.status in self.CLOSED_STATUSES
 
@@ -277,6 +299,7 @@ class BriefEvent(models.Model):
     KIND_EDITED = "edited"
     KIND_PROOF = "proof"
     KIND_COMMENT = "comment"
+    KIND_REORDERED = "reordered"
 
     KIND = [
         (KIND_RAISED, "Raised"),
@@ -292,6 +315,7 @@ class BriefEvent(models.Model):
         (KIND_EDITED, "Brief edited"),
         (KIND_PROOF, "Artwork uploaded"),
         (KIND_COMMENT, "Comment"),
+        (KIND_REORDERED, "Queue reordered"),
     ]
 
     brief = models.ForeignKey(

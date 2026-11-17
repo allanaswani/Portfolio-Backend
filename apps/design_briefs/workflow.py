@@ -59,7 +59,7 @@ def record(brief, kind, actor=None, note="", from_status="", to_status="", at=No
 @transaction.atomic
 def create(*, design_item, department, addressed_to, raised_by=None, brief="",
            item_type="other", priority=DesignBrief.PRIORITY_NORMAL,
-           release_date=None):
+           release_date=None, requester_name="", requester_email=""):
     """Raise a brief. It starts in ``new`` with no designer, by design.
 
     Nothing here auto-assigns. Who does the work is the department admin's
@@ -75,11 +75,16 @@ def create(*, design_item, department, addressed_to, raised_by=None, brief="",
         item_type=item_type or "other",
         priority=priority or DesignBrief.PRIORITY_NORMAL,
         release_date=release_date,
+        requester_name=(requester_name or "").strip(),
+        requester_email=(requester_email or "").strip(),
         status=DesignBrief.STATUS_NEW,
     )
+    on_behalf = (f" on behalf of {obj.requester_name}"
+                 if obj.requester_name else "")
     record(obj, BriefEvent.KIND_RAISED, actor=raised_by,
            to_status=obj.status,
-           note=f"Raised by {obj.department} for {obj.addressed_to}.")
+           note=f"Raised by {obj.department}{on_behalf} for {obj.addressed_to}.")
+    _after_commit(notifications.received, obj, raised_by)
     return obj
 
 
@@ -105,13 +110,17 @@ def assign(brief, designer, actor=None, note=""):
     brief.assigned_designer = designer
     brief.assigned_by = actor if (actor and actor.is_authenticated) else None
     brief.assigned_at = timezone.now()
+    # A place in one designer's queue means nothing in another's: it joins
+    # the new designer's queue behind their ranked work.
+    brief.queue_rank = None
     # Only a brief that has not been started moves to "assigned". One that is
     # already in progress or in rework keeps its status: reassigning mid-flight
     # must not quietly reset how far the work had got.
     if brief.status == DesignBrief.STATUS_NEW:
         brief.status = DesignBrief.STATUS_ASSIGNED
     brief.save(update_fields=[
-        "assigned_designer", "assigned_by", "assigned_at", "status", "updated_at"])
+        "assigned_designer", "assigned_by", "assigned_at", "status",
+        "queue_rank", "updated_at"])
 
     detail = f"Assigned to {_label(designer)}"
     if was:
@@ -296,6 +305,92 @@ def reopen(brief, actor=None, reason=""):
         "last_rework_at", "last_rework_reason", "updated_at"])
     record(brief, BriefEvent.KIND_REOPENED, actor=actor, note=reason,
            from_status=from_status, to_status=brief.status)
+    return brief
+
+
+# ── The queue ────────────────────────────────────────────────────────────────
+
+QUEUE_MOVES = ("top", "up", "down", "bottom")
+
+
+def queue_order(qs):
+    """The order a lane is worked in: ranked briefs first (1 = next), then the
+    rest by release date, urgency and age - the order the board always used."""
+    from django.db.models import Case, F, IntegerField, Value, When
+
+    prio = Case(
+        When(priority=DesignBrief.PRIORITY_URGENT, then=Value(0)),
+        When(priority=DesignBrief.PRIORITY_HIGH, then=Value(1)),
+        When(priority=DesignBrief.PRIORITY_NORMAL, then=Value(2)),
+        When(priority=DesignBrief.PRIORITY_LOW, then=Value(3)),
+        default=Value(4), output_field=IntegerField())
+    return (qs.annotate(_queue_prio=prio)
+            .order_by(F("queue_rank").asc(nulls_last=True),
+                      F("release_date").asc(nulls_last=True),
+                      "_queue_prio", "-created_at", "-id"))
+
+
+def lane(brief):
+    """The open briefs in the same queue as ``brief``, in working order: the
+    designer's, or the unassigned pile."""
+    qs = DesignBrief.objects.open().filter(
+        assigned_designer_id=brief.assigned_designer_id)
+    return list(queue_order(qs))
+
+
+@transaction.atomic
+def move_in_queue(brief, where, actor=None, reason=""):
+    """Reorder a queue: "something has just come in and must be cleared now"
+    (``top``), or "this can wait" (``bottom``), or one place at a time.
+
+    The whole lane is renumbered 1..n in its new order, so every brief in it
+    has a definite place afterwards and the next move is exact. A move to the
+    top by somebody other than the designer e-mails the designer, with the
+    reason - otherwise they would carry on with what they were doing.
+    """
+    if where not in QUEUE_MOVES:
+        raise TransitionError(f"Move it to one of: {', '.join(QUEUE_MOVES)}.")
+    if brief.is_closed:
+        raise TransitionError("This brief is closed - it is in nobody's queue.")
+    reason = (reason or "").strip()
+    if where == "top" and not reason:
+        raise TransitionError(
+            "Say why it jumps the queue - the designer is told the reason.")
+
+    # Lock the lane so two people reordering at once cannot interleave.
+    order = list(DesignBrief.objects.select_for_update().filter(
+        pk__in=[b.pk for b in lane(brief)]))
+    by_pk = {b.pk: b for b in order}
+    order = [by_pk[b.pk] for b in lane(brief) if b.pk in by_pk]
+    ids = [b.pk for b in order]
+    if brief.pk not in ids:
+        raise TransitionError("This brief is not in an open queue.")
+    i = ids.index(brief.pk)
+    item = order.pop(i)
+    j = {"top": 0, "up": max(i - 1, 0), "down": min(i + 1, len(order)),
+         "bottom": len(order)}[where]
+    order.insert(j, item)
+    if j == i:
+        return brief  # already there - no event, no mail
+
+    for n, b in enumerate(order, start=1):
+        if b.queue_rank != n:
+            DesignBrief.objects.filter(pk=b.pk).update(queue_rank=n)
+    brief.queue_rank = j + 1
+
+    words = {"top": "Moved to the top of the queue",
+             "bottom": "Moved to the bottom of the queue",
+             "up": "Moved up the queue", "down": "Moved down the queue"}[where]
+    owner = brief.assigned_designer
+    whose = f"{_label(owner)}'s queue" if owner else "the unassigned queue"
+    note = f"{words} ({whose}, now #{j + 1} of {len(order)})."
+    if reason:
+        note += f" {reason}"
+    record(brief, BriefEvent.KIND_REORDERED, actor=actor, note=note,
+           from_status=brief.status, to_status=brief.status)
+    if where == "top" and owner is not None and (
+            actor is None or getattr(actor, "id", None) != owner.id):
+        _after_commit(notifications.moved_up, brief, actor, reason)
     return brief
 
 

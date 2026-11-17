@@ -32,6 +32,7 @@ urlpatterns = [
     path("briefs/<str:reference>/cancel/",  v.BriefCancelView.as_view()),
     path("briefs/<str:reference>/reopen/",  v.BriefReopenView.as_view()),
     path("briefs/<str:reference>/note/",    v.BriefNoteView.as_view()),
+    path("briefs/<str:reference>/queue/",   v.BriefQueueView.as_view()),
 
     # The artwork. A proof's image is served from its own route so the browser
     # caches it and a board listing stays a few kilobytes.

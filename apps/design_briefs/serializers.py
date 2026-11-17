@@ -169,6 +169,7 @@ class DesignBriefListSerializer(serializers.ModelSerializer):
     priority_display = serializers.CharField(source="get_priority_display", read_only=True)
     item_type_display = serializers.CharField(source="get_item_type_display", read_only=True)
     raised_by_display = serializers.SerializerMethodField()
+    requester_display = serializers.CharField(read_only=True)
     designer_display = serializers.SerializerMethodField()
     designer_initials = serializers.SerializerMethodField()
     days_to_release = serializers.IntegerField(read_only=True)
@@ -187,8 +188,9 @@ class DesignBriefListSerializer(serializers.ModelSerializer):
             "id", "reference", "design_item", "item_type", "item_type_display",
             "department", "addressed_to",
             "raised_by", "raised_by_display",
+            "requester_name", "requester_email", "requester_display",
             "assigned_designer", "designer_display", "designer_initials",
-            "priority", "priority_display",
+            "priority", "priority_display", "queue_rank",
             "status", "status_display",
             "release_date", "days_to_release", "is_overdue",
             "rework_count", "was_reworked",
@@ -289,6 +291,7 @@ class DesignBriefDetailSerializer(DesignBriefListSerializer):
             "cancel": rbac.can_cancel(user, obj) and not obj.is_closed,
             "reopen": rbac.is_admin(user) and obj.is_closed,
             "note": rbac.can_view(user, obj),
+            "reorder": rbac.can_reorder(user, obj) and not obj.is_closed,
         }
 
 
@@ -304,8 +307,18 @@ class DesignBriefCreateSerializer(serializers.ModelSerializer):
         model = DesignBrief
         fields = [
             "design_item", "item_type", "brief", "department", "addressed_to",
-            "priority", "release_date",
+            "priority", "release_date", "requester_name", "requester_email",
         ]
+
+    def validate(self, data):
+        # A name with no address cannot be sent the ticket; say so now rather
+        # than let the requester wait for a mail that cannot go.
+        if (data.get("requester_name") or "").strip() and not \
+                (data.get("requester_email") or "").strip():
+            raise serializers.ValidationError({
+                "requester_email": "Give the requester's e-mail so they get "
+                                   "the reference and updates."})
+        return data
 
     def validate_design_item(self, value):
         value = (value or "").strip()
@@ -346,8 +359,13 @@ class DesignBriefUpdateSerializer(serializers.ModelSerializer):
         model = DesignBrief
         fields = [
             "design_item", "item_type", "brief", "department", "addressed_to",
-            "priority", "release_date",
+            "priority", "release_date", "requester_name", "requester_email",
         ]
+
+
+class QueueMoveSerializer(serializers.Serializer):
+    where = serializers.ChoiceField(choices=["top", "up", "down", "bottom"])
+    reason = serializers.CharField(required=False, allow_blank=True)
 
 
 class AssignSerializer(serializers.Serializer):

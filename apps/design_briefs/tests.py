@@ -847,15 +847,21 @@ class MailTests(BoardTestCase):
 
     def test_assigning_mails_the_designer_and_not_the_admin_who_did_it(self):
         brief = self.raise_brief()
+        mail.outbox = []
         with self.captureOnCommitCallbacks(execute=True):
             workflow.assign(brief, self.designer, actor=self.admin)
 
-        self.assertEqual(len(mail.outbox), 1)
+        # The designer is told; the requester hears who is handling it
+        # (17 Nov 2026); the admin who did it hears nothing.
+        self.assertEqual(len(mail.outbox), 2)
         msg = mail.outbox[0]
         self.assertEqual(msg.to, [self.designer.email])
-        self.assertNotIn(self.admin.email, msg.to)
         self.assertIn(brief.design_item, msg.subject)
         self.assertIn(brief.reference, msg.body)
+        self.assertEqual(mail.outbox[1].to, [self.requester.email])
+        self.assertIn("now handled by", mail.outbox[1].subject)
+        for m in mail.outbox:
+            self.assertNotIn(self.admin.email, m.to)
 
     def test_submitting_mails_the_requester_not_the_designer(self):
         brief = self.raise_brief()
@@ -1276,3 +1282,138 @@ class ModuleGateTests(APITestCase):
         self.assertEqual(self.client.get(f"{BASE}summary/").status_code, 403)
         self.client.force_authenticate(self.admin)
         self.assertEqual(self.client.get(f"{BASE}summary/").status_code, 200)
+
+
+class TicketMailTests(BoardTestCase):
+    """Marketing asked (17 Nov 2026) for a ticket receipt: the requester is
+    mailed the reference, who is handling it and the details, like a service
+    desk ticket - including a requester who is not the person typing it in."""
+
+    def setUp(self):
+        super().setUp()
+        mail.outbox = []
+
+    def test_raising_sends_the_requester_a_receipt_with_the_reference(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            brief = self.raise_brief()
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, [self.requester.email])
+        self.assertIn(brief.reference, msg.subject)
+        self.assertIn("Handled by", msg.body)
+        self.assertIn("a designer is being assigned", msg.body)
+
+    def test_a_brief_captured_for_someone_else_mails_them_not_the_typist(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            brief = self.raise_brief(raised_by=self.admin,
+                                     requester_name="Stella Branch",
+                                     requester_email="stella@hf.test")
+        self.assertEqual([m.to for m in mail.outbox], [["stella@hf.test"]])
+        self.assertIn("Stella Branch", mail.outbox[0].body)
+        mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.assign(brief, self.designer, actor=self.admin)
+        handled = [m for m in mail.outbox if m.to == ["stella@hf.test"]]
+        self.assertEqual(len(handled), 1)
+        self.assertIn(self.designer.username, handled[0].body)
+
+    def test_a_requester_name_without_an_email_is_refused(self):
+        self.client.force_authenticate(self.requester)
+        r = self.client.post(BASE + "briefs/", {
+            "design_item": "Branch banner", "department": "Marketing",
+            "addressed_to": "Branches", "requester_name": "Stella"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("requester_email", r.data)
+
+
+class QueueTests(BoardTestCase):
+    """Reprioritising a queue: something comes in that must be cleared now."""
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.raise_brief(design_item="First poster")
+        self.b = self.raise_brief(design_item="Second poster")
+        self.c = self.raise_brief(design_item="Urgent eshot")
+        for b in (self.a, self.b, self.c):
+            workflow.assign(b, self.designer, actor=self.admin)
+        mail.outbox = []
+
+    def order(self):
+        return [b.design_item for b in workflow.lane(self.a)]
+
+    def test_top_puts_it_first_and_tells_the_designer_why(self):
+        before = self.order()
+        last = DesignBrief.objects.get(design_item=before[-1])
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.move_in_queue(last, "top", actor=self.admin,
+                                   reason="CEO launch tomorrow")
+        self.assertEqual(self.order()[0], before[-1])
+        self.assertEqual(sorted(self.order()), sorted(before))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.designer.email])
+        self.assertIn("CEO launch tomorrow", mail.outbox[0].body)
+        self.assertTrue(last.events.filter(kind=BriefEvent.KIND_REORDERED).exists())
+
+    def test_moving_to_the_top_needs_a_reason(self):
+        with self.assertRaises(workflow.TransitionError):
+            workflow.move_in_queue(self.c, "top", actor=self.admin)
+
+    def test_bottom_and_one_step_moves(self):
+        first = self.order()[0]
+        workflow.move_in_queue(DesignBrief.objects.get(design_item=first),
+                               "bottom", actor=self.designer)
+        self.assertEqual(self.order()[-1], first)
+        last = self.order()[-1]
+        workflow.move_in_queue(DesignBrief.objects.get(design_item=last),
+                               "up", actor=self.designer)
+        self.assertEqual(self.order()[-2], last)
+
+    def test_the_designer_moving_their_own_work_mails_nobody(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.move_in_queue(self.a, "top", actor=self.designer,
+                                   reason="quick one")
+        self.assertEqual(self.order()[0], "First poster")
+        self.assertEqual(mail.outbox, [])
+
+    def test_only_the_admin_or_the_queues_designer_may_reorder(self):
+        self.assertTrue(rbac.can_reorder(self.admin, self.c))
+        self.assertTrue(rbac.can_reorder(self.designer, self.c))
+        self.assertFalse(rbac.can_reorder(self.other_designer, self.c))
+        self.assertFalse(rbac.can_reorder(self.requester, self.c))
+        self.client.force_authenticate(self.other_designer)
+        r = self.client.post(BASE + f"briefs/{self.c.reference}/queue/",
+                             {"where": "top", "reason": "mine now"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_the_board_lane_follows_the_queue(self):
+        workflow.move_in_queue(self.a, "top", actor=self.admin, reason="now")
+        self.client.force_authenticate(self.admin)
+        r = self.client.get(BASE + "board/")
+        lane = next(p for p in r.data["pipelines"]
+                    if p["designer_id"] == self.designer.id)
+        self.assertEqual(lane["briefs"][0]["design_item"], "First poster")
+
+    def test_reassigning_drops_the_old_queue_place(self):
+        workflow.move_in_queue(self.a, "top", actor=self.admin, reason="now")
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.queue_rank, 1)
+        workflow.assign(self.a, self.other_designer, actor=self.admin)
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.queue_rank)
+
+
+class PurgeCommandTests(BoardTestCase):
+    def test_it_only_deletes_with_confirm_and_takes_the_history_too(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        brief = self.raise_brief(design_item="test")
+        ref = brief.reference
+        out = StringIO()
+        call_command("purge_briefs", ref, stdout=out)
+        self.assertTrue(DesignBrief.objects.filter(reference=ref).exists())
+        call_command("purge_briefs", ref, "--confirm", stdout=out)
+        self.assertFalse(DesignBrief.objects.filter(reference=ref).exists())
+        self.assertFalse(DesignBrief.history.model.objects.filter(reference=ref).exists())
+        self.assertFalse(BriefEvent.objects.filter(brief_id=brief.id).exists())

@@ -37,11 +37,11 @@ from .serializers import (
     ResolveSerializer,
     DesignBriefCreateSerializer, DesignBriefDetailSerializer,
     DesignBriefListSerializer, DesignBriefUpdateSerializer, NoteSerializer,
-    PersonSerializer, ReasonSerializer,
+    PersonSerializer, QueueMoveSerializer, ReasonSerializer,
 )
 
 User = get_user_model()
-TAG = ["Design Briefs"]
+TAG = ["Marketing Briefs"]
 
 
 class BriefPagination(PageNumberPagination):
@@ -431,6 +431,25 @@ class BriefReopenView(_TransitionView):
 
 
 @extend_schema(tags=TAG)
+class BriefQueueView(_TransitionView):
+    """Move a brief up or down its queue - "this came in and must be cleared
+    now", or "this can wait". The admin for any queue, a designer for their
+    own (``rbac.can_reorder``)."""
+
+    serializer_class = QueueMoveSerializer
+
+    def check(self, user, brief):
+        if not rbac.can_reorder(user, brief):
+            return False, ("Only the marketing admin, or the designer whose "
+                           "queue this is, can reorder it.")
+        return True, ""
+
+    def act(self, brief, user, data):
+        workflow.move_in_queue(brief, data["where"], actor=user,
+                               reason=data.get("reason", ""))
+
+
+@extend_schema(tags=TAG)
 class BriefNoteView(_TransitionView):
     serializer_class = NoteSerializer
 
@@ -544,8 +563,9 @@ class BoardView(APIView):
         today = timezone.localdate()
 
         open_qs = qs.open() if (request.query_params.get("view") or "open") == "open" else qs
-        rows = list(open_qs.annotate(_prio=_priority_rank())
-                    .order_by(_by_release(), "_prio", "-created_at"))
+        # Each lane in the order it is worked: anything somebody has put first
+        # in a queue, then by release date and urgency (workflow.queue_order).
+        rows = list(workflow.queue_order(open_qs))
         ser = DesignBriefListSerializer(rows, many=True, context={"request": request})
         data = ser.data
         by_ref = {d["reference"]: d for d in data}
@@ -664,7 +684,7 @@ class MyPipelineView(APIView):
         return Response({
             "as_of": timezone.now(),
             "assigned_to_me": DesignBriefListSerializer(
-                mine.order_by(_by_release()), many=True, context=ctx).data,
+                workflow.queue_order(mine), many=True, context=ctx).data,
             "raised_by_me": DesignBriefListSerializer(
                 raised.order_by("-created_at"), many=True, context=ctx).data,
             # The nudge that stops briefs dying in review: work finished and

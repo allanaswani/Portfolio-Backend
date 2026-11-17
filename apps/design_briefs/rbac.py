@@ -166,6 +166,20 @@ def can_work(user, brief) -> bool:
     return is_admin(user)
 
 
+def can_reorder(user, brief) -> bool:
+    """Move a brief up or down its queue.
+
+    The marketing admin, for any queue; a designer, for their OWN queue only -
+    they know what they are in the middle of, but cannot reshuffle a
+    colleague's day. Assigning stays admin-only (``can_assign``).
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if is_admin(user):
+        return True
+    return bool(brief.assigned_designer_id) and brief.assigned_designer_id == user.id
+
+
 def can_judge(user, brief) -> bool:
     """Approve, or send back for rework.
 
