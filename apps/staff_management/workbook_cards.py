@@ -1606,6 +1606,44 @@ def _target_changes(spec, card, sheet, year, month):
     return out
 
 
+def _keep_lines_proration_empties(book, actuals, holder, month, ev, spec,
+                                  header, end):
+    """Lines the admin's proration leaves with no target keep their score
+    from before it -> the card rows (0-based) so kept.
+
+    Some lines count one month behind the card: on the BO CSO card Digital
+    Onboarding's year-to-date target is eight a month to the month before
+    (72 at October). A role change from September takes all of those months
+    out, so the workbook itself would show #DIV/0! there. Those months are
+    before the change - the desk's record for them stands, as it does for
+    any month inside an absence (Ivan Ombiru IO3870, CSO from October 2026).
+    """
+    col = spec.cols
+    plain = Evaluator(book, actuals, holder, month)
+    plain.list_override = {}
+    plain.inputs = dict(ev.inputs)
+    fields = [f for f in ("fy", "ytd", "actual", "score", "weighted")
+              if col.get(f) is not None]
+    kept = set()
+    for r in range(header + 1, end):
+        weight = ev.cell(r, col["weight"])
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            continue
+        target = ev.cell(r, col["ytd"]) if col.get("ytd") is not None else None
+        score = ev.cell(r, col["score"])
+        if not (isinstance(score, Err) or target == 0):
+            continue
+        before = plain.cell(r, col["score"])
+        if isinstance(before, Err):
+            continue  # an error with or without proration: the workbook's own
+        for f in fields:
+            ev.inputs[(r, col[f])] = plain.cell(r, col[f])
+        kept.add(r)
+    if kept:
+        ev.memo.clear()
+    return kept
+
+
 def compute(book, actuals, holder, month, overrides=None):
     """One person's card for one month → dict, as the workbook would show it.
 
@@ -1620,6 +1658,8 @@ def compute(book, actuals, holder, month, overrides=None):
     ev.inputs.update(overrides or {})
     col = spec.cols
     header, end = _layout(spec, card)
+    kept_unprorated = _keep_lines_proration_empties(
+        book, actuals, holder, month, ev, spec, header, end) if ev.list_override else set()
 
     def at(r, field):
         index = col.get(field)
@@ -1666,6 +1706,12 @@ def compute(book, actuals, holder, month, overrides=None):
            "role": holder.role, "total": _out(score)}
     if ev.list_override:
         note = proration_note(book, holder, month)
+        kept = [ln["measure"] or ln["initiative"] for ln in lines
+                if ln["row"] - 1 in kept_unprorated]
+        if note and kept:
+            note += (" " + ", ".join(kept) + " keep" + ("s" if len(kept) == 1 else "")
+                     + " the score from before: every month it counts is "
+                       "before the change.")
         if note:
             out["prorated"] = note
     if spec.book != BACK_OFFICE:

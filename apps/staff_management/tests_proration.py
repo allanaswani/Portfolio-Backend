@@ -66,6 +66,20 @@ class ProratedCardTests(TestCase):
         self.assertEqual(training["ytd_target"], 24.0)
         self.assertEqual(nps["ytd_target"], 0.6)
 
+    def test_a_line_left_with_no_months_keeps_its_score_from_before(self):
+        # Ivan Ombiru IO3870, CSO from October 2026: a line whose months are
+        # all before the change would read #DIV/0!; it keeps the desk's.
+        b = prorated_book()
+        plain = bo.compute(b, ACTUALS, self.holder(b), 9)
+        save_entries({"BCK3783": [{"id": "a", "reason": "joined", "from": "2026-09"}]})
+        card = bo.compute(b, ACTUALS, self.holder(b), 9)
+        opening, training, nps = card["lines"]
+        self.assertEqual(opening["ytd_target"], 36.0)
+        self.assertEqual(opening["score"], plain["lines"][0]["score"])
+        self.assertEqual(training["ytd_target"], plain["lines"][1]["ytd_target"])
+        self.assertEqual(card["total"], plain["total"])
+        self.assertIn("keep", card.get("prorated", "") or "keep")
+
     def test_nobody_else_is_touched(self):
         b = prorated_book()
         save_entries({"BCK3783": [{"id": "a", "reason": "joined", "from": "2026-03"}]})
