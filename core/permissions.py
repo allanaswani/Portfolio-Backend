@@ -215,27 +215,97 @@ StaffMgtPermissions = InGroup("staff_mgt")
 DataManagementPermissions = StaffMgtPermissions
 
 
+# ---------------------------------------------------------------------------
+# Administration: who may look, who may change
+# ---------------------------------------------------------------------------
+#
+# Nov 2026. Most Administration APIs checked only that the caller was signed in.
+# The menu hid the screens from everybody else, but the API behind them took a
+# create, an edit, a delete or an upload from any login - an RM could rewrite
+# the targets, the scorecard roles or the staff list by calling it directly.
+#
+# The rule now, in one place:
+#
+# * **change** (any method but GET / HEAD / OPTIONS): a superuser or the
+#   ``staff_mgt`` group - the role the Administration menu is given to.
+#   ``is_staff`` is not enough. It is legacy noise in this estate, held by a
+#   great many accounts for reasons that have nothing to do with administering
+#   anything (see the Access Matrix and scorecard gates, which drop it too).
+# * **look**: those, ``is_staff`` where a screen already let it read, and the
+#   ``admin_viewer`` group - a read-only administrator who sees every screen
+#   and whose every save is refused.
+
+ADMIN_CHANGE_GROUP = "staff_mgt"
+ADMIN_VIEWER_GROUP = "admin_viewer"
+
+ADMIN_ONLY_MESSAGE = "Only Administration can make this change."
+READ_ONLY_MESSAGE = ("Your Administration access is read-only. Ask an administrator "
+                     "to make this change.")
+
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def _active(user) -> bool:
+    return bool(user and user.is_authenticated and user.is_active)
+
+
+def may_change_administration(user) -> bool:
+    """A superuser or a member of ``staff_mgt``. Never ``is_staff`` alone."""
+    return _active(user) and bool(
+        user.is_superuser or user.groups.filter(name=ADMIN_CHANGE_GROUP).exists())
+
+
+def is_admin_viewer(user) -> bool:
+    """A read-only administrator: may open the Administration screens."""
+    return _active(user) and user.groups.filter(name=ADMIN_VIEWER_GROUP).exists()
+
+
+def refusal_for(user) -> str:
+    """Why a change was refused, in words the person can act on."""
+    return READ_ONLY_MESSAGE if is_admin_viewer(user) else ADMIN_ONLY_MESSAGE
+
+
+class AdministrationWrites(BasePermission):
+    """Reads stay as they were (anybody signed in); a change needs Administration.
+
+    For the Administration APIs whose reads are also used by other screens
+    (branch managers, sales staff, products ...), so only the changes are locked.
+    """
+
+    message = ADMIN_ONLY_MESSAGE
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not _active(user):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        if may_change_administration(user):
+            return True
+        self.message = refusal_for(user)
+        return False
+
+
 class IsAdministrationUser(BasePermission):
-    """The gate every Administration screen should share.
+    """The gate for screens that only Administration may open at all.
 
-    ``authentication.views.IsAdministrator`` accepts only ``is_staff`` or a
-    superuser, but the Administration menu is shown to the ``staff_mgt``
-    **group** — so a staff_mgt administrator saw the menu item and was refused
-    by the API behind it, which renders as a page of zeros rather than as an
-    error anyone can act on.
-
-    This accepts all three, matching what ``staff_management.dsr_views._is_admin``
-    and the trade-register admin gate already do.
+    Look: superuser, ``is_staff``, ``staff_mgt`` or ``admin_viewer``.
+    Change: superuser or ``staff_mgt`` (see above).
     """
 
     message = "Administrator privileges are required."
 
     def has_permission(self, request, view):
         user = request.user
-        if not (user and user.is_authenticated and user.is_active):
+        if not _active(user):
             return False
-        return bool(
-            user.is_superuser
-            or user.is_staff
-            or user.groups.filter(name="staff_mgt").exists()
-        )
+        if request.method in SAFE_METHODS:
+            return bool(
+                user.is_superuser
+                or user.is_staff
+                or user.groups.filter(name__in=(ADMIN_CHANGE_GROUP, ADMIN_VIEWER_GROUP)).exists()
+            )
+        if may_change_administration(user):
+            return True
+        self.message = refusal_for(user)
+        return False

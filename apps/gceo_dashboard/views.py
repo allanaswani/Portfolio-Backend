@@ -812,11 +812,11 @@ def _canon_staff_id(value) -> str:
 
 
 def _is_staff_admin(user) -> bool:
-    return bool(
-        user
-        and user.is_authenticated
-        and (user.is_superuser or user.is_staff or user.groups.filter(name="staff_mgt").exists())
-    )
+    """Who may change the employee overlay: Administration (superuser or
+    ``staff_mgt``). ``is_staff`` alone no longer is enough - see
+    core.permissions. Nov 2026."""
+    from core.permissions import may_change_administration
+    return may_change_administration(user)
 
 
 # Accepted CSV/JSON header aliases → overlay field. staff_id is required; the

@@ -8,6 +8,7 @@ supplied rows arrive spelled both ways in one file ("ipp" lowercase beside
 import io
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -59,6 +60,8 @@ class ApiTests(TestCase):
     def setUp(self):
         user = get_user_model().objects.create_user(
             username="bancauser", password="x", email="banca@hfcb.co.ke")
+        # Administration (staff_mgt): a plain login no longer changes these (core.permissions, Nov 2026).
+        user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
         self.client = APIClient()
         self.client.force_authenticate(user=user)
 

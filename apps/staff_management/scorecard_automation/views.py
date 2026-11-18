@@ -1,6 +1,8 @@
 from rest_framework import generics, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
+
+from core.permissions import AdministrationWrites
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
@@ -23,7 +25,7 @@ _TAG = "Scorecard Automation"
 
 @extend_schema(tags=[_TAG])
 class ScKpiListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScKpiSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -33,14 +35,14 @@ class ScKpiListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=[_TAG])
 class ScKpiDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScKpiSerializer
     queryset = ScKpi.objects.all()
 
 
 @extend_schema(tags=[_TAG])
 class ScRoleListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScRoleSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -50,14 +52,14 @@ class ScRoleListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=[_TAG])
 class ScRoleDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScRoleSerializer
     queryset = ScRole.objects.all()
 
 
 @extend_schema(tags=[_TAG])
 class ScRoleKpiMappingListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScRoleKpiMappingSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -67,14 +69,14 @@ class ScRoleKpiMappingListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=[_TAG])
 class ScRoleKpiMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScRoleKpiMappingSerializer
     queryset = ScRoleKpiMapping.objects.all()
 
 
 @extend_schema(tags=[_TAG])
 class ScEmployeePerformanceActualListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScEmployeePerformanceActualSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -84,7 +86,7 @@ class ScEmployeePerformanceActualListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=[_TAG])
 class ScEmployeePerformanceActualDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScEmployeePerformanceActualSerializer
     queryset = ScEmployeePerformanceActual.objects.all()
 
@@ -102,7 +104,7 @@ class ScEmployeeMonthlyPerformanceListView(generics.ListAPIView):
 @extend_schema(tags=[_TAG])
 class RefreshMissingActualsView(APIView):
     """Recompute which (employee, KPI) actuals are missing for a month."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         eom_date = request.data.get("eom_date")
@@ -119,7 +121,7 @@ class RunMonthlyScorecardView(APIView):
     scope of employees: all / a single employee / a department / a current role.
     Fails if there are unresolved missing actuals for the targeted employees.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         payload = RunScorecardSerializer(data=request.data)
@@ -186,6 +188,14 @@ def _may_set_figures(user):
         and (user.is_superuser
              or user.groups.filter(
                  name__in=("staff_mgt", "Management", "hr")).exists()))
+
+
+def _may_view_figures(user):
+    """May this person OPEN an Administration scorecard screen? Those who may
+    set the figures, and the read-only administrator (``admin_viewer``), whose
+    every save is still refused by ``_may_set_figures``."""
+    from core.permissions import is_admin_viewer
+    return _may_set_figures(user) or is_admin_viewer(user)
 
 
 def _month_asked_for(request):
@@ -1451,7 +1461,7 @@ class ScorecardSendManyView(APIView):
         return ready, blocked + list(unknown)
 
     def get(self, request):
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response(
                 {"detail": "Only Administration can send scorecards out."},
                 status=status.HTTP_403_FORBIDDEN)
@@ -1556,7 +1566,7 @@ class ScorecardManualRowsView(APIView):
             rows_needing_a_figure)
         from .models import ScEmployeeKpiTarget, ScEmployeePerformanceActual
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response(
                 {"detail": "Only an administrator can see everybody's "
                            "figures."}, status=403)
@@ -1607,7 +1617,7 @@ class ScorecardManualTemplateView(APIView):
 
         from apps.staff_management.scorecard_manual import build_template
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response(
                 {"detail": "Only an administrator can load everybody's "
                            "figures."}, status=403)
@@ -1780,7 +1790,7 @@ class ScorecardCatalogueView(APIView):
         from apps.staff_management.scorecard_catalogue import (
             cards, cards_without_holders)
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response(
                 {"detail": "Only an administrator can see everybody's cards."},
                 status=403)
@@ -1827,7 +1837,7 @@ class ScorecardRosterView(APIView):
     def get(self, request):
         from apps.staff_management.scorecard_catalogue import roster
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response(
                 {"detail": "Only an administrator can see the roster."},
                 status=403)
@@ -1867,7 +1877,7 @@ class ScorecardForPersonView(APIView):
         code = str(request.query_params.get("sales_code") or "").strip()
         if not code:
             return Response({"detail": "sales_code is required."}, status=400)
-        if not (_may_set_figures(request.user)
+        if not (_may_view_figures(request.user)
                 or is_in_team(request.user, code)):
             return Response(
                 {"detail": "You can open the cards of the people who report to "
@@ -1935,7 +1945,7 @@ class ReportingLinesView(APIView):
 
         from apps.staff_management.models import ScReportingLine
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response({"detail": "Only an administrator can read this."},
                             status=403)
         rows = ScReportingLine.objects.filter(active=True)
@@ -2031,7 +2041,7 @@ class SalesCodeReviewView(APIView):
     def get(self, request):
         from apps.staff_management.models import ScSalesCodeChange
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response({"detail": "Only an administrator can open this."}, status=403)
         return Response({
             "rows": _review_rows(),
@@ -2127,7 +2137,7 @@ class CardReachView(APIView):
         from apps.staff_management.management.commands.scorecard_reach import (
             _where_listed, logins_by_code, workbook_people)
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response({"detail": "Only an administrator can open this."}, status=403)
         people, missing = workbook_people()
         reached, _code_of = logins_by_code()
@@ -2194,7 +2204,7 @@ class FeedProofView(APIView):
     def get(self, request):
         from apps.staff_management import feed_proof
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response({"detail": "Only an administrator can open this."}, status=403)
         return Response({"status": feed_proof.status(), "summary": feed_proof.summary(),
                          "months": {b: feed_proof.closed_months(b) for b in feed_proof.BOOKS}})
@@ -2239,7 +2249,7 @@ class WeightedTatView(APIView):
     def get(self, request):
         from apps.staff_management.models import BoWorkbookFile
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response({"detail": "Only an administrator can open this."}, status=403)
         rows = (BoWorkbookFile.objects.filter(kind__startswith="weighted_tat:")
                 .order_by("-kind"))
@@ -2285,7 +2295,7 @@ class CxReturnsView(APIView):
         from apps.staff_management import cx_returns
         from apps.staff_management.models import BoWorkbookFile
 
-        if not _may_set_figures(request.user):
+        if not _may_view_figures(request.user):
             return Response({"detail": "Only an administrator can open this."}, status=403)
         rows = (BoWorkbookFile.objects.filter(kind__startswith="cx_return:")
                 .order_by("kind"))

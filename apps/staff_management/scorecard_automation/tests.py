@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -75,6 +76,8 @@ class ScorecardAutomationApiTests(TestCase):
     def setUp(self):
         _seed_engine()
         self.user = get_user_model().objects.create_user(username="tester", password="pw12345")
+        # Administration (staff_mgt): a plain login no longer changes these (core.permissions, Nov 2026).
+        self.user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 

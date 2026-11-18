@@ -21,8 +21,13 @@ from .models import (
 
 
 def admin(username="alert_admin"):
-    return get_user_model().objects.create_user(
+    # Administration is the staff_mgt group; is_staff alone no longer changes
+    # anything (core.permissions, Nov 2026).
+    from django.contrib.auth.models import Group
+    user = get_user_model().objects.create_user(
         username=username, password="x", is_staff=True, email=f"{username}@hf.test")
+    user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
+    return user
 
 
 class TransitionTests(APITestCase):

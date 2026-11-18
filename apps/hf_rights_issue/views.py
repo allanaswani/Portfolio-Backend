@@ -1,5 +1,7 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
+
+from core.permissions import AdministrationWrites
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
@@ -62,7 +64,7 @@ class SecurityDetailImageRegistrasCsvUpdateView(APIView):
     the old RightTakenImageRegistrasDataSecurityDetailCSVUpdateView. security_detail
     is managed=False, so writes go through raw SQL (per-row savepoint). Returns a
     results ZIP (successful/failed), which the frontend downloads."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     UPDATABLE = ["names", "mobile", "rights_taken", "due", "paid", "balance", "email"]
 
     def post(self, request, *args, **kwargs):

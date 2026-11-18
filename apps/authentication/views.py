@@ -216,6 +216,7 @@ from rest_framework.generics import (  # noqa: E402
     RetrieveUpdateDestroyAPIView,
 )
 from rest_framework.permissions import BasePermission  # noqa: E402
+from core.permissions import IsAdministrationUser, is_admin_viewer  # noqa: E402
 
 from .serializers import (  # noqa: E402
     AdminUserSerializer,
@@ -224,14 +225,14 @@ from .serializers import (  # noqa: E402
 )
 
 
-class IsAdministrator(BasePermission):
-    """Staff or superuser may manage users."""
+class IsAdministrator(IsAdministrationUser):
+    """Users & Roles and Usage Analytics.
 
-    message = "Administrator privileges are required."
-
-    def has_permission(self, request, view):
-        u = request.user
-        return bool(u and u.is_authenticated and u.is_active and (u.is_staff or u.is_superuser))
+    It used to accept ``is_staff`` for everything, and ``is_staff`` is widely
+    held: any such account could create users and put itself in any group
+    (``ceo``, ``staff_mgt`` ...). Looking is unchanged (plus the read-only
+    ``admin_viewer``); a change needs a superuser or ``staff_mgt``. Nov 2026.
+    """
 
 
 def _email_temp_password(email, username, password, *, is_reset=False):
@@ -391,8 +392,14 @@ class AccessMatrixView(APIView):
         from django.http import HttpResponse
 
         user = request.user
-        if not (user.is_superuser or user.groups.filter(name="staff_mgt").exists()):
+        administers = user.is_superuser or user.groups.filter(name="staff_mgt").exists()
+        if not (administers or is_admin_viewer(user)):
             return Response({"detail": "Only a superuser or Administration can open this."},
+                            status=status.HTTP_403_FORBIDDEN)
+        # A read-only administrator sees the matrix on screen; the Excel file of
+        # the whole staff list leaves the system, so it stays with Administration.
+        if request.query_params.get("download") and not administers:
+            return Response({"detail": "Only a superuser or Administration can download this."},
                             status=status.HTTP_403_FORBIDDEN)
         rows = am.user_rows()
         if request.query_params.get("download"):

@@ -20,6 +20,8 @@ from rest_framework import generics, status
 from rest_framework import serializers as drf_serializers
 from rest_framework.filters import SearchFilter
 from rest_framework.permissions import IsAuthenticated
+
+from core.permissions import AdministrationWrites
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -61,7 +63,7 @@ DjangoFilterBackend = django_filters.rest_framework.DjangoFilterBackend
 
 @extend_schema(tags=TAG)
 class BranchEmployeeDmcListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchEmployeeDmcDataSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -71,7 +73,7 @@ class BranchEmployeeDmcListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class BranchEmployeeDmcDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchEmployeeDmcDataSerializer
     queryset = BranchEmployeeDmcData.objects.all()
 
@@ -131,7 +133,7 @@ class BranchEmployeeDmcCsvUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class BranchFinalEmployeeDmcListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchFinalEmployeeDmcDataSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -141,7 +143,7 @@ class BranchFinalEmployeeDmcListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class BranchFinalEmployeeDmcDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchFinalEmployeeDmcDataSerializer
     queryset = BranchFinalEmployeeDmcData.objects.all()
 
@@ -168,7 +170,7 @@ class BranchFinalEmployeeDmcCsvUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class DrawdownListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = DrawdownSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -178,7 +180,7 @@ class DrawdownListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class DrawdownDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = DrawdownSerializer
     queryset = Drawdown.objects.all()
 
@@ -201,7 +203,7 @@ class DrawdownDailyListView(generics.ListCreateAPIView):
     # the right table.
     # Newest-first: without ordering the list is oldest-first, so freshly-added
     # rows (highest id) land on the last page and look "missing" after a save.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = DrawdownDailySerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -214,7 +216,7 @@ class DrawdownDailyDetailView(generics.RetrieveUpdateDestroyAPIView):
     # Retrieve + update + delete, like the old backend's DrawdownDailyView
     # (GET/PUT/DELETE). Editing (e.g. correcting a sales code) sent PUT here and
     # got 405 while this was a read-only RetrieveAPIView.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = DrawdownDailySerializer
     queryset = DrawdownDaily.objects.all()
 
@@ -244,7 +246,7 @@ class DrawdownDailyDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=TAG)
 class InsurancePolicyListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = InsurancePolicySerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -254,7 +256,7 @@ class InsurancePolicyListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class InsurancePolicyDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = InsurancePolicySerializer
     queryset = InsurancePolicy.objects.all()
 
@@ -294,7 +296,7 @@ class InsurancePolicyCsvUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class PremiumTypeMappingListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = PremiumTypeMappingSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -310,7 +312,7 @@ class PremiumTypeMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
     product containing a slash ("MOTOR/PRIVATE") still resolves; ``str:`` would
     404 on it. Who changed what is in the simple_history table."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = PremiumTypeMappingSerializer
     queryset = PremiumTypeMapping.objects.all()
 
@@ -368,7 +370,7 @@ class PremiumTypeMappingCsvUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class TradeFinanceListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = TradeFinanceDataSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -378,7 +380,7 @@ class TradeFinanceListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class TradeFinanceDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = TradeFinanceDataSerializer
     queryset = TradeFinanceData.objects.all()
 
@@ -424,7 +426,7 @@ class TradeFinanceCsvUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class CustMonthlyFtpListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = CustMonthlyFtpSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -434,7 +436,7 @@ class CustMonthlyFtpListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class CustMonthlyFtpDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = CustMonthlyFtpSerializer
     queryset = CustMonthlyFtp.objects.all()
 
@@ -448,7 +450,7 @@ class CustMonthlyFtpCsvUploadView(BaseCsvUploadView):
 
 @extend_schema(tags=TAG)
 class DailySalesAccountsWithCtoListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = DailySalesAccountsWithCtoSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -458,7 +460,7 @@ class DailySalesAccountsWithCtoListView(generics.ListAPIView):
 
 @extend_schema(tags=TAG)
 class DailyDormancyConvertedAccountListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = DailyDormancyConvertedAccountSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -469,7 +471,7 @@ class DailyDormancyConvertedAccountListView(generics.ListAPIView):
 @extend_schema(tags=TAG)
 class MerchantBankTillManualListView(generics.ListCreateAPIView):
     # Old endpoint was list+create (MerchantBankTillListCreateView).
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = MerchantBankTillManualDataSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -480,14 +482,14 @@ class MerchantBankTillManualListView(generics.ListCreateAPIView):
 @extend_schema(tags=TAG)
 class MerchantBankTillManualDetailView(generics.RetrieveUpdateDestroyAPIView):
     # Retrieve + update + delete, like the old backend's MerchantBankTillDetailView.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = MerchantBankTillManualDataSerializer
     queryset = MerchantBankTillManualData.objects.all()
 
 
 @extend_schema(tags=TAG)
 class IapplyLoanApprovalListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = IapplyLoanApprovalSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -498,7 +500,7 @@ class IapplyLoanApprovalListView(generics.ListAPIView):
 @extend_schema(tags=TAG)
 class ProductListView(generics.ListCreateAPIView):
     # Old endpoint was list+create (product mapping admin screen).
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ProductSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -509,7 +511,7 @@ class ProductListView(generics.ListCreateAPIView):
 @extend_schema(tags=TAG)
 class ProductDetailView(generics.RetrieveUpdateAPIView):
     # Retrieve + update — the admin "Update" button PUTs here (was GET-only, 405).
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ProductSerializer
     queryset = Product.objects.all()
 
@@ -526,7 +528,7 @@ class ProductMappingCsvUploadView(APIView):
     row doesn't abort the batch, and a results ZIP (successful/failed) is returned.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     REQUIRED = ["code", "product_description", "product_map", "focus", "sme_pb"]
 
     def post(self, request, *args, **kwargs):
@@ -601,7 +603,7 @@ class ProductMappingCsvUploadView(APIView):
 
 @extend_schema(tags=TAG)
 class StaffEmployeeListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = StaffEmployeeDataSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -611,7 +613,7 @@ class StaffEmployeeListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class StaffEmployeeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = StaffEmployeeDataSerializer
     queryset = StaffEmployeeData.objects.all()
 
@@ -623,7 +625,7 @@ class StaffEmployeeCsvUploadView(BaseCsvUploadView):
 
 @extend_schema(tags=TAG)
 class LeaveRecordListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = LeaveRecordSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -633,7 +635,7 @@ class LeaveRecordListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class LeaveRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = LeaveRecordSerializer
     queryset = LeaveRecord.objects.all()
 
@@ -645,7 +647,7 @@ class LeaveRecordCsvUploadView(BaseCsvUploadView):
 
 @extend_schema(tags=TAG)
 class EmployeeRoleHistoryListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = EmployeeRoleHistorySerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -655,7 +657,7 @@ class EmployeeRoleHistoryListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class EmployeeRoleHistoryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = EmployeeRoleHistorySerializer
     queryset = EmployeeRoleHistory.objects.all()
 
@@ -673,7 +675,7 @@ class RmKPIBaseSummaryListCreateView(generics.ListCreateAPIView):
     POSTs from the admin screen), matching RmKPIBaseSummaryListCreateView in the
     old backend. The computed PortfolioRmDepositTrends aggregate the new backend
     served here had a different shape."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = RmKPIBaseSummarySerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -683,7 +685,7 @@ class RmKPIBaseSummaryListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class RmKPIBaseSummaryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = RmKPIBaseSummarySerializer
     queryset = RmKPIBaseSummary.objects.all()
 
@@ -710,7 +712,7 @@ class RmKPIBaseSummaryRefreshView(APIView):
     Recompute ``rm_kpi_base_summary`` from ``customer_allocation_base`` — the legacy
     pivot that derives six RM KPIs per rm_code and upserts them as long-form rows.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         result = rm_kpi_base_summary_service.bulk_insert_from_kpi_query()
@@ -729,7 +731,7 @@ class RmKPIBaseSummaryRefreshView(APIView):
 
 @extend_schema(tags=TAG)
 class MissingEmployeeActualListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = MissingEmployeeActualSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -741,7 +743,7 @@ class MissingEmployeeActualListView(generics.ListAPIView):
 
 @extend_schema(tags=TAG)
 class EmployeeSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         from django.db.models import Count
@@ -767,7 +769,7 @@ class EmployeeSummaryView(APIView):
 
 @extend_schema(tags=TAG)
 class TelesalesStaffListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = TelesalesStaffSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -777,7 +779,7 @@ class TelesalesStaffListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class TelesalesStaffDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = TelesalesStaffSerializer
     queryset = TelesalesStaff.objects.all()
 
@@ -789,7 +791,7 @@ class TelesalesStaffCsvUploadView(BaseCsvUploadView):
 
 @extend_schema(tags=TAG)
 class TelesalesDormantTillsListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = TelesalesDormantTillsAllocationSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -799,7 +801,7 @@ class TelesalesDormantTillsListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class TelesalesDormantTillsDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = TelesalesDormantTillsAllocationSerializer
     queryset = TelesalesDormantTillsAllocation.objects.all()
 
@@ -814,7 +816,7 @@ class TelesalesDormantTillsCsvUploadView(BaseCsvUploadView):
 @extend_schema(tags=TAG)
 class RetailAllocatedPortfolioListView(generics.ListCreateAPIView):
     # Old endpoint was list+create (allocation admin screen posts new rows).
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     pagination_class = StandardPagination
     # Server-side search so the (large) allocation base can be paged instead of
     # pulled whole and filtered in the browser. `?search=` matches the text columns;
@@ -854,7 +856,7 @@ class RetailAllocatedPortfolioDetailView(generics.RetrieveUpdateAPIView):
     Reallocation is the operation this screen is for.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get_serializer_class(self):
         from apps.portfolio.models import RetailAllocatedPortfolio
@@ -1064,7 +1066,7 @@ class RetailAllocatedPortfolioUploadCsvView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class BranchDepartmentCostListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchDepartmentCostSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend, SearchFilter]
@@ -1086,7 +1088,7 @@ class BranchDepartmentCostListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class BranchDepartmentCostDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchDepartmentCostSerializer
     queryset = BranchDepartmentCost.objects.all()
 
@@ -1141,7 +1143,7 @@ class BranchDepartmentCostCsvUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=TAG)
 class OperatingExpenseMappingListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = OperatingExpenseMappingSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend, SearchFilter]
@@ -1162,7 +1164,7 @@ class OperatingExpenseMappingListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class OperatingExpenseMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = OperatingExpenseMappingSerializer
     queryset = OperatingExpenseMapping.objects.all()
 

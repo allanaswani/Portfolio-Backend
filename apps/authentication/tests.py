@@ -108,6 +108,9 @@ class AdminUserManagementAPITests(TestCase):
         self.admin = User.objects.create_user(
             "boss", email="boss@hf.co.ke", password="x", is_staff=True
         )
+        # Administration is the staff_mgt group; is_staff alone no longer
+        # changes anything (core.permissions, Nov 2026).
+        self.admin.groups.add(Group.objects.get(name="staff_mgt"))
         self.plain = User.objects.create_user("nobody", password="x")
         self.client = APIClient()
 

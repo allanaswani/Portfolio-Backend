@@ -1,6 +1,6 @@
 """Tests for the newly ported staff_management scorecard-config endpoints."""
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -15,6 +15,8 @@ from .models import (
 class ScorecardConfigEndpointTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("sm_user", password="x")
+        # Administration (staff_mgt): a plain login no longer changes these (core.permissions, Nov 2026).
+        self.user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
@@ -86,6 +88,8 @@ class LegacyStaffManagementEndpointTests(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user("legacy_user", password="x")
+        # Administration (staff_mgt): a plain login no longer changes these (core.permissions, Nov 2026).
+        self.user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
@@ -155,14 +159,21 @@ class LegacyStaffManagementEndpointTests(TestCase):
     def test_only_administration_may_delete_a_drawdown(self):
         """A deleted drawdown cannot be brought back, so DELETE is refused to
         anyone outside Administration - before any row is looked up. Reading
-        and editing keep the plain sign-in they always had."""
+        is open to anyone signed in; editing needs Administration (Nov 2026)."""
         from rest_framework.permissions import IsAuthenticated
 
         from core.permissions import IsAdministrationUser
 
         from .legacy_views import DrawdownDailyDetailView
 
-        r = self.client.delete("/staff_management/drawdown-daily/15343/")
+        from core.permissions import AdministrationWrites
+
+        plain = APIClient()
+        plain.force_authenticate(User.objects.create_user("plain_drawdown", password="x"))
+        r = plain.delete("/staff_management/drawdown-daily/15343/")
+        self.assertEqual(r.status_code, 403, r.content)
+        # Editing is Administration's too now (Nov 2026): the screen is in its menu.
+        r = plain.put("/staff_management/drawdown-daily/15343/", {}, format="json")
         self.assertEqual(r.status_code, 403, r.content)
 
         def gates(method):
@@ -171,8 +182,8 @@ class LegacyStaffManagementEndpointTests(TestCase):
             return [type(p) for p in view.get_permissions()]
 
         self.assertEqual(gates("DELETE"), [IsAuthenticated, IsAdministrationUser])
-        self.assertEqual(gates("GET"), [IsAuthenticated])
-        self.assertEqual(gates("PUT"), [IsAuthenticated])
+        self.assertEqual(gates("GET"), [IsAuthenticated, AdministrationWrites])
+        self.assertEqual(gates("PUT"), [IsAuthenticated, AdministrationWrites])
 
     def test_sales_people_csv_upload(self):
         csv_content = b"sales_code,sales_person,branch,role,team_leader\nT01,John,Nairobi,Telesales,Lead A\n"
@@ -363,6 +374,8 @@ def _make_cab(**over):
 class RmKpiBaseSummaryTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="rmkpi", password="pw12345")
+        # Administration (staff_mgt): a plain login no longer changes these (core.permissions, Nov 2026).
+        self.user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 

@@ -15,7 +15,7 @@ load would split the customer between two RMs, which is worse than the 405 -
 a 405 fails loudly, a split book does not.
 """
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.db import connection
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -59,6 +59,8 @@ class ReallocatingACustomerTests(TestCase):
                  'other@hfcb.co.ke',300,'SME')""")
 
         self.user = User.objects.create_user("stacy", password="x")
+        # Administration (staff_mgt): a plain login no longer changes these (core.permissions, Nov 2026).
+        self.user.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 

@@ -132,10 +132,15 @@ NEW_ROLES = (
     # apps/analytics/exclusions.py), and may carry another person's sales code
     # to check the data as they see it. It opens no module.
     "usage_report_excluded",
+    # Read-only administrator (Nov 2026): opens every Administration screen,
+    # and every save is refused (core.permissions). For testers and anyone who
+    # must see how Administration works without being able to change it.
+    "admin_viewer",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
     "staff_mgt": "Staff management / administration module.",
+    "admin_viewer": "Administration, read-only: sees every Administration screen, cannot change anything.",
     "exco_initiatives": "EXCO initiatives — regular user.",
     "exco_initiatives_admin": "EXCO initiatives — administrator.",
     "hfdi_officer": "HFDI module — officer (read-only dashboard).",
@@ -226,6 +231,8 @@ ROLE_TO_TIER = {
     "audit": ROLE_MANAGER,
     # Officer is the default for any account, so this raises nobody's tier.
     "usage_report_excluded": ROLE_OFFICER,
+    # Officer, the default: looking at Administration widens nobody's data scope.
+    "admin_viewer": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).

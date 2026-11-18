@@ -21,6 +21,9 @@ from . import scorecard_workbook as workbook
 _TAG = "Scorecard Automation"
 
 
+from core.permissions import is_admin_viewer  # noqa: E402
+
+
 def may_load(user):
     """The same gate as the Figures-to-load screen, and for the same reason:
     this sets what people are measured on. ``is_staff`` is legacy noise."""
@@ -779,7 +782,7 @@ class ProrationView(APIView):
     def get(self, request):
         from apps.staff_management import workbook_cards as wc
 
-        if not may_load(request.user):
+        if not (may_load(request.user) or is_admin_viewer(request.user)):
             return Response({"detail": "Only an administrator can see "
                                        "proration."}, status=403)
         entries = wc.saved(wc.PRORATION) or {}

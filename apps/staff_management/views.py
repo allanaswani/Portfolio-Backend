@@ -7,6 +7,8 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
+
+from core.permissions import AdministrationWrites
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -247,7 +249,7 @@ def _compute_scorecard(year, month, period_date):
 
 @extend_schema(tags=["Staff Management — Branch Managers"])
 class BranchManagersListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchEmployeeDataSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -259,7 +261,7 @@ class BranchManagersListView(generics.ListAPIView):
 
 @extend_schema(tags=["Staff Management — Sales Staff"])
 class SalesStaffListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchEmployeeDataSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -274,7 +276,7 @@ class SalesStaffListView(generics.ListAPIView):
 
 @extend_schema(tags=["Staff Management — All Staff"])
 class AllStaffListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchEmployeeDataSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -284,7 +286,7 @@ class AllStaffListView(generics.ListAPIView):
 
 @extend_schema(tags=["Staff Management — All Staff"])
 class StaffDetailView(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = BranchEmployeeDataSerializer
     queryset = BranchEmployeeData.objects.all()
 
@@ -293,21 +295,21 @@ class StaffDetailView(generics.RetrieveAPIView):
 
 @extend_schema(tags=["Scorecard — Roles"])
 class ScorecardRoleListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScorecardRoleSerializer
     queryset = ScorecardRole.objects.all()
 
 
 @extend_schema(tags=["Scorecard — KPIs"])
 class ScorecardKPIListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScorecardKPISerializer
     queryset = ScorecardKPI.objects.all()
 
 
 @extend_schema(tags=["Scorecard — Role-KPI Mappings"])
 class RoleKPIMappingListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = RoleKPIMappingSerializer
     queryset = RoleKPIMapping.objects.select_related("role", "kpi").all()
 
@@ -316,21 +318,21 @@ class RoleKPIMappingListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Scorecard — Roles"])
 class ScorecardRoleDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScorecardRoleSerializer
     queryset = ScorecardRole.objects.all()
 
 
 @extend_schema(tags=["Scorecard — KPIs"])
 class ScorecardKPIDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = ScorecardKPISerializer
     queryset = ScorecardKPI.objects.all()
 
 
 @extend_schema(tags=["Scorecard — Role-KPI Mappings"])
 class RoleKPIMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = RoleKPIMappingSerializer
     queryset = RoleKPIMapping.objects.select_related("role", "kpi").all()
 
@@ -353,7 +355,7 @@ class BaseCsvUploadView(APIView):
     Response contract (unchanged): ``{created, errors[:50], error_count}``.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = None  # set by subclass
     chunk_size = 1000
 
@@ -477,7 +479,7 @@ class RoleKPIMappingCsvUploadView(BaseCsvUploadView):
 
 @extend_schema(tags=["Scorecard — Actuals"])
 class PerformanceActualListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = PerformanceActualSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -487,7 +489,7 @@ class PerformanceActualListView(generics.ListAPIView):
 
 @extend_schema(tags=["Scorecard — Actuals"])
 class MissingActualsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         """
@@ -537,7 +539,7 @@ class MissingActualsView(APIView):
 
 @extend_schema(tags=["Scorecard — Actuals"])
 class MissingActualsRoleSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         latest = PerformanceActual.objects.order_by("-month").values_list("month", flat=True).first()
@@ -582,7 +584,7 @@ class MissingActualsRoleSummaryView(APIView):
 
 @extend_schema(tags=["Scorecard — Monthly Performance"])
 class EmployeeMonthlyPerfListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
     serializer_class = EmployeeMonthlyPerformanceSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -592,7 +594,7 @@ class EmployeeMonthlyPerfListView(generics.ListAPIView):
 
 @extend_schema(tags=["Scorecard — Automation"])
 class RunScorecardAllView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         try:
@@ -613,7 +615,7 @@ class RunScorecardAllView(APIView):
 
 @extend_schema(tags=["Scorecard — Automation"])
 class RunScorecardByRoleView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         try:
@@ -647,7 +649,7 @@ class RunScorecardByRoleView(APIView):
 
 @extend_schema(tags=["Scorecard — Automation"])
 class RunScorecardByDeptView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         try:
@@ -683,7 +685,7 @@ class RunScorecardByDeptView(APIView):
 
 @extend_schema(tags=["Scorecard — Summaries"])
 class PerfSummaryEmployeesView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         qs = EmployeeMonthlyPerformance.objects.order_by("-month", "-total_score")
@@ -698,7 +700,7 @@ class PerfSummaryEmployeesView(APIView):
 
 @extend_schema(tags=["Scorecard — Summaries"])
 class PerfSummaryDeptView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         qs = (
@@ -715,7 +717,7 @@ class PerfSummaryDeptView(APIView):
 
 @extend_schema(tags=["Scorecard — Summaries"])
 class PerfSummaryRoleView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         qs = (
@@ -732,7 +734,7 @@ class PerfSummaryRoleView(APIView):
 
 @extend_schema(tags=["Scorecard — Summaries"])
 class PerfSummaryOrgUnitView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         qs = (
@@ -753,7 +755,7 @@ class RMScorecardSelfDetailView(APIView):
     'Scorecard Performance' page (monthly-performance-detail/self/). Reads the
     scorecard_automation per-KPI output (sc_employee_monthly_performance), the
     same structure the old backend served via EmployeeMonthlyPerformanceService."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         from apps.portfolio.models import Profile
@@ -775,7 +777,7 @@ class RMScorecardSummaryView(APIView):
     """Monthly weighted-score series for the logged-in RM — powers the gauge and
     trend on the individual scorecard page (monthly-performance-summary/rm/).
     Rolls the per-KPI ytd_weighted_score up to one total per month."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         from apps.portfolio.models import Profile
@@ -795,7 +797,7 @@ class RMScorecardSummaryView(APIView):
 
 @extend_schema(tags=["Scorecard — Summaries"])
 class RMKPIBaseSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def get(self, request):
         from apps.portfolio.models import PortfolioRmDepositTrends, RetailAllocatedPortfolio
@@ -831,7 +833,7 @@ class RMKPIBaseSummaryView(APIView):
 
 @extend_schema(tags=["Scorecard — Setup"])
 class SeedDefaultKPIConfigView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AdministrationWrites]
 
     def post(self, request):
         try:
