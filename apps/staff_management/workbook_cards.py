@@ -1468,6 +1468,38 @@ TARGET_CHANGES = (
 )
 
 
+#: Lines awarded their full score while nothing measures them, as the CX team
+#: asked on 19 Nov 2026 for the Branch Service Ambassador card - the only card
+#: carrying SLA and CSAT (both template sheets blank all year):
+#:   * SLA is tied to the branch automation process, not yet deployed: full
+#:     score until it is (``until`` None - remove the entry when it goes live).
+#:   * CSAT: CX's survey starts November 2026, so October and before get the
+#:     full score; from November the line waits for CX's score (``then``
+#:     "wait") instead of carrying the desk's blank September as a 0.
+#: Full score = 100% of the line's weight (the actual set to the YTD target),
+#: not the 120% cap. Open months only: a month the desk closed keeps its card.
+AWARDED_FULL = (
+    {"sheet": "BSA_SCORECARD", "feed": "SLA", "until": None,
+     "why": "SLA is tied to the branch automation process, which is not yet deployed"},
+    {"sheet": "BSA_SCORECARD", "feed": "CSAT", "until": (2026, 10), "then": "wait",
+     "why": "the CX satisfaction survey had not started"},
+)
+
+
+def awarded_full(sheet, feed, year, month):
+    """The AWARDED_FULL entry for this card line and month → (entry, state):
+    state "full" (score it in full), "wait" (no figure yet: not counted), or
+    (None, None)."""
+    for entry in AWARDED_FULL:
+        if entry["sheet"] != sheet or _key(entry["feed"]) != _key(feed):
+            continue
+        if entry["until"] is None or (year, month) <= entry["until"]:
+            return entry, "full"
+        if entry.get("then") == "wait":
+            return entry, "wait"
+    return None, None
+
+
 #: Proration an administrator sets for one person (asked 11 Nov 2026; Joseph
 #: Kinuthia JKK3227, acting BOM May-Aug 2026, scored as a CSO after it).
 #:
@@ -2579,8 +2611,15 @@ def live_card(sales_code, engine_card, as_at):
     carried = {}
     template_live = copy.deepcopy(actuals)
     by_sheet = {}
+    # Lines the business scores in full for now, or that wait for a figure the
+    # desk never had (AWARDED_FULL): row -> (entry, "full" | "wait").
+    awarded = {}
     for wl in base["lines"]:
         if wl["typed"] or not wl["feed"]:
+            continue
+        entry, state = awarded_full(holder.sheet, wl["feed"], as_at.year, month)
+        if entry is not None:
+            awarded[wl["row"]] = (entry, state)
             continue
         k = _key(wl["feed"])
         if k not in by_sheet:
@@ -2612,6 +2651,10 @@ def live_card(sales_code, engine_card, as_at):
         if carried.get(wl["row"]) == month:
             # The desk has this person's figure for this very month - the
             # figure that is signed. Nothing live replaces it.
+            continue
+        if wl["row"] in awarded:
+            if awarded[wl["row"]][1] == "full" and _num(wl.get("ytd_target")):
+                overrides[(wl["row"] - 1, actual_col)] = float(wl["ytd_target"])
             continue
         if _key(wl["feed"]) == "weightedtat":
             # Weighted TAT is the desk's monthly dashboard (see weighted_tat):
@@ -3035,6 +3078,14 @@ def live_card(sales_code, engine_card, as_at):
         waiting += 1
         engine = found.get(wl["row"]) or {}
         wl["actual"] = wl["score"] = wl["weighted"] = None
+        if wl["row"] in awarded:
+            entry = awarded[wl["row"]][0]
+            wl["waiting"] = (f"Waiting for the CX team's {entry['feed']} score; "
+                             f"up to {datetime.date(*entry['until'], 1):%B %Y} "
+                             f"it was scored in full because {entry['why']}."
+                             if entry.get("until") else
+                             f"Waiting for the CX team's {entry['feed']} score.")
+            continue
         wl["waiting"] = (engine.get("pending") or
                          "The warehouse has no figure for this line yet.")
     card["total"] = total
@@ -3095,6 +3146,9 @@ def live_card(sales_code, engine_card, as_at):
                     + ("(PBT after provisions, before head-office cost, plus "
                        "bancassurance commission)" if kind == "finance_pbt"
                        else "(loan loss: P&L charge less interest adjustment)"))
+            elif awarded.get(wl["row"], (None, None))[1] == "full":
+                ln["as_at"] = (f"full score awarded: "
+                               f"{awarded[wl['row']][0]['why']} (CX team, 19 Nov 2026)")
             elif wl["row"] in dashboard:
                 ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
                                f"{dashboard[wl['row']]:%B %Y}")

@@ -319,6 +319,45 @@ class StoredCardTests(TestCase):
         card = self._open_month_with_a_proven_feed(roles=["Teller"])
         self.assertEqual(card["perspectives"][0]["lines"][0]["ytd_actual"], 30.0)
 
+    def test_a_line_awarded_in_full_and_one_that_then_waits_for_cx(self):
+        """19 Nov 2026, the CX team on the Branch Service Ambassador card: SLA
+        in full until branch automation is deployed; CSAT in full to October,
+        then CX's own score - never the desk's blank September as a 0."""
+        from unittest import mock
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        rules = (
+            {"sheet": CARD, "feed": "Training_hours", "until": None, "why": "not measured yet"},
+            {"sheet": CARD, "feed": "NPS", "until": (2026, 10), "then": "wait",
+             "why": "the survey had not started"},
+        )
+        with mock.patch.object(bo, "AWARDED_FULL", rules):
+            october = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+            november = bo.live_card("BCK3783", None, datetime.date(2026, 11, 30))
+        _, training, nps = [ln for p in october["perspectives"] for ln in p["lines"]]
+        # 100% of the weight, not the 120% cap: the actual is the YTD target.
+        self.assertEqual((training["ytd_target"], training["ytd_actual"]), (40.0, 40.0))
+        self.assertAlmostEqual(training["score"], 1.0)
+        self.assertEqual((nps["ytd_actual"], nps["score"]), (0.6, 1.0))
+        self.assertEqual(nps["as_at"],
+                         "full score awarded: the survey had not started (CX team, 19 Nov 2026)")
+        self.assertEqual(october["pending_lines"], 0)
+
+        _, training, nps = [ln for p in november["perspectives"] for ln in p["lines"]]
+        self.assertAlmostEqual(training["score"], 1.0)
+        self.assertIsNone(nps["ytd_actual"])
+        self.assertIn("Waiting for the CX team's NPS score; up to October 2026",
+                      nps["pending"])
+        self.assertEqual(november["pending_lines"], 1)
+
+    def test_awarded_full_names_only_the_bsa_lines_cx_asked_for(self):
+        self.assertEqual(bo.awarded_full("BSA_SCORECARD", "SLA", 2027, 3)[1], "full")
+        self.assertEqual(bo.awarded_full("BSA_SCORECARD", "CSAT", 2026, 10)[1], "full")
+        self.assertEqual(bo.awarded_full("BSA_SCORECARD", "CSAT", 2026, 11)[1], "wait")
+        self.assertEqual(bo.awarded_full("BSA_SCORECARD", "NPS", 2026, 10), (None, None))
+        self.assertEqual(bo.awarded_full("TELLER_SCORECARD", "SLA", 2026, 10), (None, None))
+
     def test_a_month_before_any_card_says_so(self):
         from .live_scorecard import build_card
 
