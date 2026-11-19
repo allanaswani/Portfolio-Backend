@@ -35,6 +35,12 @@ def workbook(months=("Jan 2026 MTD", "Feb 2026 MTD", "March 2026 MTD")):
                   datetime.datetime(2026, 2, 1), datetime.datetime(2026, 3, 1), "Totals"])
     banca.append([20, "RIVERROAD", 0, 0, 2850, 2850])
     banca.append([200, "REHANI", 138932, 159827, 0, 298759])
+    prov = wb.create_sheet("Provisions")
+    prov.append(["CC", "CC1"])
+    prov.append([None, None, "YTD P&L Charge", "YTD Int. Adj", "YTD Loan Loss",
+                 "March 2026 Loan Loss", "February 2026 Loan Loss", "January 2026 Loan Loss"])
+    prov.append([20, "RIVERROAD", 0, 0, 600.0, 100.0, 200.0, 300.0])
+    prov.append([None, "Total", 0, 0, 600.0, 100.0, 200.0, 300.0])
     out = BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -52,6 +58,16 @@ class ReadTests(TestCase):
         rehani = found["ytd"][200]
         self.assertEqual(rehani[1], (32058 + 26678) * 1000 + 138932 + 159827)
         self.assertNotIn(None, found["ytd"])             # the Total row is not a branch
+
+    def test_the_loan_loss_runs_from_january_and_the_branch_feed_negates_it(self):
+        found = ba.read(BytesIO(workbook()))
+        self.assertEqual(found["loss_ytd"][20][:3], [300.0, 500.0, 600.0])
+        ba.save(found, "Branch Accounts.xlsx", "root")
+        feed = {"kind": "finance_loss", "sheet": "PL_Charge"}
+        totals = bb._totals(feed, 2026, 2, 60_000)
+        # The template holds a loss as a negative (River Road: -20,485,640.48).
+        self.assertEqual(bb._branch_total(totals, "RiverRoad", feed), -500.0)
+        self.assertEqual(bb.DEFINITIONS["PL_Charge"][0][1], "finance_loss")
 
     def test_a_workbook_without_the_sheet_is_refused(self):
         import openpyxl
@@ -109,3 +125,27 @@ class ScreenTests(TestCase):
         self.assertEqual(viewer.get(URL).status_code, 200)
         self.assertEqual(viewer.post(URL, self.upload(), format="multipart").status_code, 403)
         self.assertIsNone(ba.stored(2026))
+
+
+class OtherBancaTests(TestCase):
+    """The branch card's "Other Bancassurance Premiums" reads the template's
+    Banca_Assurance_Income table #4 = #5 (all premiums) - #3 (VIC): River Road
+    September 8,672,212 - 6,001,110 = 2,671,102 (19 Nov 2026)."""
+
+    def test_the_residual_is_everything_but_the_two_vic_tables(self):
+        from unittest import mock
+
+        policies = [("RIVER ROAD", "S1", "vic_life", 100.0),
+                    ("RIVER ROAD", "S1", "vic_non_life", 40.0),
+                    ("RIVER ROAD", "S1", "non_vic", 25.0),
+                    ("RIVER ROAD", "S2", None, 10.0)]     # a product with no mapping row
+        with mock.patch.object(bb, "_banca_policies", return_value=policies), \
+                mock.patch.dict(bb.BANCA_BRANCH, {"RIVER ROAD": "RIVERROAD"}):
+            self.assertEqual(bb._banca(2026, 9, "residual", 60_000), {"riverroad": 35.0})
+            self.assertEqual(bb._banca(2026, 9, "non_vic", 60_000), {"riverroad": 25.0})
+        self.assertEqual(bb.DEFINITIONS["Banca_Assurance_Income#4"][0][2]["part"], "residual")
+
+    def test_a_line_on_an_unproven_table_names_what_was_tried(self):
+        self.assertEqual(set(bb.defined_blocks()["bancaassuranceincome"]), {1, 2, 4})
+        self.assertNotIn("no warehouse source",
+                         bb.why_not_live("Banca_Assurance_Income", 4))

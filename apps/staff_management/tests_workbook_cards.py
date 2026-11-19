@@ -504,6 +504,41 @@ class SalesWorkbookTests(TestCase):
         trade = [ln for p in card["perspectives"] for ln in p["lines"]][1]
         self.assertEqual(trade["ytd_actual"], 20.0)
 
+    def test_a_growth_below_the_desks_shows_the_growth_and_holds_the_score(self):
+        """19 Nov 2026, River Road's Deposit Growth: September's 3.81bn was a
+        quarter-end balance that left in October. The card showed September's
+        figure as his growth today. A balance-growth line (STICKY_SHEETS) now
+        shows the real growth, and its score stays at what the desk's figure
+        scored when that is higher."""
+        from unittest import mock
+
+        from . import sales_live_feeds
+        from .scorecard_automation.models import ScKpi
+
+        book = sales_book()
+        bo.rebuild(book, SALES_ACTUALS, loaded_by="test")
+        bo.save_file("sales_scorecards", book)
+        bo.save_file("sales_actuals", SALES_ACTUALS)
+        ScKpi.objects.create(kpi_code="tf", kpi_name="Trade Finance",
+                             score_cap=1.2, actuals_sheet="Trade_Finance_Income")
+        bo.save_file(sales_live_feeds.STORE_KIND, {"tradefinanceincome|tradefinance": {
+            "name": "Trade Finance", "match": 0.95, "live": True, "month": "2026-03"}})
+
+        def trade(value):
+            engine = {"perspectives": [{"lines": [
+                {"kpi_code": "tf", "kpi_name": "Trade Finance", "ytd_actual": value}]}]}
+            card = bo.live_card("CM1", engine, datetime.date(2026, 4, 30))
+            return [ln for p in card["perspectives"] for ln in p["lines"]][1]
+
+        with mock.patch.object(bo, "STICKY_SHEETS", {"tradefinanceincome"}):
+            at_desk = trade(14.0)          # the desk's March year to date
+            below = trade(10.0)
+        self.assertEqual(below["ytd_actual"], 10.0)                # the real growth
+        self.assertEqual(below["score"], at_desk["score"])         # the score held
+        self.assertEqual(below["weighted_score"], at_desk["weighted_score"])
+        self.assertIn("the score is held at the desk's year to date to Mar 2026 (14)",
+                      below["as_at"])
+
     def test_a_line_the_warehouse_has_nothing_for_keeps_the_desk(self):
         from .scorecard_automation.models import ScKpi
 

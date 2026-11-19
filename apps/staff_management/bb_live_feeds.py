@@ -247,6 +247,17 @@ def _finance_pbt(year, month, live=False):
     return _by_place([(code, value) for code, value in found.items()])
 
 
+def _finance_loss(year, month, live=False):
+    """The same workbook's Provisions sheet: loan loss (P&L charge less int.
+    adj.) year to date, by branch - negated, as the template's PL_Charge holds
+    a loss (River Road September -20,485,640.48)."""
+    from . import branch_accounts
+
+    _used, found = branch_accounts.figures(year, month, exact=not live,
+                                           measure="loss_ytd")
+    return _by_place([(code, -value) for code, value in found.items()])
+
+
 #: What each property definition reads. The weighted report's table has no need
 #: of a booking date, so ``sale`` never asks for one.
 PROPERTY_SOURCES = {"both": PROPERTY_TABLES,
@@ -503,11 +514,20 @@ def _banca_policies(year, month, timeout_ms, as_at=None):
 
 
 def _banca(year, month, part, timeout_ms, as_at=None):
-    """bancassurance_report.py: paid premiums of one kind, by branch key."""
+    """bancassurance_report.py: paid premiums of one kind, by branch key.
+
+    ``residual``: every paid premium that is not VIC life or VIC non-life -
+    all premiums less the two VIC tables, as the RM card's "renewals and
+    other products" line and the desk's table #4 (= #5 all premiums - #3 VIC:
+    River Road September 8,672,212 - 6,001,110 = 2,671,102). A product with
+    no mapping row counts here, which is why "non_vic" alone matched 27%."""
     out = {}
     for branch, _code, kind, value in _banca_policies(year, month, timeout_ms,
                                                       as_at):
-        if kind != part:
+        if part == "residual":
+            if kind in ("vic_life", "vic_non_life"):
+                continue
+        elif kind != part:
             continue
         name = BANCA_BRANCH.get(str(branch).strip() if branch else branch)
         if name is None:
@@ -603,10 +623,17 @@ DEFINITIONS = {
          {"part": "vic_non_life", "block": 2}),
     ],
     "Banca_Assurance_Income#4": [
+        ("all paid premiums less VIC life and non-life YTD (bancassurance "
+         "report) - the residual, as on the RM card", "banca",
+         {"part": "residual", "block": 4}),
         ("non-VIC paid premiums YTD (bancassurance report)", "banca",
          {"part": "non_vic", "block": 4}),
     ],
     "PL_Charge": [
+        # Finance's Branch Accounts, Provisions sheet: River Road's January to
+        # September is the desk's September figure exactly (19 Nov 2026).
+        ("loan loss YTD, P&L charge less int. adj. (Finance's Branch Accounts, "
+         "Provisions sheet)", "finance_loss", {}),
         ("P&L charge less int. adj., month, by branch (IFRS movement)",
          "ifrs", {"column": "branch", "ytd": False}),
         ("P&L charge less int. adj., YTD, by branch (IFRS movement)",
@@ -661,7 +688,7 @@ DEFINITIONS = {
 }
 #: Kinds whose totals come keyed by branch, not by brn_code.
 BY_BRANCH = ("trade", "banca", "ifrs", "property", "customers", "active",
-             "finance_pbt")
+             "finance_pbt", "finance_loss")
 
 
 def _sql(feed, year, month, live=False, today=None):
@@ -698,6 +725,8 @@ def _totals(feed, year, month, timeout_ms, live=False, today=None):
         return _active(year, month, feed["both"], feed["book"], timeout_ms)
     if feed["kind"] == "finance_pbt":
         return _finance_pbt(year, month, live=live)
+    if feed["kind"] == "finance_loss":
+        return _finance_loss(year, month, live=live)
     sql, params = _sql(feed, year, month, live=live, today=today)
     return {str(code): float(value or 0)
             for code, value in _rows(sql, params, timeout_ms)}
@@ -872,6 +901,20 @@ def live_value(feed, branch, as_at):
     value = _branch_total(totals, branch, feed)
     cache.set(key, value if value is not None else "none", 6 * 3600)
     return value
+
+
+def defined_blocks():
+    """{sheet key: {block: True}} for every sheet the proof has a definition
+    for in more than one table - so a line on a table not yet proven can still
+    be told which table it reads (and so what was tried), not "table 0"."""
+    from .workbook_cards import _key
+
+    out = {}
+    for key in DEFINITIONS:
+        if "#" in key:
+            sheet, block = key.split("#")
+            out.setdefault(_key(sheet), {})[int(block)] = True
+    return out
 
 
 def why_not_live(sheet, block=0):

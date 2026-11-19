@@ -2551,6 +2551,10 @@ def live_card(sales_code, engine_card, as_at):
         reader = lambda feed: bb_live_feeds.live_value(  # noqa: E731
             feed, holder.branch, as_at)
         blocks = _line_blocks(book, actuals, holder, month, base, feeds_live)
+        # Which table each line on a several-table sheet reads, proven or not:
+        # the label of a line still on the desk's figure names what was tried.
+        table_of = _line_blocks(book, actuals, holder, month, base,
+                                bb_live_feeds.defined_blocks())
     from . import sales_live_feeds
 
     # RM lines proven against a closed month read the warehouse.
@@ -2792,11 +2796,11 @@ def live_card(sales_code, engine_card, as_at):
                                  float(value), block, person):
                     live_rows.add(wl["row"])
                     written[wl["row"]] = float(value)
-                    if feed.get("kind") == "finance_pbt":
+                    if feed.get("kind") in ("finance_pbt", "finance_loss"):
                         from . import branch_accounts
 
-                        finance[wl["row"]] = branch_accounts.figures(
-                            as_at.year, as_at.month, exact=False)[0]
+                        finance[wl["row"]] = (branch_accounts.figures(
+                            as_at.year, as_at.month, exact=False)[0], feed["kind"])
                 continue
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
@@ -2889,6 +2893,13 @@ def live_card(sales_code, engine_card, as_at):
             spec.book == BACK_OFFICE and key in BO_ACCUMULATING_SHEETS)
 
     dropped, refused = [], {}
+    # A balance-growth line (STICKY_SHEETS) whose live growth is below the
+    # desk's: the card shows the real growth and holds the SCORE (19 Nov 2026).
+    # River Road's deposits: September's 3.81bn growth was a quarter-end
+    # balance (4.48bn at Sep, 1.56bn at Oct, as at Mar and Jun before it);
+    # holding the whole line showed September's spike as his growth today.
+    # row -> (the desk's year to date, its score at this month's target, month)
+    held = {}
     for wl in card["lines"]:
         r = wl["row"]
         is_live =(r - 1, actual_col) in overrides or r in live_rows
@@ -2915,6 +2926,10 @@ def live_card(sales_code, engine_card, as_at):
         # figure: never a "live" label on the desk's number.
         unread = (spec.book == BACK_OFFICE and r in written and not (
             _num(wl["actual"]) and abs(wl["actual"] - written[r]) < 1e-6))
+        if (shrank and not worse and not unread
+                and _key(wl["feed"]) in STICKY_SHEETS):
+            held[r] = (desk[r], desk_score.get(r), carried[r])
+            continue
         if (shrank or worse) and _num(wl["actual"]):
             # Said on the card, so "why is this not live" answers itself.
             refused[r] = (wl["actual"], "below the desk's" if shrank
@@ -2992,6 +3007,18 @@ def live_card(sales_code, engine_card, as_at):
             for field in ("ytd_target", "actual", "score", "weighted"):
                 wl[field] = earlier[field]
 
+    # The held lines: the real growth stays as the actual; the score is the
+    # higher of the two, the weighted part following it the card's own way.
+    for wl in card["lines"]:
+        h = held.get(wl["row"])
+        if not h or not (_num(wl.get("score")) and _num(h[1]) and _num(wl.get("weighted"))):
+            continue
+        if h[1] > wl["score"] + 1e-9:
+            wl["weighted"] = (wl["weighted"] * h[1] / wl["score"] if wl["score"]
+                              else h[1] * wl["weight"])
+            wl["score"] = h[1]
+            wl["held"] = h
+
     total, waiting = 0.0, 0
     for wl in card["lines"]:
         live = ((wl["row"] - 1, actual_col) in overrides
@@ -3047,17 +3074,27 @@ def live_card(sales_code, engine_card, as_at):
                     from . import bb_live_feeds
 
                     ln["as_at"] += " - " + bb_live_feeds.why_not_live(
-                        wl["feed"], blocks.get(wl["row"]) or 0)
+                        wl["feed"], blocks.get(wl["row"])
+                        or table_of.get(wl["row"]) or 0)
 
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
                 ln["as_at"] = "typed on the desk's card"
-            elif finance.get(wl["row"]):
+            elif wl.get("held"):
+                desk_ytd, _score, then = wl["held"]
+                ln["as_at"] = (
+                    f"live, as at {as_at:%d %b %Y}; the score is held at the "
+                    f"desk's year to date to "
+                    f"{datetime.date(as_at.year, then, 1):%b %Y} "
+                    f"({desk_ytd:,.0f}), which scored higher")
+            elif finance.get(wl["row"]) and finance[wl["row"]][0]:
+                closed, kind = finance[wl["row"]]
                 ln["as_at"] = (
                     f"Finance's Branch Accounts, year to "
-                    f"{datetime.date(as_at.year, finance[wl['row']], 1):%B %Y} "
-                    f"(PBT after provisions, before head-office cost, plus "
-                    f"bancassurance commission)")
+                    f"{datetime.date(as_at.year, closed, 1):%B %Y} "
+                    + ("(PBT after provisions, before head-office cost, plus "
+                       "bancassurance commission)" if kind == "finance_pbt"
+                       else "(loan loss: P&L charge less interest adjustment)"))
             elif wl["row"] in dashboard:
                 ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
                                f"{dashboard[wl['row']]:%B %Y}")
