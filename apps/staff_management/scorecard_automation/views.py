@@ -2284,6 +2284,51 @@ class WeightedTatView(APIView):
                         status=201)
 
 
+class BranchAccountsView(APIView):
+    """Finance's monthly Branch Accounts workbook: which year is loaded and to
+    which month, and loading a new copy. The branch managers' Operating Profit
+    line reads it (branch_accounts)."""
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        from apps.staff_management.models import BoWorkbookFile
+
+        if not _may_view_figures(request.user):
+            return Response({"detail": "Only an administrator can open this."}, status=403)
+        rows = (BoWorkbookFile.objects.filter(kind__startswith="branch_accounts:")
+                .order_by("-kind"))
+        return Response({"years": [{
+            "year": (r.payload or {}).get("year"),
+            "latest_month": (r.payload or {}).get("latest_month"),
+            "branches": len((r.payload or {}).get("ytd") or {}),
+            "file_name": r.file_name, "loaded_by": r.loaded_by,
+            "loaded_at": r.loaded_at} for r in rows]})
+
+    def post(self, request):
+        from apps.staff_management import branch_accounts
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only an administrator can load this."}, status=403)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"detail": "Choose Finance's Branch Accounts workbook."}, status=400)
+        try:
+            found = branch_accounts.read(upload)
+        except Exception as exc:  # noqa: BLE001 - said back to the person loading it
+            return Response({"detail": f"This file could not be read as Finance's Branch "
+                                       f"Accounts workbook: {exc}"}, status=400)
+        if not found["ytd"] or not found["latest_month"]:
+            return Response({"detail": "No branch PBT figures were found in this file."},
+                            status=400)
+        branch_accounts.save(found, upload.name, request.user.username)
+        return Response({"year": found["year"], "latest_month": found["latest_month"],
+                         "branches": len(found["ytd"]),
+                         "branches_without_banca": found["branches_without_banca"]},
+                        status=201)
+
+
 class CxReturnsView(APIView):
     """The CX team's CRM LOGS and Data Update workbooks: which are loaded, and
     loading one. The back-office CRM and KYC lines read them (cx_returns)."""

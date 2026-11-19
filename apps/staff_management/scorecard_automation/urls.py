@@ -129,6 +129,8 @@ urlpatterns = [
     # Fixing codes and reaching cards from the browser.
     path("feed-proof/", views.FeedProofView.as_view()),
     path("weighted-tat/", views.WeightedTatView.as_view()),
+    # Finance's Branch Accounts workbook: the branch managers' Operating Profit.
+    path("branch-accounts/", views.BranchAccountsView.as_view()),
     path("cx-returns/", views.CxReturnsView.as_view()),
     path("code-review/", views.SalesCodeReviewView.as_view()),
     path("code-review/undo/", views.SalesCodeUndoView.as_view()),

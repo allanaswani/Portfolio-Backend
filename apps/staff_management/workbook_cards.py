@@ -2600,6 +2600,7 @@ def live_card(sales_code, engine_card, as_at):
     dashboard = {}  # row -> the month of the Weighted TAT Dashboard it read
     cx_return = {}  # row -> which CX return (CRM logs / data update) it read
     measured = {}   # row -> how a back-office dormancy / CASA figure was read
+    finance = {}    # row -> the month of Finance's Branch Accounts it read
     tat_report = {}  # row -> (iApply user, month) read off the accounts TAT report
     for wl in base["lines"]:
         if wl["typed"]:
@@ -2791,6 +2792,11 @@ def live_card(sales_code, engine_card, as_at):
                                  float(value), block, person):
                     live_rows.add(wl["row"])
                     written[wl["row"]] = float(value)
+                    if feed.get("kind") == "finance_pbt":
+                        from . import branch_accounts
+
+                        finance[wl["row"]] = branch_accounts.figures(
+                            as_at.year, as_at.month, exact=False)[0]
                 continue
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
@@ -3046,6 +3052,12 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
                 ln["as_at"] = "typed on the desk's card"
+            elif finance.get(wl["row"]):
+                ln["as_at"] = (
+                    f"Finance's Branch Accounts, year to "
+                    f"{datetime.date(as_at.year, finance[wl['row']], 1):%B %Y} "
+                    f"(PBT after provisions, before head-office cost, plus "
+                    f"bancassurance commission)")
             elif wl["row"] in dashboard:
                 ln["as_at"] = (f"the desk's Weighted TAT Dashboard, "
                                f"{dashboard[wl['row']]:%B %Y}")
