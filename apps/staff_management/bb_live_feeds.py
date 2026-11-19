@@ -236,6 +236,64 @@ def _ifrs(year, month, column, ytd, timeout_ms):
         GROUP BY 1""", [start, end], timeout_ms))
 
 
+def _ftp_by_branch(year, month):
+    """cust_monthly_ftp's month columns, January to ``month``, by the
+    customer's branch (customers.branch). The RM card reads the same month
+    columns - the table's total_ftp does not equal its own months."""
+    from services.portfolio_service import _FTP_MONTHS
+
+    months = " + ".join(f"COALESCE(f.{m}_ftp, 0)" for m in _FTP_MONTHS[:month])
+    return f"""
+        SELECT c.branch, SUM({months})
+        FROM cust_monthly_ftp f
+        JOIN customers c ON c.cust_id::text = f.cust_cif::text
+        WHERE f.current_year = %s
+        GROUP BY 1""", [year]
+
+
+def _revenue(year, month, by, parts, timeout_ms):
+    """Branch Operating Profit off the revenue Finance's scorecard SQL dumps,
+    1 January to the month's end, the RM card's own arithmetic
+    (services.portfolio_service.rm_income_ytd) summed by branch:
+
+    * ``direct``: GII - IE + NFI. Interest expense is stored negative, so it
+      is taken as a size, as on the RM card.
+    * ``income``: that + FTP (by customers.branch) - loan loss (P&L charge
+      less int. adj. on the IFRS movement, by its ``branch`` column) - the
+      line's own wording, "(GII-IE+NFI(+/-)FTP-Loan Loss)".
+
+    ``by`` is the branch the revenue is put on: the account's unit
+    (``brn_code``) or the transaction's (``trx_unit``). The proof decides
+    which, if either, gives the desk's branch figures."""
+    from .feed_cache import cached
+
+    assert by in ("brn_code", "trx_unit") and parts in ("direct", "income")
+    start, end = _span(year, month, True)
+
+    def compute():
+        rows = _rows(f"""
+            SELECT {by},
+                   COALESCE(SUM(sum_dc) FILTER (WHERE income_category = 'interest_income'), 0),
+                   COALESCE(SUM(sum_dc) FILTER (WHERE income_category = 'interest_expenses'), 0),
+                   COALESCE(SUM(sum_dc) FILTER (WHERE income_category = 'nfi'), 0)
+            FROM revenue
+            WHERE trx_date >= %s AND trx_date < %s
+            GROUP BY 1""", [start, end], timeout_ms)
+        out = _by_place([(unit, float(gii) - abs(float(ie)) + float(nfi))
+                         for unit, gii, ie, nfi in rows])
+        if parts == "income":
+            sql, params = _ftp_by_branch(year, month)
+            for key, ftp in _by_place(_rows(sql, params, timeout_ms)).items():
+                out[key] = out.get(key, 0.0) + ftp
+            for key, charge in _ifrs(year, month, "branch", True, timeout_ms).items():
+                out[key] = out.get(key, 0.0) - charge
+        return out
+
+    found = cached(f"bb_revenue:{by}:{parts}:{year}-{month:02d}", compute)
+    # None while it is read in the background: nothing read, not nought.
+    return found if found is not None else {}
+
+
 #: What each property definition reads. The weighted report's table has no need
 #: of a booking date, so ``sale`` never asks for one.
 PROPERTY_SOURCES = {"both": PROPERTY_TABLES,
@@ -556,7 +614,28 @@ def _drawdowns(year, up_to):
 
 #: sheet → [(label, kind, options)]. ``balance`` reads a month column (or,
 #: live, yester_1_bal); ``ytd`` sums from 1 January to the month's end.
+#: Operating Profit on the branch card reads Revenue_Contribution (column N of
+#: BM_Scorecard, 19 Nov 2026). The sheet has several tables side by side, and
+#: which one the branch line reads is the card's own formula: each table is
+#: tested on its own desk figures, and the card finds the one it reads
+#: (workbook_cards._line_blocks).
+_REVENUE = [
+    ("GII - IE + NFI + FTP - loan loss YTD by account branch (revenue.brn_code)",
+     "revenue", {"by": "brn_code", "parts": "income"}),
+    ("GII - IE + NFI + FTP - loan loss YTD by transaction unit (revenue.trx_unit)",
+     "revenue", {"by": "trx_unit", "parts": "income"}),
+    ("GII - IE + NFI YTD by account branch (revenue.brn_code)",
+     "revenue", {"by": "brn_code", "parts": "direct"}),
+    ("GII - IE + NFI YTD by transaction unit (revenue.trx_unit)",
+     "revenue", {"by": "trx_unit", "parts": "direct"}),
+]
+
 DEFINITIONS = {
+    "Revenue_Contribution": _REVENUE,
+    "Revenue_Contribution#1": [(label, kind, dict(o, block=1))
+                               for label, kind, o in _REVENUE],
+    "Revenue_Contribution#2": [(label, kind, dict(o, block=2))
+                               for label, kind, o in _REVENUE],
     "Deposit_Growth_Retail": [
         ("deposits, all segments (daily balance movement report)",
          "deposits", {"retail": False}),
@@ -642,7 +721,8 @@ DEFINITIONS = {
     ],
 }
 #: Kinds whose totals come keyed by branch, not by brn_code.
-BY_BRANCH = ("trade", "banca", "ifrs", "property", "customers", "active")
+BY_BRANCH = ("trade", "banca", "ifrs", "property", "customers", "active",
+             "revenue")
 
 
 def _sql(feed, year, month, live=False, today=None):
@@ -677,6 +757,8 @@ def _totals(feed, year, month, timeout_ms, live=False, today=None):
         return _new_customers(year, month, feed["source"], timeout_ms)
     if feed["kind"] == "active":
         return _active(year, month, feed["both"], feed["book"], timeout_ms)
+    if feed["kind"] == "revenue":
+        return _revenue(year, month, feed["by"], feed["parts"], timeout_ms)
     sql, params = _sql(feed, year, month, live=live, today=today)
     return {str(code): float(value or 0)
             for code, value in _rows(sql, params, timeout_ms)}
@@ -719,6 +801,16 @@ def _desk(actuals, sheet, code, month, block=0):
 
 
 def probe(year, month, out=print):
+    """Every definition against the desk's branch figures for ``month``. Reads
+    are finished, not left to the background: a read still running would be
+    an empty result, and an empty result fails the proof for nothing."""
+    from .feed_cache import waiting
+
+    with waiting():
+        return _probe(year, month, out)
+
+
+def _probe(year, month, out=print):
     from .workbook_cards import save_file, saved
 
     people, actuals = _branch_managers()
