@@ -59,14 +59,15 @@ class ReadTests(TestCase):
         self.assertEqual(rehani[1], (32058 + 26678) * 1000 + 138932 + 159827)
         self.assertNotIn(None, found["ytd"])             # the Total row is not a branch
 
-    def test_the_loan_loss_runs_from_january_and_the_branch_feed_negates_it(self):
+    def test_the_loan_loss_runs_from_january_in_the_templates_sign(self):
         found = ba.read(BytesIO(workbook()))
         self.assertEqual(found["loss_ytd"][20][:3], [300.0, 500.0, 600.0])
         ba.save(found, "Branch Accounts.xlsx", "root")
         feed = {"kind": "finance_loss", "sheet": "PL_Charge"}
         totals = bb._totals(feed, 2026, 2, 60_000)
-        # The template holds a loss as a negative (River Road: -20,485,640.48).
-        self.assertEqual(bb._branch_total(totals, "RiverRoad", feed), -500.0)
+        # The template holds the loss positive; the card's formula shows it
+        # negative (River Road: -20,485,640.48 on the card).
+        self.assertEqual(bb._branch_total(totals, "RiverRoad", feed), 500.0)
         self.assertEqual(bb.DEFINITIONS["PL_Charge"][0][1], "finance_loss")
 
     def test_a_workbook_without_the_sheet_is_refused(self):

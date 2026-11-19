@@ -249,13 +249,15 @@ def _finance_pbt(year, month, live=False):
 
 def _finance_loss(year, month, live=False):
     """The same workbook's Provisions sheet: loan loss (P&L charge less int.
-    adj.) year to date, by branch - negated, as the template's PL_Charge holds
-    a loss (River Road September -20,485,640.48)."""
+    adj.) year to date, by branch, as Finance states it. The template's
+    PL_Charge holds the loss POSITIVE - the card's own formula shows it as
+    -20,485,640.48 for River Road. Negated here, the 19 Nov proof read every
+    branch exactly 200% off: the right size, the wrong sign."""
     from . import branch_accounts
 
     _used, found = branch_accounts.figures(year, month, exact=not live,
                                            measure="loss_ytd")
-    return _by_place([(code, -value) for code, value in found.items()])
+    return _by_place(list(found.items()))
 
 
 #: What each property definition reads. The weighted report's table has no need
