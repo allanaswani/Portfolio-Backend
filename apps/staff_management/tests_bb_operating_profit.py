@@ -64,6 +64,19 @@ class BranchOperatingProfitTests(TestCase):
         #     - P&L charge less int. adj. (80 - 30)
         self.assertEqual(got, {"hurlingham": 1000.0})
 
+    def test_less_cost_takes_the_branchs_own_operating_expenses(self):
+        from unittest import mock
+
+        costs = [{"branch": "HURLINGHAM", "month": "2026-03", "amount": 120},
+                 {"branch": "HURLINGHAM", "month": "2026-10", "amount": 9000},  # after September
+                 {"branch": "HURLINGHAM", "month": "2025-12", "amount": 7000}]  # last year
+        with mock.patch("apps.staff_management.cost_analysis.by_branch", return_value=costs):
+            self.assertEqual(bb._revenue(2026, 9, "brn_code", "direct_less_cost", 60_000),
+                             {"hurlingham": 630.0})
+            cache.clear()
+            self.assertEqual(bb._revenue(2026, 9, "brn_code", "income_less_cost", 60_000),
+                             {"hurlingham": 880.0})
+
     def test_by_transaction_unit_puts_it_where_it_was_transacted(self):
         got = bb._revenue(2026, 9, "trx_unit", "direct", 60_000)
         self.assertEqual(got, {"rehani": 750.0})
@@ -71,7 +84,7 @@ class BranchOperatingProfitTests(TestCase):
     def test_the_proof_tests_every_table_of_the_sheet(self):
         for key in ("Revenue_Contribution", "Revenue_Contribution#1",
                     "Revenue_Contribution#2"):
-            self.assertEqual(len(bb.DEFINITIONS[key]), 4, key)
+            self.assertEqual(len(bb.DEFINITIONS[key]), 6, key)
         self.assertEqual({o.get("block") for _l, _k, o in bb.DEFINITIONS["Revenue_Contribution#2"]},
                          {2})
         # A branch line on that sheet no longer says nothing is wired.

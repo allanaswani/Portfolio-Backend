@@ -251,6 +251,19 @@ def _ftp_by_branch(year, month):
         GROUP BY 1""", [year]
 
 
+def _branch_costs(year, month):
+    """The branch's operating expenses, January to ``month``, off the SAP
+    postings with the Finance notebook's rules (cost_analysis.by_branch: a
+    credit negative, 7-series less the three exclusions, mapped GLs only,
+    grouped on the cost centre NAME). Entry months are YYYY-MM."""
+    from . import cost_analysis
+
+    first, last = f"{year}-01", f"{year}-{month:02d}"
+    return _by_place([(row["branch"], float(row["amount"] or 0))
+                      for row in cost_analysis.by_branch(years=(year - 1, year))
+                      if first <= str(row["month"]) <= last])
+
+
 def _revenue(year, month, by, parts, timeout_ms):
     """Branch Operating Profit off the revenue Finance's scorecard SQL dumps,
     1 January to the month's end, the RM card's own arithmetic
@@ -261,13 +274,15 @@ def _revenue(year, month, by, parts, timeout_ms):
     * ``income``: that + FTP (by customers.branch) - loan loss (P&L charge
       less int. adj. on the IFRS movement, by its ``branch`` column) - the
       line's own wording, "(GII-IE+NFI(+/-)FTP-Loan Loss)".
+    * ``*_less_cost``: either, less the branch's SAP operating expenses.
 
     ``by`` is the branch the revenue is put on: the account's unit
     (``brn_code``) or the transaction's (``trx_unit``). The proof decides
     which, if either, gives the desk's branch figures."""
     from .feed_cache import cached
 
-    assert by in ("brn_code", "trx_unit") and parts in ("direct", "income")
+    assert by in ("brn_code", "trx_unit") and parts in (
+        "direct", "income", "direct_less_cost", "income_less_cost")
     start, end = _span(year, month, True)
 
     def compute():
@@ -281,12 +296,15 @@ def _revenue(year, month, by, parts, timeout_ms):
             GROUP BY 1""", [start, end], timeout_ms)
         out = _by_place([(unit, float(gii) - abs(float(ie)) + float(nfi))
                          for unit, gii, ie, nfi in rows])
-        if parts == "income":
+        if parts.startswith("income"):
             sql, params = _ftp_by_branch(year, month)
             for key, ftp in _by_place(_rows(sql, params, timeout_ms)).items():
                 out[key] = out.get(key, 0.0) + ftp
             for key, charge in _ifrs(year, month, "branch", True, timeout_ms).items():
                 out[key] = out.get(key, 0.0) - charge
+        if parts.endswith("_less_cost"):
+            for key, cost in _branch_costs(year, month).items():
+                out[key] = out.get(key, 0.0) - cost
         return out
 
     found = cached(f"bb_revenue:{by}:{parts}:{year}-{month:02d}", compute)
@@ -628,6 +646,12 @@ _REVENUE = [
      "revenue", {"by": "brn_code", "parts": "direct"}),
     ("GII - IE + NFI YTD by transaction unit (revenue.trx_unit)",
      "revenue", {"by": "trx_unit", "parts": "direct"}),
+    # Operating profit as the words usually mean it: the income less what the
+    # branch spent (SAP operating expenses by branch cost centre).
+    ("GII - IE + NFI + FTP - loan loss - branch operating costs YTD (revenue.brn_code, SAP)",
+     "revenue", {"by": "brn_code", "parts": "income_less_cost"}),
+    ("GII - IE + NFI - branch operating costs YTD (revenue.brn_code, SAP)",
+     "revenue", {"by": "brn_code", "parts": "direct_less_cost"}),
 ]
 
 DEFINITIONS = {
