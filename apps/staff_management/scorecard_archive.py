@@ -79,6 +79,26 @@ def share_dir():
     return path if os.path.isdir(path) else None
 
 
+def share_month_folder(period):
+    """The share's folder for a month: "2026-10" -> "2026/Oct 26".
+
+    The team's shared folder (//10.51.175.67/msi/MIS/Clinton/Scorecards
+    Data) keeps one folder per year and, inside it, one per month named like
+    "Oct 26" (user, 20 Nov 2026), so the archive's months are copied there."""
+    year, month = (int(x) for x in period.split("-"))
+    return os.path.join(str(year), datetime.date(year, month, 1).strftime("%b %y"))
+
+
+def _share_rel(rel):
+    """An archive path relative to its root → the same path on the share."""
+    if rel == ".":
+        return rel
+    head, _, rest = rel.replace("\\", "/").partition("/")
+    if re.fullmatch(r"\d{4}-\d{2}", head):
+        head = share_month_folder(head)
+    return os.path.join(head, rest) if rest else head
+
+
 def sync_share(out=print):
     """Copy every archived file the share does not have yet → summary dict.
 
@@ -94,7 +114,7 @@ def sync_share(out=print):
     if not os.path.isdir(source):
         return summary
     for root, _dirs, files in os.walk(source):
-        rel = os.path.relpath(root, source)
+        rel = _share_rel(os.path.relpath(root, source))
         dest_dir = target if rel == "." else os.path.join(target, rel)
         for name in sorted(files):
             src, dest = os.path.join(root, name), os.path.join(dest_dir, name)

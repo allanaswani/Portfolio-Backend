@@ -60,7 +60,8 @@ class ArchiveTests(TestCase):
         with patch.dict(os.environ, {"SCORECARD_SHARE_DIR": share}):
             sa.archive_card("2026-10", PERSON, card())
             self.assertEqual(sa.sync_share(out=lambda *_: None)["copied"], 3)   # xlsx, json, manifest
-            copy = os.path.join(share, "2026-10", "Back office", "BCK3783 - Bob Waigwa.json")
+            copy = os.path.join(share, "2026", "Oct 26", "Back office",
+                                "BCK3783 - Bob Waigwa.json")
             with open(copy) as f:
                 self.assertEqual(json.load(f)["performance_score"], 0.8)
             # Nothing new: nothing copied.
@@ -68,11 +69,16 @@ class ArchiveTests(TestCase):
             # A second version: its two files plus the grown manifest.
             sa.archive_card("2026-10", PERSON, card(score=0.9))
             self.assertEqual(sa.sync_share(out=lambda *_: None)["copied"], 3)
-            with open(os.path.join(share, "2026-10", "manifest.csv"), newline="") as f:
+            with open(os.path.join(share, "2026", "Oct 26", "manifest.csv"),
+                      newline="") as f:
                 self.assertEqual(len(list(csv.DictReader(f))), 2)
         # No share mounted: the archive stays on the server, nothing fails.
         with patch.dict(os.environ, {"SCORECARD_SHARE_DIR": os.path.join(share, "absent")}):
             self.assertIsNone(sa.sync_share(out=lambda *_: None)["share"])
+
+    def test_share_month_folders_follow_the_teams_layout(self):
+        self.assertEqual(sa.share_month_folder("2026-10"), os.path.join("2026", "Oct 26"))
+        self.assertEqual(sa.share_month_folder("2027-01"), os.path.join("2027", "Jan 27"))
 
     def test_complete_means_no_line_waiting(self):
         self.assertTrue(sa.is_complete(card()))
