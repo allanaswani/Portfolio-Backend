@@ -187,58 +187,74 @@ class ArchiveScreenTests(TestCase):
 
 
 class GroupSummaryTests(TestCase):
-    """Each group's summary: the desk's months off its sheet, later months off
-    the archived cards, blanks never filled in."""
+    """Each group's summary: one group per role, only the people who hold a
+    card now, the desk's months off its sheet, later months off the archived
+    cards, blanks never filled in."""
 
     def setUp(self):
         ArchiveTests.setUp(self)
         hdr = ["PF-No", "SalesCode", "Staff - Name", "Role", "Branch", "Zone"] + [
             46023.0 + 30 * i for i in range(12)]
         desk = [0.7, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, None, None, None]
-        self.bo_book = {"tables": {
-            "Monthly_Summ": [hdr, [1329.0, "BCK3783", "Bob Waigwa", "Teller", "Meru", "Zone A"] + desk],
+        self.bo_book = {"book": "back_office", "cards": {"TELLER_SCORECARD": {}, "BOM_SCORECARD": {}},
+                        "tables": {
+            "List": [["PF", "Code", "Name", "Role", "Branch"],
+                     [1329, "BCK3783", "Bob Waigwa", "Teller", "Meru"],
+                     [7, "BOM7", "Bea Manager", "BOM", "Meru"],
+                     [8, "LFT8", "Gone Person", "Teller", "left"],
+                     [9, "NEW9", "New Person", "Teller", "Meru"]],
+            "Monthly_Summ": [hdr,
+                             [1329.0, "BCK3783", "Bob Waigwa", "Teller", "Meru", "Zone A"] + desk,
+                             [7.0, "BOM7", "Bea Manager", "BOM", "Meru", "Zone A"] + desk,
+                             [8.0, "LFT8", "Gone Person", "Teller", "Meru", "Zone A"] + desk,
+                             [99.0, "OLD99", "Never Holds", "Teller", "Meru", "Zone A"] + desk],
             "RBO_Monthly_Summ": [hdr],
         }}
         bb_hdr = ["pf-number", "sales_code", "Staff - Name", "Role", "branch"] + [None] * 12
-        self.bb_book = {"tables": {"Branch_Monthly_Summary": [
-            [], [], bb_hdr,
-            [1.0, "AA1", "A", "BBM", "X"] + [0.5] * 9 + [None] * 3,
-            [2.0, "BB2", "B", "BBM", "Y"] + [0.9] * 9 + [None] * 3]}}
+        self.bb_book = {"book": "branch_business", "cards": {"BM_Scorecard": {}}, "tables": {
+            "List": [["PF", "Code", "Name", "Branch"], [1, "AA1", "A", "X"], [2, "BB2", "B", "Y"]],
+            "Branch_Monthly_Summary": [
+                [], [], bb_hdr,
+                [1.0, "AA1", "A", "BBM", "X"] + [0.5] * 9 + [None] * 3,
+                [2.0, "BB2", "B", "BBM", "Y"] + [0.9] * 9 + [None] * 3,
+                [3.0, "CC3", "Left Manager", "BBM", "Z"] + [0.6] * 9 + [None] * 3]}}
         sa.archive_card("2026-10", PERSON, card(score=0.81))
 
     def _saved(self, kind, year=None):
         return {"scorecards": self.bo_book, "bb_scorecards": self.bb_book}.get(kind)
 
-    def test_desk_months_then_the_archived_month(self):
+    def _groups(self, upto):
         from . import scorecard_summaries as ss
 
-        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
-            groups = {g["group"]: g for g in ss.group_summaries(2026, 10)}
-        bo = groups["Back office"]
-        self.assertEqual(bo["headers"][:3], ["PF-No", "SalesCode", "Staff - Name"])
-        row = bo["rows"][0]
+        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved),                 patch("apps.staff_management.workbook_cards.roster_roles", return_value={}),                 patch("apps.staff_management.workbook_cards.hr_roles", return_value={}):
+            return {g["group"]: g for g in ss.group_summaries(2026, upto)}
+
+    def test_one_group_per_role_and_only_card_holders(self):
+        groups = self._groups(10)
+        self.assertIn("Back office - Teller", groups)
+        self.assertIn("Back office - BOM", groups)
+        tellers = groups["Back office - Teller"]
+        # Not the one who left, not a desk row that holds no card.
+        self.assertEqual([r["code"] for r in tellers["rows"]], ["BCK3783"])
+        self.assertEqual([r["code"] for r in groups["Back office - BOM"]["rows"]], ["BOM7"])
+        # A card holder with no score yet is named, not a blank row.
+        self.assertEqual(tellers["no_score"], ["New Person (NEW9)"])
+
+    def test_desk_months_then_the_archived_month(self):
+        row = self._groups(10)["Back office - Teller"]["rows"][0]
         self.assertEqual(row["identity"][:3], [1329, "BCK3783", "Bob Waigwa"])
         self.assertEqual(row["scores"][8], 0.78)          # Sep, the desk's
         self.assertEqual(row["scores"][9], 0.81)          # Oct, the archived card
         self.assertAlmostEqual(row["change"], 0.03)
-        self.assertEqual(bo["from_desk"], list(range(1, 10)))
-        self.assertEqual(bo["from_archive"], [10])
-        self.assertIn("Back office - RBO", groups)
 
     def test_a_month_with_neither_stays_blank(self):
-        from . import scorecard_summaries as ss
+        row = self._groups(11)["Back office - Teller"]["rows"][0]
+        self.assertIsNone(row["scores"][10])
+        self.assertIsNone(row["change"])
 
-        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
-            groups = {g["group"]: g for g in ss.group_summaries(2026, 11)}
-        self.assertIsNone(groups["Back office"]["rows"][0]["scores"][10])
-        self.assertIsNone(groups["Back office"]["rows"][0]["change"])
-
-    def test_branch_managers_are_ranked_on_the_latest_month(self):
-        from . import scorecard_summaries as ss
-
-        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
-            groups = {g["group"]: g for g in ss.group_summaries(2026, 9)}
-        ranks = {r["code"]: r["rank"] for r in groups["Branch managers"]["rows"]}
+    def test_branch_managers_only_those_on_the_list_ranked(self):
+        bms = self._groups(9)["Branch managers - BBM"]
+        ranks = {r["code"]: r["rank"] for r in bms["rows"]}
         self.assertEqual(ranks, {"BB2": 1, "AA1": 2})
 
     def test_summaries_go_in_the_excel_and_the_zip(self):
@@ -249,8 +265,9 @@ class GroupSummaryTests(TestCase):
 
         from . import scorecard_summaries as ss
 
-        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
+        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved),                 patch("apps.staff_management.workbook_cards.roster_roles", return_value={}),                 patch("apps.staff_management.workbook_cards.hr_roles", return_value={}):
             wb = load_workbook(io.BytesIO(ss.summaries_workbook(2026, 10)))
-            self.assertIn("Back office", wb.sheetnames)
+            self.assertIn("BO - Teller", wb.sheetnames)
+            self.assertIn("BM - BBM", wb.sheetnames)
             names = zipfile.ZipFile(io.BytesIO(sa.month_zip("2026-10"))).namelist()
         self.assertIn("2026/Oct 26/Group summaries - October 2026.xlsx", names)

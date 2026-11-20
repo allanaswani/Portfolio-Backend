@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 
 #: The archive's folder for each workbook (scorecard_reach.BOOK_NAMES).
 FOLDERS = {"back_office": "Back office", "sales": "Sales",
@@ -79,12 +80,67 @@ def archived_scores(year, upto, folder):
     return out
 
 
+def _desk_rows(book, spec):
+    """{SALES CODE: (identity cells, headers, {month: score})} off the desk's
+    summary sheets - the desk's own columns and its scores, for whoever is on
+    them. Only used to fill in people who hold a card (see group_summaries)."""
+    out = {}
+    for sheet, header, code_col, first in spec.summaries:
+        grid = (book.get("tables") or {}).get(sheet) or []
+        if len(grid) <= header:
+            continue
+        head = [str(h).strip() if h not in (None, "") else "" for h in grid[header][:first]]
+        for row in grid[header + 1:]:
+            code = str(row[code_col] if len(row) > code_col else "").strip().upper()
+            if not code or code in out:
+                continue
+            scores = {}
+            for month in range(1, 13):
+                column = first + month - 1
+                value = _number(row[column]) if column < len(row) else None
+                if value is not None:
+                    scores[month] = value
+            out[code] = ([_identity(row[i]) if i < len(row) else None
+                          for i in range(first)], head, scores)
+    return out
+
+
+def _list_identity(head, holder, role):
+    """Someone the desk's summary sheet does not have: their List columns,
+    under the sheet's own headings."""
+    from .workbook_cards import _key
+
+    values = []
+    for h in head:
+        k = _key(h)
+        values.append(holder.pf if k.startswith("pf")
+                      else holder.sales_code if "code" in k
+                      else holder.name if "name" in k
+                      else role if k == "role"
+                      else holder.branch if k == "branch"
+                      else None)
+    return values
+
+
+def _role_of(spec, holder):
+    return holder.role or str(getattr(spec, "role_code", "") or "").upper() or "(no role)"
+
+
 def group_summaries(year, upto):
     """Every group's summary for ``year``, January to ``upto`` →
-    [{"group", "sheet", "workbook", "headers", "months", "rows",
-      "from_desk", "from_archive"}]. ``rows`` hold the identity cells, a score
-    per month (None when there is none), the change on the month before and,
-    on a ranked sheet, the rank."""
+    [{"group", "workbook", "role", "headers", "months", "rows", "ranked",
+      "from_desk", "from_archive", "no_score"}], one group per role.
+
+    **Who is on it:** the people who hold a card now - the workbook's List,
+    less the no-card list and anybody whose branch reads "left", and only
+    roles the workbook has a card for (the same people as Cards -> Who holds
+    them). The desk's summary sheets also carry people who have left or never
+    had a card; those are not in a group. **The columns** are the desk's own
+    summary row for the person where it has one (PF, zone ...), else the
+    List's. **A month's score** is the desk's for the months it scored, else
+    the archived card's; a month with neither is blank. Card holders with no
+    score in any month are named in ``no_score`` instead of a blank row.
+    """
     from . import workbook_cards as wc
 
     out = []
@@ -94,51 +150,59 @@ def group_summaries(year, upto):
         if book is None:
             continue
         archived = archived_scores(year, upto, folder)
-        for sheet, header, code_col, first in spec.summaries:
-            grid = (book.get("tables") or {}).get(sheet) or []
-            if len(grid) <= header:
+        desk = _desk_rows(book, spec)
+        default_head = (next(iter(desk.values()))[1] if desk
+                        else ["PF", "Sales code", "Name", "Role", "Branch"])
+        cards = book.get("cards") or {}
+        groups = {}
+        for holder in wc.holders(book):
+            if not holder.sales_code or holder.sheet not in cards:
                 continue
-            head = [str(h).strip() if h not in (None, "") else ""
-                    for h in grid[header][:first]]
-            rows, desk_months, archive_months = [], set(), set()
-            for row in grid[header + 1:]:
-                code = str(row[code_col] if len(row) > code_col else "").strip().upper()
-                if not code:
+            if str(holder.branch or "").strip().lower() == "left":
+                continue
+            role = _role_of(spec, holder)
+            found = desk.get(holder.sales_code)
+            if found:
+                identity, head, desk_scores = found
+            else:
+                head, desk_scores = default_head, {}
+                identity = _list_identity(head, holder, role)
+            g = groups.setdefault(role, {"rows": [], "head": head,
+                                         "desk": set(), "archive": set(),
+                                         "no_score": []})
+            scores = []
+            for month in range(1, upto + 1):
+                if month in desk_scores:
+                    g["desk"].add(month)
+                    scores.append(desk_scores[month])
                     continue
-                scores = []
-                for month in range(1, upto + 1):
-                    column = first + month - 1
-                    desk = _number(row[column]) if column < len(row) else None
-                    if desk is not None:
-                        desk_months.add(month)
-                        scores.append(desk)
-                        continue
-                    kept = archived.get((code, month))
-                    if kept is not None:
-                        archive_months.add(month)
-                    scores.append(kept)
-                filled = [s for s in scores if s is not None]
-                change = (scores[-1] - scores[-2]
-                          if len(scores) >= 2 and scores[-1] is not None
-                          and scores[-2] is not None else None)
-                rows.append({"identity": [_identity(row[i]) if i < len(row) else None
-                                          for i in range(first)],
-                             "code": code, "scores": scores, "change": change,
-                             "latest": filled[-1] if filled else None})
-            ranked = sheet in RANKED
+                kept = archived.get((holder.sales_code, month))
+                if kept is not None:
+                    g["archive"].add(month)
+                scores.append(kept)
+            if all(v is None for v in scores):
+                g["no_score"].append(f"{holder.name} ({holder.sales_code})")
+                continue
+            change = (scores[-1] - scores[-2]
+                      if len(scores) >= 2 and scores[-1] is not None
+                      and scores[-2] is not None else None)
+            g["rows"].append({"identity": identity, "code": holder.sales_code,
+                              "scores": scores, "change": change})
+        ranked = any(sheet in RANKED for sheet, *_ in spec.summaries)
+        for role, g in sorted(groups.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
             if ranked:
-                order = sorted((r for r in rows if r["scores"][-1] is not None),
+                order = sorted((r for r in g["rows"] if r["scores"][-1] is not None),
                                key=lambda r: -r["scores"][-1])
                 for n, r in enumerate(order, 1):
                     r["rank"] = n
             out.append({
-                "group": (f"{folder} - RBO" if sheet.startswith("RBO_") else folder),
-                "sheet": sheet, "workbook": folder,
-                "headers": head,
+                "group": f"{folder} - {role}", "workbook": folder, "role": role,
+                "sheet": ", ".join(s[0] for s in spec.summaries),
+                "headers": g["head"],
                 "months": [_month_label(year, m) for m in range(1, upto + 1)],
-                "ranked": ranked, "rows": rows,
-                "from_desk": sorted(desk_months),
-                "from_archive": sorted(archive_months),
+                "ranked": ranked, "rows": g["rows"],
+                "from_desk": sorted(g["desk"]), "from_archive": sorted(g["archive"]),
+                "no_score": g["no_score"],
             })
     return out
 
@@ -147,9 +211,13 @@ def _source_note(group, year):
     def names(months):
         return ", ".join(_month_label(year, m) for m in months) or "none"
 
-    return (f"The desk's {group['sheet']} for the months it scored ({names(group['from_desk'])}); "
+    note = (f"{group['role']}: the people who hold this card now. The desk's "
+            f"{group['sheet']} for the months it scored ({names(group['from_desk'])}); "
             f"the archived cards after that ({names(group['from_archive'])}). "
             f"A blank is a month with neither.")
+    if group["no_score"]:
+        note += f" No score in any month yet: {', '.join(group['no_score'])}."
+    return note
 
 
 def summaries_workbook(year, upto):
@@ -168,7 +236,9 @@ def summaries_workbook(year, upto):
             if g["ranked"]:
                 values.append(r.get("rank"))
             rows.append(values)
-        sheets.append({"title": g["group"][:31], "note": _source_note(g, year),
+        short = {"Back office": "BO", "Branch managers": "BM"}.get(g["workbook"], g["workbook"])
+        title = re.sub(r"[\\/?*\[\]:]", " ", f"{short} - {g['role']}")[:31]
+        sheets.append({"title": title, "note": _source_note(g, year),
                        "headers": headers, "rows": rows})
     if not sheets:
         sheets.append({"title": "Summary", "headers": ["Note"], "rows": [],
