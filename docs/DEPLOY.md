@@ -481,6 +481,16 @@ Run it from the backend repo directory ($PWD goes into the line). It is a short
 /etc/cron.d file on purpose: a long crontab line wrapped while pasting fails
 with "bad minute". The log is /data/apps/datascience/logs/archive_scorecards.log.
 
+The monthly Referrals report (20 Nov 2026) is mailed from this host only, at
+07:00 on the 1st, to everybody ticked for "Referrals Report" under
+Administration -> Alerts. Install it once:
+
+```bash
+echo "0 7 1 * * root docker exec hf-backend python manage.py send_referrals_report" > /etc/cron.d/hf-referrals-report
+```
+
+Never on the new host as well, or every recipient gets it twice.
+
 The `scorecard_share` mount (13 Nov 2026) is the shared Windows folder: each run
 copies to it every archived file it does not have yet (never overwriting;
 `manifest.csv` refreshed), so the cards open from any PC when the portal or its

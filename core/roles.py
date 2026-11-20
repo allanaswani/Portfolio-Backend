@@ -94,6 +94,12 @@ NEW_ROLES = (
     # description and tier on the Users screen instead of rendering blank.
     "telesales_supervisor",
     "telesales_agent",
+    # Referrals access is given, not assumed (Nov 2026): referrals migration
+    # 0007 creates these. referrals_user is a member of staff who captures and
+    # works referrals; postbank_referrer is the partner bank's team, confined
+    # to the Referrals API by core/partner_access.py.
+    "referrals_user",
+    "postbank_referrer",
     # Customer 360 — a SEPARATE resource server on the shared host. It has no
     # Django app here: it trusts the JWT this backend mints and reads the
     # ``groups`` claim (see apps/authentication/token_serializers.py). Its own
@@ -154,6 +160,9 @@ NEW_ROLE_DESCRIPTIONS = {
     "business_performance": "Strategy & Business Performance — executive cockpit + targets (director).",
     "telesales_supervisor": "Telesales — supervisor; allocates referrals and sees the whole queue.",
     "telesales_agent": "Telesales — agent; works the referrals allocated to them.",
+    "referrals_user": "Referrals — captures referrals and works the ones allocated to them.",
+    "postbank_referrer": "Postbank (partner) — captures Postbank referrals and sees only "
+                         "their own; this account opens nothing else.",
     "cx": "Customer experience — maintains the survey figures the RM "
           "scorecards read (contactability and satisfaction).",
     "audit": "Internal Audit — files the branch audit score and "
@@ -210,6 +219,10 @@ ROLE_TO_TIER = {
     # tier, so these entries only decide the badge shown on the Users screen.
     "telesales_supervisor": ROLE_MANAGER,
     "telesales_agent": ROLE_OFFICER,
+    "referrals_user": ROLE_OFFICER,
+    # Officer, the default, so nothing new is unlocked by a tier. What confines
+    # a Postbank account is core/partner_access.py, not its tier.
+    "postbank_referrer": ROLE_OFFICER,
     # Customer 360 — must match c360/roles.py::ROLE_TO_TIER, because Customer 360
     # resolves book scope from the tier: manager/admin → whole book, officer →
     # own book by sales_code. Nothing in THIS backend is gated on these two.

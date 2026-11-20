@@ -163,6 +163,7 @@ class AlertRecipient(models.Model):
     KIND_SENSITIVE_CHANGE = "sensitive_change"
     KIND_DAILY_DIGEST = "daily_digest"
     KIND_USAGE_REPORT = "usage_report"
+    KIND_REFERRALS_REPORT = "referrals_report"
     KIND_CHOICES = [
         (KIND_DOWNTIME, "Downtime and error spikes"),
         (KIND_DATA_HEALTH, "Data health — missing, empty or newly stale tables"),
@@ -170,6 +171,8 @@ class AlertRecipient(models.Model):
         (KIND_DAILY_DIGEST, "Daily digest"),
         (KIND_USAGE_REPORT,
          "Daily usage report - the portfolio tool and Customer 360"),
+        (KIND_REFERRALS_REPORT,
+         "Monthly referrals report - HFCB staff and Postbank referrals"),
     ]
 
     email = models.EmailField(unique=True)
@@ -180,6 +183,8 @@ class AlertRecipient(models.Model):
     daily_digest = models.BooleanField(default=False)
     # Who used the portfolio tool and Customer 360 yesterday - send_usage_report.
     usage_report = models.BooleanField(default=False)
+    # Last month's referrals, HFCB staff and Postbank - send_referrals_report.
+    referrals_report = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     history = HistoricalRecords()

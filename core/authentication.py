@@ -16,9 +16,12 @@ different people. The token's username has to match the account the number finds
 """
 
 from django.conf import settings
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.authentication import JWTAuthentication
+
+from core import partner_access
 
 
 class SecondFactorJWTAuthentication(JWTAuthentication):
@@ -31,14 +34,24 @@ class SecondFactorJWTAuthentication(JWTAuthentication):
         if named is not None and named != user.get_username():
             raise AuthenticationFailed(
                 "This token was issued to a different account.", code="wrong_account")
-        if not getattr(settings, "LOGIN_MFA_ENFORCED", False):
-            return result
-        if token.get("mfa") is False:
+        if getattr(settings, "LOGIN_MFA_ENFORCED", False) and token.get("mfa") is False:
             context = getattr(request, "parser_context", None) or {}
             view = context.get("view")
             if not getattr(view, "allow_unverified_token", False):
                 raise AuthenticationFailed(
                     "Enter the code sent to your e-mail first.", code="mfa_required")
+        # A partner institution's account reaches only its own module.
+        partner_access.check(request, user)
+        return result
+
+
+class PartnerAwareSessionAuthentication(SessionAuthentication):
+    """Session sign-in (browsable API) under the same partner rule as the JWT."""
+
+    def authenticate(self, request):
+        result = super().authenticate(request)
+        if result is not None:
+            partner_access.check(request, result[0])
         return result
 
 

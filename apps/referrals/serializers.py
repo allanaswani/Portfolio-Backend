@@ -12,6 +12,7 @@ import re
 from rest_framework import serializers
 
 from .models import Referral
+from .rbac import is_postbank
 from .staff import verify_staff
 
 # Kenyan MSISDN: national significant number is 9 digits starting 7 (Safaricom/Airtel/
@@ -38,6 +39,8 @@ class ReferralSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField()
     allocated_by_name = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    referrer_type_display = serializers.CharField(
+        source="get_referrer_type_display", read_only=True)
     # Live sales code / branch of the assignee, so the RM working the referral (and
     # anyone reviewing it) can see which code it sits under even before allocation
     # snapshots one.
@@ -76,11 +79,39 @@ class ReferralSerializer(serializers.ModelSerializer):
             )
         return cleaned
 
-    def validate_pf_number(self, value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            raise serializers.ValidationError("PF number is required.")
-        return cleaned
+    def validate(self, attrs):
+        """Who the referrer is, by institution.
+
+        * HFCB staff: the PF number is required, as before.
+        * Postbank: the referrer's Postbank sales code and name are required
+          and the PF number is not asked for. A Postbank team member's own
+          referrals are always Postbank's, whatever the form sent.
+        """
+        request = self.context.get("request")
+        if request is not None and is_postbank(request.user):
+            attrs["referrer_type"] = Referral.REFERRER_POSTBANK
+
+        def current(field):
+            if field in attrs:
+                return attrs[field]
+            return getattr(self.instance, field, "") if self.instance else ""
+
+        kind = current("referrer_type") or Referral.REFERRER_HFCB
+        for field in ("pf_number", "sales_code", "referrer_name"):
+            if field in attrs:
+                attrs[field] = (attrs[field] or "").strip()
+
+        errors = {}
+        if kind == Referral.REFERRER_POSTBANK:
+            if not (current("sales_code") or "").strip():
+                errors["sales_code"] = "Enter the Postbank referrer's sales code."
+            if not (current("referrer_name") or "").strip():
+                errors["referrer_name"] = "Enter the Postbank referrer's name."
+        elif not (current("pf_number") or "").strip():
+            errors["pf_number"] = "PF number is required."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
     # ── Staff-register soft verification ──────────────────────────────────────
     @staticmethod
@@ -88,7 +119,14 @@ class ReferralSerializer(serializers.ModelSerializer):
         """Stamp ``staff_verified`` / ``verified_staff_name`` from the roster lookup.
 
         Never raises — an unknown PF/sales code is *flagged*, not rejected.
+        A Postbank referrer is not on the bank's staff registers, and Postbank's
+        codes can repeat ours, so a Postbank referral is never looked up there:
+        it would "verify" against whichever of our staff shares the code.
         """
+        if data.get("referrer_type") == Referral.REFERRER_POSTBANK:
+            data["staff_verified"] = None
+            data["verified_staff_name"] = ""
+            return
         name, had_data = verify_staff(data.get("pf_number"), data.get("sales_code"))
         if name:
             data["staff_verified"] = Referral.STAFF_VERIFIED
@@ -100,18 +138,27 @@ class ReferralSerializer(serializers.ModelSerializer):
             data["staff_verified"] = None  # could not check (roster empty/unavailable)
             data["verified_staff_name"] = ""
 
+    @staticmethod
+    def _fill_referrer_name(data):
+        """An HFCB referrer left unnamed takes the name the register found."""
+        if not (data.get("referrer_name") or "").strip() and data.get("verified_staff_name"):
+            data["referrer_name"] = data["verified_staff_name"]
+
     def create(self, validated_data):
+        validated_data.setdefault("referrer_type", Referral.REFERRER_HFCB)
         self._apply_staff_verification(validated_data)
+        self._fill_referrer_name(validated_data)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         # Re-verify only when the referrer identity actually changed.
-        if "pf_number" in validated_data or "sales_code" in validated_data:
+        if {"pf_number", "sales_code", "referrer_type"} & set(validated_data):
             merged = {
-                "pf_number": validated_data.get("pf_number", instance.pf_number),
-                "sales_code": validated_data.get("sales_code", instance.sales_code),
+                field: validated_data.get(field, getattr(instance, field))
+                for field in ("pf_number", "sales_code", "referrer_type", "referrer_name")
             }
             self._apply_staff_verification(merged)
+            self._fill_referrer_name(merged)
             validated_data.update(merged)
         return super().update(instance, validated_data)
 

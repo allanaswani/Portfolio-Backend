@@ -256,7 +256,8 @@ REST_FRAMEWORK = {
         # JWT, plus: a token from the password alone opens only the OTP step once
         # LOGIN_MFA_ENFORCED is on. See core/authentication.py.
         "core.authentication.SecondFactorJWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
+        # Session auth, with the partner-account rule (core/partner_access.py).
+        "core.authentication.PartnerAwareSessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",

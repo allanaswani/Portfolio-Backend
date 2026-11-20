@@ -69,9 +69,27 @@ class Referral(TimeStamped):
     referral_ref = models.CharField(max_length=40, unique=True, blank=True)
 
     # ── Referrer (who is making the referral) ─────────────────────────────────
-    # ``pf_number`` is the field of record (staff aren't 1:1 with system logins),
-    # while ``created_by`` links the authenticated user who actually keyed it in.
-    pf_number = models.CharField(max_length=30)
+    # A referral comes from the bank's own staff or, since Nov 2026, from
+    # Postbank's. Postbank's sales codes are Postbank's own and can repeat one of
+    # ours, so a code means nothing without the institution beside it: reports
+    # always group on (referrer_type, sales_code).
+    REFERRER_HFCB = "hfcb"
+    REFERRER_POSTBANK = "postbank"
+    REFERRER_TYPES = [
+        (REFERRER_HFCB, "HFCB staff"),
+        (REFERRER_POSTBANK, "Postbank"),
+    ]
+    referrer_type = models.CharField(
+        max_length=20, choices=REFERRER_TYPES, default=REFERRER_HFCB)
+    # The referrer's name as typed. For HFCB staff it is filled from the staff
+    # register when left blank and the PF/sales code is found there.
+    referrer_name = models.CharField(max_length=200, blank=True)
+    # ``pf_number`` is the field of record for HFCB staff (staff aren't 1:1 with
+    # system logins), while ``created_by`` links the authenticated user who
+    # actually keyed it in. A Postbank referrer has no HFCB PF number, so it is
+    # required for HFCB referrals only (the serializer enforces it).
+    pf_number = models.CharField(max_length=30, blank=True)
+    # The referrer's sales code: ours for HFCB staff, Postbank's for Postbank.
     sales_code = models.CharField(max_length=50, blank=True)
     created_by = models.ForeignKey(
         USER, null=True, blank=True, on_delete=models.SET_NULL, related_name="referrals_created"
@@ -130,6 +148,7 @@ class Referral(TimeStamped):
             models.Index(fields=["phone"]),
             models.Index(fields=["assigned_to"]),
             models.Index(fields=["created_by"]),
+            models.Index(fields=["referrer_type", "sales_code"]),
         ]
 
     def __str__(self):
