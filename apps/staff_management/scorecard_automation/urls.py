@@ -44,6 +44,8 @@ urlpatterns = [
     # Reports who would receive it until the call carries confirm=true: this
     # is mail to real people about their own performance and cannot be undone.
     path("my-card/send-many/", views.ScorecardSendManyView.as_view()),
+    # The month-by-month archive of every card, read back (zip or one card).
+    path("archive/", views.ScorecardArchiveView.as_view()),
 
     # Loading the workbooks. Both read and report first; only a second call
     # with apply=true writes, and the actuals upload then runs the scorecard

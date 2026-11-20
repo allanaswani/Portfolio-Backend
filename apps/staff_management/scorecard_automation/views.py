@@ -2378,3 +2378,56 @@ class CxReturnsView(APIView):
                          "year": found["year"], "rows": len(found["rows"]),
                          "latest_month": max(filled), "skipped": found["skipped"]},
                         status=201)
+
+
+class ScorecardArchiveView(APIView):
+    """The scorecard archive, read back (20 Nov 2026).
+
+    Every month's cards are kept as read-only files on the old host
+    (scorecard_archive). No shared folder is reachable from the server, so
+    this is how they are opened from a PC:
+
+    * ``GET archive/`` - the archived months;
+    * ``GET archive/?period=2026-10`` - that month's cards;
+    * ``GET archive/?period=2026-10&download=1`` - the whole month as a zip;
+    * ``GET archive/?period=2026-10&file=<workbook>/<card>.xlsx`` - one card.
+
+    Everybody's performance record is in here, so only those who may set the
+    scorecard figures (``_may_set_figures``) may open it, and every download
+    is logged with who took it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        import logging
+
+        from django.http import FileResponse, HttpResponse
+
+        from apps.staff_management import scorecard_archive as sa
+
+        if not _may_set_figures(request.user):
+            return Response({"detail": "Only scorecard administrators may open "
+                                       "the scorecard archive."}, status=403)
+        period = (request.query_params.get("period") or "").strip()
+        if not period:
+            return Response({"months": sa.months(), "archive": sa.archive_dir()})
+        log = logging.getLogger("scorecard.archive")
+        try:
+            if request.query_params.get("download"):
+                body = sa.month_zip(period)
+                log.info("archive zip %s taken by %s", period, request.user.username)
+                response = HttpResponse(body, content_type="application/zip")
+                response["Content-Disposition"] = (
+                    f'attachment; filename="Scorecards {period}.zip"')
+                return response
+            rel = request.query_params.get("file")
+            if rel:
+                full = sa.archived_file(period, rel)
+                log.info("archive file %s/%s taken by %s", period, rel,
+                         request.user.username)
+                return FileResponse(open(full, "rb"), as_attachment=True,
+                                    filename=full.replace("\\", "/").rsplit("/", 1)[-1])
+            return Response({"period": period, "cards": sa.month_cards(period)})
+        except sa.ArchiveNotFound as exc:
+            return Response({"detail": str(exc)}, status=404)

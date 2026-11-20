@@ -346,3 +346,99 @@ def notify_administration(summary, out=print):
                  body="\n".join(lines), from_email=settings.DEFAULT_FROM_EMAIL,
                  to=to).send(fail_silently=False)
     out(f"Final-day report e-mailed to {', '.join(to)}.")
+
+
+# ── Reading the archive back, for the Scorecard archive screen ───────────────
+# Built 20 Nov 2026: no shared folder is reachable from the server, so the
+# archive is opened through the portal - a month as one zip, or one card.
+
+_PERIOD_RE = re.compile(r"^\d{4}-\d{2}$")
+
+
+class ArchiveNotFound(Exception):
+    """No such month or file in the archive."""
+
+
+def _month_dir(period):
+    if not _PERIOD_RE.match(str(period or "")):
+        raise ArchiveNotFound(f"{period!r} is not a month (YYYY-MM)")
+    path = os.path.join(archive_dir(), period)
+    if not os.path.isdir(path):
+        raise ArchiveNotFound(f"nothing is archived for {period}")
+    return path
+
+
+def months():
+    """Every archived month, newest first →
+    [{"period", "label", "cards", "workbooks": [{"name", "cards"}], "files"}]."""
+    root = archive_dir()
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for period in sorted(os.listdir(root), reverse=True):
+        path = os.path.join(root, period)
+        if not (_PERIOD_RE.match(period) and os.path.isdir(path)):
+            continue
+        books, files = [], 0
+        for name in sorted(os.listdir(path)):
+            sub = os.path.join(path, name)
+            if os.path.isdir(sub):
+                inside = os.listdir(sub)
+                files += len(inside)
+                books.append({"name": name,
+                              "cards": sum(1 for f in inside if f.endswith(".xlsx"))})
+            else:
+                files += 1
+        year, month = (int(x) for x in period.split("-"))
+        out.append({"period": period,
+                    "label": datetime.date(year, month, 1).strftime("%B %Y"),
+                    "cards": sum(b["cards"] for b in books),
+                    "workbooks": books, "files": files})
+    return out
+
+
+def month_cards(period):
+    """One month's cards → [{"file", "workbook", "name", "size", "saved"}],
+    ``file`` being the path to pass to :func:`archived_file`."""
+    path = _month_dir(period)
+    out = []
+    for book in sorted(os.listdir(path)):
+        sub = os.path.join(path, book)
+        if not os.path.isdir(sub):
+            continue
+        for name in sorted(os.listdir(sub)):
+            if not name.endswith(".xlsx"):
+                continue
+            full = os.path.join(sub, name)
+            out.append({"file": f"{book}/{name}", "workbook": book,
+                        "name": name[:-5], "size": os.path.getsize(full),
+                        "saved": datetime.datetime.fromtimestamp(
+                            os.path.getmtime(full)).isoformat(timespec="minutes")})
+    return out
+
+
+def archived_file(period, rel):
+    """The full path of one archived file of ``period``; never outside it."""
+    base = os.path.realpath(_month_dir(period))
+    full = os.path.realpath(os.path.join(base, str(rel or "")))
+    if not full.startswith(base + os.sep) or not os.path.isfile(full):
+        raise ArchiveNotFound(f"{rel!r} is not in the {period} archive")
+    return full
+
+
+def month_zip(period):
+    """The whole month - every card's .xlsx and .json and the manifest - as zip
+    bytes, under a folder named like the shared folder's: "2026/Oct 26"."""
+    import io
+    import zipfile
+
+    path = _month_dir(period)
+    top = share_month_folder(period).replace(os.sep, "/")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for root, _dirs, files in os.walk(path):
+            for name in sorted(files):
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, path).replace(os.sep, "/")
+                archive.write(full, f"{top}/{rel}")
+    return buffer.getvalue()

@@ -132,3 +132,55 @@ class TimelineTests(TestCase):
         self.assertEqual(out["archived"], 2)          # the incomplete one too
         self.assertEqual(self.sent, [("BCK3783", "2026-10")])   # but not sent
         notify.assert_called_once()
+
+
+class ArchiveScreenTests(TestCase):
+    """The archive read back through the portal: months, cards, zip, one file."""
+
+    def setUp(self):
+        ArchiveTests.setUp(self)   # its temporary archive, not its tests
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+
+        users = get_user_model()
+        self.admin = users.objects.create_user("sc_admin", password="x", is_superuser=True)
+        self.someone = users.objects.create_user("sc_someone", password="x", is_staff=True)
+        self.api = APIClient()
+        sa.archive_card("2026-10", PERSON, card())
+        self.url = "/staff_management/scorecard-automation/archive/"
+
+    def test_months_and_cards_are_listed(self):
+        self.api.force_authenticate(self.admin)
+        res = self.api.get(self.url)
+        self.assertEqual(res.status_code, 200, res.content)
+        month = res.data["months"][0]
+        self.assertEqual((month["period"], month["label"], month["cards"]),
+                         ("2026-10", "October 2026", 1))
+        res = self.api.get(self.url, {"period": "2026-10"})
+        self.assertEqual(res.data["cards"][0]["file"], "Back office/BCK3783 - Bob Waigwa.xlsx")
+
+    def test_month_zip_holds_every_file_under_the_share_layout(self):
+        import io
+        import zipfile
+
+        self.api.force_authenticate(self.admin)
+        res = self.api.get(self.url, {"period": "2026-10", "download": "1"})
+        self.assertEqual(res.status_code, 200)
+        names = zipfile.ZipFile(io.BytesIO(res.content)).namelist()
+        self.assertIn("2026/Oct 26/Back office/BCK3783 - Bob Waigwa.xlsx", names)
+        self.assertIn("2026/Oct 26/manifest.csv", names)
+
+    def test_one_card_downloads_and_nothing_outside_the_month(self):
+        self.api.force_authenticate(self.admin)
+        res = self.api.get(self.url, {"period": "2026-10",
+                                      "file": "Back office/BCK3783 - Bob Waigwa.xlsx"})
+        self.assertEqual(res.status_code, 200)
+        for bad in ("../../etc/passwd", "../2026-09/manifest.csv", "/etc/passwd"):
+            res = self.api.get(self.url, {"period": "2026-10", "file": bad})
+            self.assertEqual(res.status_code, 404, bad)
+        self.assertEqual(self.api.get(self.url, {"period": "../x"}).status_code, 404)
+
+    def test_only_scorecard_administrators(self):
+        # is_staff is legacy noise: it does not open everybody's records.
+        self.api.force_authenticate(self.someone)
+        self.assertEqual(self.api.get(self.url).status_code, 403)
