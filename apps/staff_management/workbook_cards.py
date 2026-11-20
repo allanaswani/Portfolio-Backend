@@ -2816,6 +2816,30 @@ def live_card(sales_code, engine_card, as_at):
                         f"{holder.branch} (AFH Applications report), to "
                         f"{as_at:%d %b %Y}")
                     continue
+        if (spec.book == BACK_OFFICE
+                and (feeds_live.get(_key(wl["feed"])) or {}).get("kind")
+                == "branch_loan_tat"):
+            # Branch_Loan_TAT: the iApply loan TAT report's branch view, for
+            # the branch the template's own row names (the List spells some
+            # differently). No figure yet: the desk's latest month stands.
+            from . import bo_live_feeds as blf
+
+            feed = feeds_live[_key(wl["feed"])]
+            row = _template_row(template_live if template_live is not None
+                                else actuals, wl["feed"], code, 0, person)
+            branch = row[4] if row and len(row) > 4 else None
+            value = blf.branch_loan_tat_value(feed, branch, as_at)
+            if value is not None:
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    measured[wl["row"]] = (
+                        f"the iApply loan TAT report, branch view "
+                        f"({blf._branch_spelling(branch).title()})")
+            continue
         feed = feeds_live.get(_key(wl["feed"]))
         block = 0
         if feed is not None and spec.book == BRANCH_BUSINESS:

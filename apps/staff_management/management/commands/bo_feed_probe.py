@@ -26,6 +26,10 @@ class Command(BaseCommand):
         parser.add_argument("--branches", action="store_true",
                             help="the branch managers' branch totals "
                             "instead of the tellers")
+        parser.add_argument("--loan-tat", action="store_true",
+                            help="prove Branch_Loan_TAT alone against the iApply "
+                            "loan TAT report's branch view, keeping the other "
+                            "proven sheets")
         parser.add_argument("--who", help="one teller's name or sales code: "
                             "show their template figures beside their "
                             "transactions instead of probing")
@@ -41,6 +45,10 @@ class Command(BaseCommand):
             from apps.staff_management import bb_live_feeds
 
             bb_live_feeds.probe(when.year, when.month, out=self.stdout.write)
+            return
+        if options["loan_tat"]:
+            bo_live_feeds.probe_branch_loan_tat(when.year, when.month,
+                                                out=self.stdout.write)
             return
         if options["who"]:
             bo_live_feeds.explain(when.year, when.month, options["who"],

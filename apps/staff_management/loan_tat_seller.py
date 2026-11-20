@@ -22,6 +22,15 @@ the summarised dump, which read 80-93 days where the desk had 12-23 (September
 
 Steps 2's "latest action" is the latest at the time of reading, as in the report,
 so a month read long after it closed can differ slightly from the report run then.
+
+**By branch (20 Nov 2026).** The back office's ``Branch_Loan_TAT`` sheet carries
+one figure per branch and month, the same on the BOM's and the CSOs' rows. The
+same report has a ``tat_vol_rts_branch_view`` sheet: the same step times,
+grouped by the application's ``Branch`` code (named through the report's own
+``_BRANCH_MAP``, copied below) and ``banking_segment``. :func:`branch_tat`
+returns both readings - the branch over every segment, and each branch and
+segment - so :func:`apps.staff_management.bo_live_feeds.prove_branch_loan_tat`
+can find which one the desk's figures are, rather than assuming it.
 """
 from __future__ import annotations
 
@@ -34,7 +43,36 @@ TERMINAL = {"stored", "cancel", "reject", "decline", "archive",
             "stored archived disbursed", "stored cancelled & archive",
             "stored declined & archived", "stored disbursed"}
 COLUMNS = ["ApplicationId", "ActionDate", "CreationDate", "createdAt", "StatusTo",
-           "StatusFrom", "ActionUser", "ActionUserName", "SellerCode", "Seller"]
+           "StatusFrom", "ActionUser", "ActionUserName", "SellerCode", "Seller",
+           "Branch"]
+#: The report's load_raw_data segment, verbatim (its CASE, in its order).
+SEGMENT_SQL = """CASE
+    WHEN c.segment IN ('MASS','STANDARD','PRIVATE','VIRTUAL') THEN 'PERSONAL BANKING'
+    WHEN c.segment IN ('PRIVATE','ULTIMATE') THEN 'ULTIMATE'
+    WHEN c.segment IN ('MEDIUM ENTERPRISES','SMALL ENTERPRISES') THEN 'SME'
+    WHEN c.segment IN ('LARGE ENTERPRISES') THEN 'COMMERCIAL'
+    WHEN c.segment IN ('PROJECT FINANCE') THEN 'PROJECT FINANCE'
+    WHEN c.segment IN ('INTERNAL ACCOUNTS') THEN 'INTERNAL ACCOUNTS'
+    WHEN c.segment IN ('INSTITUTIONAL BANKING') THEN 'INSTITUTIONAL BANKING'
+    WHEN c.segment IN ('DIASPORA PERSONAL BANKING','DIASPORA ULTIMATE BANKING',
+    'DIASPORA BUSINESS BANKING','DIASPORA','NON RESIDENT KENYANS') THEN 'DIASPORA'
+    ELSE 'PERSONAL BANKING' END"""
+#: loan_tat_iapply_automation.py's _BRANCH_MAP, verbatim.
+BRANCH_MAP = {
+    100: 'HEAD OFFICE', 101: 'RETAIL MORTGAGE SALES', 102: 'CORPORAE SALES',
+    103: 'ASSET FINANCE & IPF', 104: 'DIASPORA AND CHANNELS', 105: 'CUSTODY',
+    108: 'CORPORATE & SME/PROJECT FINANC', 16: 'KITENGELA BRANCH',
+    17: 'NAIVASHA BRANCH', 18: 'KISII BRANCH', 19: 'HURLINGHAM BRANCH',
+    210: 'HURLINGHAM BRANCH', 200: 'REHANI BRANCH', 20: 'RIVERROAD BRANCH',
+    220: 'HARAMBEE AVE BRANCH', 22: 'NANYUKI BRANCH', 230: 'BURUBURU BRANCH',
+    23: 'KOMAROCK BRANCH', 24: 'MACHAKOS BRANCH', 250: 'RONGAI BRANCH',
+    25: 'EMBU BRANCH', 260: 'TRM BRANCH', 270: 'SAMEER BRANCH', 280: 'WESTLANDS BRANCH',
+    300: 'MOMBASA BRANCH', 310: 'MOMBASA BRANCH', 400: 'NAKURU BRANCH',
+    410: 'ELDORET BRANCH', 500: 'THIKA BRANCH', 510: 'NYERI BRANCH',
+    520: 'MERU BRANCH', 600: 'KISUMU BRANCH',
+}
+#: The key for "every segment" in branch_tat's result.
+ALL_SEGMENTS = "*"
 
 _DATE = ("CASE WHEN {c}::text ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' "
          "THEN {c}::text::timestamp END")
@@ -48,7 +86,7 @@ def _rows(year, month, timeout_ms):
     action, created = _DATE.format(c='"ActionDate"'), _DATE.format(c='"createdAt"')
     select = ", ".join(f'ilt."{c}"' for c in COLUMNS)
     sql = f"""
-        SELECT {select}
+        SELECT {select}, {SEGMENT_SQL} AS banking_segment
         FROM {TABLE} ilt
         LEFT JOIN customers c ON ilt."Customerid"::decimal = c.cust_id::decimal
         WHERE ilt."ApplicationId" IN (
@@ -62,16 +100,16 @@ def _rows(year, month, timeout_ms):
         return cur.fetchall()
 
 
-def seller_tat(rows, year, month):
-    """The report's seller view for one month → {SELLER CODE: days}."""
+def _month_steps(rows, year, month):
+    """The report's steps 2-5 → the month's action rows with their TAT, or None."""
     import numpy as np
     import pandas as pd
 
     from .loan_tat_stages import map_stage
 
-    df = pd.DataFrame(rows, columns=COLUMNS)
+    df = pd.DataFrame(rows, columns=COLUMNS + ["banking_segment"])
     if df.empty:
-        return {}
+        return None
     for col in ("CreationDate", "ActionDate", "createdAt"):
         parsed = pd.to_datetime(df[col], errors="coerce", utc=True)
         df[col] = parsed.dt.tz_localize(None)
@@ -102,7 +140,19 @@ def seller_tat(rows, year, month):
                               errors="coerce").fillna(0)
     df["TAT"] = df.groupby(["ApplicationId", "stage", "ActionUser"])["TAT"].cumsum()
 
-    month_rows = df[df["ActionDate"].dt.strftime("%Y-%m") == f"{year}-{month:02d}"]
+    return df[df["ActionDate"].dt.strftime("%Y-%m") == f"{year}-{month:02d}"]
+
+
+def _mean_non_zero(values):
+    values = values[values != 0]
+    return float(values.mean()) if len(values) else 0.0
+
+
+def seller_tat(rows, year, month):
+    """The report's seller view for one month → {SELLER CODE: days}."""
+    month_rows = _month_steps(rows, year, month)
+    if month_rows is None:
+        return {}
     out = {}
     for (code, _seller), group in month_rows.groupby(["SellerCode", "Seller"], sort=True):
         values = group["TAT"][group["TAT"] != 0]
@@ -111,6 +161,46 @@ def seller_tat(rows, year, month):
         # the first, and the sheet is sorted.
         out.setdefault(key, float(values.mean()) if len(values) else 0.0)
     return out
+
+
+def _branch_name(code):
+    """The report's map_branch: the code as a number, else HEAD OFFICE."""
+    try:
+        return BRANCH_MAP.get(int(float(str(code).strip())), "HEAD OFFICE")
+    except (TypeError, ValueError):
+        return "HEAD OFFICE"
+
+
+def branch_tat(rows, year, month):
+    """The report's branch view for one month →
+    {BRANCH NAME: {ALL_SEGMENTS: days, segment: days, ...}}.
+
+    The report's rows are a branch CODE and a segment; two codes can share a
+    name (Hurlingham 19 and 210, Mombasa 300 and 310), so the name's figure is
+    taken over all its codes' rows, which is what a lookup by name on the
+    report's ``branch_name`` column gives only when there is one code - and the
+    proof says which of the two the desk used if it ever matters.
+    """
+    month_rows = _month_steps(rows, year, month)
+    if month_rows is None:
+        return {}
+    month_rows = month_rows.assign(branch_name=month_rows["Branch"].map(_branch_name))
+    out = {}
+    for name, group in month_rows.groupby("branch_name", sort=True):
+        out.setdefault(name, {})[ALL_SEGMENTS] = _mean_non_zero(group["TAT"])
+    for (name, segment), group in month_rows.groupby(
+            ["branch_name", "banking_segment"], sort=True):
+        out.setdefault(name, {})[str(segment)] = _mean_non_zero(group["TAT"])
+    return out
+
+
+def branch_month_tat(year, month, timeout_ms=180_000):
+    """{BRANCH NAME: {segment or ALL_SEGMENTS: days}} for the month, or None
+    while it is read in the background (see feed_cache)."""
+    from .feed_cache import cached
+
+    return cached(f"loan_tat_branch:{year}-{month:02d}",
+                  lambda: branch_tat(_rows(year, month, timeout_ms), year, month))
 
 
 def seller_month_tat(year, month, timeout_ms=180_000):

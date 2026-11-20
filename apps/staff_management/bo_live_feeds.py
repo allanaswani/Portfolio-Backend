@@ -12,6 +12,9 @@ Three things can prove a sheet, and each is compared with the desk's figures:
   the same sheet can mean different things on a teller's and a BOM's card;
 * the branch figures the branch managers' cards already read, because on twelve
   sheets everybody in a branch carries one figure (PL_Charge, TAT and others);
+* the iApply loan TAT report's branch view (``tat_vol_rts_branch_view``), for
+  ``Branch_Loan_TAT`` - one figure per branch and month, on the BOM's and the
+  CSOs' rows (:func:`prove_branch_loan_tat`);
 * the live engine's own reading of the line, stored separately
   (:data:`ENGINE_STORE_KIND`, by ``sales_live_feeds.probe``). It leaves loaded
   figures out, so it cannot pass by matching the desk's own upload.
@@ -401,9 +404,122 @@ def _prove_branch_sheets(actuals, holders_, year, month, out):
     return found
 
 
+#: The desk's loan turnaround sheet: one figure per branch and month.
+BRANCH_LOAN_TAT_SHEET = "Branch_Loan_TAT"
+
+
+def _branch_spelling(text):
+    return " ".join(str(text or "").upper().split())
+
+
+def _desk_branch_rows(actuals, sheet, month):
+    """[(BRANCH as the template spells it, figure)] for every row with a figure
+    that is not nought - the BOMs' and CSOs' rows; the tellers' are nought."""
+    col = 6 + month - 1
+    out = []
+    for row in (actuals.get(sheet) or [])[1:]:
+        if len(row) <= max(col, 4) or not isinstance(row[4], str):
+            continue
+        value = row[col]
+        if isinstance(value, (int, float)) and not isinstance(value, bool)                 and abs(value) > TOLERANCE:
+            out.append((_branch_spelling(row[4]), float(value)))
+    return out
+
+
+def prove_branch_loan_tat(actuals, year, month, out=print):
+    """Which reading of the iApply loan TAT report's branch view gives the
+    desk's ``Branch_Loan_TAT`` figures for ``month`` → the feed, or None.
+
+    Tried: the branch over every segment, and the branch in each one segment.
+    Each BOM/CSO row with a figure is one comparison; a reading passes when it
+    gives :data:`PASS_SHARE` of them.
+    """
+    from . import loan_tat_seller as lts
+
+    sheet = BRANCH_LOAN_TAT_SHEET
+    desk = _desk_branch_rows(actuals, sheet, month)
+    if len(desk) < MIN_PEOPLE or not _varied(v for _, v in desk):
+        out(f"  {sheet:28} the template has no figures for "
+            f"{datetime.date(year, month, 1):%B %Y} to compare with")
+        return None
+    try:
+        views = lts.branch_tat(lts._rows(year, month, PROBE_TIMEOUT_MS), year, month)
+    except Exception as exc:  # noqa: BLE001 - the reason is the answer
+        out(f"  {sheet:28} the iApply loan TAT could not be read - {exc}")
+        return None
+    segments = sorted({seg for per in views.values() for seg in per},
+                      key=lambda s: (s != lts.ALL_SEGMENTS, s))
+    best = None
+    for segment in segments:
+        hits = sum(1 for branch, value in desk
+                   if _close(value, (views.get(branch) or {}).get(segment)))
+        share = hits / len(desk)
+        what = "every segment" if segment == lts.ALL_SEGMENTS else segment
+        out(f"  {sheet:28} branch view, {what}: {hits} of {len(desk)} rows match "
+            f"({share:.1%})")
+        if best is None or share > best[0]:
+            best = (share, segment)
+    if best is None:
+        out(f"  {sheet:28} the branch view has no rows for that month")
+        return None
+    share, segment = best
+    misses = [(b, v, (views.get(b) or {}).get(segment)) for b, v in desk
+              if not _close(v, (views.get(b) or {}).get(segment))]
+    for branch, value, got in misses[:25]:
+        out(f"      {branch:24} desk {value:8.2f}   report "
+            f"{'-' if got is None else f'{got:8.2f}'}")
+    passed = share >= PASS_SHARE
+    out(f"  {sheet:28} best {share:.1%} -> {'LIVE' if passed else 'not good enough'}")
+    if not passed:
+        return None
+    return {"kind": "branch_loan_tat", "segment": segment, "sheet": sheet,
+            "match": share, "people": len(desk), "cumulative": False,
+            "month": f"{year}-{month:02d}"}
+
+
+def probe_branch_loan_tat(year, month, out=print):
+    """Prove Branch_Loan_TAT alone and keep the other proven sheets as they
+    are → the feed, or None (and the sheet back on the desk's figure)."""
+    from .workbook_cards import BACK_OFFICE, SPECS, save_file, saved
+
+    actuals = saved(SPECS[BACK_OFFICE].files[1], year)
+    if actuals is None:
+        out("Load the back-office actuals template first - the proof compares "
+            "against it.")
+        return None
+    feed = prove_branch_loan_tat(actuals, year, month, out)
+    stored = dict(saved(STORE_KIND) or {})
+    if feed is None:
+        if stored.pop(BRANCH_LOAN_TAT_SHEET, None) is not None:
+            out(f"{BRANCH_LOAN_TAT_SHEET} no longer matches: back to the desk's figure.")
+    else:
+        stored[BRANCH_LOAN_TAT_SHEET] = feed
+        out(f"{BRANCH_LOAN_TAT_SHEET} now reads live: {describe(feed)}.")
+    save_file(STORE_KIND, stored, f"loan TAT probe {year}-{month:02d}", "probe")
+    return feed
+
+
+def branch_loan_tat_value(feed, branch, as_at):
+    """The proven branch loan TAT for ``branch`` (the template's spelling) in
+    ``as_at``'s month, or None: still being read, no branch, or no step that
+    month (a nought, which the report also writes for an empty month)."""
+    from . import loan_tat_seller as lts
+
+    name = _branch_spelling(branch)
+    if not name:
+        return None
+    views = lts.branch_month_tat(as_at.year, as_at.month)
+    value = ((views or {}).get(name) or {}).get(feed.get("segment") or lts.ALL_SEGMENTS)
+    return float(value) if value else None
+
+
 def describe(feed):
     """A proven feed in words, for the screen."""
     roles = f" ({', '.join(feed['roles'])})" if feed.get("roles") else ""
+    if feed.get("kind") == "branch_loan_tat":
+        segment = feed.get("segment")
+        return ("the iApply loan TAT report's branch view"
+                + ("" if segment in (None, "*") else f", {segment}"))
     if feed.get("kind") == "ratio":
         return f"{feed.get('label')}{roles}"
     if feed.get("kind") == "iapply":
@@ -613,6 +729,11 @@ def probe(year, month, out=print):
 
     found.update({sheet: feed for sheet, feed in _prove_branch_sheets(
         actuals, everybody, year, month, out).items() if sheet not in found})
+    if BRANCH_LOAN_TAT_SHEET in actuals:
+        out("Reading the iApply loan TAT (iapply_loan_tat) by branch ...")
+        loan_tat = prove_branch_loan_tat(actuals, year, month, out)
+        if loan_tat is not None:
+            found[BRANCH_LOAN_TAT_SHEET] = loan_tat
 
     # This run replaces the last: a sheet that no longer matches stops being live.
     dropped = sorted(set(saved(STORE_KIND) or {}) - set(found))
@@ -787,6 +908,10 @@ def live_value(feed, sales_code, as_at, branch=None, name=None):
         return bb_live_feeds.live_value(feed["feed"], branch, as_at)
     if feed.get("kind") == "iapply":
         return _iapply_live(feed, sales_code, name, as_at)
+    if feed.get("kind") == "branch_loan_tat":
+        # By the branch the template's own row names (workbook_cards reads
+        # it there); the List's spelling ("SameerPark") is not the report's.
+        return branch_loan_tat_value(feed, branch, as_at)
     code = (sales_code or "").strip().upper()
     key = f"bo_live:{feed['sheet']}:{code}:{as_at.isoformat()}"
     hit = cache.get(key)
@@ -835,7 +960,8 @@ def warm(as_at, write=None):
         done.append(("transactions per person", len(_measures_kept(first, end) or {})))
     seen = set()
     for f in feeds:
-        if f.get("kind") in (None, "ratio", "per_day_worked", "bb_branch", "iapply"):
+        if f.get("kind") in (None, "ratio", "per_day_worked", "bb_branch", "iapply",
+                             "branch_loan_tat"):
             continue
         start = datetime.date(as_at.year, 1, 1) if f.get("cumulative") else first
         sig = (tuple(sorted(f.get("codes") or [], key=str)), start,
@@ -847,6 +973,11 @@ def warm(as_at, write=None):
                      len(_counts_kept(f.get("codes"), start, end, sig[2]) or {})))
     if any(f.get("kind") == "iapply" for f in feeds):
         done.append(("iApply actions", len(_iapply_kept(as_at) or [])))
+    if any(f.get("kind") == "branch_loan_tat" for f in feeds):
+        from . import loan_tat_seller as lts
+
+        done.append(("loan TAT by branch",
+                     len(lts.branch_month_tat(as_at.year, as_at.month) or {})))
     return done
 
 
