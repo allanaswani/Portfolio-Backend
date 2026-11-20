@@ -300,7 +300,7 @@ class SchemeLiveProofTests(TestCase):
         self.assertEqual(f.probe(2026, 2, out=log.append), {})
         self.assertIn("Load the Scheme template", log[0])
 
-    def _proven_card(self, reading):
+    def _proven_card(self, reading, proven=True):
         from unittest.mock import patch
 
         from . import scheme_live_feeds as f
@@ -308,31 +308,46 @@ class SchemeLiveProofTests(TestCase):
 
         record = self._card("George Ochieng", "SCHEMES_RM", 6,
                             "scheme_commercial_disbursement", 300.0, "GO3528")
-        save_file(f.STORE_KIND, {"scheme_commercial_disbursement": {"live": True}})
-        with patch.object(f, "live_value", return_value=reading):
+        if proven:
+            save_file(f.STORE_KIND, {"scheme_commercial_disbursement": {"live": True}})
+        with patch.object(f, "live_value", return_value=reading), \
+                patch.object(sc, "_warehouse",
+                             side_effect=lambda c, n, keys, a: {k: None for k in keys}):
             return sc.live_payload(record, datetime.date(2026, 10, 31))
 
-    def test_an_open_month_reads_the_proven_line_and_says_which_others_are_the_desks(self):
+    @staticmethod
+    def _lines(card):
+        return {ln["kpi_code"]: ln for p in card["perspectives"] for ln in p["lines"]}
+
+    def test_an_open_month_reads_the_proven_line_and_carries_the_desks_others(self):
         card = self._proven_card(500_000_000.0)
-        lines = {ln["kpi_code"]: ln for p in card["perspectives"] for ln in p["lines"]}
+        lines = self._lines(card)
         line = lines["scheme_commercial_disbursement"]
         self.assertEqual(line["ytd_actual"], 500_000_000.0)
         self.assertEqual(line["as_at"], "live, as at 31 Oct 2026")
         # 750m a year, ten months: 625m.
         self.assertAlmostEqual(line["ytd_target"], 625_000_000.0)
         self.assertAlmostEqual(line["score"], 0.8)
-        self.assertEqual(lines["scheme_sign_ups"]["ytd_actual"], 6.0)
-        self.assertIn("(Jun 2026)", lines["scheme_sign_ups"]["as_at"])
-        self.assertIn("1 of 2 lines read today's figures", card["how_scored"])
-        self.assertAlmostEqual(card["performance_score"], 0.18 - 0.1 + 0.8 * 0.2)
+        # The desk's June sign-ups, against June's target (15 x 6/12 = 7.5).
+        signups = lines["scheme_sign_ups"]
+        self.assertEqual(signups["ytd_actual"], 6.0)
+        self.assertEqual(signups["as_at"], "the desk's latest figure (Jun 2026)")
+        self.assertAlmostEqual(signups["ytd_target"], 7.5)
+        # Everything else has no figure: waiting, not counted.
+        self.assertEqual(card["pending_lines"], 14)
+        self.assertEqual(lines["scheme_training"]["pending_label"], "Waiting for data")
+        self.assertAlmostEqual(card["performance_score"], 0.8 * 0.2 + 0.8 * 0.2)
 
-    def test_a_reading_below_the_desks_figure_leaves_the_stored_card(self):
-        self.assertIsNone(self._proven_card(10.0))
+    def test_a_reading_below_the_desks_figure_keeps_the_desks(self):
+        line = self._lines(self._proven_card(10.0))["scheme_commercial_disbursement"]
+        self.assertEqual(line["ytd_actual"], 300.0)
+        self.assertEqual(line["as_at"], "the desk's latest figure (Jun 2026)")
 
-    def test_nothing_proven_leaves_the_stored_card(self):
-        record = self._card("George Ochieng", "SCHEMES_RM", 6,
-                            "scheme_commercial_disbursement", 300.0, "GO3528")
-        self.assertIsNone(sc.live_payload(record, datetime.date(2026, 10, 31)))
+    def test_nothing_proven_carries_the_desks_figure(self):
+        line = self._lines(self._proven_card(None, proven=False))[
+            "scheme_commercial_disbursement"]
+        self.assertEqual(line["ytd_actual"], 300.0)
+        self.assertIn("(Jun 2026)", line["as_at"])
 
     def test_the_stored_month_itself_is_never_replaced(self):
         from . import scheme_live_feeds as f
@@ -342,6 +357,114 @@ class SchemeLiveProofTests(TestCase):
                             "scheme_commercial_disbursement", 300.0, "GO3528")
         save_file(f.STORE_KIND, {"scheme_commercial_disbursement": {"live": True}})
         self.assertIsNone(sc.live_payload(record, datetime.date(2026, 6, 30)))
+
+
+class CorrectedCardTests(TestCase):
+    """20 Nov 2026, option A: the signed June cards stay as the desk scored
+    them; from July each line measures what its name says."""
+
+    RMS = [name for _c, name, role, _j in ROSTER if role == "SCHEMES RM"]
+
+    def setUp(self):
+        actuals = june_actuals()
+        cards = []
+        for code, name, role, joined in ROSTER:
+            sheet = sc.ROLE_SHEETS[sc._fold(role)]
+            cards.append((sc.RosterRow(code, name, role, sheet, joined),
+                          sc.compute_card(sc.CARDS[sheet], name, 6, joined, actuals)))
+        sc.store(cards, datetime.date(2026, 6, 1), loaded_by="test")
+
+    def _live(self, code, figures, as_at=datetime.date(2026, 10, 31)):
+        """``figures``: {(code, key): value} the warehouse gives."""
+        from unittest.mock import patch
+
+        def warehouse(c, name, keys, at):
+            out = {}
+            for k in keys:
+                value = figures.get((c, k))
+                out[k] = (None if value is None else
+                          {"value": value, "as_at": at, "as_at_label": f"{k} to {at:%b %Y}",
+                           "problem": None})
+            return out
+
+        with patch.object(sc, "_warehouse", side_effect=warehouse):
+            return sc.live_payload(sc.stored_for(code, as_at=as_at), as_at)
+
+    @staticmethod
+    def _lines(card):
+        return {ln["kpi_code"]: ln for p in card["perspectives"] for ln in p["lines"]}
+
+    def test_june_stays_exactly_as_signed(self):
+        self.assertIs(sc.card_for("SCHEMES_RM", 2026, 6), sc.CARDS["SCHEMES_RM"])
+        self.assertIs(sc.card_for("SCHEMES_RM", 2026, 7), sc.CORRECTED["SCHEMES_RM"])
+        self.assertIsNone(sc.live_payload(sc.stored_for("DK4239"), datetime.date(2026, 6, 30)))
+
+    def test_each_corrected_line_reads_what_it_says(self):
+        rm = {ln.kpi: ln for ln in sc.CORRECTED["SCHEMES_RM"].lines}
+        self.assertEqual(rm["scheme_value_of_property"].actual, ("warehouse", "property_value"))
+        self.assertEqual(rm["scheme_number_of_property"].actual, ("warehouse", "property_units"))
+        self.assertEqual(rm["scheme_vic_life"].actual, ("warehouse", "vic_life_count"))
+        self.assertEqual(rm["scheme_vic_non_life"].actual, ("warehouse", "vic_non_life_count"))
+        self.assertEqual(rm["scheme_deposit_growth"].actual, ("warehouse", "deposit_growth"))
+        # Weights, targets and proration are the workbook's own.
+        self.assertEqual([ln.weight for ln in sc.CORRECTED["SCHEMES_RM"].lines],
+                         [ln.weight for ln in sc.CARDS["SCHEMES_RM"].lines])
+        admin = {ln.kpi: ln for ln in sc.CORRECTED["PROJECT_ADMIN"].lines}
+        self.assertEqual(admin["scheme_fid"].score, ("pass", 0.03))
+        self.assertEqual(admin["scheme_audit"].score, ("audit_band",))
+        head = {ln.kpi: ln for ln in sc.CORRECTED["HOD_SCHEMES"].lines}
+        self.assertEqual(head["scheme_deposit_growth"].actual, ("team", "deposit_growth"))
+        self.assertEqual(head["scheme_rm_productivity"].actual[0], "team_avg")
+
+    def test_the_heads_productivity_is_the_rms_average(self):
+        actuals = june_actuals()
+        result = sc.compute_card(sc.CORRECTED["HOD_SCHEMES"], "Nicodemus Ngila", 6, 0,
+                                 actuals, team=self.RMS)
+        line = next(ln for ln in result["lines"] if ln["kpi"] == "scheme_rm_productivity")
+        found = [actuals.cell("Scheme_RM_Productivity", 3, 9, n, 6) for n in self.RMS]
+        found = [v for v in found if isinstance(v, float)]
+        self.assertTrue(found)
+        self.assertAlmostEqual(line["actual"], sum(found) / len(found))
+        self.assertGreater(line["actual"], 0)
+
+    def test_an_rms_october_reads_the_warehouse_and_carries_the_desks_returns(self):
+        card = self._live("DK4239", {("DK4239", "training_hours"): 30.0,
+                                     ("DK4239", "property_value"): 8_200_000.0})
+        lines = self._lines(card)
+        training = lines["scheme_training"]
+        self.assertEqual(training["ytd_actual"], 30.0)
+        self.assertEqual(training["as_at"], "live - training_hours to Oct 2026")
+        # 40 a year, joined in month 2: (10 - 2) / 12 of 40.
+        self.assertAlmostEqual(training["ytd_target"], 40 * 8 / 12)
+        value = lines["scheme_value_of_property"]
+        self.assertEqual(value["ytd_actual"], 8_200_000.0)
+        # The desk's June audit score, scored against June's band.
+        self.assertIn("(Jun 2026)", lines["scheme_audit"]["as_at"])
+        # No figure for leave or VIC: waiting, not counted.
+        self.assertEqual(lines["scheme_leave"]["pending_label"], "Waiting for data")
+        self.assertIsNone(lines["scheme_leave"]["weighted_score"])
+        self.assertEqual(card["period"]["label"], "October 2026")
+        self.assertIn("2026-10", card["months_loaded"])
+
+    def test_the_heads_deposit_growth_adds_up_the_rms(self):
+        codes = [c for c, _n, role, _j in ROSTER if role == "SCHEMES RM"]
+        figures = {(c, "deposit_growth"): 100.0 * (i + 1) for i, c in enumerate(codes)}
+        lines = self._lines(self._live("NN3533", figures))
+        deposits = lines["scheme_deposit_growth"]
+        self.assertEqual(deposits["ytd_actual"], 1000.0)
+        self.assertIn("the 4 Scheme RMs' figures added together", deposits["as_at"])
+        # The template's own faults are not carried into October.
+        self.assertEqual(lines["scheme_strategic_initiatives"]["pending_label"],
+                         "Waiting for data")
+        self.assertEqual(lines["scheme_rm_productivity"]["pending_label"],
+                         "Waiting for data")
+
+    def test_a_team_short_of_one_rm_waits_and_names_them(self):
+        codes = [c for c, _n, role, _j in ROSTER if role == "SCHEMES RM"]
+        figures = {(c, "deposit_growth"): 1.0 for c in codes[1:]}
+        deposits = self._lines(self._live("NN3533", figures))["scheme_deposit_growth"]
+        self.assertIsNone(deposits["ytd_actual"])
+        self.assertIn("George Ochieng", deposits["pending"])
 
 
 class MonthsWithNothingInThemTests(TestCase):

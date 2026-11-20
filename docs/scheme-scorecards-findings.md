@@ -124,3 +124,29 @@ Against the two workbooks above and the lake. The server proof is under Scorecar
 - **The rest.** Sign-ups, reconciliation, FID, audit, call-backs and NPS are desk returns.
 
 The actuals workbook is complete only for June, so most lines have one month to prove against.
+
+## From July 2026: the faults put right (decided 20 Nov 2026, option A)
+
+The signed cards up to June 2026 stay exactly as the template scored them
+(`FAITHFUL_UNTIL` in `scheme_cards.py`). From July the same cards - weights,
+targets, caps and proration unchanged - are scored on `CORRECTED`, and work the
+way every other card does:
+
+| Line | From July |
+|---|---|
+| Number / Value of Property | warehouse: HFDI sales + affordable housing, as the RM cards read them |
+| VIC life / non-life | warehouse: VIC (Britam) policies with paid premiums, split life / non-life |
+| Deposit Growth (RM) | warehouse: the RM's deposit book growth since December |
+| Deposit Growth (admins, head) | the Scheme RMs' deposit growth added together; waits if any RM's cannot be read |
+| Training hours, Leave | warehouse: HR's training return (by PF), Aruti's leave report |
+| PROJECT_ADMIN FID | pass at 3% or below (was divided by the text "<3%") |
+| PROJECT_ADMIN Audit | the audit band, as the other Scheme cards |
+| HOD Scheme RM productivity | the Scheme RMs' rows averaged (was the head's own empty row) |
+| HOD Strategic initiatives | a figure Administration enters, share completed, target 1 (was no formula, target typed 0.1) |
+
+Every other line is a desk return read from the actuals workbook for the month.
+With no figure for the month, the desk's latest is shown against the target of
+the month it is from, and says so. A line with no figure at all waits and is
+not counted. Disbursements read live only where the disbursement proof (Scorecards, Live feeds) has passed,
+and never below the desk's year to date. The HOD revenue line is still outside
+his total: the card's other weights already make 100%.

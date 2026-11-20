@@ -14,6 +14,11 @@ the text "<3%" and so always scores nought. Every one of those is a line in
 :data:`CARDS` below with the template's own formula beside it, so correcting
 one later is a one-line change somebody can see.
 
+**From July 2026 the faults are put right** (decided 20 Nov 2026): the signed
+cards up to June stay exactly as above; later months are scored on CORRECTED,
+the same cards with each line measuring what its name says, read live where the
+warehouse measures it. See ``FAITHFUL_UNTIL`` and :func:`live_payload`.
+
 How the workbook looks a figure up, and therefore how this does::
 
     =VLOOKUP($C$2, '<sheet>'!$C$a:$Q$b, month + 3, 0)
@@ -30,7 +35,7 @@ error, exactly as in Excel - reported, not papered over.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 #: The workbook's own error value, carried through the arithmetic so a total
 #: that Excel would show as #N/A is not shown here as a number.
@@ -73,6 +78,13 @@ class Line:
                              # ("loaded",)   typed on the card - a desk figure
                              # ("zero",)     H typed 0
                              # ("empty",)    H left empty
+                             # From July 2026 (CORRECTED, below):
+                             # ("warehouse", key)  live_actuals' figure for
+                             #                     the person
+                             # ("team", key)       that figure added up over
+                             #                     the Scheme RMs
+                             # ("team_avg", sheet, first, last)  the Scheme
+                             #                     RMs' rows of a block, averaged
     score: tuple
     counted: bool = True     # inside the card's SUM for the total
     note: str = ""
@@ -376,6 +388,120 @@ ROLE_CODES = {"SCHEMES_RM": "scheme_rm", "PROJECT_ADMIN": "scheme_project_admin"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# From July 2026: each line measures what its name says
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Decided 20 Nov 2026 (Administration, option A). The signed cards - June 2026
+# and before - stay exactly as the desk's template scored them. From the month
+# after, the same cards (weights, targets, caps, proration) are scored with the
+# template's faults put right, and the way every other card works:
+#
+#   * a line the warehouse measures reads it live, for the month asked;
+#   * a desk return (sign-ups, FID, reconciliation, audit, NPS, ...) reads the
+#     desk's actuals workbook for that month; with no figure for the month, the
+#     desk's latest figure, scored against ITS month's target, and said so;
+#   * a line with no figure anywhere waits, and is not counted.
+
+#: The last month scored exactly as the desk's template scored it.
+FAITHFUL_UNTIL = (2026, 6)
+
+_TEAM_DEPOSITS = dict(
+    actual=("team", "deposit_growth"),
+    note="The Scheme RMs' deposit growth added together, each read as the RM "
+         "cards read it (their book since December). The template's figure was "
+         "a typed list of inflows; the head's was a copy of the revenue figure.")
+
+#: Every card's corrections. Group Synergies read the wrong blocks of the
+#: actuals workbook, and the workbook has no life / non-life split at all.
+_COMMON_FIXES = {
+    "scheme_number_of_property": dict(
+        actual=("warehouse", "property_units"),
+        note="Properties sold or assisted (HFDI sales and affordable housing), "
+             "as the RM cards read them."),
+    "scheme_value_of_property": dict(
+        actual=("warehouse", "property_value"),
+        note="Value of the properties sold or assisted (HFDI sales and "
+             "affordable housing). The template read the VIC count here, so a "
+             "count of 1 was scored against a value target."),
+    "scheme_vic_life": dict(
+        actual=("warehouse", "vic_life_count"),
+        note="VIC (Britam) life policies with paid premiums, from the "
+             "insurance register."),
+    "scheme_vic_non_life": dict(
+        actual=("warehouse", "vic_non_life_count"),
+        note="VIC (Britam) non-life policies with paid premiums, from the "
+             "insurance register. The template read another block here."),
+    "scheme_training": dict(
+        actual=("warehouse", "training_hours"),
+        note="HR's training return, by PF."),
+    "scheme_leave": dict(
+        actual=("warehouse", "leave_cleared"),
+        note="Aruti's leave balance report: the share of leave cleared."),
+}
+
+_CARD_FIXES = {
+    "SCHEMES_RM": {
+        "scheme_deposit_growth": dict(
+            actual=("warehouse", "deposit_growth"),
+            note="Your deposit book's growth since December, as the RM cards "
+                 "read it. The template's figure was a typed list of inflows."),
+    },
+    "PROJECT_ADMIN": {
+        "scheme_fid": dict(
+            score=("pass", 0.03),
+            note="Pass at 3% or below, as the Schemes Admin card scores it. "
+                 "The template divided by the text \"<3%\", so it always "
+                 "scored 0."),
+        "scheme_audit": dict(
+            score=("audit_band",),
+            note="Scored on the audit band, as the other Scheme cards are. "
+                 "The template scored it as a ratio, as though higher were "
+                 "better."),
+        "scheme_deposit_growth": _TEAM_DEPOSITS,
+    },
+    "SCHEMES_ADMIN": {"scheme_deposit_growth": _TEAM_DEPOSITS},
+    "HOD_SCHEMES": {
+        "scheme_deposit_growth": _TEAM_DEPOSITS,
+        "scheme_rm_productivity": dict(
+            actual=("team_avg", "Scheme_RM_Productivity", 3, 9),
+            note="The Scheme RMs' weighted productivity, averaged. The "
+                 "template read the head's own row, which is empty."),
+        "scheme_strategic_initiatives": dict(
+            actual=("loaded",), target=1, score=("ratio", 1.0),
+            note="The share of strategic initiatives completed on time, "
+                 "entered by Administration. The template had no score "
+                 "formula here, so the line was 0 every month, and typed "
+                 "its weight (0.1) as the target."),
+    },
+}
+
+#: Desk figures from the signed months that were the template's fault, so
+#: they are never carried into a corrected month.
+FAULTY_DESK_FIGURES = {
+    "HOD_SCHEMES": {"scheme_rm_productivity", "scheme_strategic_initiatives"},
+}
+
+
+def _corrected(card):
+    fixes = {**_COMMON_FIXES, **_CARD_FIXES.get(card.sheet, {})}
+    return replace(card, lines=tuple(
+        replace(line, **fixes[line.kpi]) if line.kpi in fixes else line
+        for line in card.lines))
+
+
+#: The cards from the month after FAITHFUL_UNTIL.
+CORRECTED = {sheet: _corrected(card) for sheet, card in CARDS.items()}
+
+
+def card_for(sheet, year, month):
+    """The card a month is scored with: the template's own up to
+    FAITHFUL_UNTIL, the corrected one after it."""
+    if (year, month) <= FAITHFUL_UNTIL:
+        return CARDS[sheet]
+    return CORRECTED[sheet]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # The actuals workbook
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -518,12 +644,16 @@ def _score(rule, actual, ytd):
     raise ValueError(f"unknown scoring rule {rule!r}")
 
 
-def compute_card(card, name, month, joined, actuals, loaded=None):
+def compute_card(card, name, month, joined, actuals, loaded=None, team=()):
     """One person's card, exactly as the template computes it.
 
     ``joined`` is the List sheet's ``prorate_new`` (months before joining).
     ``loaded`` is ``{kpi code: value}`` for the figures the card has typed on
-    it and the actuals workbook does not carry.
+    it and the actuals workbook does not carry. ``team`` is the Scheme RMs'
+    names, for a corrected card's ``team_avg`` line.
+
+    A corrected card's warehouse lines are left unscored here: they are read
+    live when the card is shown (:func:`live_payload`).
 
     → ``{"lines": [...], "total": float | NA, "weight": float}``
     """
@@ -537,6 +667,14 @@ def compute_card(card, name, month, joined, actuals, loaded=None):
             raw = actuals.cell(sheet, first, last, name, month)
             empty = raw is None
             actual = 0.0 if empty else raw
+        elif source in ("warehouse", "team"):
+            actual = None
+        elif source == "team_avg":
+            _kind, sheet, first, last = line.actual
+            found = [actuals.cell(sheet, first, last, n, month) for n in team]
+            found = [v for v in found if _num(v)]
+            empty = not found
+            actual = sum(found) / len(found) if found else 0.0
         elif source == "revenue":
             actual = actuals.revenue_ytd(month)
         elif source == "loaded":
@@ -549,7 +687,7 @@ def compute_card(card, name, month, joined, actuals, loaded=None):
         # A desk figure nobody has loaded is left unscored and out of the
         # total - which is what the June run did: Benedicto Juma's signed
         # 0.6091 is his card without the collections line, typed in later.
-        score = (None if actual is None and source == "loaded"
+        score = (None if actual is None and source in ("loaded", "warehouse", "team")
                  else _score(line.score, actual, ytd))
         if score is None:
             weighted = 0.0 if line.score[0] == "none" else None
@@ -568,7 +706,7 @@ def compute_card(card, name, month, joined, actuals, loaded=None):
             "description": line.description, "weight": line.weight,
             "fy_target": full, "ytd_target": ytd, "actual": actual,
             "score": score, "weighted": weighted, "counted": line.counted,
-            "note": line.note, "empty": empty,
+            "note": line.note, "empty": empty, "source": source,
         })
     return {"lines": out, "total": total, "weight": weight}
 
@@ -682,7 +820,7 @@ def months_with_figures(actuals, names):
     return found
 
 
-def compute_months(template, actuals_book, loaded_for=None, only=None):
+def compute_months(template, actuals_book, loaded_for=None, only=None, year=None):
     """Every month the actuals workbook holds, for everybody on the List →
     ``({month: [(RosterRow, result)]}, unplaced)``.
 
@@ -690,8 +828,12 @@ def compute_months(template, actuals_book, loaded_for=None, only=None):
     the one the template happens to be set to. ``only`` restricts it to one
     month (1..12), refused if the workbook holds nothing for it.
     ``loaded_for(month)`` gives that month's figures typed under Figures to
-    load.
+    load. A month after FAITHFUL_UNTIL is computed on the corrected card, its
+    warehouse lines left to be read when the card is shown.
     """
+    import datetime
+
+    year = year or datetime.date.today().year
     roster, unplaced = read_roster(template)
     actuals = Actuals.from_workbook(actuals_book)
     held = sorted(months_with_figures(actuals,
@@ -706,13 +848,14 @@ def compute_months(template, actuals_book, loaded_for=None, only=None):
                 f"{_MONTHS[only - 1]}. It holds "
                 f"{', '.join(_MONTHS[m - 1] for m in held)}.")
         held = [only]
+    team = [person.name for person in roster if person.sheet == "SCHEMES_RM"]
     out = {}
     for month in held:
         loaded = loaded_for(month) if loaded_for else {}
         out[month] = [
-            (person, compute_card(CARDS[person.sheet], person.name, month,
-                                  person.joined, actuals,
-                                  loaded.get(person.sales_code, {})))
+            (person, compute_card(card_for(person.sheet, year, month),
+                                  person.name, month, person.joined, actuals,
+                                  loaded.get(person.sales_code, {}), team=team))
             for person in roster]
     return out, unplaced
 
@@ -898,69 +1041,223 @@ def card_payload(record, asked=None):
     }
 
 
+def _warehouse(code, name, keys, as_at):
+    """live_actuals' figures for one person → {key: figure dict or None}."""
+    from django.core.cache import cache
+
+    from .live_scorecard import live_actuals, pf_for
+
+    cache_key = f"scheme_wh:{code}:{as_at.isoformat()}:{','.join(sorted(keys))}"
+    found = cache.get(cache_key)
+    if found is None:
+        read = live_actuals(code, staff_name=name, staff_pf=pf_for(code),
+                            wanted=set(keys), as_at=as_at)
+        found = {k: read.get(k) for k in keys}
+        cache.set(cache_key, found, 3600)
+    return found
+
+
+def _scheme_rms(year):
+    """The Scheme RMs on the cards loaded for ``year`` → [(code, name)]."""
+    from .models import SchemeScorecard
+
+    seen = {}
+    for code, name in (SchemeScorecard.objects
+                       .filter(sheet="SCHEMES_RM", month__year=year)
+                       .order_by("-month").values_list("sales_code", "staff_name")):
+        seen.setdefault(code.strip().upper(), name)
+    return sorted(seen.items())
+
+
+def _team_figure(key, year, as_at):
+    """``key`` added up over the Scheme RMs → (value or None, label or why)."""
+    rms = _scheme_rms(year)
+    if not rms:
+        return None, "No Scheme RM cards are loaded, so there is no team to add up."
+    total, missing, dates = 0.0, [], []
+    for code, name in rms:
+        fig = _warehouse(code, name, [key], as_at).get(key) or {}
+        if fig.get("value") is None:
+            missing.append(f"{name} ({fig.get('problem') or 'no figure'})")
+            continue
+        total += float(fig["value"])
+        if fig.get("as_at"):
+            dates.append(fig["as_at"])
+    if missing:
+        # A team total short of somebody would read as the team's and be
+        # wrong; the line waits instead and says whose figure is missing.
+        return None, "Not every Scheme RM's figure could be read: " + "; ".join(missing)
+    at = min(dates) if dates else as_at
+    return total, (f"the {len(rms)} Scheme RMs' figures added together, as at "
+                   f"{at.day} {at:%b %Y}")
+
+
+def _desk_figure(history, line, sheet, month):
+    """The desk's figure for ``line`` at ``month``, else its latest before it →
+    (month it is from, value) or (None, None).
+
+    A signed month's figure that was the template's fault is never carried
+    (FAULTY_DESK_FIGURES), and neither is a cell the desk left empty."""
+    for m in sorted(history, reverse=True):
+        if m > month:
+            continue
+        if (history[m].month.year, m) <= FAITHFUL_UNTIL and \
+                line.kpi in FAULTY_DESK_FIGURES.get(sheet, ()):
+            continue
+        for stored in (history[m].card or {}).get("lines", []):
+            if (stored.get("kpi") == line.kpi and _num(stored.get("actual"))
+                    and not stored.get("empty")):
+                return m, float(stored["actual"])
+    return None, None
+
+
 def live_payload(record, as_at):
-    """The newest stored card with proven lines read to ``as_at`` → a payload, or
-    None if nothing is proven. Every other line stays the desk's, against the target
-    of its own month, and says so."""
-    import copy
+    """A month after FAITHFUL_UNTIL, on the corrected card → a payload, or None
+    for a signed month (that card is shown exactly as stored).
+
+    Each line, the way the other cards work:
+      * a warehouse line reads the warehouse for ``as_at``;
+      * a desk return reads the desk's figure for this month; failing that the
+        desk's latest, scored against the target of the month it is from;
+      * disbursements read live where the proof has passed, and never below
+        the desk's own year to date;
+      * a line with no figure anywhere waits and is not counted.
+    """
     import datetime
 
     from . import scheme_live_feeds as feeds
+    from .models import SchemeScorecard
 
+    year, month = as_at.year, as_at.month
+    if (record.sheet not in CORRECTED or year != record.month.year
+            or (year, month) <= FAITHFUL_UNTIL):
+        return None
+    spec = CORRECTED[record.sheet]
+    history = {r.month.month: r for r in SchemeScorecard.objects.filter(
+        sales_code__iexact=record.sales_code, month__year=year,
+        month__month__lte=month) if has_desk_figures(r)}
+    history.setdefault(record.month.month, record)
+    loaded = loaded_figures(datetime.date(year, month, 1)).get(
+        record.sales_code.strip().upper(), {})
     proven = {k for k, v in feeds.proven().items() if v.get("live")}
-    if (not proven or as_at.year != record.month.year
-            or as_at.replace(day=1) <= record.month or record.sheet not in CARDS):
-        return None
-    lines_by_kpi = {line.kpi: line for line in CARDS[record.sheet].lines}
-    data = copy.deepcopy(record.card or {})
-    total = record.total
-    read = {}
-    for line in data.get("lines", []):
-        kpi = line["kpi"]
-        if kpi not in proven or kpi not in lines_by_kpi:
-            continue
-        value = feeds.live_value(kpi, record.staff_name, as_at)
-        # A year-to-date sum cannot fall below what the desk has recorded.
-        if value is None or (_num(line["actual"]) and value < line["actual"]):
-            continue
-        spec = lines_by_kpi[kpi]
-        full, ytd = _ytd_target(spec, as_at.month, record.joined)
-        score = _score(spec.score, value, ytd)
-        weighted = score * spec.weight
-        if spec.counted and _num(total) and _num(line.get("weighted")):
-            total += weighted - line["weighted"]
-        line.update(fy_target=full, ytd_target=ytd, actual=value, score=score,
-                    weighted=weighted, empty=False)
-        read[kpi] = line
-    if not read:
-        return None
+    # One read for all of the person's own warehouse lines.
+    keys = [ln.actual[1] for ln in spec.lines if ln.actual[0] == "warehouse"]
+    own = (_warehouse(record.sales_code, record.staff_name, keys, as_at)
+           if keys else {})
 
-    stored = type("Stored", (), {})()
-    stored.card, stored.total, stored.month = data, total, record.month
-    stored.sheet, stored.sales_code = record.sheet, record.sales_code
-    stored.staff_name = record.staff_name
-    payload = card_payload(stored)
+    lines, labels, waiting = [], {}, {}
+    total, kinds = 0.0, {"warehouse": 0, "desk": 0, "carried": 0, "waiting": 0}
+    for line in spec.lines:
+        source = line.actual[0]
+        full, ytd = _ytd_target(line, month, record.joined)
+        actual, label, why = None, "", ""
+        if source in ("zero", "empty"):
+            actual = 0.0 if source == "zero" else None
+            label = "typed on the desk's card"
+        elif source in ("warehouse", "team"):
+            key = line.actual[1]
+            if source == "warehouse":
+                fig = own.get(key) or {}
+                value, said = fig.get("value"), fig.get("as_at_label")
+                why = fig.get("problem") or ""
+            else:
+                value, said = _team_figure(key, year, as_at)
+                why = "" if value is not None else said
+            if value is not None:
+                actual = float(value)
+                label = f"live - {said}" if said else f"live, as at {as_at:%d %b %Y}"
+                kinds["warehouse"] += 1
+        else:
+            then, desk = _desk_figure(history, line, record.sheet, month)
+            if source == "loaded" and line.kpi in loaded:
+                then, desk = month, float(loaded[line.kpi])
+            live = (feeds.live_value(line.kpi, record.staff_name, as_at)
+                    if line.kpi in proven else None)
+            if live is not None and (desk is None or live >= desk):
+                # A year to date cannot fall below what the desk recorded.
+                actual = float(live)
+                label = f"live, as at {as_at:%d %b %Y}"
+                kinds["warehouse"] += 1
+            elif desk is not None:
+                actual = desk
+                if then == month:
+                    label = f"the desk's figure for {as_at:%B %Y}"
+                    kinds["desk"] += 1
+                else:
+                    # Scored against the target of the month it is from: June's
+                    # year to date against November's target reads five months short.
+                    full, ytd = _ytd_target(line, then, record.joined)
+                    label = (f"the desk's latest figure "
+                             f"({datetime.date(year, then, 1):%b %Y})")
+                    kinds["carried"] += 1
+            else:
+                why = ("This is a desk return. It is read from the Scheme actuals "
+                       "workbook loaded under Scorecards, and the desk has no "
+                       "figure for it yet." if source != "loaded" else
+                       "Administration enters this figure under Scorecards → "
+                       "Figures to load.")
+        score = weighted = None
+        if actual is not None or source == "empty":
+            score = _score(line.score, actual, ytd)
+            weighted = (NA if score == NA else
+                        0.0 if score is None else score * line.weight)
+        else:
+            kinds["waiting"] += 1
+            waiting[line.kpi] = why or "The warehouse has no figure for this line yet."
+        if line.counted and weighted is not None:
+            total = NA if (total == NA or weighted == NA) else total + weighted
+        labels[line.kpi] = label
+        lines.append({
+            "row": line.row, "kpi": line.kpi, "perspective": line.perspective,
+            "description": line.description, "weight": line.weight,
+            "fy_target": full, "ytd_target": ytd, "actual": actual,
+            "score": score, "weighted": weighted, "counted": line.counted,
+            "note": line.note, "empty": False, "source": source,
+        })
+
+    shown = type("Shown", (), {})()
+    shown.card, shown.total = {"lines": lines}, total if _num(total) else None
+    shown.month, shown.sheet = datetime.date(year, month, 1), record.sheet
+    shown.sales_code, shown.staff_name = record.sales_code, record.staff_name
+    payload = card_payload(shown)
     end = as_at.isoformat()
-    desk_month = f"{record.month:%B %Y}"
     for perspective in payload["perspectives"]:
         for ln in perspective["lines"]:
-            if ln["kpi_code"] in read:
-                ln["as_at"] = f"live, as at {as_at:%d %b %Y}"
-                ln["as_at_date"] = end
-            elif not ln["pending"]:
-                ln["as_at"] = f"the desk's latest figure ({record.month:%b %Y})"
-    shown = sum(1 for ln in data["lines"])
+            kpi = ln["kpi_code"]
+            if kpi in waiting:
+                ln.update(pending=waiting[kpi], pending_label="Waiting for data",
+                          as_at="")
+            else:
+                ln.update(pending="", pending_label="", as_at=labels.get(kpi, ""),
+                          as_at_date=end)
+    every = [ln for p in payload["perspectives"] for ln in p["lines"]]
+    first_corrected = (datetime.date(*FAITHFUL_UNTIL, 28)
+                       + datetime.timedelta(days=4)).replace(day=1)
     payload.update({
         "live": True,
-        "live_lines": len(read),
+        "live_lines": kinds["warehouse"],
+        "pending_lines": kinds["waiting"],
+        "scored_lines": sum(1 for ln in every if ln["score"] is not None),
+        "scored_weight": round(sum(ln["weight"] for ln in every
+                                   if ln["score"] is not None), 4),
+        "unscored_weight": round(sum(ln["weight"] for ln in every
+                                     if ln["score"] is None), 4),
         "period": {"label": f"{as_at:%B %Y}", "as_at": end},
-        "months_loaded": sorted({*payload["months_loaded"],
-                                 f"{as_at.year}-{as_at.month:02d}"}),
+        "months_loaded": sorted({*months_loaded(record.sales_code), *(
+            f"{year}-{m:02d}" for m in range(first_corrected.month, month + 1))}),
+        "coverage_note": (
+            "" if not kinds["waiting"] else
+            f"{kinds['waiting']} line(s) have no figure yet and are not counted; "
+            f"they fill in as the figures arrive."),
+        "showing_other_month": "",
         "how_scored": (
-            f"{len(read)} of {shown} lines read today's figures. The others show the "
-            f"desk's latest figure ({desk_month}). Disbursements count a customer new "
-            f"since the desk's last list only if their employer code belongs to one "
-            f"scheme RM. Otherwise this is scored as the desk's Scheme workbook scores it."),
+            f"From {first_corrected:%B %Y} each line measures what its name says; "
+            f"the signed cards before it stay as the desk scored them. "
+            f"{kinds['warehouse']} line(s) read the warehouse, {kinds['desk']} are "
+            f"the desk's returns for {as_at:%B}, {kinds['carried']} show the desk's "
+            f"latest figure against that month's target, and {kinds['waiting']} "
+            f"wait for a figure. Weights, targets and caps are the Scheme "
+            f"workbook's own."),
     })
     return payload
 

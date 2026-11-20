@@ -346,7 +346,7 @@ class ScorecardSchemeUploadView(_WorkbookUploadView):
             by_month, unplaced = sc.compute_months(
                 template, actuals,
                 lambda m: sc.loaded_figures(datetime.date(year, m, 1)),
-                only=only)
+                only=only, year=year)
         except sc.SchemeCardError as exc:
             return Response({"detail": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001 - the message is for the reader

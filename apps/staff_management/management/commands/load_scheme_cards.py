@@ -82,7 +82,7 @@ class Command(BaseCommand):
             by_month, unplaced = sc.compute_months(
                 template, actuals,
                 lambda m: sc.loaded_figures(datetime.date(year, m, 1)),
-                only=only)
+                only=only, year=year)
         except sc.SchemeCardError as exc:
             raise CommandError(str(exc))
 
