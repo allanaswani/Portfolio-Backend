@@ -184,3 +184,73 @@ class ArchiveScreenTests(TestCase):
         # is_staff is legacy noise: it does not open everybody's records.
         self.api.force_authenticate(self.someone)
         self.assertEqual(self.api.get(self.url).status_code, 403)
+
+
+class GroupSummaryTests(TestCase):
+    """Each group's summary: the desk's months off its sheet, later months off
+    the archived cards, blanks never filled in."""
+
+    def setUp(self):
+        ArchiveTests.setUp(self)
+        hdr = ["PF-No", "SalesCode", "Staff - Name", "Role", "Branch", "Zone"] + [
+            46023.0 + 30 * i for i in range(12)]
+        desk = [0.7, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, None, None, None]
+        self.bo_book = {"tables": {
+            "Monthly_Summ": [hdr, [1329.0, "BCK3783", "Bob Waigwa", "Teller", "Meru", "Zone A"] + desk],
+            "RBO_Monthly_Summ": [hdr],
+        }}
+        bb_hdr = ["pf-number", "sales_code", "Staff - Name", "Role", "branch"] + [None] * 12
+        self.bb_book = {"tables": {"Branch_Monthly_Summary": [
+            [], [], bb_hdr,
+            [1.0, "AA1", "A", "BBM", "X"] + [0.5] * 9 + [None] * 3,
+            [2.0, "BB2", "B", "BBM", "Y"] + [0.9] * 9 + [None] * 3]}}
+        sa.archive_card("2026-10", PERSON, card(score=0.81))
+
+    def _saved(self, kind, year=None):
+        return {"scorecards": self.bo_book, "bb_scorecards": self.bb_book}.get(kind)
+
+    def test_desk_months_then_the_archived_month(self):
+        from . import scorecard_summaries as ss
+
+        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
+            groups = {g["group"]: g for g in ss.group_summaries(2026, 10)}
+        bo = groups["Back office"]
+        self.assertEqual(bo["headers"][:3], ["PF-No", "SalesCode", "Staff - Name"])
+        row = bo["rows"][0]
+        self.assertEqual(row["identity"][:3], [1329, "BCK3783", "Bob Waigwa"])
+        self.assertEqual(row["scores"][8], 0.78)          # Sep, the desk's
+        self.assertEqual(row["scores"][9], 0.81)          # Oct, the archived card
+        self.assertAlmostEqual(row["change"], 0.03)
+        self.assertEqual(bo["from_desk"], list(range(1, 10)))
+        self.assertEqual(bo["from_archive"], [10])
+        self.assertIn("Back office - RBO", groups)
+
+    def test_a_month_with_neither_stays_blank(self):
+        from . import scorecard_summaries as ss
+
+        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
+            groups = {g["group"]: g for g in ss.group_summaries(2026, 11)}
+        self.assertIsNone(groups["Back office"]["rows"][0]["scores"][10])
+        self.assertIsNone(groups["Back office"]["rows"][0]["change"])
+
+    def test_branch_managers_are_ranked_on_the_latest_month(self):
+        from . import scorecard_summaries as ss
+
+        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
+            groups = {g["group"]: g for g in ss.group_summaries(2026, 9)}
+        ranks = {r["code"]: r["rank"] for r in groups["Branch managers"]["rows"]}
+        self.assertEqual(ranks, {"BB2": 1, "AA1": 2})
+
+    def test_summaries_go_in_the_excel_and_the_zip(self):
+        import io
+        import zipfile
+
+        from openpyxl import load_workbook
+
+        from . import scorecard_summaries as ss
+
+        with patch("apps.staff_management.workbook_cards.saved", side_effect=self._saved):
+            wb = load_workbook(io.BytesIO(ss.summaries_workbook(2026, 10)))
+            self.assertIn("Back office", wb.sheetnames)
+            names = zipfile.ZipFile(io.BytesIO(sa.month_zip("2026-10"))).namelist()
+        self.assertIn("2026/Oct 26/Group summaries - October 2026.xlsx", names)

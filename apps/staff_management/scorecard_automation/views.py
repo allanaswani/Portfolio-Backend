@@ -2390,7 +2390,9 @@ class ScorecardArchiveView(APIView):
     * ``GET archive/`` - the archived months;
     * ``GET archive/?period=2026-10`` - that month's cards;
     * ``GET archive/?period=2026-10&download=1`` - the whole month as a zip;
-    * ``GET archive/?period=2026-10&file=<workbook>/<card>.xlsx`` - one card.
+    * ``GET archive/?period=2026-10&file=<workbook>/<card>.xlsx`` - one card;
+    * ``GET archive/?period=2026-10&summary=1`` - each group's summary, as the
+      desk's summary sheets lay it out (``summary=xlsx`` for the Excel).
 
     Everybody's performance record is in here, so only those who may set the
     scorecard figures (``_may_set_figures``) may open it, and every download
@@ -2413,6 +2415,30 @@ class ScorecardArchiveView(APIView):
         if not period:
             return Response({"months": sa.months(), "archive": sa.archive_dir()})
         log = logging.getLogger("scorecard.archive")
+        summary = request.query_params.get("summary")
+        if summary:
+            # Each group's summary, as the desk's summary sheets lay it out.
+            import re
+
+            from apps.staff_management import scorecard_summaries as ss
+
+            if not re.fullmatch(r"\d{4}-\d{2}", period):
+                return Response({"detail": "period must be YYYY-MM"}, status=400)
+            year, month = (int(x) for x in period.split("-"))
+            if not 1 <= month <= 12:
+                return Response({"detail": "period must be YYYY-MM"}, status=400)
+            if summary == "xlsx":
+                log.info("group summaries %s taken by %s", period,
+                         request.user.username)
+                response = HttpResponse(
+                    ss.summaries_workbook(year, month),
+                    content_type="application/vnd.openxmlformats-officedocument"
+                                 ".spreadsheetml.sheet")
+                response["Content-Disposition"] = (
+                    f'attachment; filename="Group summaries {period}.xlsx"')
+                return response
+            return Response({"period": period,
+                             "groups": ss.group_summaries(year, month)})
         try:
             if request.query_params.get("download"):
                 body = sa.month_zip(period)

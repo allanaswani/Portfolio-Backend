@@ -427,8 +427,9 @@ def archived_file(period, rel):
 
 
 def month_zip(period):
-    """The whole month - every card's .xlsx and .json and the manifest - as zip
-    bytes, under a folder named like the shared folder's: "2026/Oct 26"."""
+    """The whole month - every card's .xlsx and .json, the manifest and the
+    group summaries - as zip bytes, under a folder named like the shared
+    folder's: "2026/Oct 26"."""
     import io
     import zipfile
 
@@ -436,6 +437,17 @@ def month_zip(period):
     top = share_month_folder(period).replace(os.sep, "/")
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        # Each group's summary, as the desk's summary sheets lay it out. A
+        # summary that cannot be built never costs the cards themselves.
+        try:
+            from .scorecard_summaries import summaries_workbook
+
+            year, month = (int(x) for x in period.split("-"))
+            label = datetime.date(year, month, 1).strftime("%B %Y")
+            archive.writestr(f"{top}/Group summaries - {label}.xlsx",
+                             summaries_workbook(year, month))
+        except Exception:  # noqa: BLE001
+            pass
         for root, _dirs, files in os.walk(path):
             for name in sorted(files):
                 full = os.path.join(root, name)
