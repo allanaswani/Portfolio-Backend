@@ -517,3 +517,86 @@ class ListingUploadTests(UploadTests):
         self.assertEqual(resp.data["inserted"], 1)
         self.assertEqual(resp.data["active_not_on_file"], 1)
         self.assertEqual(employees().get(staff_id=9).exit, 0)
+
+
+class EmployeeRecordTests(TransactionTestCase):
+    """One person at a time on employee_table: add, list, edit, delete."""
+
+    LIST = "/staff_management/employee-data/"
+
+    def setUp(self):
+        with connection.schema_editor() as editor:
+            editor.create_model(EmployeeTable)
+        self.addCleanup(UploadTests._drop_employee_table)
+        User = get_user_model()
+        self.admin = User.objects.create_user("hradmin2", password="x")
+        self.admin.groups.add(Group.objects.get_or_create(name="staff_mgt")[0])
+        self.rm = User.objects.create_user("an_rm", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _add(self, **over):
+        body = {"staff_id": 4022, "name": "Grace Kanja", "email": "grace@hfgroup.co.ke",
+                "date_of_birth": "1990-05-04", "date_of_employment": "2015-01-12",
+                "department": "Finance", "job_title": "Analyst", "exit": 0}
+        body.update(over)
+        return self.client.post(self.LIST, body, format="json")
+
+    def test_add_then_read_back_every_field(self):
+        resp = self._add()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.data["staff_id"], 4022)
+        self.assertEqual(resp.data["date_of_birth"], "1990-05-04")
+        row = employees().get(pk=resp.data["id"])
+        self.assertEqual(int(row.staff_id), 4022)
+        self.assertEqual(row.date_of_birth.date().isoformat(), "1990-05-04")
+        self.assertIsNotNone(row.updated_at)
+
+    def test_a_staff_id_already_on_the_roster_is_refused(self):
+        self._add()
+        resp = self._add(name="Someone Else")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("staff_id", resp.data)
+
+    def test_a_staff_id_is_required(self):
+        resp = self._add(staff_id=None)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_edit_any_field(self):
+        pk = self._add().data["id"]
+        resp = self.client.patch(f"{self.LIST}{pk}/", {
+            "job_title": "Senior Analyst", "grade": "07", "exit": 1,
+            "staff_exit_date": "2026-11-01", "date_of_employment": "2014-03-01"},
+            format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        row = employees().get(pk=pk)
+        self.assertEqual(row.job_title, "Senior Analyst")
+        self.assertEqual((row.grade, row.exit), ("07", 1))
+        self.assertEqual(row.staff_exit_date.isoformat(), "2026-11-01")
+        self.assertEqual(row.date_of_employment.date().isoformat(), "2014-03-01")
+
+    def test_moving_to_another_persons_staff_id_is_refused(self):
+        self._add()
+        other = self._add(staff_id=5000, name="Other").data["id"]
+        resp = self.client.patch(f"{self.LIST}{other}/", {"staff_id": 4022}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_list_searches_by_name_and_staff_id(self):
+        self._add()
+        self._add(staff_id=5000, name="Peter Otieno")
+        names = [r["name"] for r in self.client.get(self.LIST, {"search": "otieno"}).data]
+        self.assertEqual(names, ["Peter Otieno"])
+        names = [r["name"] for r in self.client.get(self.LIST, {"search": "4022"}).data]
+        self.assertEqual(names, ["Grace Kanja"])
+
+    def test_delete(self):
+        pk = self._add().data["id"]
+        self.assertEqual(self.client.delete(f"{self.LIST}{pk}/").status_code, 204)
+        self.assertFalse(employees().filter(pk=pk).exists())
+
+    def test_only_administration_may_change_or_read(self):
+        pk = self._add().data["id"]
+        self.client.force_authenticate(self.rm)
+        self.assertEqual(self.client.patch(f"{self.LIST}{pk}/", {"name": "X"}, format="json").status_code, 403)
+        self.assertEqual(self.client.delete(f"{self.LIST}{pk}/").status_code, 403)
+        self.assertEqual(self.client.get(self.LIST).status_code, 403)

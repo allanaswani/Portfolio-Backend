@@ -716,3 +716,187 @@ class EmployeeMasterTemplateView(APIView):
                     "unit, grade and job title). Nobody is ever deleted. A single "
                     "CSV is read as a lone full_list sheet.",
         })
+
+
+# ── One record at a time: view, add, edit, delete ────────────────────────────
+#
+# The upload above is the bulk path. These let Administration correct or add a
+# single person on ``employee_table`` from the All Employees screen - every
+# column is editable. They read and write through ``employee_db()``, the same
+# alias the upload uses, and supply the id themselves where the table has no
+# sequence (see _id_is_database_generated). Every change is logged with who
+# made it and which fields moved.
+
+import logging
+
+from rest_framework import serializers
+
+from core.permissions import IsAdministrationUser
+
+_change_log = logging.getLogger("staff_management.employee_table")
+
+
+class _CalendarDate(serializers.Field):
+    """A date-only value on a timestamp column (date_of_birth,
+    date_of_employment): read back as YYYY-MM-DD, written at UTC midnight like
+    the upload does, so the calendar day survives the round trip."""
+
+    def to_representation(self, value):
+        day = _as_date(value)
+        return day.isoformat() if day else None
+
+    def to_internal_value(self, data):
+        if data in (None, ""):
+            return None
+        try:
+            day = date.fromisoformat(str(data)[:10])
+        except ValueError:
+            raise serializers.ValidationError("Use a date as YYYY-MM-DD.")
+        return _as_datetime(day)
+
+
+class EmployeeRecordSerializer(serializers.ModelSerializer):
+    # staff_id is a DecimalField(max_digits=990) on the model, which DRF's own
+    # decimal field cannot serialise; it is a whole number (the PF number).
+    staff_id = serializers.IntegerField(allow_null=True, required=False)
+    date_of_birth = _CalendarDate(allow_null=True, required=False)
+    date_of_employment = _CalendarDate(allow_null=True, required=False)
+
+    class Meta:
+        model = EmployeeTable
+        fields = [
+            "id", "staff_id", "name", "national_id", "email", "gender",
+            "date_of_birth", "age", "date_of_employment", "service_code",
+            "service_years", "division", "department", "unit", "org_unit",
+            "grade", "job_title", "hfdi_erp_id", "exit", "staff_exit_date",
+            "promotion", "promotion_date", "new", "updated_at",
+        ]
+        read_only_fields = ["id", "updated_at"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.staff_id is not None:
+            data["staff_id"] = canon_staff_id(instance.staff_id)
+        return data
+
+    def validate(self, attrs):
+        if self.instance is None and attrs.get("staff_id") is None:
+            raise serializers.ValidationError(
+                {"staff_id": "Staff ID (PF number) is required."})
+        return attrs
+
+    def validate_staff_id(self, value):
+        if value is None:
+            raise serializers.ValidationError("Staff ID (PF number) is required.")
+        taken = (EmployeeTable.objects.using(employee_db())
+                 .filter(staff_id=value))
+        if self.instance is not None:
+            taken = taken.exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise serializers.ValidationError(
+                f"Staff ID {value} is already on the roster.")
+        return value
+
+
+def _record_queryset():
+    return EmployeeTable.objects.using(employee_db())
+
+
+def _changed(before, after):
+    return sorted(k for k in after if before.get(k) != after.get(k))
+
+
+@extend_schema(tags=["Staff Management — Employee master"])
+class EmployeeRecordListCreateView(APIView):
+    """``GET employee-data/`` - the roster, ``?search=`` on name, staff ID,
+    national ID, e-mail, department or job title (``?limit=``, default 100).
+    ``POST employee-data/`` - add one person."""
+
+    permission_classes = [IsAuthenticated, IsAdministrationUser]
+
+    def get(self, request):
+        from django.db.models import Q
+
+        qs = _record_queryset().order_by("name")
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            match = (Q(name__icontains=search) | Q(email__icontains=search)
+                     | Q(national_id__icontains=search)
+                     | Q(department__icontains=search)
+                     | Q(job_title__icontains=search))
+            if canon_staff_id(search) is not None:
+                match |= Q(staff_id=canon_staff_id(search))
+            qs = qs.filter(match)
+        try:
+            limit = max(1, min(int(request.query_params.get("limit") or 100), 2000))
+        except ValueError:
+            limit = 100
+        return Response(EmployeeRecordSerializer(qs[:limit], many=True).data)
+
+    def post(self, request):
+        serializer = EmployeeRecordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        alias = employee_db()
+        fields = dict(serializer.validated_data, updated_at=timezone.now())
+        if not _id_is_database_generated():
+            fields["id"] = (_record_queryset().aggregate(m=Max("id"))["m"] or 0) + 1
+        with transaction.atomic(using=alias):
+            record = EmployeeTable(**fields)
+            record.save(using=alias, force_insert=True)
+        _change_log.info("employee_table: %s added staff %s (id %s)",
+                         request.user.username, record.staff_id, record.pk)
+        return Response(EmployeeRecordSerializer(record).data,
+                        status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=["Staff Management — Employee master"])
+class EmployeeRecordDetailView(APIView):
+    """``GET / PUT / PATCH / DELETE employee-data/<id>/`` - one person."""
+
+    permission_classes = [IsAuthenticated, IsAdministrationUser]
+
+    def _record(self, pk):
+        return _record_queryset().filter(pk=pk).first()
+
+    def get(self, request, pk):
+        record = self._record(pk)
+        if record is None:
+            return Response({"detail": "No such employee."}, status=404)
+        return Response(EmployeeRecordSerializer(record).data)
+
+    def put(self, request, pk):
+        return self._update(request, pk, partial=False)
+
+    def patch(self, request, pk):
+        return self._update(request, pk, partial=True)
+
+    def _update(self, request, pk, partial):
+        record = self._record(pk)
+        if record is None:
+            return Response({"detail": "No such employee."}, status=404)
+        before = EmployeeRecordSerializer(record).data
+        serializer = EmployeeRecordSerializer(record, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        for field, value in serializer.validated_data.items():
+            setattr(record, field, value)
+        record.updated_at = timezone.now()
+        alias = employee_db()
+        with transaction.atomic(using=alias):
+            record.save(using=alias)
+        after = EmployeeRecordSerializer(record).data
+        _change_log.info("employee_table: %s edited staff %s (id %s): %s",
+                         request.user.username, record.staff_id, record.pk,
+                         ", ".join(_changed(before, after)) or "no change")
+        return Response(after)
+
+    def delete(self, request, pk):
+        record = self._record(pk)
+        if record is None:
+            return Response({"detail": "No such employee."}, status=404)
+        staff_id = record.staff_id
+        alias = employee_db()
+        with transaction.atomic(using=alias):
+            record.delete(using=alias)
+        _change_log.info("employee_table: %s deleted staff %s (id %s)",
+                         request.user.username, staff_id, pk)
+        return Response(status=status.HTTP_204_NO_CONTENT)

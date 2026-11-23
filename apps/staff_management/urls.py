@@ -46,6 +46,11 @@ urlpatterns = [
          name="upload-employee-data"),
     path("employee-data/template/",   emv.EmployeeMasterTemplateView.as_view(),
          name="employee-data-template"),
+    # One person at a time on employee_table: list/add, view/edit/delete.
+    path("employee-data/",            emv.EmployeeRecordListCreateView.as_view(),
+         name="employee-data-list"),
+    path("employee-data/<int:pk>/",   emv.EmployeeRecordDetailView.as_view(),
+         name="employee-data-detail"),
 
     # ── Staff master (old employees/ = staff_employee_data, NOT the DMC table) ─
     path("employees/upload-csv/", lv.StaffEmployeeCsvUploadView.as_view()),

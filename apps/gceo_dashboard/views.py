@@ -735,7 +735,8 @@ class EmployeeRosterListView(generics.GenericAPIView):
 
     # Columns the admin directory renders — all safe scalar fields on the ETL base.
     COLUMNS = [
-        "name", "staff_id", "national_id", "email",
+        # id: the record the All Employees screen edits (employee-data/<id>/).
+        "id", "name", "staff_id", "national_id", "email",
         "department", "division", "unit", "org_unit", "job_title", "grade",
         "gender", "age", "date_of_birth", "date_of_employment",
         "service_code", "service_years",
