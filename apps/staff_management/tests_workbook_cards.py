@@ -9,7 +9,7 @@ small card of their own, built the way the reader builds one.
 
 import datetime
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from . import workbook_cards as bo
 
@@ -1797,3 +1797,41 @@ class YearToDateCannotFallTests(TestCase):
         # The user is the template row's code column; the month is November's.
         self.assertEqual(read.call_args.args[0], "X")
         self.assertEqual(read.call_args.args[2], datetime.date(2026, 11, 1))
+
+
+
+class EngineTargetCellsTests(SimpleTestCase):
+    """A joiner the desk has not put on Summary Allocation gets the engine's
+    per-person target, prorated as the workbook prorates (Jackson Nyawa)."""
+
+    def test_missing_targets_come_from_the_engine_prorated(self):
+        from . import workbook_cards as wc
+
+        spec = wc.SPECS["sales"]
+        lines = [
+            {"row": 8, "feed": "New_Customers", "measure": "New Customers",
+             "typed": False, "pm": 0.0, "growth": 0.0},
+            {"row": 10, "feed": "Revenue_Contribution", "measure": "Income Contribution",
+             "typed": False, "pm": 0.0, "growth": 0.0},
+            {"row": 11, "feed": "Plot_Sales_Volume", "measure": "Number of Property",
+             "typed": False, "pm": 4.0, "growth": 4.0},          # the desk's own: kept
+            {"row": 12, "feed": "PL_Charge", "measure": "Loan Loss",
+             "typed": False, "pm": 0.0, "growth": 0.0},          # sign-flipped: skipped
+        ]
+        pool = [
+            {"feed": "newcustomers", "name": "newcustomers", "negate": False,
+             "line": {"growth_target": 120.0, "prior_year": None, "annual_target": 120.0,
+                      "target_source": "your DMC row"}},
+            {"feed": "revenuecontribution", "name": "incomecontribution", "negate": False,
+             "line": {"growth_target": None, "prior_year": 1000.0, "annual_target": 2200.0}},
+            {"feed": "plotsalesvolume", "name": "numberofproperty", "negate": False,
+             "line": {"growth_target": 99.0}},
+            {"feed": "plcharge", "name": "loanloss", "negate": True,
+             "line": {"growth_target": 5.0}},
+        ]
+        out = wc.engine_target_cells(spec, lines, pool, lambda row: 9.0)
+        self.assertEqual(sorted(out), [8, 10])
+        g, prior = spec.cols["growth"], spec.cols["prior"]
+        self.assertEqual(out[8][0][(7, g)], 120.0 * 3 / 12)        # joined in September
+        self.assertEqual(out[10][0][(9, g)], (2200.0 - 1000.0) * 3 / 12)
+        self.assertEqual(out[10][0][(9, prior)], 1000.0)

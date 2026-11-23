@@ -2603,6 +2603,66 @@ def _line_blocks(book, actuals, holder, month, base, feeds_live):
     return out
 
 
+def _engine_match(pool, wl):
+    """The engine line a workbook line reads: sheet and name, then sheet,
+    then name - the matching the live figures use."""
+    return (next((p for p in pool if p["feed"] and p["name"]
+                  and p["feed"] == _key(wl["feed"])
+                  and p["name"] == _key(wl["measure"])), None)
+            or next((p for p in pool if p["feed"] and
+                     p["feed"] == _key(wl["feed"])), None)
+            or next((p for p in pool if p["name"] and
+                     p["name"] == _key(wl["measure"])), None)
+            # A line whose KPI cell is merged with the one above (VIC
+            # Premiums / "non-life as per assigned Target") is named only by
+            # its measure of success.
+            or (next((p for p in pool if p["name"] and
+                      p["name"] == _key(wl.get("initiative"))), None)
+                if not _key(wl["measure"]) else None))
+
+
+def engine_target_cells(spec, lines, pool, prorate_of):
+    """{row: (cells, engine line)}: the targets the workbook has none of.
+
+    The sales workbook takes every target off its Summary Allocation sheet by
+    the person's name, so somebody the desk has not put on it - a joiner such
+    as Jackson Nyawa (JN3696, PB ARM, from September) - gets 0 on every line
+    and #DIV/0! everywhere, although his targets are allocated on the DMC
+    tables. The live engine already reads those (allocation sheet, then the
+    person's own DMC row, then the role's target); this puts its GROWTH into
+    the card's growth cell, prorated exactly as the workbook prorates the
+    sheet's figure (x (12 - prorate_new) / 12), and its prior year into the
+    prior cell, so the card's own 2026 FY, YTD and score formulas run as they
+    do for everybody else. A target the workbook does have is never touched.
+    """
+    cols = spec.cols
+    out = {}
+    if cols.get("growth") is None:
+        return out
+    for wl in lines:
+        if wl.get("typed"):
+            continue
+        if any(_num(wl.get(f)) and wl.get(f) != 0 for f in ("pm", "growth")):
+            continue
+        match = _engine_match(pool, wl)
+        if match is None or match["negate"]:
+            continue
+        ln = match["line"]
+        annual, prior, growth = (ln.get("annual_target"), ln.get("prior_year"),
+                                 ln.get("growth_target"))
+        if not _num(growth):
+            growth = (annual - prior) if _num(annual) and _num(prior) else annual
+        if not _num(growth) or growth == 0:
+            continue
+        prorate = prorate_of(wl["row"])
+        prorate = float(prorate) if _num(prorate) and 0 <= prorate < 12 else 0.0
+        cells = {(wl["row"] - 1, cols["growth"]): float(growth) * (12 - prorate) / 12}
+        if cols.get("prior") is not None and _num(prior):
+            cells[(wl["row"] - 1, cols["prior"])] = float(prior)
+        out[wl["row"]] = (cells, ln)
+    return out
+
+
 def live_card(sales_code, engine_card, as_at):
     """The month still open, scored by the workbook's own formulas over the
     figures the warehouse gives today → a card, or None.
@@ -2670,6 +2730,29 @@ def live_card(sales_code, engine_card, as_at):
     base = compute(book, actuals, holder, month)
     actual_col = spec.cols["actual"]
     overrides, found = {}, {}
+    # Targets the workbook has none of, from the engine's per-person targets
+    # (see engine_target_cells). Sales cards: the back office's targets are
+    # the role's own numbers on the card, not an allocation.
+    target_cells, target_from = {}, {}
+    if spec.book == SALES:
+        _prorate_ev = Evaluator(book, actuals, holder, month)
+        filled = engine_target_cells(spec, base["lines"], pool,
+                                     lambda r: _prorate_ev.cell(r - 1, 14))
+        for row, (cells, ln) in filled.items():
+            target_cells.update(cells)
+            target_from[row] = ln.get("target_source") or "your own allocated target"
+        if filled:
+            # Some lines build 2026 FY straight off the allocation rather than
+            # from the growth cell (VIC, non-life, drawdowns): where FY is
+            # still 0, the same prorated figure goes into the FY cell.
+            growth_col, fy_col = spec.cols["growth"], spec.cols["fy"]
+            for wl in compute(book, actuals, holder, month, target_cells)["lines"]:
+                if wl["row"] not in filled or (_num(wl.get("pm")) and wl["pm"] != 0):
+                    continue
+                value = filled[wl["row"]][0].get((wl["row"] - 1, growth_col))
+                if _num(value):
+                    target_cells[(wl["row"] - 1, fy_col)] = value
+    overrides.update(target_cells)
     # The back office first reads the feeds the probe has proven - a count
     # off transaction_diary that gave the desk's own figures for a closed
     # month (bo_live_feeds). They win over the engine, whose readers look
@@ -2745,7 +2828,7 @@ def live_card(sales_code, engine_card, as_at):
                 None)
             carried[wl["row"]] = own or latest
     # The desk's year to date per line, before anything live is put in.
-    desk_card = (compute(book, template_live, holder, month)["lines"]
+    desk_card = (compute(book, template_live, holder, month, target_cells)["lines"]
                  if carried else [])
     desk = {wl["row"]: wl["actual"] for wl in desk_card}
     # What the desk's latest figure scores against THIS month's target.
@@ -3058,13 +3141,7 @@ def live_card(sales_code, engine_card, as_at):
                     and sales_live_feeds.line_key(wl) not in bo_engine)
         # Sheet and name together first: both mortgage lines read
         # Asset_Drawdown, and only the name tells commercial from not.
-        match = (next((p for p in pool if p["feed"] and p["name"]
-                       and p["feed"] == _key(wl["feed"])
-                       and p["name"] == _key(wl["measure"])), None)
-                 or next((p for p in pool if p["feed"] and
-                          p["feed"] == _key(wl["feed"])), None)
-                 or next((p for p in pool if p["name"] and
-                          p["name"] == _key(wl["measure"])), None))
+        match = _engine_match(pool, wl)
         if match is None:
             continue
         pool.remove(match)
@@ -3099,7 +3176,7 @@ def live_card(sales_code, engine_card, as_at):
             # off the template's unfilled September cell and showed 0.
             by_month[then] = {w["row"]: w for w in compute(
                 book, running_totals_filled(template_live or actuals, then),
-                holder, then)["lines"]}
+                holder, then, target_cells)["lines"]}
         return by_month[then]
 
     def accumulates(wl):
@@ -3219,6 +3296,14 @@ def live_card(sales_code, engine_card, as_at):
             continue
         earlier = at_month(then).get(r)
         if earlier is not None:
+            # A joiner's own proration can make the figure's month an error
+            # in the workbook itself: prorate_new 9 counts from October, and
+            # the YTD formula divides by (months - prorate) = 9 - 9 = 0 for
+            # September (Jackson Nyawa). That month is not theirs to be
+            # scored at; the card's month, which is, stands.
+            if (isinstance(earlier.get("score"), dict)
+                    and not isinstance(wl.get("score"), dict)):
+                continue
             for field in ("ytd_target", "actual", "score", "weighted"):
                 wl[field] = earlier[field]
 
@@ -3320,6 +3405,10 @@ def live_card(sales_code, engine_card, as_at):
         for ln, wl in zip(p["lines"], [w for w in card["lines"]
                                        if (w["perspective"] or "Other")
                                        == p["perspective"]]):
+            if wl["row"] in target_from:
+                ln["target_source"] = (f"{target_from[wl['row']]} - not on the "
+                                       f"workbook's Summary Allocation, so the "
+                                       f"target comes from the DMC tables")
             if wl.get("waiting"):
                 ln["pending"] = wl["waiting"]
                 ln["pending_label"] = "Waiting for data"
