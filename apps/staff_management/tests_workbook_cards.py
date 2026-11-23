@@ -273,6 +273,34 @@ class StoredCardTests(TestCase):
         self.assertEqual(card["live_lines"], 0)
         self.assertIn("0 of 3 lines read today's figures", card["how_scored"])
 
+    def test_a_line_the_workbook_shows_as_an_error_leaves_no_score(self):
+        """The workbook's total over an error is the error, so the desk gives
+        no score. The live card used to add up only the lines with a number
+        (Jackson Nyawa JN3696: 28.1% on 27.5% of his weight, 13 lines dividing
+        by a target of 0)."""
+        from unittest.mock import patch
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        real = bo.compute
+
+        def no_target_on_the_first_line(*args, **kwargs):
+            card = real(*args, **kwargs)
+            first = card["lines"][0]
+            first["score"] = first["weighted"] = {"e": "#DIV/0!"}
+            return card
+
+        with patch.object(bo, "compute", side_effect=no_target_on_the_first_line):
+            card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertIsNone(card["performance_score"])
+        self.assertIn("Not scored", card["not_scored"])
+        self.assertIn("target is 0", card["not_scored"])
+        self.assertIn("Not scored", card["coverage_note"])
+        # The same person with every line scored keeps the score.
+        bob = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertIsNotNone(bob["performance_score"])
+        self.assertEqual(bob["not_scored"], "")
+
     def test_a_feed_proven_for_another_role_leaves_this_person_on_the_desk(self):
         card = self._open_month_with_a_proven_feed(roles=["BOM"])
         opening = card["perspectives"][0]["lines"][0]

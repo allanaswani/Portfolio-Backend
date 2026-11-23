@@ -283,3 +283,20 @@ class TheMonthAskedForTests(TestCase):
         self.assertIsNone(month)
         self.assertEqual(bad.status_code, 400)
         self.assertIn("YYYY-MM", str(bad.data))
+
+
+class NoOverallScoreTests(TestCase):
+    """A card the workbook gives no total for is never written as 0%."""
+
+    def test_the_mail_says_why_and_never_zero(self):
+        reason = "Not scored: the workbook itself shows #DIV/0! on 13 lines."
+        _subject, body = E.compose(a_card(performance_score=None, not_scored=reason))
+        self.assertIn(reason, body)
+        self.assertNotIn("0.0%", body)
+
+    def test_the_workbook_says_not_scored(self):
+        import openpyxl
+
+        ws = openpyxl.load_workbook(build_card_workbook(a_card(performance_score=None))).active
+        values = [c.value for row in ws.iter_rows() for c in row]
+        self.assertIn("Not scored", values)

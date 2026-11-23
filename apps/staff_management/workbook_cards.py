@@ -3113,9 +3113,38 @@ def live_card(sales_code, engine_card, as_at):
         wl["waiting"] = (engine.get("pending") or
                          "The warehouse has no figure for this line yet.")
     card["total"] = total
+    # A line the workbook itself shows as an error (#DIV/0!, #N/A ...) makes
+    # the workbook's own total that error too - SUM over an error is the
+    # error - so the desk's run writes no score for that person. Adding up
+    # only the lines that happen to have a number gave Jackson Nyawa (JN3696,
+    # PB ARM, joined September 2026) 28.1% for October on 27.5% of his
+    # weight: his targets grow a 2025 book he does not have, so 13 lines
+    # divide by a target of 0, and the desk's Monthly_Summ has no score for
+    # him in any month. The card now does what the workbook does.
+    errored = [wl for wl in card["lines"]
+               if not wl.get("waiting") and next(
+                   (v["e"] for v in (wl.get("actual"), wl.get("score"), wl.get("weighted"))
+                    if isinstance(v, dict) and v.get("e")), "")]
+    not_scored = ""
+    if errored:
+        card["total"] = None
+        codes = sorted({next(v["e"] for v in (wl.get("actual"), wl.get("score"),
+                                               wl.get("weighted"))
+                             if isinstance(v, dict) and v.get("e"))
+                        for wl in errored})
+        names = [wl["measure"] or wl["initiative"] for wl in errored]
+        not_scored = (
+            f"Not scored: the workbook itself shows {' / '.join(codes)} on "
+            f"{len(errored)} line{'s' if len(errored) != 1 else ''} "
+            f"({', '.join(names)}), so its total is an error as well and the "
+            f"desk's run gives no score."
+            + (" #DIV/0! means the line's target is 0 - no target is set for "
+               "this person on it (a target grows the person's own prior-year "
+               "figure, which a new joiner does not have)."
+               if "#DIV/0!" in codes else ""))
 
     record = type("LiveRecord", (), {})()
-    record.book, record.card, record.total = spec.book, card, total
+    record.book, record.card, record.total = spec.book, card, card["total"]
     record.recorded, record.month = None, as_at.replace(day=1)
     record.sales_code, record.staff_name = code.upper(), holder.name
     record.sheet, record.branch = holder.sheet, str(holder.branch or "")
@@ -3218,10 +3247,12 @@ def live_card(sales_code, engine_card, as_at):
         # live where it has not.
         "months_loaded": [f"{as_at.year}-{m:02d}"
                           for m in range(1, as_at.month + 1)],
-        "coverage_note": (
+        "coverage_note": " ".join(x for x in (
+            not_scored,
             "" if not waiting else
             f"{waiting} line(s) have no live figure yet and are not counted; "
-            f"they fill in as the warehouse has them."),
+            f"they fill in as the warehouse has them.") if x),
+        "not_scored": not_scored,
         "how_scored": (f"{len(read_now)} of {read_from} lines read today's figures."
                        f"{desk_note} All are scored by {spec.source}'s own targets, "
                        f"caps and weights. Closed months show the card the desk sent."),

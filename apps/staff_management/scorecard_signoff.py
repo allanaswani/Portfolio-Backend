@@ -237,7 +237,10 @@ def build_card_workbook(card, signoff=None):
         label(row, 7, score_label, 10)
         ws.row_dimensions[row].height = 17
 
-    score_cell = at(2, 11, fraction(card.get("performance_score") or 0),
+    # No overall score (a line the workbook shows as an error): say so, never 0%.
+    no_score = card.get("performance_score") is None
+    score_cell = at(2, 11, "Not scored" if no_score
+                    else fraction(card.get("performance_score")),
                     middle, bold=True, size=16)
     score_cell.number_format = "0.0%"
     span(2, 11, 12, rows=3, border=Border(left=edge, right=edge, top=edge,
@@ -362,7 +365,8 @@ def build_card_workbook(card, signoff=None):
         for line in group.get("lines") or [])), middle, bold=True,
         color=white)
     weights.number_format = "0.0%"
-    total = at(total_row, 12, fraction(card.get("performance_score") or 0),
+    total = at(total_row, 12, "Not scored" if no_score
+               else fraction(card.get("performance_score")),
                middle, bold=True, color=white)
     total.number_format = "0.0%"
     ws.row_dimensions[total_row].height = 20

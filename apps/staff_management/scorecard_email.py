@@ -140,8 +140,13 @@ def compose(card, signoff=None):
     signed = getattr(signoff, "signed_at", None)
     counter = getattr(signoff, "manager_signed_at", None)
 
-    score = float(card.get("performance_score") or 0)
-    state = (f"It scores {score * 100:.1f}% overall.")
+    if card.get("performance_score") is None:
+        # No overall score (see workbook_cards.live_card): never mail it as 0%.
+        state = (card.get("not_scored") or
+                 "It has no overall score yet, because some lines have no target.")
+    else:
+        score = float(card.get("performance_score"))
+        state = (f"It scores {score * 100:.1f}% overall.")
     if signed and counter:
         countersigner = (getattr(signoff, "manager_signed_by_name", "")
                          or "your line manager")
