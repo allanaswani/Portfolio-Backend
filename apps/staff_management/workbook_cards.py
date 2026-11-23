@@ -1686,6 +1686,53 @@ def _keep_lines_proration_empties(book, actuals, holder, month, ev, spec,
     return kept
 
 
+def _named_for(actuals, holder):
+    """The template with the person's row findable by their List name.
+
+    The card reads each sheet with VLOOKUP on the person's NAME, so a row the
+    template spells differently is #N/A - a quarter of Joseph Gatundu's
+    (JN3465, teller, Harambee) card went blank on Productivity while the
+    desk's own run scored him 85.2%. Where a sheet has no row under the name
+    but has one under the person's sales code (or PF), that row is theirs:
+    a copy of it carries the List's name. Sheets that already have the name
+    are shared untouched; nothing is changed when neither matches.
+    """
+    name = holder.name
+    code = (holder.sales_code or "").strip().upper()
+    pf = str(holder.pf or "").strip()
+    if not (name and (code or pf)):
+        return actuals
+    out = None
+    for sheet, grid in (actuals or {}).items():
+        if not isinstance(grid, list) or len(grid) < 2:
+            continue
+        rows = grid[1:]
+        if any(len(r) > 2 and _compare("=", r[2], name) for r in rows):
+            continue
+
+        def same_person(r):
+            if len(r) > 1 and code and str(r[1] or "").strip().upper() == code:
+                return True
+            if pf and len(r) > 0 and r[0] not in (None, ""):
+                try:
+                    return str(int(float(r[0]))) == pf
+                except (TypeError, ValueError):
+                    return False
+            return False
+
+        hit = next((i for i, r in enumerate(rows, start=1) if same_person(r)), None)
+        if hit is None:
+            continue
+        if out is None:
+            out = dict(actuals)
+        fixed = list(grid)
+        row = list(fixed[hit])
+        row[2] = name
+        fixed[hit] = row
+        out[sheet] = fixed
+    return actuals if out is None else out
+
+
 def compute(book, actuals, holder, month, overrides=None):
     """One person's card for one month → dict, as the workbook would show it.
 
@@ -1693,6 +1740,7 @@ def compute(book, actuals, holder, month, overrides=None):
     value} - which is how the live card hands the formulas today's figures
     in place of the template's.
     """
+    actuals = _named_for(actuals, holder)
     spec = spec_of(book)
     card = book["cards"][holder.sheet]
     ev = Evaluator(book, actuals, holder, month)
@@ -2372,6 +2420,10 @@ WHIZZ_ON_CARDS = False
 #: account_opening.desk_turnaround instead, which gave the desk's own Jul-Sep
 #: figures for him; with no step in the month the desk's latest month stands.
 BO_DESK_TAT_SHEETS = {"accountopeningpb", "accountopeningbb"}
+#: The template's audit sheets, read off Internal Audit's branch return.
+BO_AUDIT_SHEETS = {"branchaudit", "branchauditresolution"}
+#: "Annual audit score of 1.65" - a grade, lower is better (audit_returns).
+BO_AUDIT_TARGET = 1.65
 
 
 #: Cards whose CASA line is not the person's own accounts: the RBOs' counts
@@ -2763,6 +2815,42 @@ def live_card(sales_code, engine_card, as_at):
                     written[wl["row"]] = float(value)
                     measured[wl["row"]] = how
                     continue
+        if spec.book == BACK_OFFICE and _key(wl["feed"]) in BO_AUDIT_SHEETS:
+            # Internal Audit's branch return (audit_returns), loaded on
+            # Scorecards -> Audit returns. The desk's two audit sheets are that
+            # return for the person's branch: Branch_Audit_Resolution is the
+            # implementation rate (Eldoret 0.93, Embu 0.80, Rehani 0.82 from
+            # June = the return's 93% / 80% / 82%), and Branch_Audit the grade
+            # on the bank's audit band (scheme_cards "audit_band": 1.65 or
+            # better 1, under 2.49 0.8, else 0 - Eldoret and Embu 1.65 -> 1,
+            # Rehani 1.72 -> 0.8). A branch's audit stands until it is audited
+            # again; no return that had closed by then and the desk's figure
+            # stands.
+            from . import audit_returns
+
+            row = _template_row(template_live, wl["feed"], code, 0, person)
+            branch = (row[4] if row and len(row) > 4 and row[4] else holder.branch)
+            found = audit_returns.latest_for_branch(branch, as_at=as_at)
+            value, how = None, ""
+            if found and _key(wl["feed"]) == "branchaudit" and _num(found.get("audit_score")):
+                grade = float(found["audit_score"])
+                value = (1.0 if 0 <= grade <= BO_AUDIT_TARGET
+                         else 0.8 if BO_AUDIT_TARGET < grade < 2.49 else 0.0)
+                how = (f"Internal Audit's return ({found['period']}, {found['branch']}): "
+                       f"grade {grade:g}, {value:g} on the bank's audit band")
+            elif found and _num(found.get("implementation")):
+                value = float(found["implementation"])
+                how = (f"Internal Audit's return ({found['period']}, {found['branch']}): "
+                       f"implementation {value:.0%}")
+            if value is not None:
+                prior[wl["row"]] = (wl["feed"], 0, _get_template(
+                    template_live, wl["feed"], code, month, 0, person))
+                if _put_template(template_live, wl["feed"], code, month,
+                                 float(value), 0, person):
+                    live_rows.add(wl["row"])
+                    written[wl["row"]] = float(value)
+                    measured[wl["row"]] = how
+                    continue
         if spec.book == BACK_OFFICE and _key(wl["feed"]) in ("crm", "kyc"):
             # The CX team's returns (see cx_returns): CRM logs by the person,
             # data-update forms by branch, as running totals. The template's
@@ -3131,17 +3219,36 @@ def live_card(sales_code, engine_card, as_at):
     # weight: his targets grow a 2025 book he does not have, so 13 lines
     # divide by a target of 0, and the desk's Monthly_Summ has no score for
     # him in any month. The card now does what the workbook does.
-    errored = [wl for wl in card["lines"]
-               if not wl.get("waiting") and next(
-                   (v["e"] for v in (wl.get("actual"), wl.get("score"), wl.get("weighted"))
-                    if isinstance(v, dict) and v.get("e")), "")]
+    def error_of(wl):
+        return next((v["e"] for v in (wl.get("actual"), wl.get("score"),
+                                      wl.get("weighted"))
+                     if isinstance(v, dict) and v.get("e")), "")
+
+    # A line the workbook can't read because the person has no row on that
+    # sheet (#N/A) is a gap in the template, not a verdict: the desk's own run
+    # scored Joseph Gatundu where our copy had no Productivity row for him. It
+    # waits like any line with no figure - named, not counted, and the card
+    # stays incomplete so it is not sent.
+    for wl in card["lines"]:
+        if wl.get("waiting") or error_of(wl) != "#N/A":
+            continue
+        wl["waiting"] = (f"{holder.name} has no row on the {wl.get('feed') or 'actuals'} "
+                         f"sheet of the actuals template (by name, sales code or PF), "
+                         f"so this line has no figure.")
+        wl["actual"] = wl["score"] = wl["weighted"] = None
+        waiting += 1
+    # Any other error - #DIV/0!, a target of 0 - makes the workbook's own
+    # total that error too (SUM over an error is the error), so the desk's run
+    # writes no score for that person. Adding up only the lines that happen to
+    # have a number gave Jackson Nyawa (JN3696, PB ARM, joined September 2026)
+    # 28.1% for October on 27.5% of his weight: his targets grow a 2025 book
+    # he does not have, so 13 lines divide by a target of 0, and the desk's
+    # Monthly_Summ has no score for him in any month.
+    errored = [wl for wl in card["lines"] if not wl.get("waiting") and error_of(wl)]
     not_scored = ""
     if errored:
         card["total"] = None
-        codes = sorted({next(v["e"] for v in (wl.get("actual"), wl.get("score"),
-                                               wl.get("weighted"))
-                             if isinstance(v, dict) and v.get("e"))
-                        for wl in errored})
+        codes = sorted({error_of(wl) for wl in errored})
         names = [wl["measure"] or wl["initiative"] for wl in errored]
         not_scored = (
             f"Not scored: the workbook itself shows {' / '.join(codes)} on "

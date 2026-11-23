@@ -273,6 +273,90 @@ class StoredCardTests(TestCase):
         self.assertEqual(card["live_lines"], 0)
         self.assertIn("0 of 3 lines read today's figures", card["how_scored"])
 
+    def test_the_desk_check_lists_cards_that_differ(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        out = StringIO()
+        call_command("scorecard_desk_check", stdout=out)
+        text = out.getvalue()
+        self.assertIn("person-months match the desk", text)
+        # January was recorded at 50% with that month's targets: it differs.
+        self.assertIn("BCK3783", text)
+
+    def test_a_row_spelt_differently_is_found_by_sales_code(self):
+        """Joseph Gatundu: the card looks rows up by name, and a template row
+        spelt differently left Productivity #N/A while the desk scored him."""
+        renamed = {}
+        for sheet, grid in ACTUALS.items():
+            rows = [list(r) for r in grid]
+            for r in rows[1:]:
+                if r[2] == "Bob Waigwa":
+                    r[1], r[2] = "BCK3783", "Waigwa, Bob"
+            renamed[sheet] = rows
+        card = bo.compute(book(), renamed, holder("Bob Waigwa"), 9)
+        self.assertNotIsInstance(card["lines"][2]["actual"], dict)
+        self.assertAlmostEqual(card["lines"][2]["actual"], 0.7241379310344828)
+        self.assertNotIsInstance(card["total"], dict)
+
+    def test_a_missing_row_waits_rather_than_unscoring_the_card(self):
+        """A line the workbook shows as #N/A (no row for the person on that
+        sheet) waits and is not counted; the card keeps a score and is not
+        "Not scored" - the desk scored Joseph Gatundu from a row our copy
+        lacked."""
+        from unittest.mock import patch
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        real = bo.compute
+
+        def no_row_on_the_first_line(*args, **kwargs):
+            card = real(*args, **kwargs)
+            first = card["lines"][0]
+            first["actual"] = first["score"] = first["weighted"] = {"e": "#N/A"}
+            return card
+
+        with patch.object(bo, "compute", side_effect=no_row_on_the_first_line):
+            card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertEqual(card["not_scored"], "")
+        self.assertIsNotNone(card["performance_score"])
+        # It waits (not counted) rather than unscoring the whole card.
+        self.assertTrue(card["perspectives"][0]["lines"][0]["pending"])
+
+    def test_the_audit_lines_read_internal_audits_return(self):
+        """Branch_Audit_Resolution is the return's implementation rate and
+        Branch_Audit its grade on the bank's audit band (Eldoret 0.93 / 1,
+        Rehani 0.82 / 0.8 on the desk's own template)."""
+        from .audit_returns import fold_branch
+        from .models import ScAuditReturn
+
+        def with_feed(feed):
+            b = book()
+            b["cards"][CARD]["grid"][11][11] = feed
+            return b
+
+        actuals = dict(ACTUALS)
+        for feed in ("Branch_Audit_Resolution", "Branch_Audit"):
+            actuals.update(template({feed: {"Bob Waigwa": [0.5] * 9}}))
+        ScAuditReturn.objects.create(period="2026-09", branch="Kitengela",
+                                     branch_key=fold_branch("Kitengela"),
+                                     audit_score=1.72, implementation=0.82)
+        bo.save_file("actuals", actuals)
+        for feed, expected, words in (("Branch_Audit_Resolution", 0.82, "implementation 82%"),
+                                      ("Branch_Audit", 0.8, "grade 1.72")):
+            bo.save_file("scorecards", with_feed(feed))
+            card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+            line = card["perspectives"][0]["lines"][2]
+            self.assertAlmostEqual(line["ytd_actual"], expected)
+            self.assertIn(words, line["as_at"])
+        # A grade at or under 1.65 scores 1 on the band.
+        ScAuditReturn.objects.filter(branch="Kitengela").update(audit_score=1.65)
+        card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertEqual(card["perspectives"][0]["lines"][2]["ytd_actual"], 1.0)
+
     def test_a_line_the_workbook_shows_as_an_error_leaves_no_score(self):
         """The workbook's total over an error is the error, so the desk gives
         no score. The live card used to add up only the lines with a number
