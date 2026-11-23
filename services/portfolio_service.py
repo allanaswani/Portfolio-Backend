@@ -562,7 +562,9 @@ def allocated_book_bases(sales_code, year):
     taken from the customers allocated to them, matched by customer, not by
     the RM code the balances were booked under.
     """
-    out = {"customers": None, "december_loan_book": None, "problems": {}}
+    # "zero": bases that were READ and came out at nothing - a genuine zero,
+    # not a failure to read.
+    out = {"customers": None, "december_loan_book": None, "problems": {}, "zero": []}
     with connection.cursor() as cur:
         cur.execute(f"SELECT count(*) FROM ({RM_BOOK}) b", [sales_code])
         count = cur.fetchone()[0]
@@ -593,6 +595,7 @@ def allocated_book_bases(sales_code, year):
         out["problems"]["december_loan_book"] = (
             f"the customers allocated to this sales code had no loan balance "
             f"at December {year}")
+        out["zero"].append("december_loan_book")
     else:
         out["december_loan_book"] = float(value)
     return out

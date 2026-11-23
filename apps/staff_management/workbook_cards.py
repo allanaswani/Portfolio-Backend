@@ -3400,7 +3400,36 @@ def live_card(sales_code, engine_card, as_at):
     # 28.1% for October on 27.5% of his weight: his targets grow a 2025 book
     # he does not have, so 13 lines divide by a target of 0, and the desk's
     # Monthly_Summ has no score for him in any month.
+    # A #DIV/0! line whose base was READ on the customers allocated to the
+    # person and is genuinely zero - a book that started this year, so 38% of
+    # a December loan book of 0, or last year's income of 0 grown 20% - is not
+    # a missing figure: the bank's rule gives it no target. It is left off and
+    # the card is scored on the rest of its weight, brought back to 100%.
+    # Jackson Nyawa (JN3696): his 49 allocated customers' 6 loans all date
+    # from 2026, and they had no 2025 revenue. A line that is blank because
+    # something could NOT be read stays an error: no score from missing data.
+    not_applicable = []
+    for wl in card["lines"]:
+        if wl.get("waiting") or error_of(wl) != "#DIV/0!":
+            continue
+        why = (engine_for_row.get(wl["row"]) or {}).get("base_is_zero")
+        if why:
+            wl["not_applicable"] = why
+            wl["actual"] = wl["score"] = wl["weighted"] = None
+            not_applicable.append(wl)
     errored = [wl for wl in card["lines"] if not wl.get("waiting") and error_of(wl)]
+    applicable_note = ""
+    if not_applicable and not errored:
+        left_out = sum(_num(wl.get("weight")) and wl["weight"] or 0.0
+                       for wl in not_applicable)
+        if left_out < 1 - 1e-9:
+            card["total"] = total / (1 - left_out)
+            applicable_note = (
+                f"Not applicable: {', '.join(wl['measure'] or wl['initiative'] for wl in not_applicable)} "
+                f"({left_out:.1%} of the weight) - the base these lines grow is "
+                f"zero on the customers allocated to {holder.name}, so the "
+                f"bank's rule sets no target. The card is scored on the other "
+                f"{1 - left_out:.1%} of its weight, brought back to 100%.")
     not_scored = ""
     if errored:
         card["total"] = None
@@ -3431,6 +3460,12 @@ def live_card(sales_code, engine_card, as_at):
                     and engine_ln.get("pending_label") == "No target set"
                     and engine_ln.get("pending")):
                 ln["pending"] = (f"No target for this line: {engine_ln['pending']}")
+            if wl.get("not_applicable"):
+                ln["pending"] = (f"Not applicable: {wl['not_applicable']}, so "
+                                 f"the bank's rule sets no target. Left off; "
+                                 f"the card is scored on its other lines.")
+                ln["pending_label"] = "Not applicable"
+                ln["score"] = ln["weighted"] = None
             if wl["row"] in target_from:
                 ln["target_source"] = (f"{target_from[wl['row']]} - not on the "
                                        f"workbook's Summary Allocation, so the "
@@ -3530,11 +3565,12 @@ def live_card(sales_code, engine_card, as_at):
         "months_loaded": [f"{as_at.year}-{m:02d}"
                           for m in range(1, as_at.month + 1)],
         "coverage_note": " ".join(x for x in (
-            not_scored,
+            not_scored, applicable_note,
             "" if not waiting else
             f"{waiting} line(s) have no live figure yet and are not counted; "
             f"they fill in as the warehouse has them.") if x),
         "not_scored": not_scored,
+        "not_applicable": applicable_note,
         "how_scored": (f"{len(read_now)} of {read_from} lines read today's figures."
                        f"{desk_note} All are scored by {spec.source}'s own targets, "
                        f"caps and weights. Closed months show the card the desk sent."),

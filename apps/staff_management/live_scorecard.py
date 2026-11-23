@@ -3195,6 +3195,10 @@ def off_sheet_target(rule, base):
     return base + sign * 0.2 * abs(base), how.format(b=base)
 
 
+# last_year_income's answer when the book was read and had nothing in the year.
+NO_INCOME_LAST_YEAR = "no revenue, FTP or provisions on your book in"
+
+
 def last_year_income(sales_code, year):
     """(value, problem): the person's Income Contribution for ``year`` - the
     base of the off-sheet income target. ``year`` is closed, so the answer is
@@ -3220,7 +3224,7 @@ def last_year_income(sales_code, year):
         found = (prior["interest_income"] - abs(prior["interest_expenses"])
                  + prior["nfi"] + prior["ftp"] + prior["loan_loss"], "")
     else:
-        found = (None, f"no revenue, FTP or provisions on your book in {year}")
+        found = (None, f"{NO_INCOME_LAST_YEAR} {year}")
     cache.set(key, list(found), 86400)
     return found
 
@@ -4457,6 +4461,9 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
     # The allocated portfolio's bases, read once per card and only when a
     # rate line has no base of its own (see ALLOCATED_BOOK_BASES).
     allocated_book = None
+    # Bases read and found to be zero (a book that started this year): the
+    # line has no target by the bank's rule and is left off the card.
+    zero_bases = set()
 
     perspectives, seen = [], {}
     total = 0.0
@@ -4555,6 +4562,8 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             elif allocated_book.get("problems"):
                 base_problems.setdefault(base_name, "; ".join(
                     allocated_book["problems"].values()))
+            if not value and key in (allocated_book.get("zero") or ()):
+                zero_bases.add(base_name)
 
         fy_target, target_how, target_is_a_level = None, "", False
         allocated = allocations.get(mapping.kpi_code)
@@ -4585,6 +4594,8 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                     sales_code, (as_at or datetime.date.today()).year - 1)
                 if value is None:
                     base_problems["last_year_income"] = problem
+                    if str(problem).startswith(NO_INCOME_LAST_YEAR):
+                        zero_bases.add("last_year_income")
                 else:
                     bases["last_year_income"] = value
                 line_bases = {**line_bases, "last_year_income": value}
@@ -4880,6 +4891,13 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             pending = "The warehouse has no figure for this line yet."
             pending_label = "No figure yet"
 
+        base_is_zero = ""
+        if pending_label == "No target set":
+            rule = OFF_SHEET_RULES.get(source.actual_key)
+            key_ = rule[0] if rule else (base_name if rate_basis else "")
+            if key_ in zero_bases or str(base_problems.get(key_) or "").startswith(
+                    NO_INCOME_LAST_YEAR):
+                base_is_zero = base_problems.get(key_) or "the base is zero"
         if pending_label == "No target set" and off_the_sheet:
             # Off the sheet, the base is measured on the allocated portfolio:
             # say why that could not be done, not only where the sheet is.
@@ -4954,6 +4972,9 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             # base) and prior_year the base - what the workbook card needs
             # to put each figure in the right cell.
             "target_is_rate": bool(rate_basis and base_name),
+            # Read and zero (the customers allocated had no December loan
+            # book / no income last year): not applicable, not a failure.
+            "base_is_zero": base_is_zero,
             "target_field": field,
             "target_source": target_how,
             "full_year_target": full_year,

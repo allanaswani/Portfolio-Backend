@@ -326,6 +326,46 @@ class StoredCardTests(TestCase):
         # It waits (not counted) rather than unscoring the whole card.
         self.assertTrue(card["perspectives"][0]["lines"][0]["pending"])
 
+    def _div0_on_nps(self, engine_line):
+        from unittest.mock import patch
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        real = bo.compute
+
+        def no_target_on_nps(*args, **kwargs):
+            card = real(*args, **kwargs)
+            card["lines"][2]["score"] = card["lines"][2]["weighted"] = {"e": "#DIV/0!"}
+            return card
+
+        engine = {"has_card": True, "live": True, "perspectives": [{"lines": [
+            {"kpi_code": "zz", "kpi_name": "NPS", **engine_line}]}]}
+        with patch.object(bo, "compute", side_effect=no_target_on_nps):
+            return bo.live_card("BCK3783", engine, datetime.date(2026, 10, 31))
+
+    def test_a_line_whose_base_is_genuinely_zero_is_left_off_and_the_rest_scored(self):
+        """Jackson Nyawa: his allocated customers had no December 2025 loan
+        book, so Asset Growth has no target - the card scores the rest."""
+        card = self._div0_on_nps({
+            "pending_label": "No target set", "pending": "x",
+            "base_is_zero": "the customers allocated to this sales code had no "
+                            "loan balance at December 2025"})
+        self.assertIsNotNone(card["performance_score"])
+        self.assertIn("Not applicable", card["not_applicable"])
+        nps = card["perspectives"][0]["lines"][2]
+        self.assertEqual(nps["pending_label"], "Not applicable")
+        self.assertIsNone(nps["score"])
+        lines = [ln for p in card["perspectives"] for ln in p["lines"]]
+        rest = sum(ln["weighted_score"] or 0 for ln in lines)
+        self.assertAlmostEqual(card["performance_score"],
+                               round(rest / (1 - nps["weight"]), 4), places=4)
+
+    def test_a_line_whose_base_could_not_be_read_still_leaves_the_card_unscored(self):
+        card = self._div0_on_nps({"pending_label": "No target set",
+                                  "pending": "the table could not be read"})
+        self.assertIsNone(card["performance_score"])
+        self.assertIn("Not scored", card["not_scored"])
+
     def test_a_line_with_no_target_says_why(self):
         """A #DIV/0! line shows the engine's reason it has no target, not
         just the error (Jackson Nyawa's Income Contribution, Asset Growth)."""
