@@ -326,6 +326,20 @@ class StoredCardTests(TestCase):
         # It waits (not counted) rather than unscoring the whole card.
         self.assertTrue(card["perspectives"][0]["lines"][0]["pending"])
 
+    def test_an_audit_line_with_no_return_still_builds_the_card(self):
+        """No audit return loaded: the card must still build. A variable the
+        audit lines reused crashed every back-office live card on 23 Nov 2026,
+        and the page fell back to the general card (Joseph Gatundu 0.7%)."""
+        b = book()
+        b["cards"][CARD]["grid"][11][11] = "Branch_Audit"
+        actuals = dict(ACTUALS)
+        actuals.update(template({"Branch_Audit": {"Bob Waigwa": [0.8] * 9}}))
+        bo.save_file("scorecards", b)
+        bo.save_file("actuals", actuals)
+        card = bo.live_card("BCK3783", None, datetime.date(2026, 10, 31))
+        self.assertIsNotNone(card)
+        self.assertTrue(card["has_card"])
+
     def test_the_audit_lines_read_internal_audits_return(self):
         """Branch_Audit_Resolution is the return's implementation rate and
         Branch_Audit its grade on the bank's audit band (Eldoret 0.93 / 1,
@@ -1429,8 +1443,42 @@ class CarriedLineRescoredTests(TestCase):
         self.assertEqual(filled["Plot_Sales_Value"][1][14], 38)
 
 
+class ListWinsTests(TestCase):
+    """The desk's List decides role and branch (23 Nov 2026): the roster and
+    HR job titles no longer move anybody."""
+
+    def test_the_list_stands_against_the_roster_and_hr(self):
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = {"book": "back_office", "cards": {}, "tables": {"List": [["h"] * 9] + [
+            [1695, "JOO1695", "Jasper Ondari", "BOM", "TRM"],
+            [3870, "IO3870", "Ivan Ombiru", "Teller", "RiverRoad"],
+            [3465, "JN3465", "Joseph Gatundu", "Teller", "Harambee"],
+        ]}}
+        roster = {"JOO1695": ("Jasper Ondari", "CSO", "TRM BRANCH", 1695, True),
+                  "IO3870": ("Ivan Ombiru", "CSO", "RIVERROAD BRANCH", 3870, True),
+                  "JN3465": ("Joseph Gatundu", "TELLER", "HARAMBEE AVE BRANCH", 3465, True)}
+        with mock.patch.object(wc, "roster_roles", return_value=roster),                 mock.patch.object(wc, "hr_roles", return_value={"1695": "CSO"}):
+            jasper, ivan, joseph = wc.holders(book)
+        self.assertEqual((jasper.role, jasper.branch), ("BOM", "TRM"))
+        self.assertEqual((ivan.role, ivan.branch), ("Teller", "RiverRoad"))
+        self.assertEqual(joseph.branch, "Harambee")
+
+
 class RosterOverridesListTests(TestCase):
-    """The branch roster corrects a List row the desk has not updated."""
+    """The branch roster corrects a List row the desk has not updated - while
+    LIST_WINS is off. Kept, switched off, so turning it back on is safe."""
+
+    def setUp(self):
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        patcher = mock.patch.object(wc, "LIST_WINS", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _book(self, book_kind, rows):
         return {"book": book_kind, "tables": {"List": [["h"] * 9] + rows}, "cards": {}}

@@ -1399,6 +1399,11 @@ def off_card(sales_code, month=None):
     return entry if not start or f"{month:%Y-%m}" >= start else None
 
 
+#: The desk's List decides every back-office person's role and branch; the HR
+#: roster and job titles do not override it (decided 23 Nov 2026).
+LIST_WINS = True
+
+
 def holders(book, keep_off=False):
     """The workbook's card holders. Somebody on the no-card list (see
     :func:`no_card`) is left out from their month on; ``keep_off`` keeps them
@@ -1409,13 +1414,20 @@ def holders(book, keep_off=False):
     # Branch managers come from the branch-manager workbook's List only: the
     # branch table still named Dennis Geni for Naivasha after he left on
     # 10 March 2026, and adding roster BBMs gave him a card.
-    roster = roster_roles() if spec.book == BACK_OFFICE else {}
+    # The desk's List wins (the business, 23 Nov 2026: "the desk's List wins
+    # for all of them"). The roster and HR job-title corrections below moved
+    # people to roles and branches the desk had not: Jasper Ondari (BOM ->
+    # CSO, 76.2% -> 51.4%), Ivan Ombiru (Teller -> CSO), Sharon Wanjiru,
+    # Jennifer Kiango (TRM -> Naivasha) and others, and a respelt branch
+    # blanked every Harambee and SameerPark card. They stay switched off;
+    # the List is the record. LIST_WINS = False brings them back.
+    roster = roster_roles() if spec.book == BACK_OFFICE and not LIST_WINS else {}
     list_branches = sorted({str(r[spec.list_cols["branch"]]).strip()
                             for r in grid[1:]
                             if spec.list_cols.get("branch") is not None
                             and len(r) > spec.list_cols["branch"]
                             and str(r[spec.list_cols["branch"]] or "").strip()})
-    hr = hr_roles() if spec.book == BACK_OFFICE else {}
+    hr = hr_roles() if spec.book == BACK_OFFICE and not LIST_WINS else {}
     by_role = {k.upper(): k for k in spec.role_sheets}
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
@@ -2868,17 +2880,17 @@ def live_card(sales_code, engine_card, as_at):
 
             row = _template_row(template_live, wl["feed"], code, 0, person)
             branch = (row[4] if row and len(row) > 4 and row[4] else holder.branch)
-            found = audit_returns.latest_for_branch(branch, as_at=as_at)
+            audit = audit_returns.latest_for_branch(branch, as_at=as_at)
             value, how = None, ""
-            if found and _key(wl["feed"]) == "branchaudit" and _num(found.get("audit_score")):
-                grade = float(found["audit_score"])
+            if audit and _key(wl["feed"]) == "branchaudit" and _num(audit.get("audit_score")):
+                grade = float(audit["audit_score"])
                 value = (1.0 if 0 <= grade <= BO_AUDIT_TARGET
                          else 0.8 if BO_AUDIT_TARGET < grade < 2.49 else 0.0)
-                how = (f"Internal Audit's return ({found['period']}, {found['branch']}): "
+                how = (f"Internal Audit's return ({audit['period']}, {audit['branch']}): "
                        f"grade {grade:g}, {value:g} on the bank's audit band")
-            elif found and _num(found.get("implementation")):
-                value = float(found["implementation"])
-                how = (f"Internal Audit's return ({found['period']}, {found['branch']}): "
+            elif audit and _num(audit.get("implementation")):
+                value = float(audit["implementation"])
+                how = (f"Internal Audit's return ({audit['period']}, {audit['branch']}): "
                        f"implementation {value:.0%}")
             if value is not None:
                 prior[wl["row"]] = (wl["feed"], 0, _get_template(
