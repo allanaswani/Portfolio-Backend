@@ -1829,9 +1829,42 @@ class EngineTargetCellsTests(SimpleTestCase):
             {"feed": "plcharge", "name": "loanloss", "negate": True,
              "line": {"growth_target": 5.0}},
         ]
+        lines.append({"row": 7, "feed": "Active_Customers", "measure": "Active Customers",
+                      "typed": False, "pm": 0.0, "growth": 0.0})
+        pool.append({"feed": "activecustomers", "name": "activecustomers", "negate": False,
+                     "line": {"growth_target": None, "prior_year": 40.0, "annual_target": 8.0,
+                              "target_is_rate": True}})
         out = wc.engine_target_cells(spec, lines, pool, lambda row: 9.0)
+        # A rate line: 20% of 40 allocated customers is the growth, 40 the base.
+        self.assertEqual(out[7][0][(6, spec.cols["growth"])], 8.0 * 3 / 12)
+        self.assertEqual(out[7][0][(6, spec.cols["prior"])], 40.0)
+        out.pop(7)
         self.assertEqual(sorted(out), [8, 10])
+
         g, prior = spec.cols["growth"], spec.cols["prior"]
         self.assertEqual(out[8][0][(7, g)], 120.0 * 3 / 12)        # joined in September
         self.assertEqual(out[10][0][(9, g)], (2200.0 - 1000.0) * 3 / 12)
         self.assertEqual(out[10][0][(9, prior)], 1000.0)
+
+    def test_two_lines_on_one_sheet_take_their_own_engine_targets(self):
+        """VIC Premiums and its non-life line read the same sheet: each takes
+        its own engine target (the non-life one had the life target)."""
+        from . import workbook_cards as wc
+
+        spec = wc.SPECS["sales"]
+        lines = [
+            {"row": 13, "feed": "VIC", "measure": "VIC Premiums", "initiative": "life",
+             "typed": False, "pm": 0.0, "growth": 0.0},
+            {"row": 14, "feed": "VIC", "measure": "", "initiative": "non-life as per assigned Target",
+             "typed": False, "pm": 0.0, "growth": 0.0},
+        ]
+        pool = [
+            {"feed": "vic", "name": "vicpremiums", "negate": False,
+             "line": {"annual_target": 5634.0}},
+            {"feed": "vic", "name": "vicpremiumsnonlife", "negate": False,
+             "line": {"annual_target": 51815.0}},
+        ]
+        out = wc.engine_target_cells(spec, lines, pool, lambda row: 9.0)
+        g = spec.cols["growth"]
+        self.assertEqual(out[13][0][(12, g)], 5634.0 * 3 / 12)
+        self.assertEqual(out[14][0][(13, g)], 51815.0 * 3 / 12)

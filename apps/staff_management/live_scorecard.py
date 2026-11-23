@@ -3157,6 +3157,17 @@ TARGET_BASES = {
 }
 
 
+#: Rate bases the Summary Allocation sheet holds per person, and how they are
+#: measured on the allocated portfolio for somebody it does not carry:
+#: base name -> (allocated_book_bases key, how the card words it).
+ALLOCATED_BOOK_BASES = {
+    "last_year_active_customers": (
+        "customers", "the {v:,.0f} customers allocated to you (the sheet's Count)"),
+    "december_loan_book": (
+        "december_loan_book", "your allocated customers' December loan book of {v:,.0f}"),
+}
+
+
 #: The Summary Allocation sheet's target rules, for somebody it does not carry
 #: (Valary Simiyu, VS3759, PB ARM Rehani: on the DMC roster, absent from the
 #: Q3 workbook). Measured on the Q3 2026 sheet, 10 Nov 2026:
@@ -4443,6 +4454,10 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
     named = {k.kpi_code: k for k in ScKpi.objects.filter(
         kpi_code__in=[m.kpi_code for m in mappings])}
 
+    # The allocated portfolio's bases, read once per card and only when a
+    # rate line has no base of its own (see ALLOCATED_BOOK_BASES).
+    allocated_book = None
+
     perspectives, seen = [], {}
     total = 0.0
     live_lines = pending_lines = 0
@@ -4509,6 +4524,37 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             from_sheet = allocations.get(mapping.kpi_code)
             if from_sheet is not None:
                 line_bases = {**bases, base_name: from_sheet}
+        # Not on the sheet, and no base of their own (a joiner): the base the
+        # sheet would hold, measured on the portfolio allocated to them now -
+        # its customer Count, its December loan book (see
+        # svc.allocated_book_bases). Jackson Nyawa (JN3696) had Active
+        # Customers and Asset Growth with no target although a portfolio is
+        # allocated to him.
+        base_from_allocation = ""
+        if (rate_basis and base_name in ALLOCATED_BOOK_BASES
+                and line_bases.get(base_name) is None
+                and mapping.kpi_code not in allocations):
+            if allocated_book is None:
+                from django.db import transaction
+
+                from services import portfolio_service as svc
+
+                # Its own savepoint: a table missing here must cost this base,
+                # not abort the request's transaction for every later read.
+                try:
+                    with transaction.atomic():
+                        allocated_book = svc.allocated_book_bases(
+                            sales_code, (as_at or datetime.date.today()).year - 1)
+                except Exception as exc:  # noqa: BLE001 - reported on the line
+                    allocated_book = {"problems": {"_": str(exc)}}
+            key, words = ALLOCATED_BOOK_BASES[base_name]
+            value = allocated_book.get(key)
+            if value:
+                line_bases = {**line_bases, base_name: float(value)}
+                base_from_allocation = words.format(v=float(value))
+            elif allocated_book.get("problems"):
+                base_problems.setdefault(base_name, "; ".join(
+                    allocated_book["problems"].values()))
 
         fy_target, target_how, target_is_a_level = None, "", False
         allocated = allocations.get(mapping.kpi_code)
@@ -4523,6 +4569,10 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
 
         if fy_target is None:
             fy_target, target_how = role_target(mapping, line_bases)
+            if fy_target is not None and base_from_allocation:
+                target_how = (f"{target_how} - {base_from_allocation}, as the "
+                              f"Summary Allocation sheet would hold it (you are "
+                              f"not on the sheet)")
 
         # Not on the Summary Allocation sheet: the sheet's own rule on this
         # person's own last year (see OFF_SHEET_RULES).
@@ -4830,6 +4880,16 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             pending = "The warehouse has no figure for this line yet."
             pending_label = "No figure yet"
 
+        if pending_label == "No target set" and off_the_sheet:
+            # Off the sheet, the base is measured on the allocated portfolio:
+            # say why that could not be done, not only where the sheet is.
+            rule = OFF_SHEET_RULES.get(source.actual_key)
+            base_key = rule[0] if rule else (base_name if rate_basis else "")
+            if base_key and base_problems.get(base_key):
+                pending += (f" Measured on the customers allocated to you "
+                            f"instead, it could not be set: "
+                            f"{base_problems[base_key]}.")
+
         if full_marks:
             # Full marks, not 120%. The instruction is "give full marks",
             # which is the target met - not the target beaten.
@@ -4890,6 +4950,10 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             # The sheet's "GROWTH" column, where the line is measured as a
             # growth and the target therefore IS the growth.
             "growth_target": growth_target,
+            # A rate on a base: annual_target is then the GROWTH (rate x
+            # base) and prior_year the base - what the workbook card needs
+            # to put each figure in the right cell.
+            "target_is_rate": bool(rate_basis and base_name),
             "target_field": field,
             "target_source": target_how,
             "full_year_target": full_year,

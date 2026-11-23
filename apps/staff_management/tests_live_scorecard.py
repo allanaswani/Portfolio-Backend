@@ -481,3 +481,51 @@ class NoBookIsSaidOnceTests(TestCase):
 
         self.assertEqual(allocated_customers(""), 0)
         self.assertEqual(allocated_customers(None), 0)
+
+
+class AllocatedBookBasesTests(TestCase):
+    """The bases Summary Allocation holds, measured on the portfolio allocated
+    to a joiner now (Jackson Nyawa, JN3696): customers matched by cust_id,
+    not by the RM code their December balances were booked under."""
+
+    def setUp(self):
+        from django.db import connection
+
+        with connection.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE retail_allocated_portfolio (
+                    cust_id bigint, sales_code text, updated_at timestamp)""")
+            cur.execute("""
+                CREATE TABLE loan_daily_balance_movement (
+                    cust_cif text, rm_code text, customer_segment text,
+                    dec_25_bal numeric)""")
+            cur.execute("""INSERT INTO retail_allocated_portfolio VALUES
+                (101, 'JN3696', now()), (101, 'JN3696', now()),
+                (102, 'JN3696', now()), (103, 'OTHER', now())""")
+            cur.execute("""INSERT INTO loan_daily_balance_movement VALUES
+                ('101', 'PREV1', 'PB', 1000), ('102.0', 'PREV1', 'PB', 500),
+                ('102', 'PREV1', 'VIRTUAL', 9999), ('103', 'OTHER', 'PB', 7777),
+                ('102', 'PREV1', 'PB', -50)""")
+
+    def tearDown(self):
+        from django.db import connection
+
+        with connection.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS retail_allocated_portfolio")
+            cur.execute("DROP TABLE IF EXISTS loan_daily_balance_movement")
+
+    def test_count_and_december_loan_book_of_the_allocated_customers(self):
+        from services import portfolio_service as svc
+
+        out = svc.allocated_book_bases("JN3696", 2025)
+        self.assertEqual(out["customers"], 2)                 # 101 once, 102
+        # 101 + 102 under the previous RM's code; VIRTUAL, negatives and
+        # another RM's customer left out.
+        self.assertEqual(out["december_loan_book"], 1500.0)
+
+    def test_no_allocation_says_so(self):
+        from services import portfolio_service as svc
+
+        out = svc.allocated_book_bases("NOBODY", 2025)
+        self.assertIsNone(out["customers"])
+        self.assertIn("no customers are allocated", out["problems"]["customers"])

@@ -548,6 +548,56 @@ def rm_balances(sales_code):
     }
 
 
+def allocated_book_bases(sales_code, year):
+    """The bases the desk's Summary Allocation sheet holds, measured on the
+    portfolio allocated to this RM NOW -> {"customers", "december_loan_book",
+    "problems"}.
+
+    The sheet is built from each RM's allocated portfolio: its Count is the
+    number of customers allocated (Faith Muthinja's 117, grown 20% on her
+    card), its loan base that book's December close. Somebody the desk has
+    not put on the sheet - a joiner such as Jackson Nyawa (JN3696) - has no
+    such row, and their sales code has no history of its own: last December
+    their customers sat under another RM's code. So the same figures are
+    taken from the customers allocated to them, matched by customer, not by
+    the RM code the balances were booked under.
+    """
+    out = {"customers": None, "december_loan_book": None, "problems": {}}
+    with connection.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM ({RM_BOOK}) b", [sales_code])
+        count = cur.fetchone()[0]
+    out["customers"] = int(count) if count else None
+    if not count:
+        out["problems"]["customers"] = "no customers are allocated to this sales code"
+        return out
+    table = "loan_daily_balance_movement"
+    columns = _table_columns(table)
+    base_column = f"dec_{str(int(year))[-2:]}_bal"
+    if not columns or "cust_cif" not in columns or base_column not in columns:
+        out["problems"]["december_loan_book"] = (
+            f"{table} has no cust_cif or {base_column} column to read the "
+            f"allocated customers' December loan book from")
+        return out
+    seg = ("AND COALESCE(l.customer_segment, '') <> ALL(%s)"
+           if "customer_segment" in columns else "")
+    params = [sales_code] + ([list(_BAL_EXCLUDE)] if seg else [])
+    with connection.cursor() as cur:
+        cur.execute(f"""
+            SELECT SUM(l.{base_column}) FILTER (WHERE l.{base_column} > 0)
+            FROM {table} l
+            WHERE split_part(TRIM(l.cust_cif::text), '.', 1) ~ '^[0-9]+$'
+              AND split_part(TRIM(l.cust_cif::text), '.', 1)::bigint IN ({_BOOK_IDS})
+              {seg}""", params)
+        value = cur.fetchone()[0]
+    if value is None:
+        out["problems"]["december_loan_book"] = (
+            f"the customers allocated to this sales code had no loan balance "
+            f"at December {year}")
+    else:
+        out["december_loan_book"] = float(value)
+    return out
+
+
 def rm_growth(table, sales_code, as_at=None):
     """An RM's YTD GROWTH in one balance-movement table.
 

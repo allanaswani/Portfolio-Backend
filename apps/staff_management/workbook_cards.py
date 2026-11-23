@@ -2639,19 +2639,31 @@ def engine_target_cells(spec, lines, pool, prorate_of):
     out = {}
     if cols.get("growth") is None:
         return out
+    # Each engine line answers one card line, in order: VIC Premiums and its
+    # non-life line read the same sheet, and without taking the first match
+    # out of the pool both got the life target (Jackson Nyawa: 1,408.5 on
+    # non-life where his DMC row sets 51,815).
+    pool = list(pool)
     for wl in lines:
         if wl.get("typed"):
             continue
+        match = _engine_match(pool, wl)
+        if match is not None:
+            pool.remove(match)
         if any(_num(wl.get(f)) and wl.get(f) != 0 for f in ("pm", "growth")):
             continue
-        match = _engine_match(pool, wl)
         if match is None or match["negate"]:
             continue
         ln = match["line"]
         annual, prior, growth = (ln.get("annual_target"), ln.get("prior_year"),
                                  ln.get("growth_target"))
         if not _num(growth):
-            growth = (annual - prior) if _num(annual) and _num(prior) else annual
+            # A rate line's annual target IS the growth (20% x the base) and
+            # its prior year the base; a level's growth is level - base.
+            if ln.get("target_is_rate"):
+                growth = annual
+            else:
+                growth = (annual - prior) if _num(annual) and _num(prior) else annual
         if not _num(growth) or growth == 0:
             continue
         prorate = prorate_of(wl["row"])

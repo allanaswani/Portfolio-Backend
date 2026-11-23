@@ -32,6 +32,36 @@ class Command(BaseCommand):
             if key.startswith("target"):
                 self.stdout.write(f"  {key:<34} {targets[key]!r}")
 
+        import datetime
+
+        from django.db import connection, transaction
+
+        from services import portfolio_service as svc
+
+        last_year = datetime.date.today().year - 1
+        self.stdout.write(f"\nBases on the customers allocated to {code} ({last_year}):")
+        try:
+            with transaction.atomic():
+                book = svc.allocated_book_bases(code, last_year)
+            self.stdout.write(f"  customers allocated            {book.get('customers')}")
+            self.stdout.write(f"  December {last_year} loan book       {book.get('december_loan_book')}")
+            for k, v in (book.get("problems") or {}).items():
+                self.stdout.write(f"  problem ({k}): {v}")
+        except Exception as exc:  # noqa: BLE001
+            self.stdout.write(f"  could not read: {exc}")
+        try:
+            with transaction.atomic():
+                value, problem = ls.last_year_income(code, last_year)
+            self.stdout.write(f"  {last_year} income contribution     {value}  {problem or ''}")
+        except Exception as exc:  # noqa: BLE001
+            self.stdout.write(f"  {last_year} income: could not read: {exc}")
+        try:
+            with transaction.atomic(), connection.cursor() as cur:
+                cur.execute("SELECT min(trx_date), max(trx_date), count(*) FROM revenue")
+                self.stdout.write(f"  revenue table covers {cur.fetchone()}")
+        except Exception as exc:  # noqa: BLE001
+            self.stdout.write(f"  revenue table: {exc}")
+
         card = ls._engine_card(code)
         if not card.get("has_card"):
             self.stdout.write(f"No engine card: {card.get('detail') or card.get('reason')}")
