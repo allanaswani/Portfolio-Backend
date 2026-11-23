@@ -1931,3 +1931,39 @@ class EngineTargetCellsTests(SimpleTestCase):
         g = spec.cols["growth"]
         self.assertEqual(out[13][0][(12, g)], 5634.0 * 3 / 12)
         self.assertEqual(out[14][0][(13, g)], 51815.0 * 3 / 12)
+
+
+class LoanBookFromStartTests(SimpleTestCase):
+    """Jackson Nyawa (JN3696, prorate_new 9): his allocated customers had no
+    December 2025 loan book; their book at the end of September 2026 is the
+    base, and growth is measured from it."""
+
+    def _run(self, engine_line, prorate=9, as_at=datetime.date(2026, 10, 31)):
+        from unittest.mock import patch
+
+        from . import workbook_cards as wc
+
+        spec = wc.SPECS["sales"]
+        books = {"sep_26_bal": 13212895.55, "oct_26_bal": 13300000.0}
+        with patch("services.portfolio_service.allocated_loan_book",
+                   side_effect=lambda code, col: books.get(col)):
+            return spec, wc._loan_book_from_start(
+                spec, [{"row": 20}], {20: engine_line}, "JN3696",
+                lambda r: prorate, as_at)
+
+    def test_september_book_is_the_base_and_growth_is_from_it(self):
+        spec, out = self._run({"base_is_zero": "no loan balance at December 2025",
+                               "base_key": "december_loan_book", "target_rate": 0.38})
+        cells, why = out[20]
+        c = spec.cols
+        self.assertAlmostEqual(cells[(19, c["growth"])], 0.38 * 13212895.55 * 3 / 12)
+        self.assertAlmostEqual(cells[(19, c["prior"])], 13212895.55)
+        self.assertAlmostEqual(cells[(19, c["actual"])], 13300000.0 - 13212895.55)
+        self.assertIn("September 2026", why)
+
+    def test_nobody_else_changes(self):
+        _spec, out = self._run({"base_key": "december_loan_book", "target_rate": 0.38})
+        self.assertEqual(out, {})                       # December base was not zero
+        _spec, out = self._run({"base_is_zero": "x", "base_key": "december_loan_book",
+                                "target_rate": 0.38}, prorate=0)
+        self.assertEqual(out, {})                       # holds the full year

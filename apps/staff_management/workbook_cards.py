@@ -2675,6 +2675,65 @@ def engine_target_cells(spec, lines, pool, prorate_of):
     return out
 
 
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
+           "oct", "nov", "dec")
+
+
+def _loan_book_from_start(spec, card_lines, engine_for_row, code, prorate_of, as_at):
+    """{row: (cells, why)}: Asset Growth for somebody whose allocated book
+    started after December.
+
+    The rule is 38% of the December loan book: the book the person held when
+    their year's targets began. A joiner's targets begin later - the List's
+    prorate_new (Jackson Nyawa, JN3696: 9, so from October) - and the loans
+    on the customers allocated to them may start after December too (his 6
+    loans: 0 in every 2025 column, the first balances in June and September
+    2026). So the base is the allocated customers' book at the end of the
+    month before their targets start - September for him, December for
+    everybody who holds the year - and the actual is growth since that base,
+    measured from the same point. Only where the December base was read and
+    is zero; nobody else's card changes.
+    """
+    from services import portfolio_service as svc
+
+    out = {}
+    cols = spec.cols
+    if spec.book != SALES or cols.get("growth") is None:
+        return out
+    for wl in card_lines:
+        ln = engine_for_row.get(wl["row"]) or {}
+        if not (ln.get("base_is_zero") and ln.get("base_key") == "december_loan_book"
+                and _num(ln.get("target_rate"))):
+            continue
+        p = prorate_of(wl["row"])
+        p = int(p) if _num(p) and 1 <= p < 12 else 0
+        if not p or p >= as_at.month:
+            continue
+        yy = str(as_at.year)[-2:]
+        now_col = (f"{_MONTHS[as_at.month - 1]}_{yy}_bal"
+                   if as_at.month != datetime.date.today().month
+                   or as_at.year != datetime.date.today().year else "yester_1_bal")
+        try:
+            base = svc.allocated_loan_book(code, f"{_MONTHS[p - 1]}_{yy}_bal")
+            now = svc.allocated_loan_book(code, now_col)
+        except Exception:  # noqa: BLE001 - the line stays not applicable
+            continue
+        if not base:
+            continue
+        r = wl["row"] - 1
+        growth = float(ln["target_rate"]) * base
+        cells = {(r, cols["growth"]): growth * (12 - p) / 12,
+                 (r, cols["actual"]): (now or 0.0) - base}
+        if cols.get("prior") is not None:
+            cells[(r, cols["prior"])] = base
+        out[wl["row"]] = (cells, f"{float(ln['target_rate']):.0%} of the loan book of "
+                                 f"the customers allocated to you at the end of "
+                                 f"{datetime.date(as_at.year, p, 1):%B %Y} ({base:,.0f}), "
+                                 f"the month before your targets start; growth is "
+                                 f"measured from that same book")
+    return out
+
+
 def live_card(sales_code, engine_card, as_at):
     """The month still open, scored by the workbook's own formulas over the
     figures the warehouse gives today → a card, or None.
@@ -3176,6 +3235,15 @@ def live_card(sales_code, engine_card, as_at):
             overrides[(wl["row"] - 1, actual_col)] = float(value)
             if unproven:
                 beside[wl["row"]] = float(value)
+    from_start = _loan_book_from_start(spec, card_lines=base["lines"],
+                                       engine_for_row=engine_for_row, code=code,
+                                       prorate_of=(lambda r: Evaluator(
+                                           book, actuals, holder, month).cell(r - 1, 14)),
+                                       as_at=as_at)
+    for row, (cells, _why) in from_start.items():
+        overrides.update(cells)
+        live_rows.add(row)
+        carried.pop(row, None)
     card = compute(book, template_live or actuals, holder, month, overrides)
 
     # A year-to-date count or sum cannot fall below what the desk already
@@ -3466,7 +3534,9 @@ def live_card(sales_code, engine_card, as_at):
                                  f"the card is scored on its other lines.")
                 ln["pending_label"] = "Not applicable"
                 ln["score"] = ln["weighted"] = None
-            if wl["row"] in target_from:
+            if wl["row"] in from_start:
+                ln["target_source"] = from_start[wl["row"]][1]
+            elif wl["row"] in target_from:
                 ln["target_source"] = (f"{target_from[wl['row']]} - not on the "
                                        f"workbook's Summary Allocation, so the "
                                        f"target comes from the DMC tables")

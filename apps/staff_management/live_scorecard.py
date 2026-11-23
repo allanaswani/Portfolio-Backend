@@ -4975,6 +4975,10 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             # Read and zero (the customers allocated had no December loan
             # book / no income last year): not applicable, not a failure.
             "base_is_zero": base_is_zero,
+            "base_key": ((OFF_SHEET_RULES.get(source.actual_key) or ("",))[0]
+                         or (base_name if rate_basis else "")),
+            "target_rate": (float(mapping.kpi_target)
+                            if rate_basis and mapping.kpi_target is not None else None),
             "target_field": field,
             "target_source": target_how,
             "full_year_target": full_year,

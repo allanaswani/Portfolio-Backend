@@ -548,6 +548,29 @@ def rm_balances(sales_code):
     }
 
 
+def allocated_loan_book(sales_code, column):
+    """The loan balance, in one of loan_daily_balance_movement's balance
+    columns (dec_25_bal, sep_26_bal, yester_1_bal ...), of the customers
+    allocated to this sales code now - matched by customer, not by the RM code
+    the loans are booked under -> float, or None when none is above 0."""
+    table = "loan_daily_balance_movement"
+    columns = _table_columns(table)
+    if not columns or "cust_cif" not in columns or column not in columns:
+        raise ValueError(f"{table} has no cust_cif or {column} column")
+    seg = ("AND COALESCE(l.customer_segment, '') <> ALL(%s)"
+           if "customer_segment" in columns else "")
+    params = [sales_code] + ([list(_BAL_EXCLUDE)] if seg else [])
+    with connection.cursor() as cur:
+        cur.execute(f"""
+            SELECT SUM(l.{column}) FILTER (WHERE l.{column} > 0)
+            FROM {table} l
+            WHERE split_part(TRIM(l.cust_cif::text), '.', 1) ~ '^[0-9]+$'
+              AND split_part(TRIM(l.cust_cif::text), '.', 1)::bigint IN ({_BOOK_IDS})
+              {seg}""", params)
+        value = cur.fetchone()[0]
+    return None if value is None else float(value)
+
+
 def allocated_book_bases(sales_code, year):
     """The bases the desk's Summary Allocation sheet holds, measured on the
     portfolio allocated to this RM NOW -> {"customers", "december_loan_book",
@@ -580,17 +603,7 @@ def allocated_book_bases(sales_code, year):
             f"{table} has no cust_cif or {base_column} column to read the "
             f"allocated customers' December loan book from")
         return out
-    seg = ("AND COALESCE(l.customer_segment, '') <> ALL(%s)"
-           if "customer_segment" in columns else "")
-    params = [sales_code] + ([list(_BAL_EXCLUDE)] if seg else [])
-    with connection.cursor() as cur:
-        cur.execute(f"""
-            SELECT SUM(l.{base_column}) FILTER (WHERE l.{base_column} > 0)
-            FROM {table} l
-            WHERE split_part(TRIM(l.cust_cif::text), '.', 1) ~ '^[0-9]+$'
-              AND split_part(TRIM(l.cust_cif::text), '.', 1)::bigint IN ({_BOOK_IDS})
-              {seg}""", params)
-        value = cur.fetchone()[0]
+    value = allocated_loan_book(sales_code, base_column)
     if value is None:
         out["problems"]["december_loan_book"] = (
             f"the customers allocated to this sales code had no loan balance "
