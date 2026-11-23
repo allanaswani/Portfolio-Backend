@@ -2746,6 +2746,15 @@ def live_card(sales_code, engine_card, as_at):
     # (see engine_target_cells). Sales cards: the back office's targets are
     # the role's own numbers on the card, not an allocation.
     target_cells, target_from = {}, {}
+    # The engine's line for each card row, kept for its reason when neither
+    # the workbook nor the engine has a target.
+    engine_for_row = {}
+    _left = list(pool)
+    for _wl in base["lines"]:
+        _m = _engine_match(_left, _wl)
+        if _m is not None:
+            _left.remove(_m)
+            engine_for_row[_wl["row"]] = _m["line"]
     if spec.book == SALES:
         _prorate_ev = Evaluator(book, actuals, holder, month)
         filled = engine_target_cells(spec, base["lines"], pool,
@@ -3417,6 +3426,11 @@ def live_card(sales_code, engine_card, as_at):
         for ln, wl in zip(p["lines"], [w for w in card["lines"]
                                        if (w["perspective"] or "Other")
                                        == p["perspective"]]):
+            engine_ln = engine_for_row.get(wl["row"]) or {}
+            if (str(ln.get("pending") or "").startswith("The workbook itself shows #DIV/0!")
+                    and engine_ln.get("pending_label") == "No target set"
+                    and engine_ln.get("pending")):
+                ln["pending"] = (f"No target for this line: {engine_ln['pending']}")
             if wl["row"] in target_from:
                 ln["target_source"] = (f"{target_from[wl['row']]} - not on the "
                                        f"workbook's Summary Allocation, so the "

@@ -326,6 +326,29 @@ class StoredCardTests(TestCase):
         # It waits (not counted) rather than unscoring the whole card.
         self.assertTrue(card["perspectives"][0]["lines"][0]["pending"])
 
+    def test_a_line_with_no_target_says_why(self):
+        """A #DIV/0! line shows the engine's reason it has no target, not
+        just the error (Jackson Nyawa's Income Contribution, Asset Growth)."""
+        from unittest.mock import patch
+
+        bo.save_file("scorecards", book())
+        bo.save_file("actuals", ACTUALS)
+        real = bo.compute
+
+        def no_target_on_nps(*args, **kwargs):
+            card = real(*args, **kwargs)
+            card["lines"][2]["score"] = card["lines"][2]["weighted"] = {"e": "#DIV/0!"}
+            return card
+
+        engine = {"has_card": True, "live": True, "perspectives": [{"lines": [
+            {"kpi_code": "zz", "kpi_name": "NPS", "pending_label": "No target set",
+             "pending": "the customers allocated to you had no loan balance at December 2025"}]}]}
+        with patch.object(bo, "compute", side_effect=no_target_on_nps):
+            card = bo.live_card("BCK3783", engine, datetime.date(2026, 10, 31))
+        nps = card["perspectives"][0]["lines"][2]
+        self.assertIn("No target for this line", nps["pending"])
+        self.assertIn("no loan balance at December 2025", nps["pending"])
+
     def test_an_audit_line_with_no_return_still_builds_the_card(self):
         """No audit return loaded: the card must still build. A variable the
         audit lines reused crashed every back-office live card on 23 Nov 2026,
