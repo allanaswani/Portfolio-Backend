@@ -1407,10 +1407,20 @@ def holders(book, keep_off=False):
             # on the roster, still had the List's BOM card for Naivasha.
             role = by_role.get(str(found[1] or "").upper())
             # A more specific List role of the same family stands: the roster's
-            # "CSO" against the List's "CSO_UB", "RBO" against "TL_RBO".
-            same_family = role and (holder.role.upper().endswith(role.upper())
-                                    or holder.role.upper().startswith(role.upper())
-                                    or role.upper().startswith(holder.role.upper()))
+            # "CSO" against the List's "CSO_UB", "RBO" against "TL_RBO" - and,
+            # by ROLE_FAMILIES (the rule the HR override below already used),
+            # "TELLER" against "Cash_Center" and "CSO" against "CSM_DB". Matching
+            # only on the names' letters turned Christine Adhiambo (CA3780,
+            # Cash_Center, Rehani) into a Teller: the teller card's 43
+            # transactions a day scored her 4.7% on a quarter of her weight and
+            # 59% overall, where the desk's cash-centre card gave her about 80%
+            # every month.
+            same_family = role and (
+                (ROLE_FAMILIES.get(role) is not None
+                 and ROLE_FAMILIES.get(role) == ROLE_FAMILIES.get(holder.role))
+                or holder.role.upper().endswith(role.upper())
+                or holder.role.upper().startswith(role.upper())
+                or role.upper().startswith(holder.role.upper()))
             if role and role != holder.role and not same_family:
                 holder.role, holder.sheet = role, spec.role_sheets[role]
             if found[2] and _branch_name(found[2]) != _branch_name(holder.branch):

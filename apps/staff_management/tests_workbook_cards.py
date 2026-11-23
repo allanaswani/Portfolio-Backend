@@ -1368,6 +1368,29 @@ class RosterOverridesListTests(TestCase):
                          ("CSO", "CSO_SCORECARD", "Embu"))
         self.assertEqual((ub.role, ub.sheet), ("CSO_UB", "CSO_UB_SCORECARD"))
 
+    def test_a_more_specific_list_role_of_the_same_family_stands(self):
+        """Christine Adhiambo: the List has Cash_Center at Rehani, the roster
+        TELLER. She was put on the teller card and read 59% where the desk's
+        cash-centre card gave her about 80%. Same for CSM_DB against CSO."""
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = self._book("back_office", [
+            [3780, "CA3780", "Christine Adhiambo", "Cash_Center", "Rehani"],
+            [3302, "HC3302", "A CSM", "CSM_DB", "Rehani"],
+            [9, "TT9", "A Teller", "Teller", "Rehani"],
+        ])
+        roster = {"CA3780": ("Christine Adhiambo", "TELLER", "REHANI BRANCH", 3780, True),
+                  "HC3302": ("A CSM", "CSO", "REHANI BRANCH", 3302, True),
+                  "TT9": ("A Teller", "CSO", "REHANI BRANCH", 9, True)}
+        with mock.patch.object(wc, "roster_roles", return_value=roster),                 mock.patch.object(wc, "hr_roles", return_value={}):
+            christine, csm, moved = wc.holders(book)
+        self.assertEqual((christine.role, christine.sheet), ("Cash_Center", "CASH_TELLER_SCORECARD"))
+        self.assertEqual((csm.role, csm.sheet), ("CSM_DB", "CSM_DB_SCORECARD"))
+        # A real move to another family still follows the roster.
+        self.assertEqual(moved.role, "CSO")
+
     def test_an_inactive_roster_row_does_not_override_the_list(self):
         """Felix Saigon: the List has BSA at Komarock; his only DMC row is an
         old posting (TELLER, MACHAKOS BRANCH, active 0). His card said
