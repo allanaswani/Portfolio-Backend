@@ -1338,6 +1338,29 @@ def hr_roles():
     return found
 
 
+def _branch_key(branch):
+    """A branch however it is written → one key: "HARAMBEE AVE BRANCH",
+    "Harambee" -> HARAMBEE; "SAMEER BUSINESS PARK", "SameerPark" -> SAMEERPARK;
+    "RIVER ROAD", "Riverroad" -> RIVERROAD."""
+    text = re.sub(r"\s+branch\s*$", "", str(branch or "").strip(), flags=re.I).upper()
+    text = re.sub(r"\b(AVENUE|AVE|BUSINESS)\b", " ", text)
+    return re.sub(r"[^A-Z]", "", text)
+
+
+def _list_branch(branch, list_branches):
+    """The List's own spelling of ``branch`` (exact key, else a unique
+    prefix either way), or None when the List never names it."""
+    key = _branch_key(branch)
+    if not key:
+        return None
+    exact = [b for b in list_branches if _branch_key(b) == key]
+    if exact:
+        return exact[0]
+    near = [b for b in list_branches
+            if _branch_key(b) and (_branch_key(b).startswith(key) or key.startswith(_branch_key(b)))]
+    return near[0] if len(near) == 1 else None
+
+
 def _branch_name(branch):
     """'EMBU BRANCH' -> 'Embu', as the back-office List writes branches."""
     text = re.sub(r"\s+branch\s*$", "", str(branch or "").strip(), flags=re.I)
@@ -1387,6 +1410,11 @@ def holders(book, keep_off=False):
     # branch table still named Dennis Geni for Naivasha after he left on
     # 10 March 2026, and adding roster BBMs gave him a card.
     roster = roster_roles() if spec.book == BACK_OFFICE else {}
+    list_branches = sorted({str(r[spec.list_cols["branch"]]).strip()
+                            for r in grid[1:]
+                            if spec.list_cols.get("branch") is not None
+                            and len(r) > spec.list_cols["branch"]
+                            and str(r[spec.list_cols["branch"]] or "").strip()})
     hr = hr_roles() if spec.book == BACK_OFFICE else {}
     by_role = {k.upper(): k for k in spec.role_sheets}
     for index, row in enumerate(grid[1:], start=1):
@@ -1423,8 +1451,18 @@ def holders(book, keep_off=False):
                 or role.upper().startswith(holder.role.upper()))
             if role and role != holder.role and not same_family:
                 holder.role, holder.sheet = role, spec.role_sheets[role]
-            if found[2] and _branch_name(found[2]) != _branch_name(holder.branch):
-                holder.branch = _branch_name(found[2])
+            if found[2]:
+                moved = _list_branch(found[2], list_branches)
+                # Only a different branch moves the person, and only into the
+                # List's own spelling of it - the card looks targets up by
+                # branch (a teller's Productivity target is per branch), so
+                # "Harambee Ave" for the List's "Harambee" turned Productivity
+                # and the whole score into #N/A for every Harambee and
+                # SameerPark card (Joseph Gatundu, Christine Kamande, Purity
+                # Zawadi ...). A branch the List never spells is not a move
+                # the card can read, so the List's stands.
+                if moved and _branch_key(moved) != _branch_key(holder.branch):
+                    holder.branch = moved
         if spec.book == BACK_OFFICE and holder.pf:
             # HR's job title, where it puts the person in another role family
             # than the List - and the workbook has that card.

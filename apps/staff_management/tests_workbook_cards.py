@@ -1443,14 +1443,51 @@ class RosterOverridesListTests(TestCase):
         book = self._book("back_office", [
             [3227, "JKK3227", "Joseph Kinuthia", "BOM", "Naivasha"],
             [1, "UB1", "Ultimate CSO", "CSO_UB", "Westlands"],
+            [2, "EM2", "Someone at Embu", "CSO", "Embu"],
         ])
         roster = {"JKK3227": ("Joseph Kinuthia", "CSO", "EMBU BRANCH", 3227, True),
                   "UB1": ("Ultimate CSO", "CSO", "WESTLANDS BRANCH", 1, True)}
         with mock.patch.object(wc, "roster_roles", return_value=roster):
-            joseph, ub = wc.holders(book)
+            joseph, ub, _embu = wc.holders(book)
         self.assertEqual((joseph.role, joseph.sheet, joseph.branch),
                          ("CSO", "CSO_SCORECARD", "Embu"))
         self.assertEqual((ub.role, ub.sheet), ("CSO_UB", "CSO_UB_SCORECARD"))
+
+    def test_branch_spellings_fold_to_one_key(self):
+        from . import workbook_cards as wc
+
+        for one, other in (("HARAMBEE AVE BRANCH", "Harambee"),
+                           ("SAMEER BUSINESS PARK BRANCH", "SameerPark"),
+                           ("RIVER ROAD", "Riverroad"), ("TRM BRANCH", "TRM")):
+            self.assertEqual(wc._branch_key(one), wc._branch_key(other), one)
+        self.assertNotEqual(wc._branch_key("Naivasha"), wc._branch_key("Nakuru"))
+        self.assertEqual(wc._branch_key("NAIVASHA"), "NAIVASHA")  # AVA inside a word stays
+
+    def test_a_roster_spelling_of_the_same_branch_is_not_a_move(self):
+        """The roster's "HARAMBEE AVE BRANCH" is the List's "Harambee" and
+        "SAMEER BUSINESS PARK BRANCH" its "SameerPark": the card looks targets
+        up by branch, so renaming them turned Productivity #N/A for every
+        teller there. A real move takes the List's own spelling."""
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        book = self._book("back_office", [
+            [3465, "JN3465", "Joseph Gatundu", "Teller", "Harambee"],
+            [4417, "PZ4417", "Purity Zawadi", "Teller", "SameerPark"],
+            [1815, "DAO1815", "Diana Osewe", "BOM", "Kisumu"],
+            [1, "K1", "Someone", "Teller", "Kitengela"],
+        ])
+        roster = {"JN3465": ("Joseph Gatundu", "TELLER", "HARAMBEE AVE BRANCH", 3465, True),
+                  "PZ4417": ("Purity Zawadi", "TELLER", "SAMEER BUSINESS PARK BRANCH", 4417, True),
+                  "DAO1815": ("Diana Osewe", "BOM", "KITENGELA BRANCH", 1815, True),
+                  "K1": ("Someone", "TELLER", "NOWHERE BRANCH", 1, True)}
+        with mock.patch.object(wc, "roster_roles", return_value=roster),                 mock.patch.object(wc, "hr_roles", return_value={}):
+            joseph, purity, diana, someone = wc.holders(book)
+        self.assertEqual(joseph.branch, "Harambee")
+        self.assertEqual(purity.branch, "SameerPark")
+        self.assertEqual(diana.branch, "Kitengela")     # a real move, List spelling
+        self.assertEqual(someone.branch, "Kitengela")   # a branch the List never names
 
     def test_a_more_specific_list_role_of_the_same_family_stands(self):
         """Christine Adhiambo: the List has Cash_Center at Rehani, the roster
