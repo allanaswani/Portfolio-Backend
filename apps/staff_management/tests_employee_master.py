@@ -610,3 +610,31 @@ class EmployeeRecordTests(TransactionTestCase):
         self.assertEqual(self.client.patch(f"{self.LIST}{pk}/", {"name": "X"}, format="json").status_code, 403)
         self.assertEqual(self.client.delete(f"{self.LIST}{pk}/").status_code, 403)
         self.assertEqual(self.client.get(self.LIST).status_code, 403)
+
+    def test_a_refused_save_says_why(self):
+        """A database refusal comes back as a message, never a bare 500 page."""
+        from unittest import mock
+
+        from django.db import DatabaseError
+
+        pk = self._add().data["id"]
+        with mock.patch.object(EmployeeTable, "save",
+                               side_effect=DatabaseError('column "x" is of type date')):
+            resp = self.client.put(f"{self.LIST}{pk}/", {"name": "Y", "staff_id": 4022},
+                                   format="json")
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("The database refused this change", resp.data["detail"])
+        self.assertIn('column "x"', resp.data["detail"])
+
+
+class EmployeeRecordTextStaffIdTests(EmployeeRecordTests):
+    """Production's employee_table.staff_id is character varying, not the
+    model's numeric: every test above again on a text column. The first edit
+    on production failed with 'operator does not exist: character varying =
+    integer' on the duplicate-staff-ID check."""
+
+    def setUp(self):
+        super().setUp()
+        with connection.cursor() as cur:
+            cur.execute("ALTER TABLE employee_table ALTER COLUMN staff_id "
+                        "TYPE varchar(50) USING staff_id::text")

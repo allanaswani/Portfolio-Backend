@@ -80,9 +80,12 @@ def _check_hr(pf):
     if pf is None:
         return None, True
 
-    # staff_id is a numeric column, so 3868 and 3868.00000 are the same row.
+    # Compared as text: the model says numeric, production's column is text
+    # (see apps.staff_management.staff_ids), and 3868 / 3868.00000 are one row.
+    from apps.staff_management.staff_ids import with_staff_id
+
     name = (
-        roster.filter(staff_id=pf)
+        with_staff_id(roster, pf)
         .exclude(name__isnull=True).exclude(name="")
         .values_list("name", flat=True)
         .first()

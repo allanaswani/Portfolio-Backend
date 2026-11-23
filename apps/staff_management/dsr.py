@@ -89,8 +89,10 @@ def autofill_from_roster(pf_number) -> dict:
         from apps.gceo_dashboard.models import EmployeeTable as Emp
 
         if pf_int is not None:
+            from apps.staff_management.staff_ids import with_staff_id
+
             er = (
-                Emp.objects.filter(staff_id=pf_int)
+                with_staff_id(Emp.objects.all(), pf_int)
                 .values("name", "department")
                 .first()
             )

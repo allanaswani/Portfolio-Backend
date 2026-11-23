@@ -65,7 +65,7 @@ import re
 from datetime import date, datetime, timezone as dt_timezone
 
 from django.conf import settings
-from django.db import connections, router, transaction
+from django.db import DatabaseError, connections, router, transaction
 from django.db.models import Max
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -755,10 +755,29 @@ class _CalendarDate(serializers.Field):
         return _as_datetime(day)
 
 
+class _StaffId(serializers.Field):
+    """The PF number. Declared numeric on the model, but production's
+    ``employee_table.staff_id`` is ``character varying`` - so it is read
+    through canon_staff_id whatever it holds ("3439", "3439.0", 3439.00000)
+    and written as the plain whole number's text."""
+
+    def to_representation(self, value):
+        return canon_staff_id(value)
+
+    def to_internal_value(self, data):
+        if data in (None, ""):
+            return None
+        number = canon_staff_id(data)
+        if number is None:
+            raise serializers.ValidationError("Staff ID must be a whole number.")
+        return number
+
+
+from apps.staff_management.staff_ids import staff_id_matches, with_staff_id  # noqa: E402
+
+
 class EmployeeRecordSerializer(serializers.ModelSerializer):
-    # staff_id is a DecimalField(max_digits=990) on the model, which DRF's own
-    # decimal field cannot serialise; it is a whole number (the PF number).
-    staff_id = serializers.IntegerField(allow_null=True, required=False)
+    staff_id = _StaffId(allow_null=True, required=False)
     date_of_birth = _CalendarDate(allow_null=True, required=False)
     date_of_employment = _CalendarDate(allow_null=True, required=False)
 
@@ -773,12 +792,6 @@ class EmployeeRecordSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "updated_at"]
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        if instance.staff_id is not None:
-            data["staff_id"] = canon_staff_id(instance.staff_id)
-        return data
-
     def validate(self, attrs):
         if self.instance is None and attrs.get("staff_id") is None:
             raise serializers.ValidationError(
@@ -788,8 +801,7 @@ class EmployeeRecordSerializer(serializers.ModelSerializer):
     def validate_staff_id(self, value):
         if value is None:
             raise serializers.ValidationError("Staff ID (PF number) is required.")
-        taken = (EmployeeTable.objects.using(employee_db())
-                 .filter(staff_id=value))
+        taken = with_staff_id(EmployeeTable.objects.using(employee_db()), value)
         if self.instance is not None:
             taken = taken.exclude(pk=self.instance.pk)
         if taken.exists():
@@ -804,6 +816,15 @@ def _record_queryset():
 
 def _changed(before, after):
     return sorted(k for k in after if before.get(k) != after.get(k))
+
+
+def _refused(exc, request, what):
+    """A database refusal as a message the form can show, not a bare 500 page.
+    The full traceback still goes to the log."""
+    _change_log.exception("employee_table: %s could not %s", request.user.username, what)
+    return Response(
+        {"detail": f"The database refused this change: {str(exc).strip().splitlines()[0][:300]}"},
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(tags=["Staff Management — Employee master"])
@@ -824,8 +845,11 @@ class EmployeeRecordListCreateView(APIView):
                      | Q(national_id__icontains=search)
                      | Q(department__icontains=search)
                      | Q(job_title__icontains=search))
-            if canon_staff_id(search) is not None:
-                match |= Q(staff_id=canon_staff_id(search))
+            number = canon_staff_id(search)
+            if number is not None:
+                pf_match, cast = staff_id_matches(number)
+                qs = qs.annotate(_sid=cast)
+                match |= pf_match
             qs = qs.filter(match)
         try:
             limit = max(1, min(int(request.query_params.get("limit") or 100), 2000))
@@ -834,15 +858,24 @@ class EmployeeRecordListCreateView(APIView):
         return Response(EmployeeRecordSerializer(qs[:limit], many=True).data)
 
     def post(self, request):
+        try:
+            return self._add(request)
+        except DatabaseError as exc:
+            return _refused(exc, request, "add an employee")
+
+    def _add(self, request):
         serializer = EmployeeRecordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         alias = employee_db()
         fields = dict(serializer.validated_data, updated_at=timezone.now())
         if not _id_is_database_generated():
             fields["id"] = (_record_queryset().aggregate(m=Max("id"))["m"] or 0) + 1
-        with transaction.atomic(using=alias):
-            record = EmployeeTable(**fields)
-            record.save(using=alias, force_insert=True)
+        try:
+            with transaction.atomic(using=alias):
+                record = EmployeeTable(**fields)
+                record.save(using=alias, force_insert=True)
+        except DatabaseError as exc:
+            return _refused(exc, request, "add an employee")
         _change_log.info("employee_table: %s added staff %s (id %s)",
                          request.user.username, record.staff_id, record.pk)
         return Response(EmployeeRecordSerializer(record).data,
@@ -865,10 +898,16 @@ class EmployeeRecordDetailView(APIView):
         return Response(EmployeeRecordSerializer(record).data)
 
     def put(self, request, pk):
-        return self._update(request, pk, partial=False)
+        try:
+            return self._update(request, pk, partial=False)
+        except DatabaseError as exc:
+            return _refused(exc, request, f"edit employee {pk}")
 
     def patch(self, request, pk):
-        return self._update(request, pk, partial=True)
+        try:
+            return self._update(request, pk, partial=True)
+        except DatabaseError as exc:
+            return _refused(exc, request, f"edit employee {pk}")
 
     def _update(self, request, pk, partial):
         record = self._record(pk)
@@ -881,8 +920,11 @@ class EmployeeRecordDetailView(APIView):
             setattr(record, field, value)
         record.updated_at = timezone.now()
         alias = employee_db()
-        with transaction.atomic(using=alias):
-            record.save(using=alias)
+        try:
+            with transaction.atomic(using=alias):
+                record.save(using=alias)
+        except DatabaseError as exc:
+            return _refused(exc, request, f"edit employee {pk}")
         after = EmployeeRecordSerializer(record).data
         _change_log.info("employee_table: %s edited staff %s (id %s): %s",
                          request.user.username, record.staff_id, record.pk,
@@ -895,8 +937,11 @@ class EmployeeRecordDetailView(APIView):
             return Response({"detail": "No such employee."}, status=404)
         staff_id = record.staff_id
         alias = employee_db()
-        with transaction.atomic(using=alias):
-            record.delete(using=alias)
+        try:
+            with transaction.atomic(using=alias):
+                record.delete(using=alias)
+        except DatabaseError as exc:
+            return _refused(exc, request, f"delete employee {pk}")
         _change_log.info("employee_table: %s deleted staff %s (id %s)",
                          request.user.username, staff_id, pk)
         return Response(status=status.HTTP_204_NO_CONTENT)
