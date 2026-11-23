@@ -575,6 +575,16 @@ class EmployeeRecordTests(TransactionTestCase):
         self.assertEqual(row.staff_exit_date.isoformat(), "2026-11-01")
         self.assertEqual(row.date_of_employment.date().isoformat(), "2014-03-01")
 
+    def test_a_full_put_as_the_form_sends_it(self):
+        created = self._add().data
+        body = dict(created, job_title="Team Leader", exit=0, new=1)
+        body.pop("id"); body.pop("updated_at")
+        resp = self.client.put(f"{self.LIST}{created['id']}/", body, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        row = employees().get(pk=created["id"])
+        self.assertEqual((row.job_title, row.new), ("Team Leader", 1))
+        self.assertEqual(int(row.staff_id), 4022)
+
     def test_moving_to_another_persons_staff_id_is_refused(self):
         self._add()
         other = self._add(staff_id=5000, name="Other").data["id"]
