@@ -818,9 +818,11 @@ def _at_row(grid, r):
     return grid[r] if 0 <= r < len(grid) and grid[r] else []
 
 
-#: The template sheet name the Loan Approvals line reads. The actuals
-#: template has no such sheet: the figure is the iApply loan trail's
-#: (loan_applications.accepted_offers), put into the line's actual cell.
+#: The template sheet the Loan Approvals line reads - the sales actuals
+#: template's own Loan_Approvals sheet (C:R, a running total). Months the
+#: desk has not filled take the iApply loan trail's figure
+#: (loan_applications.accepted_offers): in compute, and on the live card as
+#: the desk's year to date plus what was accepted since.
 LOAN_APPROVALS_FEED = "Loan_Approvals"
 
 
@@ -2262,8 +2264,12 @@ def compute(book, actuals, holder, month, overrides=None):
     ev.inputs.update(_target_changes(spec, card, holder.sheet, book_year(book), month))
     # Loan Approvals has no template sheet: the iApply trail's figure goes
     # into the line's actual cell (see complete_loan_approvals).
+    # A month the desk filled on its own Loan_Approvals sheet keeps the desk's
+    # figure (RG4072 18.5m, MM4047 14m for September).
     for r in _loan_approvals_rows(card, spec.cols["feed"]):
-        if (r, spec.cols["actual"]) not in (overrides or {}):
+        if (r, spec.cols["actual"]) not in (overrides or {}) and not _num(
+                _get_template(actuals, LOAN_APPROVALS_FEED, holder.sales_code,
+                              month, 0, holder.name)):
             value = loan_approvals_value(holder.sales_code, book_year(book), month)
             if value is not None:
                 ev.inputs[(r, spec.cols["actual"])] = value
@@ -2920,7 +2926,7 @@ def _put_template(actuals, sheet, code, month, value, block=0, person=None):
 ACCUMULATING_SHEETS = {"plotsalesvolume", "plotsalesvalue",
                        "tradefinanceincome", "bancaassuranceincome",
                        "newcustomers", "assetdrawdown", "traininghours",
-                       "vic", "viclife", "vicnonlife",
+                       "vic", "viclife", "vicnonlife", "loanapprovals",
                        "hfcbpropertiesvalue", "hfcbpropertiesvolume"}
 
 
@@ -3455,6 +3461,7 @@ def live_card(sales_code, engine_card, as_at):
     measured = {}   # row -> how a back-office dormancy / CASA figure was read
     finance = {}    # row -> the month of Finance's Branch Accounts it read
     tat_report = {}  # row -> (iApply user, month) read off the accounts TAT report
+    approvals_rows = set()  # Loan Approvals: the desk's YTD plus iApply since
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -3468,13 +3475,27 @@ def live_card(sales_code, engine_card, as_at):
             continue
         if wl["feed"] == LOAN_APPROVALS_FEED:
             # Accepted offers off the iApply loan trail (the TAT (Loan)
-            # line's source), year to this month's end.
+            # line's source), year to this month's end. Where the desk's
+            # template has an earlier month, its year to date stands and
+            # only what was accepted after that month is added - as topped
+            # does for the mortgage lines.
             value = loan_approvals_value(code, as_at.year, month)
+            then = carried.get(wl["row"])
+            how = ("approved amount on your applications whose offer letter "
+                   "was accepted, year to date (iApply loan trail)")
+            if value is not None and then and then < month and _num(desk.get(wl["row"])):
+                before = loan_approvals_value(code, as_at.year, then)
+                if before is None:
+                    continue
+                value = float(desk[wl["row"]]) + max(0.0, value - before)
+                how = (f"the desk's year to date to "
+                       f"{datetime.date(as_at.year, then, 1):%b %Y} "
+                       f"({float(desk[wl['row']]):,.0f}) plus offers accepted "
+                       f"since (iApply loan trail)")
             if value is not None:
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
-                measured[wl["row"]] = (
-                    "approved amount on your applications whose offer letter "
-                    "was accepted, year to date (iApply loan trail)")
+                measured[wl["row"]] = how
+                approvals_rows.add(wl["row"])
             continue
         if _key(wl["feed"]) == "weightedtat":
             # Weighted TAT is the desk's monthly dashboard (see weighted_tat):
@@ -3848,6 +3869,7 @@ def live_card(sales_code, engine_card, as_at):
             proven_line = r not in beside
         worse = (is_live and r in carried and not proven_line
                  and r not in dashboard and r not in tat_report
+                 and r not in approvals_rows
                  and _num(wl.get("score")) and _num(desk_score.get(r))
                  and wl["score"] < desk_score[r] - 1e-9)
         # A back-office line is live only if the card's own formula found the

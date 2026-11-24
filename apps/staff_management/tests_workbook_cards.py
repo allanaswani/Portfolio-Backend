@@ -2274,6 +2274,7 @@ class LoanApprovalsTests(TestCase):
                              "'Summary Allocation'!$C:$C,$C$2)")
         for row in probation["allocation"][3:]:
             row[56] = 100e6
+        card["f"]["0,13"] = t("=Constants!$B$5")  # the card's N1: the month's column
         return ProbationWorkbookTests()._sales(), probation
 
     def test_the_card_scores_the_line_from_the_trail(self):
@@ -2293,6 +2294,27 @@ class LoanApprovalsTests(TestCase):
                          (100e6, 50e6, 12e6))
         self.assertAlmostEqual(line["score"], 0.24)
         self.assertAlmostEqual(line["weighted"], 0.072)
+
+    def test_a_month_the_desk_filled_keeps_the_desks_figure(self):
+        from unittest import mock
+
+        sales, probation = self._cards()
+        merged = bo.with_probation(sales, probation=probation)
+        roy = next(h for h in bo.holders(merged) if h.sales_code == "RG4072")
+        # The template's own Loan_Approvals sheet: PF, code, name, role,
+        # branch, zone, then Jan..Dec as running totals.
+        actuals = {bo.LOAN_APPROVALS_FEED: [
+            ["PF", "Code", "Name", "Role", "Branch", "Zone"] + [None] * 12,
+            [4072, "RG4072", "Roy Gitonga", "Mortgage Business RM", "Mortgage", None,
+             None, None, None, None, None, None, None, 0, 18_500_000]]}
+        with mock.patch.object(bo, "loan_approvals_value", return_value=25e6):
+            sep = bo.compute(merged, actuals, roy, 9)
+            octo = bo.compute(merged, actuals, roy, 10)
+        line = lambda card: next(ln for ln in card["lines"]  # noqa: E731
+                                 if ln["measure"].startswith("Loan Approvals"))
+        self.assertEqual(line(sep)["actual"], 18_500_000)
+        # October is not on the template: the trail's figure.
+        self.assertEqual(line(octo)["actual"], 25e6)
 
     def test_a_row_the_desk_completes_is_left_as_the_desk_wrote_it(self):
         sales, probation = self._cards()
