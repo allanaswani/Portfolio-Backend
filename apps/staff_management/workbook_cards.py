@@ -1404,6 +1404,36 @@ def off_card(sales_code, month=None):
 LIST_WINS = True
 
 
+def role_after_change(spec, book, holder, month):
+    """(role, sheet) the person holds in ``month`` after a role change or
+    promotion an administrator recorded on the Proration screen, or None.
+
+    The desk's List wins (23 Nov 2026) - for the months it covers. A change
+    recorded after it is newer than the List: Ivan Ombiru (IO3870), a Teller
+    on the Q3 List, CSO from October 2026, went back to the Teller card for
+    November when the roster's role was switched off for everybody. From the
+    month of the recorded change on, the person holds their current role on
+    the roster (the entry records that the role changed, the roster to what).
+    A role in the same family as the List's stands, as it always has."""
+    if spec.book != BACK_OFFICE:
+        return None
+    entries = [e for e in (proration().get((holder.sales_code or "").upper()) or [])
+               if e.get("reason") in ("role_change", "promotion") and _ym(e.get("from"))]
+    started = [e for e in entries if _ym(e["from"]) <= (month.year, month.month)]
+    if not started:
+        return None
+    found = roster_roles().get(holder.sales_code)
+    if not found or not found[4]:
+        return None
+    role = {k.upper(): k for k in spec.role_sheets}.get(str(found[1] or "").strip().upper())
+    if (not role or role == holder.role
+            or (ROLE_FAMILIES.get(role) is not None
+                and ROLE_FAMILIES.get(role) == ROLE_FAMILIES.get(holder.role))
+            or spec.role_sheets[role] not in (book.get("cards") or {})):
+        return None
+    return role, spec.role_sheets[role]
+
+
 def holders(book, keep_off=False):
     """The workbook's card holders. Somebody on the no-card list (see
     :func:`no_card`) is left out from their month on; ``keep_off`` keeps them
@@ -2821,6 +2851,9 @@ def live_card(sales_code, engine_card, as_at):
     if as_at is None:
         first_this = datetime.date.today().replace(day=1)
         as_at = first_this - datetime.timedelta(days=1)
+    changed = role_after_change(spec, book, holder, as_at)
+    if changed:
+        holder.role, holder.sheet = changed
     if as_at.year != book_year(book):
         return None
     month = as_at.month

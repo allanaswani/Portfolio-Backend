@@ -1987,3 +1987,38 @@ class AssetGrowthCapTests(SimpleTestCase):
 
         self.assertEqual(wc.asset_growth_cap({"tables": {}}, "SME RM", 0.43), 116100000.0)
         self.assertIsNone(wc.asset_growth_cap({"tables": {}}, "Teller", 0.38))
+
+
+class RoleAfterChangeTests(SimpleTestCase):
+    """Ivan Ombiru (IO3870): Teller on the desk's List, CSO from October 2026
+    (a role change recorded on the Proration screen). The List wins for its
+    months; from the recorded change on he holds the roster's CSO."""
+
+    def _call(self, entries, roster, month):
+        from unittest import mock
+
+        from . import workbook_cards as wc
+
+        spec = wc.SPECS[wc.BACK_OFFICE]
+        holder = type("H", (), {"sales_code": "IO3870", "role": "Teller"})()
+        book = {"cards": {sheet: {} for sheet in spec.role_sheets.values()}}
+        with mock.patch.object(wc, "proration", return_value={"IO3870": entries}), \
+                mock.patch.object(wc, "roster_roles", return_value=roster):
+            return wc.role_after_change(spec, book, holder, month)
+
+    def test_from_the_recorded_change_he_holds_the_rosters_role(self):
+        from . import workbook_cards as wc
+
+        roster = {"IO3870": ("Ivan Ombiru", "CSO", "RiverRoad", "3870", True)}
+        entry = [{"reason": "role_change", "from": "2026-10"}]
+        spec = wc.SPECS[wc.BACK_OFFICE]
+        self.assertEqual(self._call(entry, roster, datetime.date(2026, 11, 24)),
+                         ("CSO", spec.role_sheets["CSO"]))
+        # September is the List's: no change.
+        self.assertIsNone(self._call(entry, roster, datetime.date(2026, 9, 30)))
+
+    def test_no_recorded_change_the_list_stands(self):
+        roster = {"IO3870": ("Ivan Ombiru", "CSO", "RiverRoad", "3870", True)}
+        self.assertIsNone(self._call([], roster, datetime.date(2026, 11, 24)))
+        self.assertIsNone(self._call([{"reason": "acting", "from": "2026-10", "to": "2026-11"}],
+                                     roster, datetime.date(2026, 11, 24)))
