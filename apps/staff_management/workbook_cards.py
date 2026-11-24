@@ -535,6 +535,352 @@ def _read_scorecards_path(path):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Formulas written as text (.xlsx / .xlsm) → the same RPN
+# ─────────────────────────────────────────────────────────────────────────
+
+#: Excel's operator precedence, highest first: negation, percent, power,
+#: multiply/divide, add/subtract, join, compare. Negation binds tighter than
+#: power (=-2^2 is 4).
+_PRECEDENCE = {"u": 7, "^": 5, "*": 4, "/": 4, "+": 3, "-": 3, "&": 2,
+               "=": 1, "<>": 1, "<": 1, ">": 1, "<=": 1, ">=": 1, ":": 8}
+_XL_ERRORS = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!",
+              "#N/A"}
+_REF = re.compile(r"^\$?([A-Za-z]{1,3})?\$?(\d+)?(?::\$?([A-Za-z]{1,3})?\$?(\d+)?)?$")
+
+
+def _ref_token(text):
+    """``'Summary Allocation'!$BJ:$BJ``, ``$C$2``, ``E6:E9``, ``1:8`` → an
+    "r" or "a" token as the .xlsb reader writes them; a reference into
+    another workbook is #REF! (the .xlsb reader refuses those too), and a
+    defined name #NAME? (as the .xlsb reader reads one)."""
+    sheet, ref = None, text
+    if "!" in text:
+        sheet, ref = text.rsplit("!", 1)
+        if sheet.startswith("'") and sheet.endswith("'"):
+            sheet = sheet[1:-1].replace("''", "'")
+        if sheet.startswith("["):
+            return ["n", {"e": "#REF!"}]
+    m = _REF.match(ref)
+    if not m or not any(m.groups()):
+        return ["n", {"e": "#NAME?"}]
+    c1, r1, c2, r2 = m.groups()
+    if ":" not in ref:
+        if not (c1 and r1):
+            return ["n", {"e": "#NAME?"}]
+        return ["r", sheet, int(r1) - 1, _column_index(c1)]
+    col1 = _column_index(c1) if c1 else 0
+    col2 = _column_index(c2) if c2 else 16383
+    row1 = int(r1) - 1 if r1 else 0
+    row2 = int(r2) - 1 if r2 else 1048575
+    return ["a", sheet, row1, col1, row2, col2]
+
+
+def formula_tokens(text):
+    """An Excel formula as text (``=SUMIFS(...)``) → our RPN, the list the
+    :class:`Evaluator` runs - the same tokens :func:`_tokens` makes from an
+    .xlsb. Raises WorkbookError on an element the evaluator has no meaning
+    for (array constants)."""
+    from openpyxl.formula.tokenizer import Token, Tokenizer
+
+    out, ops, argc = [], [], []
+    prev = None
+
+    def pop_until_open():
+        while ops and ops[-1][0] not in ("(", "func"):
+            out.append(ops.pop()[1])
+
+    for tok in Tokenizer(text).items:
+        kind, sub, value = tok.type, tok.subtype, tok.value
+        if kind == Token.WSPACE:
+            continue
+        if kind == Token.OPERAND:
+            if sub == Token.NUMBER:
+                out.append(["n", float(value)])
+            elif sub == Token.TEXT:
+                out.append(["n", value[1:-1].replace('""', '"')])
+            elif sub == Token.LOGICAL:
+                out.append(["n", value.upper() == "TRUE"])
+            elif sub == Token.ERROR:
+                out.append(["n", {"e": value.upper()}])
+            else:
+                out.append(_ref_token(value))
+        elif kind == Token.FUNC and sub == Token.OPEN:
+            name = value[:-1].upper()
+            for prefix in ("_XLFN._XLWS.", "_XLFN."):
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+            ops.append(("func", name))
+            argc.append(0)
+        elif kind == Token.FUNC and sub == Token.CLOSE:
+            if prev is not None and prev.type == Token.SEP:
+                out.append(["n", None])          # f(a,) - a missing argument
+            pop_until_open()
+            _, name = ops.pop()
+            count = argc.pop()
+            empty = prev is not None and prev.type == Token.FUNC and prev.subtype == Token.OPEN
+            out.append(["f", name, 0 if empty else count + 1])
+        elif kind == Token.SEP and sub == Token.ARG:
+            if prev is not None and (prev.type == Token.SEP or (
+                    prev.type == Token.FUNC and prev.subtype == Token.OPEN)):
+                out.append(["n", None])          # f(,b) / f(a,,c)
+            pop_until_open()
+            if argc:
+                argc[-1] += 1
+        elif kind == Token.PAREN and sub == Token.OPEN:
+            ops.append(("(", None))
+        elif kind == Token.PAREN and sub == Token.CLOSE:
+            pop_until_open()
+            if ops and ops[-1][0] == "(":
+                ops.pop()
+        elif kind == Token.OP_PRE:
+            ops.append(("op", ["u", value], _PRECEDENCE["u"], True))
+        elif kind == Token.OP_POST:
+            out.append(["u", "%"])
+        elif kind == Token.OP_IN:
+            p = _PRECEDENCE.get(value)
+            if p is None:
+                raise WorkbookError(f"operator {value!r} is not supported")
+            while (ops and ops[-1][0] == "op"
+                   and (ops[-1][2] > p or (ops[-1][2] == p and not ops[-1][3]))):
+                out.append(ops.pop()[1])
+            ops.append(("op", ["b", value], p, False))
+        else:
+            raise WorkbookError(f"formula element {value!r} is not supported")
+        prev = tok
+    while ops:
+        item = ops.pop()
+        if item[0] != "op":
+            raise WorkbookError("unbalanced brackets")
+        out.append(item[1])
+    return out
+
+
+def _xl_value(v):
+    """A cell's cached value as the .xlsb reader stores it: an error as
+    {"e": code}."""
+    if isinstance(v, str) and v.strip() in _XL_ERRORS:
+        return {"e": v.strip()}
+    return _store_value(v)
+
+
+def _read_xl_sheet(formulas_ws, values_ws, with_formulas=True):
+    """One openpyxl sheet (opened with and without data_only) →
+    {"grid": [[value, ...]], "f": {"r,c": tokens}}, and the problems."""
+    grid, f, problems = [], {}, []
+    for r, row in enumerate(values_ws.iter_rows(values_only=True)):
+        values = [_xl_value(v) for v in row]
+        while values and values[-1] in (None, ""):
+            values.pop()
+        grid.append(values)
+    while grid and not grid[-1]:
+        grid.pop()
+    if with_formulas:
+        for row in formulas_ws.iter_rows():
+            for c in row:
+                v = c.value
+                text = getattr(v, "text", None)          # an array formula
+                array = text is not None
+                if text is None:
+                    text = v if isinstance(v, str) and v.startswith("=") else None
+                if not text:
+                    continue
+                try:
+                    tokens = formula_tokens(text)
+                    key = f"{c.row - 1},{c.column - 1}"
+                    f[key] = [["array"]] + tokens if array else tokens
+                except Exception as exc:  # noqa: BLE001
+                    problems.append(f"{formulas_ws.title}!{c.coordinate}: {exc}")
+    return {"grid": grid, "f": f}, problems
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# The mortgage business probation workbook
+# ─────────────────────────────────────────────────────────────────────────
+
+#: "Portfolio Management - Mortgage Business Probation scorecards" (.xlsm):
+#: the desk's card for a Mortgage Business ARM on probation. Its macro
+#: (scorecards_generation) types every "Mortgage Business ARM" on its List
+#: into the Mortgage_ARM sheet; the joiners Roy Gitonga (from August),
+#: Claudine Odhiambo, Monicah Mwaniki and Dorine Oseko (from September) are
+#: on the sales workbook's List but not on its Summary Allocation, so the
+#: sales card gave them 0 on every target and no score. Their targets are
+#: on this workbook's Summary Allocation - probation sized (disbursements
+#: 12m a month for 3 months, loan approvals 20m a month, CASA and new
+#: customers 2 a month over the 6 months, training 48 x 6/12 = 24 hours) -
+#: and its Mortgage_ARM card weighs the lines differently (Loan Approvals
+#: 30%, the two mortgage lines 5% each, no PAR).
+PROBATION_KIND = "mortgage_probation"
+PROBATION_ROLE_SHEETS = {"Mortgage Business ARM": "Mortgage_ARM"}
+
+
+def read_probation(stream):
+    """The probation workbook → {"year", "cards": {sheet: card},
+    "allocation": Summary Allocation grid, "list": List grid, "problems"}.
+
+    The card sheet keeps its formulas (run by the same :class:`Evaluator`
+    over the sales workbook's Constants and List, which are laid out the same
+    way); Summary Allocation and the List keep their values."""
+    from openpyxl import load_workbook
+
+    data = stream.read() if hasattr(stream, "read") else stream
+    import io
+
+    try:
+        wf = load_workbook(io.BytesIO(data), read_only=True, keep_vba=False)
+        wv = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise WorkbookError(f"that is not an .xlsm/.xlsx workbook ({exc})")
+    try:
+        wanted = set(PROBATION_ROLE_SHEETS.values()) | {"Summary Allocation", "List",
+                                                        "Constants"}
+        missing = sorted(wanted - set(wf.sheetnames))
+        if missing:
+            raise WorkbookError("this is not the mortgage probation workbook - it "
+                                "has no " + ", ".join(missing) + " sheet")
+        out = {"cards": {}, "problems": []}
+        for sheet in sorted(set(PROBATION_ROLE_SHEETS.values())):
+            card, problems = _read_xl_sheet(wf[sheet], wv[sheet])
+            out["cards"][sheet] = card
+            out["problems"] += problems
+        for sheet, key in (("Summary Allocation", "allocation"), ("List", "list"),
+                           ("Constants", "constants")):
+            out[key] = _read_xl_sheet(wf[sheet], wv[sheet], False)[0]["grid"]
+    finally:
+        wf.close()
+        wv.close()
+    year = _at(out["constants"], 0, 1)
+    out["year"] = int(year) if _num(year) and 2000 < year < 2100 else datetime.date.today().year
+    return out
+
+
+def is_probation_workbook(data):
+    """Has this .xlsx/.xlsm the probation workbook's sheets?"""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        names = set(wb.sheetnames)
+    finally:
+        wb.close()
+    return set(PROBATION_ROLE_SHEETS.values()) <= names and "Summary Allocation" in names
+
+
+def _allocation_columns(card):
+    """The Summary Allocation columns a card's formulas read."""
+    cols = set()
+    for tokens in card["f"].values():
+        for t in tokens:
+            if t[0] in ("r", "a") and t[1] == "Summary Allocation":
+                cols.update(range(t[3], (t[5] if t[0] == "a" else t[3]) + 1))
+    return cols
+
+
+def probation_people(book, probation):
+    """{SALES CODE: probation card sheet} - who the desk scores on the
+    probation workbook: a role its macro puts on a probation card, on its
+    List and not marked "left", on the sales List, and NOT on the sales
+    Summary Allocation (where the desk allocates everybody it scores on the
+    sales card). Somebody the desk later puts on the sales Summary
+    Allocation goes back to the sales card."""
+    spec = SPECS[SALES]
+    sales_list = book["tables"].get("List") or []
+    on_list = {str(r[0] or "").strip().upper() for r in sales_list[1:] if r}
+    alloc = book["tables"].get(_sheet_named(book["tables"], "Summary Allocation") or "") or []
+    allocated = {str(r[1] or "").strip().upper() for r in alloc if len(r) > 1}
+    out = {}
+    for row in (probation.get("list") or [])[1:]:
+        if len(row) < 4:
+            continue
+        code = str(row[spec.list_cols["code"]] or "").strip().upper()
+        role = str(row[spec.list_cols["role"]] or "").strip()
+        branch = str(row[spec.list_cols["branch"]] or "").strip().lower()
+        sheet = PROBATION_ROLE_SHEETS.get(role)
+        if (code and sheet and branch != "left" and code in on_list
+                and code not in allocated and sheet in probation.get("cards", {})):
+            out[code] = sheet
+    return out
+
+
+def probation_start(book, holder):
+    """The sales List's prorate_new for this person (column I, which the
+    card's column O looks up) → int; 0 when blank."""
+    row = _at_row(book["tables"].get("List") or [], holder.row)
+    v = row[8] if len(row) > 8 else None
+    return int(v) if _num(v) and 0 < v < 12 else 0
+
+
+def _at_row(grid, r):
+    return grid[r] if 0 <= r < len(grid) and grid[r] else []
+
+
+def with_probation(book, year=None, probation=None):
+    """The sales workbook with the probation workbook's cards in it → book.
+
+    Adds each probation card sheet, the probation Summary Allocation rows of
+    the people :func:`probation_people` finds (written under the sales
+    List's spelling of their name, which the card's SUMIFS look up - the
+    probation List has "Monica Mwaniki", the sales List "Monicah Mwaniki"),
+    and ``book["probation"]`` = {code: sheet}, which :func:`holders` reads.
+    Only where every Summary Allocation column the card reads carries the
+    same heading in both workbooks; otherwise the book is returned as it
+    was, with the reason in its problems."""
+    if not book or book.get("book") != SALES or book.get("probation") is not None:
+        return book
+    if probation is None:
+        try:
+            probation = saved(PROBATION_KIND, year or book_year(book))
+        except Exception:  # noqa: BLE001 - before the table exists
+            probation = None
+    if not probation:
+        return book
+    people = probation_people(book, probation)
+    if not people:
+        return book
+    name_of = {str(r[0] or "").strip().upper(): r[1]
+               for r in (book["tables"].get("List") or [])[1:] if r}
+    alloc_name = _sheet_named(book["tables"], "Summary Allocation") or "Summary Allocation"
+    sales_alloc = book["tables"].get(alloc_name) or []
+    prob_alloc = probation.get("allocation") or []
+    def heading(grid, c):
+        # The first text heading in the column (rows 2 and 3): the probation
+        # sheet keeps its probation months (6) in C2, above "Name".
+        return next((v.strip().lower() for v in (_at(grid, 1, c), _at(grid, 2, c))
+                     if isinstance(v, str) and v.strip()), "")
+
+    out = dict(book)
+    out["problems"] = list(book.get("problems") or [])
+    for sheet in set(people.values()):
+        cols = _allocation_columns(probation["cards"][sheet])
+        differ = [_a1(1, c) for c in sorted(cols)
+                  if heading(sales_alloc, c) != heading(prob_alloc, c)]
+        if differ:
+            out["problems"].append(
+                f"The probation workbook's Summary Allocation is laid out differently "
+                f"from the sales workbook's at {', '.join(differ)}; its {sheet} card "
+                f"was not used.")
+            return out
+    rows = []
+    for row in prob_alloc[3:]:
+        code = str(row[1] if len(row) > 1 else "").strip().upper()
+        if code in people:
+            row = list(row)
+            row[2] = name_of.get(code) or row[2]
+            rows.append(row)
+    out["cards"] = dict(book["cards"])
+    for sheet in set(people.values()):
+        out["cards"][sheet] = probation["cards"][sheet]
+    out["tables"] = dict(book["tables"])
+    out["tables"][alloc_name] = list(sales_alloc) + rows
+    out["probation"] = people
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Reading the actuals template
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -1459,10 +1805,15 @@ def holders(book, keep_off=False):
                             and str(r[spec.list_cols["branch"]] or "").strip()})
     hr = hr_roles() if spec.book == BACK_OFFICE and not LIST_WINS else {}
     by_role = {k.upper(): k for k in spec.role_sheets}
+    # The desk's probation card (see with_probation), for the people it
+    # scores there.
+    on_probation = book.get("probation") or {}
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
         if not (holder.name and (holder.sales_code or holder.pf)):
             continue
+        if on_probation.get(holder.sales_code) in book.get("cards", {}):
+            holder.sheet = on_probation[holder.sales_code]
         if not keep_off and off_card(holder.sales_code):
             continue
         found = roster.get(holder.sales_code)
@@ -2021,13 +2372,21 @@ def compute_all(book, actuals, months=None, only=None):
                for month in months}
     out = []
     year = book_year(book)
+    on_probation = book.get("probation") or {}
     for holder in holders(book, keep_off=True):
         if holder.sheet is None or holder.sheet not in book["cards"]:
             continue
         if only is not None and holder.sales_code not in only:
             continue
+        started = (probation_start(book, holder)
+                   if holder.sales_code in on_probation else 0)
         for month in months:
             if off_card(holder.sales_code, datetime.date(year, month, 1)):
+                continue
+            if month <= started:
+                # Before the probation targets start: the card's YTD target
+                # is (month - prorate_new) / (12 - prorate_new) of the year's,
+                # 0 or less, and the sheet divides by it.
                 continue
             card = compute(book, by_month[month], holder, month)
             if changed[month]:
@@ -2072,7 +2431,7 @@ def store(results, year, recorded=None, loaded_by=""):
 #: from one year to the next: loading 2027's workbook must not re-score a 2026
 #: card. Every other kind is one row, as before.
 YEARLY_KINDS = frozenset({"scorecards", "actuals", "sales_scorecards",
-                          "sales_actuals", "bb_scorecards"})
+                          "sales_actuals", "bb_scorecards", PROBATION_KIND})
 
 
 def year_kind(kind, year):
@@ -2122,13 +2481,18 @@ def saved(kind, year=None):
     one for ``year`` (default this year) - see :func:`_year_for`."""
     from .models import BoWorkbookFile
 
+    base = kind
     if kind in YEARLY_KINDS:
         found = _year_for(kind, int(year or datetime.date.today().year))
         if found is None:
             return None
         kind = year_kind(kind, found)
     row = BoWorkbookFile.objects.filter(kind=kind).first()
-    return row.payload if row is not None else None
+    payload = row.payload if row is not None else None
+    if base == SPECS[SALES].files[0] and payload is not None:
+        # The probation joiners' cards ride on the sales workbook.
+        payload = with_probation(payload, found)
+    return payload
 
 
 def check(book, actuals):

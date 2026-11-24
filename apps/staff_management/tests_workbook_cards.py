@@ -2022,3 +2022,194 @@ class RoleAfterChangeTests(SimpleTestCase):
         self.assertIsNone(self._call([], roster, datetime.date(2026, 11, 24)))
         self.assertIsNone(self._call([{"reason": "acting", "from": "2026-10", "to": "2026-11"}],
                                      roster, datetime.date(2026, 11, 24)))
+
+
+class FormulaTextTests(SimpleTestCase):
+    """Formulas written as text (.xlsm) read into the same RPN the .xlsb
+    reader makes, so one evaluator runs both."""
+
+    def test_precedence_functions_and_missing_arguments(self):
+        t = bo.formula_tokens
+        # Negation binds tighter than power: =-2^2 is 4.
+        self.assertEqual(t("=-2^2"), [n(2.0), ["u", "-"], n(2.0), ["b", "^"]])
+        self.assertEqual(t("=1+2*3"), [n(1.0), n(2.0), n(3.0), ["b", "*"], ["b", "+"]])
+        self.assertEqual(t('=IF(A1<>"",,1)'),
+                         [ref(0, 0), n(""), ["b", "<>"], n(None), n(1.0), ["f", "IF", 3]])
+        self.assertEqual(t("=SUM('Summary Allocation'!$BJ:$BJ)"),
+                         [area(0, 61, 1048575, 61, "Summary Allocation"), ["f", "SUM", 1]])
+        self.assertEqual(t('=_xlfn.CONCAT("a""b",5%)'),
+                         [n('a"b'), n(5.0), ["u", "%"], ["f", "CONCAT", 2]])
+        self.assertEqual(t("=[1]Portfolio_Data!$K:$K")[0], n({"e": "#REF!"}))
+
+
+def _row(width=64, **cells):
+    row = [None] * width
+    for col, value in cells.items():
+        row[int(col[1:])] = value
+    return row
+
+
+class ProbationWorkbookTests(TestCase):
+    """The mortgage probation workbook's card for the joiners the sales
+    Summary Allocation does not carry (Roy Gitonga from August; Monicah
+    Mwaniki, Claudine Odhiambo, Dorine Oseko from September)."""
+
+    BJ = 61  # mortgage_mkt_rate, in both workbooks
+
+    def _sales(self):
+        t = bo.formula_tokens
+        grid = [[None] * 16 for _ in range(10)]
+        grid[4][1], grid[4][2], grid[5][2], grid[5][4] = "KPI", "KPI Description", "Line", 1.0
+        grid[7][0] = "Reviewee Name:"
+        card = {"grid": grid, "f": {"5,7": t("=1")}}
+        heading = _row(**{"c61": "mortgage_mkt_rate"})
+        return {
+            "book": bo.SALES,
+            "cards": {"Mortgage_Business": card},
+            "tables": {
+                "List": [["sales_code", "name", "role", "branch", "BBM"],
+                         ["RG4072", "Roy Gitonga", "Mortgage Business ARM", "Mortgage",
+                          "Stella Mutai", None, None, None, 8.0],
+                         ["MM4047", "Monicah Mwaniki", "Mortgage Business ARM", "Mortgage",
+                          "Stella Mutai", None, None, None, 9.0],
+                         ["GK4139", "Gladys Kitonga", "Mortgage Business ARM", "Mortgage",
+                          "Stella Mutai", None, None, None, 0.0]],
+                "Summary Allocation": [
+                    _row(), heading, _row(c1="SALES  CODE", c2="Name"),
+                    _row(c0="Mortgage", c1="GK4139", c2="Gladys Kitonga", c61=100e6)],
+                "Constants": [["Year", 2026.0], [None], [None], [None],
+                              ["Month_column", 12.0], ["Month_count", 8.0]],
+            },
+            "problems": [],
+        }
+
+    def _probation(self, heading="mortgage_mkt_rate"):
+        t = bo.formula_tokens
+        grid = [[None] * 16 for _ in range(10)]
+        grid[4][1], grid[4][2], grid[5][2], grid[5][4] = (
+            "KPI", "KPI Description", "Net Mortgage sales", 1.0)
+        grid[7][0] = "Reviewee Name:"
+        card = {"grid": grid, "f": {
+            "5,7": t("=+SUMIFS('Summary Allocation'!$BJ:$BJ,"
+                     "'Summary Allocation'!$C:$C,$C$2)"),
+            "5,8": t("=IFERROR(+H6/((12-O6)/(Constants!$B$6-O6)),0)"),
+            "5,14": t("=VLOOKUP($C$2,List!B:I,8,0)"),
+            "1,10": t("=I6"),
+        }}
+        return {
+            "year": 2026,
+            "cards": {"Mortgage_ARM": card},
+            "allocation": [
+                _row(c1="Prob_target_months(extended)", c2=8),
+                _row(c1="Prob_target_months", c2=6, c61=heading),
+                _row(c0="Branch", c1="SALES  CODE", c2="Name"),
+                _row(c0="Mortgage", c1="BO4411", c2="Brian Omondi", c61=52.5e6),
+                _row(c0="Mortgage", c1="RG4072", c2="Roy Gitonga", c61=36e6),
+                _row(c0="Mortgage", c1="GK4139", c2="Gladys Kitonga", c61=67.5e6),
+                # The probation List spells her "Monica".
+                _row(c0="Mortgage", c1="MM4047", c2="Monica Mwaniki", c61=18e6),
+            ],
+            "list": [["sales_code", "name", "role", "branch", "BBM"],
+                     ["BO4411", "Brian Omondi", "Mortgage Business RM", "left"],
+                     ["GK4139", "Gladys Kitonga", "Mortgage Business ARM", "Mortgage"],
+                     ["RG4072", "Roy Gitonga", "Mortgage Business ARM", "Mortgage"],
+                     ["MM4047", "Monica Mwaniki", "Mortgage Business ARM", "Mortgage"]],
+            "constants": [["Year", 2026.0]],
+            "problems": [],
+        }
+
+    def _holder(self, merged, code):
+        return next(h for h in bo.holders(merged) if h.sales_code == code)
+
+    def test_only_joiners_off_the_sales_allocation_take_the_probation_card(self):
+        merged = bo.with_probation(self._sales(), probation=self._probation())
+        self.assertEqual(merged["probation"],
+                         {"RG4072": "Mortgage_ARM", "MM4047": "Mortgage_ARM"})
+        self.assertEqual(self._holder(merged, "RG4072").sheet, "Mortgage_ARM")
+        # Allocated on the sales workbook: the sales card stands.
+        self.assertEqual(self._holder(merged, "GK4139").sheet, "Mortgage_Business")
+
+    def test_the_desks_probation_targets_prorated_from_the_joining_month(self):
+        merged = bo.with_probation(self._sales(), probation=self._probation())
+        roy = bo.compute(merged, {}, self._holder(merged, "RG4072"), 10)
+        line = roy["lines"][0]
+        # 36m for the probation; from August: 36m x (10 - 8) / (12 - 8).
+        self.assertEqual((line["pm"], line["ytd_target"]), (36e6, 18e6))
+        self.assertEqual(roy["total"], 18e6)
+        # Looked up under the sales List's spelling of her name.
+        monicah = bo.compute(merged, {}, self._holder(merged, "MM4047"), 10)
+        self.assertEqual(monicah["lines"][0]["pm"], 18e6)
+        self.assertEqual(monicah["lines"][0]["ytd_target"], 6e6)
+
+    def test_no_card_before_the_targets_start(self):
+        merged = bo.with_probation(self._sales(), probation=self._probation())
+        months = [m for _h, m, _c in bo.compute_all(merged, {"CASA": [[None]]},
+                                                    months=[8, 9, 10],
+                                                    only={"RG4072", "MM4047"})]
+        self.assertEqual(sorted(months), [9, 10, 10])
+
+    def test_a_differently_laid_out_allocation_is_not_used(self):
+        merged = bo.with_probation(self._sales(),
+                                   probation=self._probation(heading="avg_bal"))
+        self.assertNotIn("probation", merged)
+        self.assertTrue(any("laid out differently" in p for p in merged["problems"]))
+        self.assertEqual(self._holder(merged, "RG4072").sheet, "Mortgage_Business")
+
+    def test_saved_sales_workbook_carries_the_probation_cards(self):
+        bo.save_file("sales_scorecards", self._sales(), year=2026)
+        self.assertNotIn("probation", bo.saved("sales_scorecards", 2026))
+        bo.save_file(bo.PROBATION_KIND, self._probation(), year=2026)
+        self.assertEqual(set(bo.saved("sales_scorecards", 2026)["probation"]),
+                         {"RG4072", "MM4047"})
+
+    def test_the_upload_screen_reads_the_xlsm_and_scores_the_joiners(self):
+        import io
+
+        from django.contrib.auth.models import User
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from openpyxl import Workbook
+        from rest_framework.test import APIClient
+
+        from .models import BoScorecard
+
+        bo.save_file("sales_scorecards", self._sales(), year=2026)
+        bo.save_file("sales_actuals", {"Asset_Drawdown": [["PF"]]}, year=2026)
+        prob = self._probation()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Mortgage_ARM"
+        ws["B5"], ws["C5"], ws["C6"], ws["E6"] = "KPI", "KPI Description", "Net Mortgage sales", 1.0
+        ws["A8"] = "Reviewee Name:"
+        ws["H6"] = ("=+SUMIFS('Summary Allocation'!$BJ:$BJ,"
+                    "'Summary Allocation'!$C:$C,$C$2)")
+        ws["I6"] = "=IFERROR(+H6/((12-O6)/(Constants!$B$6-O6)),0)"
+        ws["O6"] = "=VLOOKUP($C$2,List!B:I,8,0)"
+        ws["K2"] = "=I6"
+        for title, rows in (("Summary Allocation", prob["allocation"]),
+                            ("List", prob["list"]), ("Constants", [["Year", 2026]])):
+            sheet = wb.create_sheet(title)
+            for row in rows:
+                sheet.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("root.admin", password="x"))
+        url = "/staff_management/scorecard-automation/manual-figures/bo-actuals/"
+        upload = lambda: SimpleUploadedFile(  # noqa: E731
+            "Mortgage Business Probation scorecards_H2_2026.xlsm", buf.getvalue())
+        checked = client.post(url, {"file": upload()}, format="multipart")
+        self.assertEqual(checked.status_code, 200, checked.content)
+        self.assertFalse(checked.json()["applied"])
+        self.assertIn("RG4072  Roy Gitonga: Mortgage_ARM card, scored from September",
+                      checked.json()["detail"])
+        self.assertIsNone(bo.saved(bo.PROBATION_KIND, 2026))
+
+        loaded = client.post(url, {"file": upload(), "apply": "1"}, format="multipart")
+        self.assertEqual(loaded.status_code, 200, loaded.content)
+        self.assertEqual(set(bo.saved("sales_scorecards", 2026)["probation"]),
+                         {"RG4072", "MM4047"})
+        # Nothing stored before their targets start (the template's months
+        # here are none, so nothing at all - and certainly not August).
+        self.assertFalse(BoScorecard.objects.filter(sales_code="RG4072",
+                                                    month=datetime.date(2026, 8, 1)).exists())

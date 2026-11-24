@@ -252,6 +252,11 @@ class BoActualsUploadView(APIView):
         # The actuals template. Which workbook's it is, its own sheets say.
         from . import workbook_cards
 
+        data = upload.read()
+        upload.seek(0)
+        if workbook_cards.is_probation_workbook(data):
+            return self._probation(data, upload.name, apply, who)
+
         try:
             actuals_book = workbook_cards.read_actuals(upload)
         except Exception as exc:  # noqa: BLE001
@@ -397,6 +402,10 @@ class BoActualsUploadView(APIView):
         if actuals_book is not None and year not in workbook_cards.stored_years(
                 spec.files[1]):
             actuals_book = None  # another year's template is not this book's
+        # Stored as read; the probation joiners' cards ride on it wherever it
+        # is computed (saved() adds them on every read).
+        raw = book
+        book = workbook_cards.with_probation(book, year)
         cards = self._cards_report(book, actuals_book, spec)
         cards["year"] = year
         if not apply:
@@ -404,7 +413,7 @@ class BoActualsUploadView(APIView):
                 "applied": False, "cards": cards,
                 "detail": (f"Read the {spec.label} scorecards workbook for "
                            f"{year}. Nothing has been saved yet.")})
-        workbook_cards.save_file(spec.files[0], book, upload.name, who,
+        workbook_cards.save_file(spec.files[0], raw, upload.name, who,
                                  year=year)
         if actuals_book is not None:
             cards["stored"] = workbook_cards.rebuild(book, actuals_book, who)
@@ -412,6 +421,85 @@ class BoActualsUploadView(APIView):
             "applied": True, "cards": cards,
             "detail": (f"Saved the {spec.label} scorecards workbook for "
                        f"{year}. " + self._stored_detail(cards, spec))})
+
+    def _probation(self, data, file_name, apply, who):
+        """The mortgage business probation workbook (.xlsm): the desk's card
+        and targets for the Mortgage Business ARMs on probation whom the
+        sales workbook's Summary Allocation does not carry (see
+        workbook_cards.with_probation)."""
+        import datetime
+        import io
+
+        from . import workbook_cards as wc
+
+        try:
+            probation = wc.read_probation(io.BytesIO(data))
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return Response({"file": f"That workbook could not be read: {exc}"},
+                            status=400)
+        year = probation["year"]
+        sales = wc.SPECS[wc.SALES]
+        # The sales workbook as stored - not through saved(), which would add
+        # the probation workbook already loaded rather than this one.
+        book = self._sales_raw(year)
+        if book is None:
+            return Response({"file": f"Load the {year} sales scorecards workbook "
+                                     f"(.xlsb) first: the probation cards run over "
+                                     f"its List and Constants."}, status=400)
+        merged = wc.with_probation(book, year, probation=probation)
+        people = merged.get("probation") or {}
+        on_card = {h.sales_code: h for h in wc.holders(merged)
+                   if h.sales_code in people}
+        report = {
+            "year": year,
+            "people": [{"sales_code": c, "name": on_card[c].name, "card": s,
+                        # The first month the card scores.
+                        "targets_from": wc.probation_start(merged, on_card[c]) + 1}
+                       for c, s in sorted(people.items()) if c in on_card],
+            "problems": probation.get("problems", []) + [
+                p for p in merged.get("problems", []) if "probation" in p.lower()],
+        }
+        who_list = "\n".join(
+            f"  {p['sales_code']}  {p['name']}: {p['card']} card, scored from "
+            f"{datetime.date(year, p['targets_from'], 1):%B}"
+            if p["targets_from"] <= 12 else f"  {p['sales_code']}  {p['name']}"
+            for p in report["people"])
+        problems = "".join(f"\n  {p}" for p in report["problems"][:10])
+        if not apply:
+            return Response({
+                "applied": False, "cards": report,
+                "detail": (f"Read the mortgage probation workbook for {year}: "
+                           f"{len(report['people'])} person(s) the sales Summary "
+                           f"Allocation does not carry will be scored on its card. "
+                           f"Nothing has been saved yet.\n{who_list}{problems}")})
+        wc.save_file(wc.PROBATION_KIND, probation, file_name, who, year=year)
+        actuals = wc.saved(sales.files[1], year)
+        stored = 0
+        if actuals is not None and people:
+            results = wc.compute_all(merged, actuals, only=set(people))
+            stored = wc.store(results, wc.book_year(merged),
+                              wc.recorded_scores(merged), loaded_by=who)
+        report["stored"] = stored
+        return Response({
+            "applied": True, "cards": report,
+            "detail": (f"Saved the mortgage probation workbook for {year}. "
+                       f"{len(report['people'])} person(s) are scored on its card"
+                       + (f"; {stored:,} card-month(s) computed." if stored else
+                          "; their months are computed when the sales actuals "
+                          "template is loaded." if actuals is None else ".")
+                       + f"\n{who_list}{problems}")})
+
+    @staticmethod
+    def _sales_raw(year):
+        """The sales workbook as stored, without the probation cards in."""
+        from .models import BoWorkbookFile
+        from . import workbook_cards as wc
+
+        kind = wc.SPECS[wc.SALES].files[0]
+        found = wc._year_for(kind, year)
+        row = (BoWorkbookFile.objects.filter(kind=wc.year_kind(kind, found)).first()
+               if found is not None else None)
+        return row.payload if row is not None else None
 
 
 @extend_schema(tags=[_TAG])
