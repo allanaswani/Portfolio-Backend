@@ -2621,7 +2621,41 @@ def _engine_match(pool, wl):
                 if not _key(wl["measure"]) else None))
 
 
-def engine_target_cells(spec, lines, pool, prorate_of):
+#: Asset Growth's cap per role, read from the desk's Summary Allocation
+#: formula (Portfolio Management - Q3 2026): asset_growth =
+#: IF(Assets x rate >= cap, cap, Assets x rate), the cap typed into each row
+#: and the same for every row of a role. Used only when the loaded sheet has
+#: no capped row for the role to read it from.
+ASSET_GROWTH_CAPS = {
+    "PB ARM": 40500000.0, "PB BBC": 40500000.0, "PB RM": 60750000.0,
+    "SME ARM": 92880000.0, "SME BBC": 74304000.0, "SME RM": 116100000.0,
+    "ULTIMATE RM": 109375000.0, "COMMERCIAL RM": 160510204.0,
+    "COMMERCIAL RM- TRADE": 160510204.0,
+}
+
+
+def asset_growth_cap(book, role, rate):
+    """The cap on a role's Asset Growth target, or None.
+
+    Read off the loaded Summary Allocation: a row of this role whose
+    asset_growth (column M) is below Assets (column L) x rate was capped, and
+    that figure is the cap. Else the cap read from the sheet's formula."""
+    role_key = str(role or "").strip().upper()
+    grid = ((book or {}).get("tables") or {}).get(
+        _sheet_named((book or {}).get("tables") or {}, "Summary Allocation") or "") or []
+    found = []
+    for row in grid[3:]:
+        if len(row) < 13 or str(row[3] or "").strip().upper() != role_key:
+            continue
+        assets, growth = row[11], row[12]
+        if _num(assets) and _num(growth) and growth > 0 and growth + 1 < assets * rate:
+            found.append(float(growth))
+    if found:
+        return max(found)
+    return ASSET_GROWTH_CAPS.get(role_key)
+
+
+def engine_target_cells(spec, lines, pool, prorate_of, cap_of=None):
     """{row: (cells, engine line)}: the targets the workbook has none of.
 
     The sales workbook takes every target off its Summary Allocation sheet by
@@ -2666,6 +2700,13 @@ def engine_target_cells(spec, lines, pool, prorate_of):
                 growth = (annual - prior) if _num(annual) and _num(prior) else annual
         if not _num(growth) or growth == 0:
             continue
+        # Asset Growth is capped per role, as Summary Allocation caps it.
+        if (cap_of and ln.get("target_is_rate")
+                and ln.get("base_key") == "december_loan_book"
+                and _num(ln.get("target_rate"))):
+            cap = cap_of(float(ln["target_rate"]))
+            if _num(cap) and growth > cap:
+                growth = cap
         prorate = prorate_of(wl["row"])
         prorate = float(prorate) if _num(prorate) and 0 <= prorate < 12 else 0.0
         cells = {(wl["row"] - 1, cols["growth"]): float(growth) * (12 - prorate) / 12}
@@ -2679,7 +2720,8 @@ _MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
            "oct", "nov", "dec")
 
 
-def _loan_book_from_start(spec, card_lines, engine_for_row, code, prorate_of, as_at):
+def _loan_book_from_start(spec, card_lines, engine_for_row, code, prorate_of, as_at,
+                          cap_of=None):
     """{row: (cells, why)}: Asset Growth for somebody whose allocated book
     started after December.
 
@@ -2722,6 +2764,9 @@ def _loan_book_from_start(spec, card_lines, engine_for_row, code, prorate_of, as
             continue
         r = wl["row"] - 1
         growth = float(ln["target_rate"]) * base
+        cap = cap_of(float(ln["target_rate"])) if cap_of else None
+        if _num(cap) and growth > cap:
+            growth = cap
         cells = {(r, cols["growth"]): growth * (12 - p) / 12,
                  (r, cols["actual"]): (now or 0.0) - base}
         if cols.get("prior") is not None:
@@ -2817,7 +2862,9 @@ def live_card(sales_code, engine_card, as_at):
     if spec.book == SALES:
         _prorate_ev = Evaluator(book, actuals, holder, month)
         filled = engine_target_cells(spec, base["lines"], pool,
-                                     lambda r: _prorate_ev.cell(r - 1, 14))
+                                     lambda r: _prorate_ev.cell(r - 1, 14),
+                                     cap_of=lambda rate: asset_growth_cap(
+                                         book, holder.role, rate))
         for row, (cells, ln) in filled.items():
             target_cells.update(cells)
             target_from[row] = ln.get("target_source") or "your own allocated target"
@@ -3239,7 +3286,9 @@ def live_card(sales_code, engine_card, as_at):
                                        engine_for_row=engine_for_row, code=code,
                                        prorate_of=(lambda r: Evaluator(
                                            book, actuals, holder, month).cell(r - 1, 14)),
-                                       as_at=as_at)
+                                       as_at=as_at,
+                                       cap_of=lambda rate: asset_growth_cap(
+                                           book, holder.role, rate))
     for row, (cells, _why) in from_start.items():
         overrides.update(cells)
         live_rows.add(row)

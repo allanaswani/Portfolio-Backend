@@ -4463,7 +4463,7 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
     allocated_book = None
     # Bases read and found to be zero (a book that started this year): the
     # line has no target by the bank's rule and is left off the card.
-    zero_bases = set()
+    zero_bases = {}
 
     perspectives, seen = [], {}
     total = 0.0
@@ -4563,7 +4563,8 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                 base_problems.setdefault(base_name, "; ".join(
                     allocated_book["problems"].values()))
             if not value and key in (allocated_book.get("zero") or ()):
-                zero_bases.add(base_name)
+                zero_bases[base_name] = allocated_book["problems"].get(
+                    key, "the base is zero")
 
         fy_target, target_how, target_is_a_level = None, "", False
         allocated = allocations.get(mapping.kpi_code)
@@ -4595,7 +4596,7 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
                 if value is None:
                     base_problems["last_year_income"] = problem
                     if str(problem).startswith(NO_INCOME_LAST_YEAR):
-                        zero_bases.add("last_year_income")
+                        zero_bases["last_year_income"] = problem
                 else:
                     bases["last_year_income"] = value
                 line_bases = {**line_bases, "last_year_income": value}
@@ -4892,12 +4893,16 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
             pending_label = "No figure yet"
 
         base_is_zero = ""
-        if pending_label == "No target set":
+        # Both labels mean the same thing here: a rate line whose base is
+        # missing says "No base to work from" (Asset Growth), a rule line "No
+        # target set" (Income Contribution).
+        if pending_label in ("No target set", "No base to work from"):
             rule = OFF_SHEET_RULES.get(source.actual_key)
             key_ = rule[0] if rule else (base_name if rate_basis else "")
             if key_ in zero_bases or str(base_problems.get(key_) or "").startswith(
                     NO_INCOME_LAST_YEAR):
-                base_is_zero = base_problems.get(key_) or "the base is zero"
+                base_is_zero = (zero_bases.get(key_)
+                                or base_problems.get(key_) or "the base is zero")
         if pending_label == "No target set" and off_the_sheet:
             # Off the sheet, the base is measured on the allocated portfolio:
             # say why that could not be done, not only where the sheet is.

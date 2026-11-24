@@ -1967,3 +1967,23 @@ class LoanBookFromStartTests(SimpleTestCase):
         _spec, out = self._run({"base_is_zero": "x", "base_key": "december_loan_book",
                                 "target_rate": 0.38}, prorate=0)
         self.assertEqual(out, {})                       # holds the full year
+
+
+class AssetGrowthCapTests(SimpleTestCase):
+    """Summary Allocation caps Asset Growth per role: IF(Assets x rate >= cap,
+    cap, Assets x rate) - three PB ARMs with big books all at 40,500,000."""
+
+    def test_cap_read_from_a_capped_row_of_the_role(self):
+        from . import workbook_cards as wc
+
+        row = lambda role, assets, growth: [None, "X", "N", role] + [None] * 7 + [assets, growth]
+        book = {"tables": {"Summary Allocation": [[], [], [],
+                row("PB ARM", 194730921.0, 40500000.0),          # capped
+                row("PB ARM", 2246595.0, 853706.0)]}}             # 38%, not capped
+        self.assertEqual(wc.asset_growth_cap(book, "PB ARM", 0.38), 40500000.0)
+
+    def test_cap_from_the_formula_when_no_row_is_capped(self):
+        from . import workbook_cards as wc
+
+        self.assertEqual(wc.asset_growth_cap({"tables": {}}, "SME RM", 0.43), 116100000.0)
+        self.assertIsNone(wc.asset_growth_cap({"tables": {}}, "Teller", 0.38))
