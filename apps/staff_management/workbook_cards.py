@@ -818,6 +818,90 @@ def _at_row(grid, r):
     return grid[r] if 0 <= r < len(grid) and grid[r] else []
 
 
+#: The template sheet name the Loan Approvals line reads. The actuals
+#: template has no such sheet: the figure is the iApply loan trail's
+#: (loan_applications.accepted_offers), put into the line's actual cell.
+LOAN_APPROVALS_FEED = "Loan_Approvals"
+
+
+def complete_loan_approvals(card):
+    """The Mortgage_ARM card with its Loan Approvals row scored → card.
+
+    The desk's row 8 ("Loan Approvals (Subject to paid commitment fees &
+    offer letter acceptance)", 30%) has only its 2026 FY Target (H8); YTD
+    target, actual, score and weighted score are blank, so 30% of every
+    probation card counted nothing. Where those cells are blank they get the
+    formulas the card's own money line beside it (row 7) uses - YTD target
+    prorated from the joining month, actual read by name, score capped at
+    120%, weighted - and column M names :data:`LOAN_APPROVALS_FEED`. A row the
+    desk completes itself is left exactly as the desk wrote it."""
+    grid, f = card["grid"], card["f"]
+    for r, row in enumerate(grid):
+        text = row[2] if row and len(row) > 2 else None
+        if not (isinstance(text, str) and _key(text).startswith("loanapprovals")):
+            continue
+        if any(f.get(f"{r},{c}") or _at(grid, r, c) not in (None, "")
+               for c in (8, 9, 10, 11)):
+            return card
+        n = r + 1
+        cells = {
+            8: f"=IFERROR(+H{n}/((12-O{n})/(Constants!$B$6-O{n})),0)",
+            9: (f'=+VLOOKUP($C$2,INDIRECT("[2026_Actual_Template.xlsx]"&$M{n}'
+                f'&"!" &"$C:$R"),$N$1,0)'),
+            10: f"=IFERROR(IF(J{n}/I{n}>1.2,1.2,J{n}/I{n}),0)",
+            11: f"=IF(K{n}*E{n}<0,0,K{n}*E{n})",
+            13: f"=Constants!$B$6-O{n}",
+            14: "=VLOOKUP($C$2,List!B:I,8,0)",
+        }
+        out = dict(card)
+        out["f"] = dict(f)
+        out["grid"] = [list(x) if i == r else x for i, x in enumerate(grid)]
+        line = out["grid"][r]
+        while len(line) < 15:
+            line.append(None)
+        line[12] = LOAN_APPROVALS_FEED
+        for c, text in cells.items():
+            out["f"][f"{r},{c}"] = formula_tokens(text)
+            if c in (13, 14):
+                line[c] = None
+        out["completed_rows"] = [n]
+        return out
+    return card
+
+
+#: (code, year, month) -> (read at, value): the trail read once a few minutes
+#: per person-month, not once per formula pass (a live card computes each
+#: month several times).
+_APPROVALS_CACHE = {}
+_APPROVALS_TTL = 300
+
+
+def loan_approvals_value(code, year, month):
+    """The iApply figure for the Loan Approvals line, year to the month's
+    end → float, or None when the trail could not be read."""
+    import time
+
+    from . import loan_applications as la
+
+    key = (str(code or "").strip().upper(), int(year), int(month))
+    hit = _APPROVALS_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < _APPROVALS_TTL:
+        return hit[1]
+    try:
+        value = la.accepted_offers(key[0], year, _month_end(
+            datetime.date(year, month, 1)))["amount"]
+    except la.LoanTrailUnavailable:
+        value = None
+    _APPROVALS_CACHE[key] = (time.monotonic(), value)
+    return value
+
+
+def _loan_approvals_rows(card, feed_col):
+    """Card rows (0-based) whose feed cell names the Loan Approvals sheet."""
+    return [r for r, row in enumerate(card["grid"])
+            if row and len(row) > feed_col and row[feed_col] == LOAN_APPROVALS_FEED]
+
+
 def with_probation(book, year=None, probation=None):
     """The sales workbook with the probation workbook's cards in it → book.
 
@@ -873,7 +957,7 @@ def with_probation(book, year=None, probation=None):
             rows.append(row)
     out["cards"] = dict(book["cards"])
     for sheet in set(people.values()):
-        out["cards"][sheet] = probation["cards"][sheet]
+        out["cards"][sheet] = complete_loan_approvals(probation["cards"][sheet])
     out["tables"] = dict(book["tables"])
     out["tables"][alloc_name] = list(sales_alloc) + rows
     out["probation"] = people
@@ -2176,6 +2260,13 @@ def compute(book, actuals, holder, month, overrides=None):
     card = book["cards"][holder.sheet]
     ev = Evaluator(book, actuals, holder, month)
     ev.inputs.update(_target_changes(spec, card, holder.sheet, book_year(book), month))
+    # Loan Approvals has no template sheet: the iApply trail's figure goes
+    # into the line's actual cell (see complete_loan_approvals).
+    for r in _loan_approvals_rows(card, spec.cols["feed"]):
+        if (r, spec.cols["actual"]) not in (overrides or {}):
+            value = loan_approvals_value(holder.sales_code, book_year(book), month)
+            if value is not None:
+                ev.inputs[(r, spec.cols["actual"])] = value
     ev.inputs.update(overrides or {})
     col = spec.cols
     header, end = _layout(spec, card)
@@ -3374,6 +3465,16 @@ def live_card(sales_code, engine_card, as_at):
         if wl["row"] in awarded:
             if awarded[wl["row"]][1] == "full" and _num(wl.get("ytd_target")):
                 overrides[(wl["row"] - 1, actual_col)] = float(wl["ytd_target"])
+            continue
+        if wl["feed"] == LOAN_APPROVALS_FEED:
+            # Accepted offers off the iApply loan trail (the TAT (Loan)
+            # line's source), year to this month's end.
+            value = loan_approvals_value(code, as_at.year, month)
+            if value is not None:
+                overrides[(wl["row"] - 1, actual_col)] = float(value)
+                measured[wl["row"]] = (
+                    "approved amount on your applications whose offer letter "
+                    "was accepted, year to date (iApply loan trail)")
             continue
         if _key(wl["feed"]) == "weightedtat":
             # Weighted TAT is the desk's monthly dashboard (see weighted_tat):

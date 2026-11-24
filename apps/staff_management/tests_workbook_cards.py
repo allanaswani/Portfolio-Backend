@@ -2213,3 +2213,91 @@ class ProbationWorkbookTests(TestCase):
         # here are none, so nothing at all - and certainly not August).
         self.assertFalse(BoScorecard.objects.filter(sales_code="RG4072",
                                                     month=datetime.date(2026, 8, 1)).exists())
+
+
+class LoanApprovalsTests(TestCase):
+    """The probation card's Loan Approvals line (30%): the desk typed only
+    its target, so it is scored off the iApply loan trail - the approved
+    amount on applications whose offer letter was accepted."""
+
+    def _trail(self, rows):
+        from django.db import connection
+
+        from . import loan_applications as la
+
+        with connection.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {la.TABLE} (
+                    id bigserial PRIMARY KEY,
+                    "ApplicationId" varchar(40), "SellerCode" varchar(40),
+                    "CreationDate" varchar(40),
+                    "ActionDate" timestamp without time zone,
+                    "StatusTo" varchar(160), "ApprovedAmount" varchar(40))
+            """)
+            for app, code, at, status, amount in rows:
+                cur.execute(
+                    f'INSERT INTO {la.TABLE} ("ApplicationId", "SellerCode", '
+                    f'"CreationDate", "ActionDate", "StatusTo", "ApprovedAmount") '
+                    f'VALUES (%s, %s, %s, %s, %s, %s)',
+                    [app, code, "2026-01-05 00:00:00", at, status, amount])
+
+    def test_the_trail_sums_accepted_offers_at_their_approved_amount(self):
+        from . import loan_applications as la
+
+        self._trail([
+            ("A1", "RG4072", "2026-03-01", "Credit Approval", "20000000"),
+            ("A1", "RG4072", "2026-03-10", "RM Processing Accepted Letter Of Offer", "20000000"),
+            ("A1", "RG4072", "2026-03-12", "CAOD To initiate disbursement process", None),
+            # Accepted, then cancelled: not an approval.
+            ("A2", "RG4072", "2026-04-01", "RM Processing application with accepted offer letter", "9000000"),
+            ("A2", "RG4072", "2026-04-09", "MRC To cancel application at offer letter preparation", None),
+            # Names an accepted offer letter but is a cancellation.
+            ("A3", "RG4072", "2026-05-01", "HCS To cancel application with accepted offer letter", "7000000"),
+            # Accepted in October.
+            ("A4", "rg4072 ", "2026-10-03", "AMCA Processing Accepted Letter Of Offer", "15000000.50"),
+            # Somebody else's.
+            ("A5", "MM4047", "2026-03-10", "RM Processing Accepted Letter Of Offer", "50000000"),
+        ])
+        sep = la.accepted_offers("RG4072", 2026, datetime.date(2026, 9, 30))
+        self.assertEqual((sep["applications"], sep["amount"]), (1, 20_000_000))
+        octo = la.accepted_offers("RG4072", 2026, datetime.date(2026, 10, 31))
+        self.assertEqual((octo["applications"], octo["amount"]), (2, 35_000_000.5))
+        self.assertEqual(octo["latest"], datetime.date(2026, 10, 3))
+
+    def _cards(self):
+        t = bo.formula_tokens
+        probation = ProbationWorkbookTests()._probation()
+        card = probation["cards"]["Mortgage_ARM"]
+        card["grid"][6][2], card["grid"][6][4] = (
+            "Loan Approvals(Subject to paid commitment fees & offer letter acceptance)", 0.3)
+        card["f"]["6,7"] = t("=+SUMIFS('Summary Allocation'!$BE:$BE,"
+                             "'Summary Allocation'!$C:$C,$C$2)")
+        for row in probation["allocation"][3:]:
+            row[56] = 100e6
+        return ProbationWorkbookTests()._sales(), probation
+
+    def test_the_card_scores_the_line_from_the_trail(self):
+        from unittest import mock
+
+        sales, probation = self._cards()
+        merged = bo.with_probation(sales, probation=probation)
+        roy = next(h for h in bo.holders(merged) if h.sales_code == "RG4072")
+        with mock.patch.object(bo, "loan_approvals_value", return_value=12e6) as read:
+            card = bo.compute(merged, {}, roy, 10)
+        read.assert_called_with("RG4072", 2026, 10)
+        line = next(ln for ln in card["lines"] if ln["measure"].startswith("Loan Approvals"))
+        self.assertEqual(line["feed"], bo.LOAN_APPROVALS_FEED)
+        self.assertFalse(line["typed"])
+        # 100m for the probation; from August: 100m x (10 - 8) / (12 - 8).
+        self.assertEqual((line["pm"], line["ytd_target"], line["actual"]),
+                         (100e6, 50e6, 12e6))
+        self.assertAlmostEqual(line["score"], 0.24)
+        self.assertAlmostEqual(line["weighted"], 0.072)
+
+    def test_a_row_the_desk_completes_is_left_as_the_desk_wrote_it(self):
+        sales, probation = self._cards()
+        card = probation["cards"]["Mortgage_ARM"]
+        card["f"]["6,9"] = bo.formula_tokens("=5")
+        self.assertIs(bo.complete_loan_approvals(card), card)
+        merged = bo.with_probation(sales, probation=probation)
+        self.assertNotIn("completed_rows", merged["cards"]["Mortgage_ARM"])
