@@ -3796,13 +3796,20 @@ def live_card(sales_code, engine_card, as_at):
                 if got is not None:
                     overrides[(wl["row"] - 1, actual_col)] = got
                     if proof.get("live"):
-                        note = (f"matched the desk's figure for {proof['matched']} "
+                        note = (f"proven: gave the desk's figure for {proof['matched']} "
                                 f"of {proof['people']} people ({proof['month']})")
                         carried.pop(wl["row"], None)
                     else:
-                        note = ((f"{proof['matched']} of {proof['people']} people matched "
-                                 f"the desk's figure ({proof['month']})") if proof
-                                else "not yet checked against the desk's figures")
+                        if not proof:
+                            note = "not yet checked against the desk's figures"
+                        elif not proof.get("evidence"):
+                            # Agreeing only where the desk had 0 proves nothing.
+                            note = (f"not proven: the desk's {proof['month']} figures "
+                                    f"it agreed with were all 0")
+                        else:
+                            note = (f"not proven: gave the desk's figure for "
+                                    f"{proof['matched']} of {proof['people']} people "
+                                    f"({proof['month']})")
                         if has_desk:
                             beside[wl["row"]] = True     # the "worse" guard applies
                         else:

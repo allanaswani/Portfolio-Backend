@@ -265,20 +265,23 @@ class RetailBackOfficeFeedTests(TestCase):
                 for c, card in cards.items()}
 
     def test_a_proven_line_reads_live(self):
-        crm = self._live({"Commercial_CRM": {"live": True, "matched": 1, "people": 1,
-                                             "definition": None, "month": "2026-09"}})
+        crm = self._live({"Commercial_CRM": {"live": True, "matched": 2, "people": 2,
+                                             "evidence": 2, "definition": None,
+                                             "month": "2026-09"}})
         self.assertEqual(crm["TS3966"]["ytd_actual"], 5.0)
-        self.assertIn("matched the desk's figure for 1 of 1", crm["TS3966"]["as_at"])
+        self.assertIn("proven: gave the desk's figure for 2 of 2", crm["TS3966"]["as_at"])
 
     def test_an_unproven_line_reads_but_cannot_score_below_the_desk(self):
         unproven = {"Commercial_CRM": {"live": False, "matched": 0, "people": 1,
-                                       "definition": None, "month": "2026-09"}}
+                                       "evidence": 0, "definition": None,
+                                       "month": "2026-09"}}
         # Read 5 CRM logs: above Terry's desk 2, so it is his figure; Sarah,
         # whom the desk has none for, gets it too.
         crm = self._live(unproven)
         self.assertEqual(crm["TS3966"]["ytd_actual"], 5.0)
         self.assertEqual(crm["SN3521"]["ytd_actual"], 5.0)
-        self.assertIn("0 of 1 people matched", crm["SN3521"]["as_at"])
+        self.assertIn("not proven", crm["SN3521"]["as_at"])
+        self.assertNotIn("matched", crm["SN3521"]["as_at"])
         # Read 1: below Terry's desk 2 on a reading not yet proven - the
         # desk's stands and the card says what was read.
         crm = self._live(unproven, got=(1.0, "CX return", ""))
@@ -299,11 +302,30 @@ class RetailBackOfficeFeedTests(TestCase):
         spec = wc.SPECS[wc.RETAIL_BO]
         wc.save_file(spec.files[0], book, year=2026)
         wc.save_file(spec.files[1], actuals, year=2026)
-        # Terry's desk CRM for September is 2: a reader giving 2 is live,
-        # one giving 3 is not.
+        # One person agreeing is not proof: two non-zero desk figures must.
+        with mock.patch.object(rlf, "value", return_value=(2.0, "x", "")):
+            result = rlf.prove(2026, out=lambda *_: None)
+        self.assertEqual(result["Commercial_CRM"]["evidence"], 1)
+        self.assertFalse(result["Commercial_CRM"]["live"])
+        # Sarah's desk CRM is 2 too: now two people with a real figure agree.
+        sarah = [3521, "SN3521", "Sarah Nzeli", None, None, None] + [None] * 12
+        sarah[6 + 8] = 2.0
+        actuals["Commercial_CRM"].append(sarah)
+        wc.save_file(spec.files[1], actuals, year=2026)
         with mock.patch.object(rlf, "value", return_value=(2.0, "x", "")):
             result = rlf.prove(2026, out=lambda *_: None)
         self.assertTrue(result["Commercial_CRM"]["live"])
+        # Every desk figure 0 and the reader 0: never live.
+        for row in actuals["Commercial_CRM"][1:]:
+            row[6 + 8] = 0.0
+        wc.save_file(spec.files[1], actuals, year=2026)
+        with mock.patch.object(rlf, "value", return_value=(0.0, "x", "")):
+            result = rlf.prove(2026, out=lambda *_: None)
+        self.assertEqual((result["Commercial_CRM"]["matched"],
+                          result["Commercial_CRM"]["live"]), (2, False))
+        for row in actuals["Commercial_CRM"][1:]:
+            row[6 + 8] = 2.0
+        wc.save_file(spec.files[1], actuals, year=2026)
         self.assertEqual(rlf.proven()["Commercial_CRM"]["month"], "2026-09")
         with mock.patch.object(rlf, "value", return_value=(3.0, "x", "")):
             result = rlf.prove(2026, out=lambda *_: None)
@@ -313,8 +335,8 @@ class RetailBackOfficeFeedTests(TestCase):
         def by_definition(feed, holder, year, month, definition=None, wait=False):
             return ({"year/own": 2.0}.get(definition, 9.0), "x", "")
 
-        actuals["RTS"] = [actuals["Commercial_CRM"][0],
-                          list(actuals["Commercial_CRM"][1])]
+        actuals["RTS"] = [actuals["Commercial_CRM"][0]] + [
+            list(r) for r in actuals["Commercial_CRM"][1:]]
         wc.save_file(spec.files[1], actuals, year=2026)
         with mock.patch.object(rlf, "value", side_effect=by_definition):
             result = rlf.prove(2026, out=lambda *_: None)

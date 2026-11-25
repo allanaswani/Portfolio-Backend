@@ -436,6 +436,15 @@ class JoinerProrationTests(SimpleTestCase):
             prorate_to(12, datetime.date(2026, 9, 30), counted=True,
                        since=self.APRIL), 6.0)
 
+    def test_a_positive_count_target_never_rounds_to_nothing(self):
+        """Valary Simiyu: 1 active customer for the year at October rounded to
+        a target of 0, which cannot be scored against her 30."""
+        self.assertEqual(prorate_to(1, datetime.date(2026, 10, 31), counted=True), 1.0)
+        self.assertEqual(prorate_to(5, datetime.date(2026, 10, 31), counted=True), 4.0)
+        # Nothing yet to slice (a start after the date) stays nothing.
+        self.assertEqual(prorate_to(1, datetime.date(2026, 3, 31), counted=True,
+                                    since=datetime.date(2026, 9, 1)), 0.0)
+
 
 class NoBookIsSaidOnceTests(TestCase):
     """Twelve symptoms of one fact is not a diagnosis.

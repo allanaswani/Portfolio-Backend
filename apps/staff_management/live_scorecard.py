@@ -4098,7 +4098,13 @@ def prorate_to(annual, as_at=None, counted=False, since=None):
             months = max(0.0, months - start_months)
 
     sliced = float(annual) * (months / 12)
-    return float(round(sliced)) if counted else sliced
+    if not counted:
+        return sliced
+    # Rounded to whole units - but a positive target never to nothing: 1 a
+    # year at October rounded to 0, and a target of 0 cannot be scored
+    # (Valary Simiyu, 30 active customers against 0, no score).
+    whole = float(round(sliced))
+    return 1.0 if whole == 0 and sliced > 0 else whole
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4631,6 +4637,15 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
         # property target of 0 - and scoring against it would divide by zero.
         if fy_target == 0:
             fy_target, target_how = None, ""
+
+        # Less than one of something counted is not a target. A rate on a
+        # base can leave one - Valary Simiyu's Active Customers is 20% of last
+        # year's ONE customer, 0.2 of a customer for the year - so a counted
+        # line's year target under 1 is 1. Anything larger stays exactly as
+        # the desk's sheet computes it (120.7 active customers is the desk's
+        # own figure on a calibrated card).
+        if source.counted and fy_target is not None and 0 < fy_target < 1:
+            fy_target = 1.0
 
         # Absent from the table is a different problem from NULL in the row,
         # and the two need different people to fix them. Neither matters once

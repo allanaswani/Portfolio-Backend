@@ -47,6 +47,9 @@ log = logging.getLogger(__name__)
 
 STORE_KIND = "rbo_live_feeds"
 PASS_SHARE = 0.9
+#: At least this many people whose desk figure is not 0 must match: a reader
+#: that agrees only on noughts has proven nothing.
+MIN_EVIDENCE = 2
 TOLERANCE = 0.01
 RELATIVE = 0.005
 
@@ -382,16 +385,22 @@ def prove(year=None, out=print):
                     v = 0.0
                 got.append((holder, d, v, why))
             matched = sum(1 for _h, d, v, _w in got if _close(d, v))
-            if best is None or matched > best[0]:
-                best = (matched, definition, got)
-        matched, definition, got = best
+            # Matches on a desk figure that is not 0: agreeing on nought
+            # proves nothing (the desk had 0 property and VIC for nearly
+            # everybody, and 13 of 13 "matched" with nothing read).
+            evidence = sum(1 for _h, d, v, _w in got if d and _close(d, v))
+            if best is None or (evidence, matched) > (best[0], best[1]):
+                best = (evidence, matched, definition, got)
+        evidence, matched, definition, got = best
         share = matched / len(got)
-        result[feed] = {"live": share >= PASS_SHARE, "matched": matched,
+        live = share >= PASS_SHARE and evidence >= MIN_EVIDENCE
+        result[feed] = {"live": live, "matched": matched, "evidence": evidence,
                         "people": len(got), "definition": definition,
                         "month": f"{year}-{month:02d}"}
-        out(f"{feed}: {matched} of {len(got)} people give the desk's figure"
+        out(f"{feed}: {matched} of {len(got)} people give the desk's figure, "
+            f"{evidence} of them a figure other than 0"
             f"{f' ({definition})' if definition else ''} - "
-            f"{'LIVE' if share >= PASS_SHARE else 'not live'}")
+            f"{'LIVE' if live else 'not live'}")
         for holder, d, v, why in got:
             out(f"    {holder.sales_code:<9} desk {d:>14,.2f}  read "
                 f"{('-' if v is None else f'{v:,.2f}'):>14}  "
