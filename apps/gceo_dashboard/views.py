@@ -156,8 +156,18 @@ def _monthly_movement_sql(table: str) -> str:
                {yester2} AS yester_2_bal,
                {yester1} AS yester_1_bal
         FROM {table} dbm
+        WHERE {_NOT_INTERNAL.format(a="dbm.")}
         GROUP BY COALESCE(dbm.customer_segment, 'New-Unsegmented')
     """
+
+
+#: Internal accounts are the bank's own GL / suspense accounts, not customers'
+#: money: every deposit and loan figure leaves them out (asked 25 Nov 2026).
+#: Every page that read these endpoints already dropped the segment itself;
+#: leaving it out here means no page has to remember to. COALESCE, not
+#: NOT IN: a row with no segment is not internal and must not vanish with
+#: them (25 Nov 2026 the whole table loaded with no segment for a morning).
+_NOT_INTERNAL = "COALESCE({a}customer_segment, '') <> 'INTERNAL ACCOUNTS'"
 
 
 # ── Existing views (unchanged) ─────────────────────────────────────────────
@@ -1538,8 +1548,10 @@ class RMYTDMovementView(APIView):
 
     def get(self, request):
         # Old backend `rm_ytd_movement`: rm_name comes from the rap join,
-        # dec_bal is an unfiltered SUM(dec_{py}_bal), yester_1_bal uses the
-        # month-fallback CASE, and there is NO customer_segment filter.
+        # dec_bal is a SUM(dec_{py}_bal), yester_1_bal uses the month-fallback
+        # CASE. The old query had NO customer_segment filter, so internal
+        # accounts counted in an RM's movement; they are left out now, as on
+        # every other deposit figure (25 Nov 2026).
         yester1 = _yester_case("dbm", "yester_1_bal", cy, py)
         sql = f"""
             WITH data AS (
@@ -1558,6 +1570,7 @@ class RMYTDMovementView(APIView):
                     ORDER BY cust_id, updated_at DESC NULLS LAST, ctid DESC
                 ) rap
                     ON dbm.cust_cif = rap.cust_id
+                WHERE {_NOT_INTERNAL.format(a="dbm.")}
                 GROUP BY rm_code, rap.rm_name
             )
             SELECT
