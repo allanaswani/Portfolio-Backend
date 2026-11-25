@@ -182,7 +182,9 @@ def iapply_users(year, month, timeout_ms=180_000, wait=False):
         cols = _columns()
         return user_month(lts._rows(year, month, timeout_ms, columns=cols), year, month)
 
-    key = f"rbo_iapply_users:{year}-{month:02d}"
+    # v2: per-category action and application counts were added; months kept
+    # before them have none, and every count read 0 off them (proof, 26 Nov).
+    key = f"rbo_iapply_users_v2:{year}-{month:02d}"
     if wait:
         # Read now AND keep it, so the cards have it too: the proof used to
         # read every month and keep none, and the cards said "being read".
@@ -290,7 +292,9 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
                 if entry["tat"]:
                     values.append(entry["tat"])
             else:
-                values.append(entry.get(measure, 0))
+                if measure not in entry:
+                    return None, "", f"the iApply month kept has no {measure} count"
+                values.append(entry[measure])
         else:
             category = CATEGORY_FEEDS[feed]
             if measure == "tat":
@@ -298,7 +302,12 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
                 if v:
                     values.append(v)
             else:
-                values.append(entry.get(f"by_category_{measure}", {}).get(category, 0))
+                # Absent is not 0: a month kept before these counts existed
+                # read 0 for every category and "matched" the desk's noughts.
+                counts = entry.get(f"by_category_{measure}")
+                if counts is None:
+                    return None, "", f"the iApply month kept has no per-category {measure} count"
+                values.append(counts.get(category, 0))
     span = (f"{datetime.date(year, month, 1):%B %Y}" if span_kind == "month"
             else f"year to {datetime.date(year, month, 1):%b %Y}")
     what = {"tat": "", "actions": ", actions counted", "apps": ", applications counted"}[measure]

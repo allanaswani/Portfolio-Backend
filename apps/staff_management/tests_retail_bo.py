@@ -407,3 +407,16 @@ class RetailBackOfficeFeedTests(TestCase):
             self.assertEqual(v, 0.0)
         self.assertIn("month/own/actions", rlf.DEFINITIONS["TOTAL_TAT"])
         self.assertEqual(rlf.DEFINITIONS["RTS"], rlf.IAPPLY_DEFINITIONS)
+
+    def test_a_month_kept_without_the_counts_is_no_figure_not_zero(self):
+        """The proof read SME/SP/Trade counts as 0 off months kept before the
+        counts existed, and called it agreement with the desk's noughts."""
+        from . import rbo_live_feeds as rlf
+
+        old = {"BAKUMU": {"own": {"tat": 2.0, "rts": 0, "actions": 3,
+                                  "by_category": {"sme<20m": 2.0}}}}
+        with mock.patch.object(rlf, "iapply_users", return_value=old):
+            v, _, why = rlf.iapply_value("SME_below_20M", "Brenda Akumu", 2026, 9,
+                                         "month/own/actions")
+        self.assertIsNone(v)
+        self.assertIn("no per-category actions count", why)
