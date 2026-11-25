@@ -226,6 +226,14 @@ class RetailBackOfficeFeedTests(TestCase):
         wc.save_file(rlf.LOGINS_KIND, {"JGC2024": "ECHEGE"})
         self.assertEqual(rlf.login_for("JGC2024", "James Chege", users),
                          ("ECHEGE", "confirmed"))
+        # The server's own list (25 Nov 2026).
+        server = {"MWMUSYOKA": {}, "CMUSYOKA": {}, "HKILONZO": {}, "EKILONZI": {},
+                  "JWANGARI": {}, "LWANGARI": {}, "NDUNGUP": {}, "SNNDUNGU": {}}
+        self.assertEqual(rlf.login_for("MM3977", "Mwanzi Musyoka", server)[0], "MWMUSYOKA")
+        self.assertEqual(rlf.login_for("HKK1735", "Henry Kilonzi", server)[0], "HKILONZO")
+        self.assertIsNone(rlf.login_for("TN4111", "Teresia Ngari", server)[0])
+        self.assertIsNone(rlf.login_for("FKN3723", "Francis Ndungu", server)[0])
+        self.assertIsNone(rlf.login_for("JO4015", "James Ogworo", server)[0])
         # Two sign-ins that both fit the name: none chosen.
         self.assertIsNone(rlf.login_for("X1", "Mary Ann Musyoka",
                                         {"MMUSYOKA": {}, "AMUSYOKA": {}})[0])

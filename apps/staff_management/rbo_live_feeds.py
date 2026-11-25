@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
@@ -206,17 +207,25 @@ def login_for(code, name, users):
     if fixed:
         return fixed.upper(), "confirmed"
     guesses = _login_guesses(name)
-    exact = guesses & logins
-    if len(exact) == 1:
-        return next(iter(exact)), "initial and name"
-    if len(exact) > 1:
-        return None, f"more than one iApply sign-in fits {name}: {', '.join(sorted(exact))}"
-    near = {u for u in logins for g in guesses
-            if len(g) >= 5 and u.startswith(g) and len(u) - len(g) <= 2}
-    if len(near) == 1:
-        return next(iter(near)), "initial and name, spelt longer in iApply"
-    if len(near) > 1:
-        return None, f"more than one iApply sign-in fits {name}: {', '.join(sorted(near))}"
+    # Two letters of the first name (server, 25 Nov 2026: Mwanzi Musyoka is
+    # MWMUSYOKA).
+    parts = re.findall(r"[A-Z]+", str(name or "").upper())
+    if len(parts) >= 2 and len(parts[0]) >= 2:
+        guesses = guesses | {parts[0][:2] + parts[-1]}
+    for kind, fits in (
+            ("initial and name", lambda u, g: u == g),
+            # iApply spelling the surname longer: ALIDEDE for Aileen Lided.
+            ("initial and name, spelt longer in iApply",
+             lambda u, g: len(g) >= 5 and u.startswith(g) and 0 < len(u) - len(g) <= 2),
+            # One letter different, same length: HKILONZO for Henry Kilonzi.
+            ("initial and name, one letter different in iApply",
+             lambda u, g: len(g) >= 6 and len(u) == len(g) and u[0] == g[0]
+             and sum(a != b for a, b in zip(u, g)) == 1)):
+        hits = {u for u in logins for g in guesses if fits(u, g)}
+        if len(hits) == 1:
+            return next(iter(hits)), kind
+        if len(hits) > 1:
+            return None, f"more than one iApply sign-in fits {name}: {', '.join(sorted(hits))}"
     return None, (f"no iApply sign-in fits {name} (tried {', '.join(sorted(guesses))}); "
                   f"an administrator can set it with rbo_iapply_login")
 
