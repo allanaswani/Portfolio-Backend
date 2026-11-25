@@ -178,29 +178,57 @@ class RetailBackOfficeFeedTests(TestCase):
         # branch, DecisionType, ProductCategory, ApprovedAmount, segment
         rows = [
             ("A1", sep(2026, 9, 3), sep(2026, 9, 1), sep(2026, 9, 3, 1), "BBM Review",
-             "CCA Processing", "CCA mm", "Mwanzi Musyoka", "C1", "S", 200,
+             "CCA Processing", "CCA mm", "MMUSYOKA", "C1", "S", 200,
              "Approve", "BL", "25000000", "SME"),
             ("A1", sep(2026, 9, 9), sep(2026, 9, 1), sep(2026, 9, 9, 1),
              "STORED Archived - Disbursed", "BBM Review", "BBM x", "Someone Else",
              "C1", "S", 200, "Approve", "BL", "25000000", "SME"),
             ("A2", sep(2026, 9, 5), sep(2026, 9, 1), sep(2026, 9, 5, 1),
              "RM Processing Application Returned by CCA", "CCA Processing", "CCA mm",
-             "Mwanzi Musyoka", "C2", "S", 200, "Return", "AF", "900000", "PB"),
+             "MMUSYOKA", "C2", "S", 200, "Return", "AF", "900000", "PB"),
         ]
         users = rlf.user_month(rows, 2026, 9)
-        mm = users["MWANZI MUSYOKA"]["own"]
+        mm = users["MMUSYOKA"]["own"]
         # The report also files the generated current-status row under the name.
-        self.assertEqual(users["MWANZI MUSYOKA"]["all"]["rts"], 2)
+        self.assertEqual(users["MMUSYOKA"]["all"]["rts"], 2)
         self.assertEqual(mm["rts"], 1)
         self.assertEqual(mm["by_category"]["sme>=20m"], 2.0)          # 1 to 3 Sep
         self.assertEqual(mm["by_category"]["Asset Finance loans"], 4.0)
         self.assertEqual(mm["tat"], 3.0)
-        with mock.patch.object(rlf, "iapply_users", return_value=users):
-            self.assertEqual(rlf.iapply_value("RTS", "Mwanzi Musyoka", 2026, 9)[0], 1.0)
+        # A quiet month still has Henry's sign-in from another month.
+        months = {9: users, 8: {"HKILONZI": {"own": {"tat": 0.0, "rts": 0, "actions": 0,
+                                                     "by_category": {}}}}}
+        with mock.patch.object(rlf, "iapply_users",
+                               side_effect=lambda y, m, **kw: months.get(m, {})):
+            # iApply holds the SIGN-IN (MMUSYOKA), not the name.
+            v, label, _why = rlf.iapply_value("RTS", "Mwanzi Musyoka", 2026, 9)
+            self.assertEqual(v, 1.0)
+            self.assertIn("sign-in MMUSYOKA", label)
             self.assertEqual(rlf.iapply_value("SME_above_20M", "Mwanzi Musyoka", 2026, 9)[0], 2.0)
             v, _label, why = rlf.iapply_value("TOTAL_TAT", "Henry Kilonzi", 2026, 9)
             self.assertIsNone(v)                          # no action: not 0 days
-            self.assertIn("no iApply action", why)
+            self.assertIn("no iApply action by HKILONZI", why)
+            # Nobody's sign-in fits: no figure - not 0 returns at full marks.
+            v, _label, why = rlf.iapply_value("RTS", "Brenda Akumu", 2026, 9)
+            self.assertIsNone(v)
+            self.assertIn("no iApply sign-in fits Brenda Akumu", why)
+
+    def test_the_sign_in_is_found_only_beyond_doubt(self):
+        from . import rbo_live_feeds as rlf
+
+        users = {"ALIDEDE": {}, "ECHEGE": {}, "SACHEGE": {}, "MMUSYOKA": {}}
+        # iApply spells her longer than the List: one sign-in fits.
+        self.assertEqual(rlf.login_for("AL4067", "Aileen Lided", users)[0], "ALIDEDE")
+        # James Chege: neither JCHEGE nor CJAMES is there; ECHEGE is
+        # somebody else's initial - no guess.
+        self.assertIsNone(rlf.login_for("JGC2024", "James Chege", users)[0])
+        # Confirmed by an administrator: that wins.
+        wc.save_file(rlf.LOGINS_KIND, {"JGC2024": "ECHEGE"})
+        self.assertEqual(rlf.login_for("JGC2024", "James Chege", users),
+                         ("ECHEGE", "confirmed"))
+        # Two sign-ins that both fit the name: none chosen.
+        self.assertIsNone(rlf.login_for("X1", "Mary Ann Musyoka",
+                                        {"MMUSYOKA": {}, "AMUSYOKA": {}})[0])
 
     def test_the_mapping_is_the_desks(self):
         from . import rbo_live_feeds as rlf
@@ -304,16 +332,16 @@ class RetailBackOfficeFeedTests(TestCase):
                         '"ActionUserName" varchar(100), "ActionUser" varchar(40), '
                         '"ActionDate" varchar(40))')
             cur.execute("INSERT INTO iapply_loan_tat VALUES "
-                        "('TERRY SIMPSON', 'TSIMPSON', '2026-09-03 10:00:00')")
+                        "('TSIMPSON', 'TSIMPSON', '2026-09-03 10:00:00')")
         out = io.StringIO()
-        users = {"TERRY SIMPSON": {"own": {"tat": 2.0, "rts": 2, "actions": 1,
+        users = {"TSIMPSON": {"own": {"tat": 2.0, "rts": 2, "actions": 1,
                                            "by_category": {}},
                                    "all": {"tat": 2.0, "rts": 3, "actions": 2,
                                            "by_category": {}}}}
         with mock.patch.object(rlf, "iapply_users", return_value=users):
             call_command("rbo_tat_explain", "--month", "2026-09", stdout=out)
         text = out.getvalue()
-        self.assertIn("ActionUserName='TERRY SIMPSON'  ActionUser='TSIMPSON'  actions=1", text)
-        self.assertIn("matched in the role view by name: yes", text)
+        self.assertIn("ActionUserName='TSIMPSON'  ActionUser='TSIMPSON'  actions=1", text)
+        self.assertIn("sign-in used: TSIMPSON - initial and name", text)
         self.assertIn("month/own=2.00", text)
         self.assertIn("month/all=3.00", text)

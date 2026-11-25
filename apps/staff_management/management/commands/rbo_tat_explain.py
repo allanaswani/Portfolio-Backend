@@ -68,15 +68,19 @@ class Command(BaseCommand):
                 w(f"   iApply: nobody with '{surname}' in ActionUserName or ActionUser in the month")
             for name, login, n in found:
                 w(f"   iApply: ActionUserName={name!r}  ActionUser={login!r}  actions={n}")
-            matched = rlf._user_entry(users, holder.name)
-            w(f"   matched in the role view by name: {'yes' if matched else 'NO'}")
+            every = {}
+            for m in range(1, month + 1):
+                every.update(rlf.iapply_users(year, m, wait=True) or {})
+            login, how = rlf.login_for(holder.sales_code, holder.name, every)
+            w(f"   sign-in used: {login or 'NONE'} - {how}")
             for feed in sorted(feeds_by_sheet[holder.sheet]):
                 row = wc._template_row(actuals, feed, holder.sales_code, 0, holder.name)
                 desk = row[6 + month - 1] if row and len(row) > 6 + month - 1 else None
                 readings = []
                 for definition in rlf.IAPPLY_DEFINITIONS:
                     v, _label, why = rlf.iapply_value(feed, holder.name, year, month,
-                                                      definition, wait=True)
+                                                      definition, wait=True,
+                                                      code=holder.sales_code)
                     readings.append(f"{definition}={'-' if v is None else f'{v:,.2f}'}")
                 w(f"   {feed:<14} desk {('-' if desk is None else desk)!s:>8}   " + "  ".join(readings))
             w("")

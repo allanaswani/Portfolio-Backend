@@ -175,27 +175,85 @@ def iapply_users(year, month, timeout_ms=180_000, wait=False):
     return cached(key, compute)
 
 
-def _user_entry(users, name):
-    from .live_scorecard import names_agree
-
-    found = [v for k, v in (users or {}).items() if names_agree(k, name)]
-    return found[0] if len(found) == 1 else None
+#: Logins an administrator has confirmed: {SALES CODE: LOGIN}
+#: (manage.py rbo_iapply_login). They win over the guess.
+LOGINS_KIND = "rbo_iapply_logins"
 
 
-def iapply_value(feed, name, year, month, definition="month/own", wait=False):
+def confirmed_logins():
+    from .workbook_cards import saved
+
+    try:
+        return saved(LOGINS_KIND) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def login_for(code, name, users):
+    """The person's iApply sign-in → (login, how), or (None, why).
+
+    iApply's ActionUserName and ActionUser both hold the SIGN-IN, not the
+    name (server output 25 Nov 2026: 'ALIDEDE', 'ECHEGE'): matching the name
+    "Aileen Lided" against them found nobody. A confirmed login wins; else
+    one name's initial plus another name whole (bo_live_feeds._login_guesses:
+    EGITITI, JKURIA), exactly or with the sign-in carrying up to two more
+    letters than the List's spelling (ALIDEDE for Lided) - and only when ONE
+    sign-in fits, so nobody's figures land on somebody else."""
+    from .bo_live_feeds import _login_guesses
+
+    logins = set(users or {})
+    fixed = confirmed_logins().get(str(code or "").strip().upper())
+    if fixed:
+        return fixed.upper(), "confirmed"
+    guesses = _login_guesses(name)
+    exact = guesses & logins
+    if len(exact) == 1:
+        return next(iter(exact)), "initial and name"
+    if len(exact) > 1:
+        return None, f"more than one iApply sign-in fits {name}: {', '.join(sorted(exact))}"
+    near = {u for u in logins for g in guesses
+            if len(g) >= 5 and u.startswith(g) and len(u) - len(g) <= 2}
+    if len(near) == 1:
+        return next(iter(near)), "initial and name, spelt longer in iApply"
+    if len(near) > 1:
+        return None, f"more than one iApply sign-in fits {name}: {', '.join(sorted(near))}"
+    return None, (f"no iApply sign-in fits {name} (tried {', '.join(sorted(guesses))}); "
+                  f"an administrator can set it with rbo_iapply_login")
+
+
+def _user_entry(users, name, code=None):
+    login, _how = login_for(code, name, users)
+    return (users or {}).get(login) if login else None
+
+
+def iapply_value(feed, name, year, month, definition="month/own", wait=False, code=None):
     """(value, label, why): the analyst's figure for ``feed`` under one of
     :data:`IAPPLY_DEFINITIONS`. A year-to-date turnaround is the mean of the
-    months' figures."""
+    months' figures. Somebody whose iApply sign-in cannot be told has no
+    figure - not 0 returns, which the card's =IF(H<=G,1,0) scores in full."""
     span_kind, _, which = (definition or "month/own").partition("/")
     which = which or "own"
     months = [month] if span_kind == "month" else list(range(1, month + 1))
-    values = []
+    by_month = {}
     for m in months:
         users = iapply_users(year, m, wait=wait)
         if users is None:
             return None, "", (f"the iApply loan TAT report for "
                               f"{datetime.date(year, m, 1):%B %Y} is being read")
-        entry = (_user_entry(users, name) or {}).get(which)
+        by_month[m] = users
+    # The sign-in, over every month read: a quiet month still has one.
+    every = {}
+    for m in range(1, month + 1):
+        got = by_month.get(m)
+        if got is None:
+            got = iapply_users(year, m, wait=wait)   # kept; None while being read
+        every.update({k: True for k in (got or {})})
+    login, how = login_for(code, name, every)
+    if login is None:
+        return None, "", how
+    values = []
+    for m in months:
+        entry = (by_month[m].get(login) or {}).get(which)
         if entry is None:
             continue
         if feed == "RTS":
@@ -209,13 +267,13 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False):
                 values.append(v)
     span = (f"{datetime.date(year, month, 1):%B %Y}" if span_kind == "month"
             else f"year to {datetime.date(year, month, 1):%b %Y}")
-    label = f"iApply loan TAT report, by the user who acted, {span}"
+    label = f"iApply loan TAT report, sign-in {login}, {span}"
     if feed == "RTS":
         return float(sum(values)), label, ""
     if not values:
         # No action of theirs in the period: no turnaround to score - not 0
         # days, which the card's =IF(H<=G,1,...) would score in full.
-        return None, "", (f"no iApply action by {name} in {span} on the loan "
+        return None, "", (f"no iApply action by {login} ({name}) in {span} on the loan "
                           f"TAT report, so there is no turnaround to score")
     return float(sum(values) / len(values)), label, ""
 
@@ -253,7 +311,8 @@ def value(feed, holder, year, month, definition=None, wait=False):
         return crm_value(holder, year, month)
     if feed in IAPPLY_FEEDS:
         definition = definition or (proven().get(feed) or {}).get("definition") or "month/own"
-        return iapply_value(feed, holder.name, year, month, definition, wait=wait)
+        return iapply_value(feed, holder.name, year, month, definition, wait=wait,
+                            code=holder.sales_code)
     return None, "", "no reader for this line"
 
 
