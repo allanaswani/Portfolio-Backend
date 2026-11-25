@@ -58,6 +58,7 @@ LOCAL_APPS = [
     "apps.commercial_pipeline",
     "apps.referrals",
     "apps.observability",
+    "apps.large_cash",
     "apps.service_desk",
     "apps.design_briefs",
 ]

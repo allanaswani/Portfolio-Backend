@@ -32,6 +32,7 @@ urlpatterns = [
     path("business_performance/", include("apps.business_performance.urls")),
     path("referrals/", include("apps.referrals.urls")),
     path("observability/", include("apps.observability.urls")),
+    path("large_cash/", include("apps.large_cash.urls")),
     path("service_desk/", include("apps.service_desk.urls")),
     path("design_briefs/", include("apps.design_briefs.urls")),
 

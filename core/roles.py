@@ -142,11 +142,17 @@ NEW_ROLES = (
     # and every save is refused (core.permissions). For testers and anyone who
     # must see how Administration works without being able to change it.
     "admin_viewer",
+    # Large Cash Transactions dashboard (Nov 2026): customer-level cash of
+    # KES 500,000 and above. Administrators see it; anybody else only once an
+    # administrator puts them in this group (apps/large_cash/views.py).
+    "large_cash_viewer",
 )
 
 NEW_ROLE_DESCRIPTIONS = {
     "staff_mgt": "Staff management / administration module.",
     "admin_viewer": "Administration, read-only: sees every Administration screen, cannot change anything.",
+    "large_cash_viewer": "Large Cash Transactions — sees the daily dashboard of cash "
+                         "deposits and withdrawals of KES 500,000 and above.",
     "exco_initiatives": "EXCO initiatives — regular user.",
     "exco_initiatives_admin": "EXCO initiatives — administrator.",
     "hfdi_officer": "HFDI module — officer (read-only dashboard).",
@@ -246,6 +252,8 @@ ROLE_TO_TIER = {
     "usage_report_excluded": ROLE_OFFICER,
     # Officer, the default: looking at Administration widens nobody's data scope.
     "admin_viewer": ROLE_OFFICER,
+    # Gated on the group NAME, not the tier - this only decides the badge.
+    "large_cash_viewer": ROLE_OFFICER,
 }
 
 # Backward-compatible alias (older imports referenced this name).
