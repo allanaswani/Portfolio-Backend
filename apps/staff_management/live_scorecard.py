@@ -3557,7 +3557,7 @@ def resolve_person(sales_code):
     if rbo is not None:
         return Person(
             sales_code=code, name=rbo.staff_name,
-            role_code=bo_workbook.RBO_ROLE_CODES.get(rbo.sheet, rbo.sheet),
+            role_code=bo_workbook.rbo_role_code(rbo.sheet),
             branch=rbo.branch, roster=bo_workbook.RBO_ROSTER)
 
     # 1. the sales roster

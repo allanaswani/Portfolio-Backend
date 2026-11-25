@@ -256,6 +256,24 @@ class BoActualsUploadView(APIView):
         upload.seek(0)
         if workbook_cards.is_retail_bo_workbook(data):
             return self._retail_bo(data, upload.name, apply, who)
+        from . import rbo_live_feeds
+
+        mapping = rbo_live_feeds.read_tat_mapping(data)
+        if mapping is not None:
+            # 2026_loan_tat_mapping.xlsx: the desk's product -> analyst
+            # category table the credit analysts' TAT lines are split by.
+            split = mapping["split"]
+            head = (f"Read the loan TAT mapping: {len(mapping['categories'])} product "
+                    f"codes into {len(set(mapping['categories'].values()))} analyst "
+                    f"categories; {split['category']} split at {split['at']:,.0f}.")
+            if not apply:
+                return Response({"applied": False, "cards": {"mapping": mapping},
+                                 "detail": head + " Nothing has been saved yet."})
+            workbook_cards.save_file(rbo_live_feeds.MAPPING_KIND, mapping,
+                                     upload.name, who)
+            return Response({"applied": True, "cards": {"mapping": mapping},
+                             "detail": head + " Saved; the analysts' TAT lines read "
+                                              "by it from now on."})
         if workbook_cards.is_probation_workbook(data):
             return self._probation(data, upload.name, apply, who)
 

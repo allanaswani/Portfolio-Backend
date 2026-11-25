@@ -85,6 +85,139 @@ CATEGORY_FEEDS = {
     "TRADE": "trade", "IPF": "ipf", "ASSET_FINANCE": "Asset Finance loans",
 }
 IAPPLY_FEEDS = {"TOTAL_TAT", "RTS"} | set(CATEGORY_FEEDS)
+
+# ── Which reader each template sheet uses: a SETTING, not code ─────────────
+# The card names its template sheet in column K. These are the readers there
+# are, and the default sheet -> reader; an administrator maps a new or renamed
+# sheet to a reader with ``manage.py rbo_feed_source`` (asked 26 Nov 2026: "no
+# code changes when KPIs change"). A sheet no reader is mapped to keeps the
+# desk's own figure.
+SOURCES_KIND = "rbo_feed_sources"
+READERS = {
+    **{f"engine:{key}": f"the platform's {key.replace('_', ' ')} reader"
+       for key in sorted(set(ENGINE_KEYS.values()))},
+    "cx_crm": "the CX team's CRM logs return, the person's running total",
+    "iapply:total": "iApply loan TAT report by the analyst's sign-in: turnaround / actions",
+    "iapply:returns": "iApply loan TAT report by the analyst's sign-in: returned actions",
+    "iapply:category:<category>": "the same, for one analyst category of the TAT mapping",
+}
+DEFAULT_SOURCES = {
+    **{sheet: f"engine:{key}" for sheet, key in ENGINE_KEYS.items()},
+    **{sheet: "cx_crm" for sheet in CRM_FEEDS},
+    "TOTAL_TAT": "iapply:total", "RTS": "iapply:returns",
+    **{sheet: f"iapply:category:{cat}" for sheet, cat in CATEGORY_FEEDS.items()},
+}
+
+
+def sources():
+    """{template sheet: reader} - the defaults with the administrator's own
+    mappings over them (a mapping to "" removes a sheet)."""
+    from .workbook_cards import saved
+
+    try:
+        mine = saved(SOURCES_KIND) or {}
+    except Exception:  # noqa: BLE001 - before the table exists
+        mine = {}
+    out = dict(DEFAULT_SOURCES)
+    for sheet, reader in mine.items():
+        if reader:
+            out[sheet] = reader
+        else:
+            out.pop(sheet, None)
+    return out
+
+
+def reader_of(feed):
+    return sources().get(feed)
+
+
+def valid_reader(reader):
+    reader = str(reader or "")
+    return (reader in READERS or reader.startswith("iapply:category:")
+            and len(reader) > len("iapply:category:"))
+
+
+def is_iapply(feed):
+    return str(reader_of(feed) or "").startswith("iapply:")
+
+
+def definitions_for(feed):
+    reader = str(reader_of(feed) or "")
+    if reader == "iapply:returns":
+        return IAPPLY_DEFINITIONS
+    if reader.startswith("iapply:"):
+        return tuple(f"{d}/{m}" for d in IAPPLY_DEFINITIONS for m in MEASURES)
+    return (None,)
+
+
+# ── The desk's product -> analyst category mapping: an UPLOAD, not code ────
+MAPPING_KIND = "rbo_tat_mapping"
+
+
+def tat_mapping():
+    """{"categories": {product code: category}, "split": {"category": c,
+    "at": amount}} - the uploaded 2026_loan_tat_mapping.xlsx, else the copy
+    of it the platform shipped with."""
+    from .workbook_cards import saved
+
+    try:
+        found = saved(MAPPING_KIND)
+    except Exception:  # noqa: BLE001
+        found = None
+    if found and found.get("categories"):
+        return found
+    return {"categories": dict(PRODUCT_CATEGORY),
+            "split": {"category": "sme", "at": SME_SPLIT}}
+
+
+def read_tat_mapping(data):
+    """The loan TAT mapping workbook → tat_mapping()'s shape, or None when the
+    file is not one. Its sheet has a ProductCategory column and a
+    credit_analyst_mapping column; the split is the "<20m" / ">=20m" pair."""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        for ws in wb.worksheets:
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            head = next(((i, r) for i, r in enumerate(rows)
+                         if "ProductCategory" in [str(v or "").strip() for v in r]
+                         and "credit_analyst_mapping" in [str(v or "").strip() for v in r]),
+                        None)
+            if head is None:
+                continue
+            i, r = head
+            labels = [str(v or "").strip() for v in r]
+            pc, cat = labels.index("ProductCategory"), labels.index("credit_analyst_mapping")
+            categories = {}
+            for row in rows[i + 1:]:
+                code = str(row[pc] or "").strip().upper() if pc < len(row) else ""
+                name = str(row[cat] or "").strip() if cat < len(row) else ""
+                if code and name:
+                    categories[code] = name
+            # The split: the category whose rows read "<20m" and ">=20m".
+            split = {"category": "sme", "at": SME_SPLIT}
+            for row in rows:
+                for j, v in enumerate(row):
+                    m = re.match(r"^\s*>=\s*(\d+(?:\.\d+)?)\s*m\s*$", str(v or ""), re.I)
+                    if m:
+                        split["at"] = float(m.group(1)) * 1_000_000
+                        # The nearest cell to its left naming a category (the
+                        # row also carries a product's own columns further left).
+                        names = {c.lower(): c for c in categories.values()}
+                        for x in reversed(row[:j]):
+                            if str(x or "").strip().lower() in names:
+                                split["category"] = names[str(x).strip().lower()]
+                                break
+            return {"categories": categories, "split": split} if categories else None
+        return None
+    finally:
+        wb.close()
 #: How a line's figure can be taken off a month of actions; the proof keeps
 #: whichever gives the desk's figures.
 #: "<span>/<rows>": the month's own figure or the year to date; every row
@@ -102,7 +235,7 @@ for _feed in ("TOTAL_TAT", *CATEGORY_FEEDS):
 
 
 def handles(feed):
-    return feed in ENGINE_KEYS or feed in CRM_FEEDS or feed in IAPPLY_FEEDS
+    return valid_reader(reader_of(feed))
 
 
 def _month_end(year, month):
@@ -119,15 +252,23 @@ def _columns():
     return list(lts.COLUMNS) + [c for c in extra if c not in lts.COLUMNS]
 
 
-def _category(product, approved):
+def _split_names(split):
+    at = f"{split['at'] / 1_000_000:g}m"
+    return f"{split['category']}<{at}", f"{split['category']}>={at}"
+
+
+def _category(product, approved, mapping=None):
+    mapping = mapping or tat_mapping()
     code = str(product or "").strip().upper()
-    category = PRODUCT_CATEGORY.get(code)
-    if category == "sme":
+    category = mapping["categories"].get(code)
+    split = mapping["split"]
+    if category and category.lower() == str(split["category"]).lower():
         try:
             amount = float(str(approved).replace(",", ""))
         except (TypeError, ValueError):
             return None
-        return "sme>=20m" if amount >= SME_SPLIT else "sme<20m"
+        below, above = _split_names(split)
+        return above if amount >= split["at"] else below
     return category
 
 
@@ -141,8 +282,9 @@ def user_month(rows, year, month):
     month_rows = lts._month_steps(rows, year, month, columns=cols)
     if month_rows is None or month_rows.empty:
         return {}
+    mapping = tat_mapping()
     month_rows = month_rows.assign(
-        category=[_category(p, a) for p, a in zip(month_rows["ProductCategory"],
+        category=[_category(p, a, mapping) for p, a in zip(month_rows["ProductCategory"],
                                                    month_rows["ApprovedAmount"])],
         returned=month_rows["DecisionType"].str.lower().str.contains("return", na=False))
     def figures(group):
@@ -184,7 +326,12 @@ def iapply_users(year, month, timeout_ms=180_000, wait=False):
 
     # v2: per-category action and application counts were added; months kept
     # before them have none, and every count read 0 off them (proof, 26 Nov).
-    key = f"rbo_iapply_users_v2:{year}-{month:02d}"
+    # The mapping in force is part of the key: uploading a new one re-reads.
+    import hashlib
+    import json
+
+    stamp = hashlib.sha1(json.dumps(tat_mapping(), sort_keys=True).encode()).hexdigest()[:8]
+    key = f"rbo_iapply_users_v2:{stamp}:{year}-{month:02d}"
     if wait:
         # Read now AND keep it, so the cards have it too: the proof used to
         # read every month and keep none, and the cards said "being read".
@@ -262,6 +409,15 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
     span_kind, which, measure = ((definition or "month/own") + "//").split("/")[:3]
     which = which or "own"
     measure = measure if measure in MEASURES else "tat"
+    reader = str(reader_of(feed) or "")
+    if reader == "iapply:returns":
+        kind = "returns"
+    elif reader == "iapply:total":
+        kind = "total"
+    elif reader.startswith("iapply:category:"):
+        kind = reader[len("iapply:category:"):]      # the analyst category
+    else:
+        return None, "", f"{feed} is not mapped to an iApply reader"
     months = [month] if span_kind == "month" else list(range(1, month + 1))
     by_month = {}
     for m in months:
@@ -285,9 +441,9 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
         entry = (by_month[m].get(login) or {}).get(which)
         if entry is None:
             continue
-        if feed == "RTS":
+        if kind == "returns":
             values.append(entry["rts"])
-        elif feed == "TOTAL_TAT":
+        elif kind == "total":
             if measure == "tat":
                 if entry["tat"]:
                     values.append(entry["tat"])
@@ -296,7 +452,7 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
                     return None, "", f"the iApply month kept has no {measure} count"
                 values.append(entry[measure])
         else:
-            category = CATEGORY_FEEDS[feed]
+            category = kind
             if measure == "tat":
                 v = entry["by_category"].get(category)
                 if v:
@@ -312,7 +468,7 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
             else f"year to {datetime.date(year, month, 1):%b %Y}")
     what = {"tat": "", "actions": ", actions counted", "apps": ", applications counted"}[measure]
     label = f"iApply loan TAT report, sign-in {login}{what}, {span}"
-    if feed == "RTS" or measure != "tat":
+    if kind == "returns" or measure != "tat":
         # A count: a quiet month is a real 0, and a year's is the sum.
         return float(sum(values)), label, ""
     if not values:
@@ -329,7 +485,7 @@ def engine_value(feed, holder, as_at):
     """(value, label, why) off live_scorecard.live_actuals."""
     from .live_scorecard import live_actuals
 
-    key = ENGINE_KEYS[feed]
+    key = str(reader_of(feed) or "").split(":", 1)[1]
     got = live_actuals(holder.sales_code, staff_name=holder.name,
                        staff_pf=holder.pf, branch=str(holder.branch or ""),
                        wanted={key}, as_at=as_at).get(key) or {}
@@ -350,11 +506,12 @@ def crm_value(holder, year, month):
 
 def value(feed, holder, year, month, definition=None, wait=False):
     """(value, label, why) - the line's figure for ``month``."""
-    if feed in ENGINE_KEYS:
+    reader = str(reader_of(feed) or "")
+    if reader.startswith("engine:"):
         return engine_value(feed, holder, _month_end(year, month))
-    if feed in CRM_FEEDS:
+    if reader == "cx_crm":
         return crm_value(holder, year, month)
-    if feed in IAPPLY_FEEDS:
+    if reader.startswith("iapply:"):
         definition = definition or (proven().get(feed) or {}).get("definition") or "month/own"
         return iapply_value(feed, holder.name, year, month, definition, wait=wait,
                             code=holder.sales_code)
@@ -406,7 +563,7 @@ def prove(year=None, out=print):
         if not desk:
             continue
         best = None
-        for definition in DEFINITIONS.get(feed, (None,)):
+        for definition in definitions_for(feed):
             got = []
             for holder, d in desk:
                 try:
@@ -414,7 +571,7 @@ def prove(year=None, out=print):
                 except Exception as exc:  # noqa: BLE001 - say it, try the next
                     v, why = None, f"{type(exc).__name__}: {exc}"
                 # No action at all is the desk's 0 on a TAT line.
-                if v is None and feed in IAPPLY_FEEDS and "no iApply action" in why:
+                if v is None and is_iapply(feed) and "no iApply action" in why:
                     v = 0.0
                 got.append((holder, d, v, why))
             matched = sum(1 for _h, d, v, _w in got if _close(d, v))

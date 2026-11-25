@@ -44,7 +44,7 @@ class Command(BaseCommand):
             for key, tokens in card["f"].items():
                 r, c = (int(x) for x in key.split(","))
                 feed = wc._txt(wc._at(card["grid"], r, spec.cols["feed"]))
-                if c == spec.cols["actual"] and feed in rlf.IAPPLY_FEEDS:
+                if c == spec.cols["actual"] and rlf.is_iapply(feed):
                     feeds_by_sheet.setdefault(sheet, set()).add(feed)
         people = [h for h in wc.holders(book, keep_off=True) if h.sheet in feeds_by_sheet]
         first = datetime.date(year, month, 1)
@@ -77,7 +77,7 @@ class Command(BaseCommand):
                 row = wc._template_row(actuals, feed, holder.sales_code, 0, holder.name)
                 desk = row[6 + month - 1] if row and len(row) > 6 + month - 1 else None
                 readings = []
-                for definition in rlf.DEFINITIONS.get(feed, rlf.IAPPLY_DEFINITIONS):
+                for definition in rlf.definitions_for(feed):
                     v, _label, why = rlf.iapply_value(feed, holder.name, year, month,
                                                       definition, wait=True,
                                                       code=holder.sales_code)

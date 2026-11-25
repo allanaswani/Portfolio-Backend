@@ -845,9 +845,19 @@ def is_retail_bo_workbook(data):
         return False
     try:
         names = set(wb.sheetnames)
+        if not {"List", "Constants", "Monthly_Summary"} <= names:
+            return False
+        # Its cards read the retail back office actuals template by name -
+        # whatever the role sheets are called this year.
+        for sheet in wb.worksheets:
+            if sheet.title in RBO_TABLE_SHEETS:
+                continue
+            for row in sheet.iter_rows(max_row=60, max_col=12, values_only=True):
+                if any(isinstance(v, str) and RBO_TEMPLATE_MARK in v.lower() for v in row):
+                    return True
+        return False
     finally:
         wb.close()
-    return {"List", "Constants", SPECS[RETAIL_BO].marker, "RETAIL_ANALYST"} <= names
 
 
 def read_retail_bo(stream):
@@ -872,27 +882,82 @@ def read_retail_bo(stream):
         wv = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:  # noqa: BLE001
         raise WorkbookError(f"that is not an .xlsm/.xlsx workbook ({exc})")
-    spec = SPECS[RETAIL_BO]
     try:
         names = list(wf.sheetnames)
-        missing = sorted(({"List", "Constants", "Monthly_Summary"}
-                          | set(RBO_ROLE_SHEETS.values())) - set(names))
+        missing = sorted(set(RBO_TABLE_SHEETS) - set(names))
         book = {"book": RETAIL_BO, "cards": {}, "tables": {}, "problems": []}
         if missing:
             book["problems"].append("not in the workbook: " + ", ".join(missing))
-        formula_sheets = set(RBO_ROLE_SHEETS.values()) | set(RBO_INITIATIVE_SHEETS)
+        # Every sheet but the List, Constants and the summary keeps its
+        # formulas; which of them are cards, and which are evaluated with a
+        # card, the workbook itself says below.
         for sheet in names:
-            if sheet in formula_sheets:
-                card, problems = _read_xl_sheet(wf[sheet], wv[sheet])
-                book["cards"][sheet] = card
-                book["problems"] += problems
-            else:
+            if sheet in RBO_TABLE_SHEETS:
                 book["tables"][sheet] = _read_xl_sheet(wf[sheet], wv[sheet],
                                                        False)[0]["grid"]
+                continue
+            card, problems = _read_xl_sheet(wf[sheet], wv[sheet])
+            book["cards"][sheet] = card
+            book["tables"][sheet] = card["grid"]
+            book["problems"] += problems
     finally:
         wf.close()
         wv.close()
+    _rbo_layout(book)
     return book, rbo_desk_actuals(book)
+
+
+#: The workbook's own tables - read as values, never evaluated.
+RBO_TABLE_SHEETS = ("List", "Constants", "Monthly_Summary")
+RBO_TEMPLATE_MARK = "actual_template_retail_back_office"
+
+
+def _rbo_layout(book):
+    """Which sheets are cards and for which role, and which sheets the cards
+    evaluate - read off the workbook, so a new or renamed role sheet needs no
+    code (asked 26 Nov 2026: "no code changes when KPIs change").
+
+    A card is a sheet with the "KPI" header and a role in E2 - the cell the
+    desk's macro types the role into (RO_COMMERCIAL's E2 is "RELATIONSHIP
+    OFFICER - COMMERCIAL"). A sheet a card's formulas reach (INITIATIVES_*) is
+    evaluated with it. Everything else keeps its values only."""
+    spec = SPECS[RETAIL_BO]
+    roles, cards = {}, set()
+    for sheet, card in book["cards"].items():
+        grid = card["grid"]
+        header = any(isinstance(v, str) and v.strip() == spec.header
+                     for row in grid[:8] for v in row)
+        role = _txt(_at(grid, 1, 4)).strip()                    # E2
+        if header and role and card["f"].get(f"{spec.score[0]},{spec.score[1]}"):
+            if role.upper() in {r.upper() for r in roles}:
+                book["problems"].append(f"two card sheets carry the role {role!r}: "
+                                        f"{roles[next(r for r in roles if r.upper() == role.upper())]} "
+                                        f"and {sheet} - the first is used")
+                continue
+            roles[role] = sheet
+            cards.add(sheet)
+    reached = set()
+    for sheet in cards:
+        for tokens in book["cards"][sheet]["f"].values():
+            for t in tokens:
+                if t[0] in ("r", "a") and t[1] and not str(t[1]).startswith("@"):
+                    reached.add(t[1])
+    book["role_sheets"] = roles
+    book["evaluate_sheets"] = sorted((reached & set(book["cards"])) - cards
+                                     - set(RBO_TABLE_SHEETS))
+    # Sheets neither a card nor reached by one are not needed as formulas.
+    for sheet in list(book["cards"]):
+        if sheet not in cards and sheet not in book["evaluate_sheets"]:
+            book["cards"].pop(sheet)
+
+
+def rbo_role_sheets(book):
+    """{List role: card sheet} - the workbook's own, else the macro's."""
+    return book.get("role_sheets") or RBO_ROLE_SHEETS
+
+
+def rbo_role_code(sheet):
+    return "rbo_" + str(sheet or "").lower()
 
 
 def rbo_run_month(book):
@@ -918,7 +983,7 @@ def rbo_desk_actuals(book):
     if month is None:
         return out
     col = spec.cols
-    for sheet in RBO_ROLE_SHEETS.values():
+    for sheet in rbo_role_sheets(book).values():
         card = book["cards"].get(sheet)
         if not card:
             continue
@@ -952,7 +1017,7 @@ def rbo_proof(book, actuals):
     month = rbo_run_month(book)
     people = {h.name.strip().lower(): h for h in holders(book, keep_off=True)}
     out = []
-    for sheet in RBO_ROLE_SHEETS.values():
+    for sheet in rbo_role_sheets(book).values():
         card = book["cards"].get(sheet)
         if not card or month is None:
             continue
@@ -1283,7 +1348,7 @@ class Evaluator:
     def value(self, sheet, r, c):
         if sheet in (None, self.sheet):
             return self.cell(r, c)
-        if (sheet in getattr(self.spec, "evaluate_sheets", ())
+        if (sheet in (self.book.get("evaluate_sheets") or getattr(self.spec, "evaluate_sheets", ()))
                 and sheet in self.book.get("cards", {})):
             return self._other(sheet).cell(r, c)
         if sheet == "Constants" and (r, c) == self.spec.month_column:
@@ -2119,6 +2184,11 @@ def holders(book, keep_off=False):
     on_probation = book.get("probation") or {}
     for index, row in enumerate(grid[1:], start=1):
         holder = Holder(spec, index, row)
+        if spec.book == RETAIL_BO:
+            # The workbook's own role -> sheet (E2 of each card), so a new or
+            # renamed role sheet needs no code.
+            by_role = {k.strip().upper(): v for k, v in rbo_role_sheets(book).items()}
+            holder.sheet = by_role.get(holder.role.strip().upper())
         if not (holder.name and (holder.sales_code or holder.pf)):
             continue
         if on_probation.get(holder.sales_code) in book.get("cards", {}):
@@ -3089,7 +3159,7 @@ def card_payload(record, asked=None):
             "role_code": (ROLE_CODES.get(sheet, sheet)
                           if spec.book == BACK_OFFICE else
                           getattr(spec, "role_code", "")
-                          or getattr(spec, "role_codes", {}).get(sheet)
+                          or (rbo_role_code(sheet) if spec.book == RETAIL_BO else None)
                           or SALES_ROLE_CODES.get(data.get("role", ""),
                                                   sheet)),
             "branch": record.branch,

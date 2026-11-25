@@ -420,3 +420,76 @@ class RetailBackOfficeFeedTests(TestCase):
                                          "month/own/actions")
         self.assertIsNone(v)
         self.assertIn("no per-category actions count", why)
+
+
+class NoCodeWhenKpisChangeTests(TestCase):
+    """New roles, renamed sheets, new template sheets and a new TAT mapping
+    take effect from the files and settings - no code (asked 26 Nov 2026)."""
+
+    def setUp(self):
+        for name, value in (("proration", {}), ("no_card", {})):
+            patcher = mock.patch.object(wc, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_new_role_on_a_renamed_sheet_gets_its_card_from_the_workbook(self):
+        book = rbo_book()
+        card = book["cards"].pop("RO_COMMERCIAL")
+        card["grid"][1][4] = "CREDIT ANALYST - SME"          # E2: the new role
+        book["cards"]["SME_ANALYST_2027"] = card
+        for row in book["tables"]["List"][1:]:
+            row[3] = "CREDIT ANALYST - SME"
+        wc._rbo_layout(book)
+        self.assertEqual(book["role_sheets"], {"CREDIT ANALYST - SME": "SME_ANALYST_2027"})
+        self.assertEqual(book["evaluate_sheets"], ["INITIATIVES_SRM"])
+        terry = next(h for h in wc.holders(book) if h.sales_code == "TS3966")
+        self.assertEqual(terry.sheet, "SME_ANALYST_2027")
+        actuals = wc.rbo_desk_actuals(book)
+        proof = wc.rbo_proof(book, actuals)
+        self.assertEqual([p["same"] for p in proof], [True])
+        self.assertEqual(wc.rbo_role_code("SME_ANALYST_2027"), "rbo_sme_analyst_2027")
+
+    def test_a_new_template_sheet_is_a_setting(self):
+        from . import rbo_live_feeds as rlf
+
+        self.assertFalse(rlf.handles("Insurance_Leads"))
+        wc.save_file(rlf.SOURCES_KIND, {"Insurance_Leads": "cx_crm", "VIC_life": ""})
+        self.assertTrue(rlf.handles("Insurance_Leads"))
+        self.assertEqual(rlf.reader_of("Insurance_Leads"), "cx_crm")
+        # Switched off: the desk's figure only.
+        self.assertFalse(rlf.handles("VIC_life"))
+        self.assertTrue(rlf.handles("training_hrs"))           # defaults stand
+        self.assertFalse(rlf.valid_reader("nonsense"))
+        self.assertTrue(rlf.valid_reader("iapply:category:trade"))
+
+    def test_the_tat_mapping_uploads_through_the_workbook_panel(self):
+        import io
+
+        from django.contrib.auth.models import User
+        from openpyxl import Workbook
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        from . import rbo_live_feeds as rlf
+        from .workbook_views import BoActualsUploadView
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append([None, None, None, "ProductCategory", "Product", "Product Name",
+                   "Product Class", "product_name", "credit_analyst_mapping"])
+        ws.append([None, None, None, "AF", 40005, "ASSET FINANCE", "A", "a", "Asset Finance loans"])
+        ws.append([None, None, None, "BL", 40050, "SECURED BUSINESS LOAN", "C", "b", "sme"])
+        ws.append([None, None, None, "CF", 40007, "CONTRACT", "T", "c", "trade",
+                   None, None, None, "sme", "SME files- Above Kes.30m", ">=30m"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        upload = io.BytesIO(buf.getvalue())
+        upload.name = "2027_loan_tat_mapping.xlsx"
+        req = APIRequestFactory().post("/x", {"file": upload, "apply": "1"}, format="multipart")
+        force_authenticate(req, user=User.objects.create_superuser("a", "a@a", "x"))
+        got = BoActualsUploadView.as_view()(req)
+        self.assertEqual(got.status_code, 200, got.data)
+        self.assertTrue(got.data["applied"])
+        m = rlf.tat_mapping()
+        self.assertEqual(m["split"], {"category": "sme", "at": 30_000_000.0})
+        self.assertEqual(rlf._category("BL", "25000000"), "sme<30m")
+        self.assertEqual(rlf._category("AF", None), "Asset Finance loans")
