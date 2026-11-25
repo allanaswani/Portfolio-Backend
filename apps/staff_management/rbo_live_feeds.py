@@ -164,9 +164,15 @@ def iapply_users(year, month, timeout_ms=180_000, wait=False):
         cols = _columns()
         return user_month(lts._rows(year, month, timeout_ms, columns=cols), year, month)
 
+    key = f"rbo_iapply_users:{year}-{month:02d}"
     if wait:
-        return compute()
-    return cached(f"rbo_iapply_users:{year}-{month:02d}", compute)
+        # Read now AND keep it, so the cards have it too: the proof used to
+        # read every month and keep none, and the cards said "being read".
+        from .feed_cache import waiting
+
+        with waiting():
+            return cached(key, compute)
+    return cached(key, compute)
 
 
 def _user_entry(users, name):
@@ -323,4 +329,13 @@ def prove(year=None, out=print):
                 f"{('-' if v is None else f'{v:,.2f}'):>14}  "
                 f"{'same' if _close(d, v) else why or 'different'}")
     wc.save_file(STORE_KIND, result, loaded_by="prove_rbo_feeds")
+    # Every month up to now read and kept, so no card waits on one.
+    today = datetime.date.today()
+    last = today.month if year == today.year else 12
+    for m in range(1, last + 1):
+        try:
+            iapply_users(year, m, wait=True)
+            out(f"iApply {year}-{m:02d}: read and kept")
+        except Exception as exc:  # noqa: BLE001 - said, the run goes on
+            out(f"iApply {year}-{m:02d}: FAILED {type(exc).__name__}: {exc}")
     return result

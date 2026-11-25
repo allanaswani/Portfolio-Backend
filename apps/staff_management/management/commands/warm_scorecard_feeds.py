@@ -28,7 +28,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         from apps.staff_management import (bo_live_feeds, feed_cache, loan_tat_seller,
-                                           rm_definitions,
+                                           rbo_live_feeds, rm_definitions,
                                            weighted_sales_drawdowns as wsd,
                                            weighted_sales_new_customers as wnc)
 
@@ -54,6 +54,10 @@ class Command(BaseCommand):
                 # The back-office cards' proven lines, read for the whole bank
                 # so a card never reads transaction_diary itself (17 Nov 2026).
                 ("Back office live feeds", lambda: bo_live_feeds.warm(end)),
+                # The retail back office credit analysts' lines: the iApply
+                # loan TAT report by the user who acted (rbo_live_feeds).
+                ("Retail back office iApply by user",
+                 lambda: rbo_live_feeds.iapply_users(year, month)),
             ]
             for sheet in chosen:
                 if sheet in rm_definitions.CANDIDATES:

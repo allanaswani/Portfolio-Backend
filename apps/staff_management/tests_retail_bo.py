@@ -234,14 +234,21 @@ class RetailBackOfficeFeedTests(TestCase):
         self.assertEqual(crm["TS3966"]["ytd_actual"], 5.0)
         self.assertIn("matched the desk's figure for 1 of 1", crm["TS3966"]["as_at"])
 
-    def test_an_unproven_line_keeps_the_desk_figure_and_fills_the_rest(self):
-        crm = self._live({"Commercial_CRM": {"live": False, "matched": 0, "people": 1,
-                                             "definition": None, "month": "2026-09"}})
-        # Terry has the desk's September 2: it stands.
-        self.assertEqual(crm["TS3966"]["ytd_actual"], 2.0)
-        # Sarah has no desk figure: the reader's, labelled as not matched.
+    def test_an_unproven_line_reads_but_cannot_score_below_the_desk(self):
+        unproven = {"Commercial_CRM": {"live": False, "matched": 0, "people": 1,
+                                       "definition": None, "month": "2026-09"}}
+        # Read 5 CRM logs: above Terry's desk 2, so it is his figure; Sarah,
+        # whom the desk has none for, gets it too.
+        crm = self._live(unproven)
+        self.assertEqual(crm["TS3966"]["ytd_actual"], 5.0)
         self.assertEqual(crm["SN3521"]["ytd_actual"], 5.0)
-        self.assertIn("not yet matched", crm["SN3521"]["as_at"])
+        self.assertIn("0 of 1 people matched", crm["SN3521"]["as_at"])
+        # Read 1: below Terry's desk 2 on a reading not yet proven - the
+        # desk's stands and the card says what was read.
+        crm = self._live(unproven, got=(1.0, "CX return", ""))
+        self.assertEqual(crm["TS3966"]["ytd_actual"], 2.0)
+        self.assertIn("reads 1", crm["TS3966"]["as_at"])
+        self.assertEqual(crm["SN3521"]["ytd_actual"], 1.0)
 
     def test_no_figure_waits_with_the_reason(self):
         crm = self._live({}, got=(None, "", "no row for this name on the CX return"))
