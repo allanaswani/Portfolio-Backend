@@ -3531,6 +3531,19 @@ def resolve_person(sales_code):
             branch=bm.branch,
             roster="the branch business scorecards workbook")
 
+    # 0d. the retail back office workbook's List - credit analysts, product
+    # managers, sector RMs and trade.
+    try:
+        with transaction.atomic():
+            rbo = bo_workbook.stored_for(code, book=bo_workbook.RETAIL_BO)
+    except Exception:  # noqa: BLE001
+        rbo = None
+    if rbo is not None:
+        return Person(
+            sales_code=code, name=rbo.staff_name,
+            role_code=bo_workbook.RBO_ROLE_CODES.get(rbo.sheet, rbo.sheet),
+            branch=rbo.branch, roster=bo_workbook.RBO_ROSTER)
+
     # 1. the sales roster
     row = roster_row(code)
     if row is not None:
@@ -4305,6 +4318,16 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
 
         record = bo_workbook.stored_month(sales_code, as_at.replace(day=1),
                                           bo_workbook.BACK_OFFICE)
+        if record is not None:
+            return bo_workbook.card_payload(record, asked=as_at)
+
+    # The retail back office cards likewise: a month the desk ran is its card.
+    if person.roster == "the retail back office scorecards workbook" and as_at \
+            and not warehouse_only:
+        from . import workbook_cards as bo_workbook
+
+        record = bo_workbook.stored_month(sales_code, as_at.replace(day=1),
+                                          bo_workbook.RETAIL_BO)
         if record is not None:
             return bo_workbook.card_payload(record, asked=as_at)
 

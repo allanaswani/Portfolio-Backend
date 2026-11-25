@@ -131,6 +131,33 @@ SALES_ROLE_CODES = {
 }
 
 BACK_OFFICE, SALES, BRANCH_BUSINESS = "back_office", "sales", "branch_business"
+RETAIL_BO = "retail_back_office"
+
+#: The Retail Back Office workbook's macro (retail_back_office_scorecards):
+#: List role (column D) → card sheet. Its INITIATIVES_* sheets are not cards
+#: anybody holds; one line of the APM, SPM, sector RM, SRM and trade cards
+#: reads their total.
+RBO_ROLE_SHEETS = {
+    "RELATIONSHIP OFFICER - COMMERCIAL": "RO_COMMERCIAL",
+    "CREDIT ANALYST - COMMERCIAL": "COMMERCIAL_ANALYST",
+    "MANAGER CREDIT ANALYST - COMMERCIAL": "MANAGER_COMMERCIAL_ANALYST",
+    "CREDIT ANALYST - RETAIL": "RETAIL_ANALYST",
+    "CREDIT ORIGINATION MANAGER": "CREDIT_ORG_MANAGER",
+    "PRODUCTS OFFICER - LENDING": "PO_LENDING",
+    "ASSETS PRODUCTS MANAGER": "ASSETS_PRODUCTS_MANAGER",
+    "PRODUCTS OFFICER - LIABILITIES": "PO_LIABILITIES",
+    "SENIOR PRODUCT MANAGER": "SENIOR_PRODUCT_MANAGER",
+    "SECTOR RM - HEALTH": "SECTOR_RM_HEALTH",
+    "SECTOR RM - WATER AND ENERGY": "SECTOR_RM_WATER_AND_ENERGY",
+    "SENIOR RELATIONSHIP MANAGER": "SENIOR_RELATIONSHIP_MANAGER",
+    "TRADE MIDDLE OFFICE": "TRADE_MIDDLE_OFFICE",
+    "RM - TRADE FINANCE SALES": "RM_TRADE_FINANCE_SALES",
+}
+RBO_INITIATIVE_SHEETS = ("INITIATIVES_APM", "INITIATIVES_SPM", "INITIATIVES_HEALTH",
+                         "INITIATIVES_WATER_AND_ENERGY", "INITIATIVES_SRM",
+                         "INITIATIVES_TRADE_FINANCE")
+RBO_ROLE_CODES = {sheet: "rbo_" + sheet.lower() for sheet in RBO_ROLE_SHEETS.values()}
+RBO_ROSTER = "the retail back office scorecards workbook"
 
 
 class Spec:
@@ -205,6 +232,38 @@ SPECS = {
         files=("bb_scorecards", "sales_actuals"),
         source="the branch business scorecards workbook",
         title="Branch Manager", role_code="bbm",
+    ),
+    # 2026_Retail_Back_Office_Scorecards (.xlsm): credit analysts, product
+    # managers, sector RMs, trade. Every sheet: E weight, F FY, G YTD
+    # (=F*((Constants!B2 - L)/12), L = the List's prorate_new), H actual -
+    # typed by the desk ("group numbers") or read off its actuals template
+    # through INDIRECT on K - I score, J weighted, the score in I2. The macro
+    # types C2 name, E2 role, C3 branch, E3 reports to.
+    RETAIL_BO: Spec(
+        book=RETAIL_BO,
+        label="retail back office",
+        marker="RO_COMMERCIAL",
+        role_sheets=RBO_ROLE_SHEETS,
+        role_codes=RBO_ROLE_CODES,
+        list_cols={"pf": 0, "code": 1, "name": 2, "role": 3, "branch": 4,
+                   "bbm": 6},
+        inputs={(1, 2): "name", (1, 4): "role", (2, 2): "branch", (2, 4): "bbm"},
+        score=(1, 8),                                 # I2
+        month_column=(0, 1), month_count=(1, 1), year=(4, 1),
+        header="KPI", ends=("Reviewee",),
+        cols={"perspective": 1, "measure": 2, "initiative": 3, "weight": 4,
+              "prior": None, "growth": None, "fy": 5, "ytd": 6, "actual": 7,
+              "score": 8, "weighted": 9, "feed": 10},
+        summaries=(("Monthly_Summary", 0, 1, 6),),
+        # Its Monthly_Summary carries March, April and June, and an October
+        # column that is a copy of June (Q checks P = L): only months up to
+        # the desk's own run (Constants B2) are its scores.
+        summary_upto_run_month=True,
+        # The INITIATIVES_* sheets are evaluated with the card, so their
+        # month-prorated targets follow the month asked for.
+        evaluate_sheets=RBO_INITIATIVE_SHEETS,
+        files=("rbo_scorecards", "rbo_actuals"),
+        source="the retail back office scorecards workbook",
     ),
 }
 
@@ -770,6 +829,152 @@ def is_probation_workbook(data):
     return set(PROBATION_ROLE_SHEETS.values()) <= names and "Summary Allocation" in names
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# The Retail Back Office workbook
+# ─────────────────────────────────────────────────────────────────────────
+
+def is_retail_bo_workbook(data):
+    """Has this .xlsx/.xlsm the Retail Back Office workbook's sheets?"""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        names = set(wb.sheetnames)
+    finally:
+        wb.close()
+    return {"List", "Constants", SPECS[RETAIL_BO].marker, "RETAIL_ANALYST"} <= names
+
+
+def read_retail_bo(stream):
+    """The Retail Back Office workbook → (book, desk_actuals).
+
+    ``book`` is shaped as :func:`read_scorecards` shapes an .xlsb: each role
+    sheet and INITIATIVES_* sheet keeps its formulas, every other sheet its
+    values. ``desk_actuals`` is the desk's own figures in its template's
+    layout (PF, code, name, role, branch, zone, January..December), for the
+    month the workbook was last run (Constants B2): the cached value of each
+    line that reads the template, for the person whose card each sheet was
+    last run for. Its actuals template (2026_Actual_Template_Retail_Back_
+    office.xlsx) is not loaded anywhere, so for everybody else those lines
+    have no figure until a feed gives one."""
+    import io
+
+    from openpyxl import load_workbook
+
+    data = stream.read() if hasattr(stream, "read") else stream
+    try:
+        wf = load_workbook(io.BytesIO(data), read_only=True, keep_vba=False)
+        wv = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise WorkbookError(f"that is not an .xlsm/.xlsx workbook ({exc})")
+    spec = SPECS[RETAIL_BO]
+    try:
+        names = list(wf.sheetnames)
+        missing = sorted(({"List", "Constants", "Monthly_Summary"}
+                          | set(RBO_ROLE_SHEETS.values())) - set(names))
+        book = {"book": RETAIL_BO, "cards": {}, "tables": {}, "problems": []}
+        if missing:
+            book["problems"].append("not in the workbook: " + ", ".join(missing))
+        formula_sheets = set(RBO_ROLE_SHEETS.values()) | set(RBO_INITIATIVE_SHEETS)
+        for sheet in names:
+            if sheet in formula_sheets:
+                card, problems = _read_xl_sheet(wf[sheet], wv[sheet])
+                book["cards"][sheet] = card
+                book["problems"] += problems
+            else:
+                book["tables"][sheet] = _read_xl_sheet(wf[sheet], wv[sheet],
+                                                       False)[0]["grid"]
+    finally:
+        wf.close()
+        wv.close()
+    return book, rbo_desk_actuals(book)
+
+
+def rbo_run_month(book):
+    """The month the desk last ran the workbook for (Constants B2) → int."""
+    v = _at(book["tables"].get("Constants") or [], *SPECS[RETAIL_BO].month_count)
+    return int(v) if _num(v) and 1 <= v <= 12 else None
+
+
+def _rbo_person_row(book, name):
+    """The List row naming ``name`` → [pf, code, name, role, branch, zone]."""
+    for row in (book["tables"].get("List") or [])[1:]:
+        if len(row) > 2 and _txt(row[2]).strip().lower() == _txt(name).strip().lower():
+            return [row[i] if i < len(row) else None for i in range(6)]
+    return None
+
+
+def rbo_desk_actuals(book):
+    """The desk's own figures, read off the cards as last run (see
+    :func:`read_retail_bo`) → {template sheet: rows}."""
+    spec = SPECS[RETAIL_BO]
+    month = rbo_run_month(book)
+    out = {}
+    if month is None:
+        return out
+    col = spec.cols
+    for sheet in RBO_ROLE_SHEETS.values():
+        card = book["cards"].get(sheet)
+        if not card:
+            continue
+        person = _rbo_person_row(book, _at(card["grid"], 1, 2))
+        if person is None:
+            continue
+        for key, tokens in card["f"].items():
+            r, c = (int(x) for x in key.split(","))
+            if c != col["actual"] or not any(
+                    t[0] == "f" and t[1] == "INDIRECT" for t in tokens):
+                continue
+            feed, value = _txt(_at(card["grid"], r, col["feed"])), _at(card["grid"], r, c)
+            if not feed or not _num(value) or isinstance(value, bool):
+                continue
+            rows = out.setdefault(feed, [["staff_pf", "sales_code", "staff_name",
+                                          "staff_role", "staff_branch", "staff_zone"]
+                                         + [None] * 12])
+            row = next((x for x in rows[1:] if x[2] == person[2]), None)
+            if row is None:
+                row = list(person) + [None] * 12
+                rows.append(row)
+            row[6 + month - 1] = float(value)
+    return out
+
+
+def rbo_proof(book, actuals):
+    """Each role sheet's card as the desk last ran it, recomputed → [{sheet,
+    name, desk, computed, same}]. The desk's own figures go in, so every
+    card must come back to the score cached on it."""
+    spec = SPECS[RETAIL_BO]
+    month = rbo_run_month(book)
+    people = {h.name.strip().lower(): h for h in holders(book, keep_off=True)}
+    out = []
+    for sheet in RBO_ROLE_SHEETS.values():
+        card = book["cards"].get(sheet)
+        if not card or month is None:
+            continue
+        name = _txt(_at(card["grid"], 1, 2))
+        desk = _plain(_at(card["grid"], *spec.score))
+        holder = people.get(name.strip().lower())
+        if holder is None:
+            out.append({"sheet": sheet, "name": name, "desk": desk,
+                        "computed": None, "same": False,
+                        "why": "not on the List"})
+            continue
+        import copy as _copy
+
+        h = _copy.copy(holder)
+        h.sheet = sheet
+        total = compute(book, actuals, h, month)["total"]
+        same = _num(total) and _num(desk) and abs(total - desk) < 1e-9
+        out.append({"sheet": sheet, "name": name, "desk": desk,
+                    "computed": total, "same": bool(same)})
+    return out
+
+
 def _allocation_columns(card):
     """The Summary Allocation columns a card's formulas read."""
     cols = set()
@@ -1058,11 +1263,29 @@ class Evaluator:
         # this person's own List row, which the card reaches by name.
         self.list_name = _txt(holder.name).lower()
         self.list_override = proration_cells(book, holder, month)
+        self.holder, self.others = holder, {}
+
+    def _other(self, sheet):
+        """Another sheet of this workbook evaluated with its formulas, for
+        this person and month (a spec's ``evaluate_sheets``)."""
+        if sheet not in self.others:
+            import copy as _copy
+
+            h = _copy.copy(self.holder)
+            h.sheet = sheet
+            ev = Evaluator(self.book, self.actuals, h, self.month)
+            ev.inputs = {}      # the macro types into the card, not this sheet
+            ev.others = self.others
+            self.others[sheet] = ev
+        return self.others[sheet]
 
     # -- cells --------------------------------------------------------------
     def value(self, sheet, r, c):
         if sheet in (None, self.sheet):
             return self.cell(r, c)
+        if (sheet in getattr(self.spec, "evaluate_sheets", ())
+                and sheet in self.book.get("cards", {})):
+            return self._other(sheet).cell(r, c)
         if sheet == "Constants" and (r, c) == self.spec.month_column:
             return float(self.month + FIRST_MONTH_INDEX - 1)
         if sheet == "Constants" and (r, c) == self.spec.month_count:
@@ -2419,6 +2642,10 @@ def recorded_scores(book):
     """
     spec = spec_of(book)
     out = {}
+    last = 12
+    if getattr(spec, "summary_upto_run_month", False):
+        run = _at(book["tables"].get("Constants") or [], *spec.month_count)
+        last = int(run) if _num(run) and 1 <= run <= 12 else 12
     for sheet, header, code_col, first in spec.summaries:
         grid = book["tables"].get(sheet, [])
         for row in grid[header + 1:]:
@@ -2426,7 +2653,7 @@ def recorded_scores(book):
                        ).strip().upper()
             if not code:
                 continue
-            for month in range(1, 13):
+            for month in range(1, last + 1):
                 column = first + month - 1
                 v = row[column] if column < len(row) else None
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -2574,7 +2801,8 @@ def store(results, year, recorded=None, loaded_by=""):
 #: from one year to the next: loading 2027's workbook must not re-score a 2026
 #: card. Every other kind is one row, as before.
 YEARLY_KINDS = frozenset({"scorecards", "actuals", "sales_scorecards",
-                          "sales_actuals", "bb_scorecards", PROBATION_KIND})
+                          "sales_actuals", "bb_scorecards", PROBATION_KIND,
+                          "rbo_scorecards", "rbo_actuals"})
 
 
 def year_kind(kind, year):
@@ -2861,6 +3089,7 @@ def card_payload(record, asked=None):
             "role_code": (ROLE_CODES.get(sheet, sheet)
                           if spec.book == BACK_OFFICE else
                           getattr(spec, "role_code", "")
+                          or getattr(spec, "role_codes", {}).get(sheet)
                           or SALES_ROLE_CODES.get(data.get("role", ""),
                                                   sheet)),
             "branch": record.branch,
@@ -4020,10 +4249,25 @@ def live_card(sales_code, engine_card, as_at):
     # against ten months of target reads a month short. The workbook's own
     # formulas, run for the month the figure is from, give the target,
     # score and weighted score the desk itself would have shown.
+    # The retail back office desk TYPES most actuals - the group's year to
+    # date as at its run (Constants B2) - so a typed figure there is the
+    # desk's figure from that month too, and is scored at that month's
+    # target the same way: 170 approvals to September against November's
+    # 91.7 target read short of what the desk's own card gave.
+    typed_then = rbo_run_month(book) if spec.book == RETAIL_BO else None
+    typed_at = set()
     for wl in card["lines"]:
         r = wl["row"]
         then = carried.get(r)
-        if (wl["typed"] or not then or then >= month
+        if wl["typed"] and typed_then and typed_then < month \
+                and _num(wl.get("actual")):
+            then = typed_then
+            earlier = at_month(then).get(r) or {}
+            if earlier.get("ytd_target") != wl.get("ytd_target"):
+                typed_at.add(r)
+        elif wl["typed"]:
+            continue
+        if (not then or then >= month
                 or (r - 1, actual_col) in overrides or r in live_rows):
             continue
         earlier = at_month(then).get(r)
@@ -4214,6 +4458,12 @@ def live_card(sales_code, engine_card, as_at):
             elif wl["typed"]:
                 # Part of the card itself: nothing read it from anywhere.
                 ln["as_at"] = "typed on the desk's card"
+                if wl["row"] in typed_at:
+                    ln["as_at"] += (
+                        f", year to date to "
+                        f"{datetime.date(as_at.year, typed_then, 1):%b %Y} - "
+                        f"scored against that month's target, as the desk's "
+                        f"card scored it")
             elif wl.get("held"):
                 desk_ytd, _score, then = wl["held"]
                 ln["as_at"] = (

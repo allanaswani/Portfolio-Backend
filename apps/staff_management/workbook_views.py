@@ -254,6 +254,8 @@ class BoActualsUploadView(APIView):
 
         data = upload.read()
         upload.seek(0)
+        if workbook_cards.is_retail_bo_workbook(data):
+            return self._retail_bo(data, upload.name, apply, who)
         if workbook_cards.is_probation_workbook(data):
             return self._probation(data, upload.name, apply, who)
 
@@ -421,6 +423,52 @@ class BoActualsUploadView(APIView):
             "applied": True, "cards": cards,
             "detail": (f"Saved the {spec.label} scorecards workbook for "
                        f"{year}. " + self._stored_detail(cards, spec))})
+
+    def _retail_bo(self, data, file_name, apply, who):
+        """The Retail Back Office scorecards workbook (.xlsm): credit
+        analysts, product managers, sector RMs and trade. Its cards run on
+        its own formulas; the figures its actuals template would give come,
+        for the month it was last run, off the cards as the desk ran them."""
+        import io
+
+        from . import workbook_cards as wc
+
+        try:
+            book, actuals = wc.read_retail_bo(io.BytesIO(data))
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return Response({"file": f"That workbook could not be read: {exc}"},
+                            status=400)
+        year = wc.book_year(book)
+        month = wc.rbo_run_month(book)
+        proof = wc.rbo_proof(book, actuals)
+        same = sum(1 for p in proof if p["same"])
+        people = [h for h in wc.holders(book) if h.sheet in book["cards"]]
+        lines = "\n".join(
+            f"  {p['sheet']}: {p['name']} - desk {p['desk']!s:.6}, recomputed "
+            f"{p['computed']!s:.6} {'same' if p['same'] else 'DIFFERENT'}"
+            for p in proof)
+        report = {"book": wc.RETAIL_BO, "year": year, "month": month,
+                  "people": len(people), "proof": proof, "same": same,
+                  "problems": book.get("problems", [])}
+        head = (f"Read the retail back office scorecards workbook for {year}: "
+                f"{len(people)} people on {len({h.sheet for h in people})} cards, "
+                f"last run for month {month}. {same} of {len(proof)} cards "
+                f"recompute to the score the desk's run gives:\n{lines}")
+        if same != len(proof):
+            return Response({"applied": False, "cards": report,
+                             "detail": head + "\nNot saved: every card must "
+                                              "recompute to the desk's score."},
+                            status=400)
+        if not apply:
+            return Response({"applied": False, "cards": report,
+                             "detail": head + "\nNothing has been saved yet."})
+        spec = wc.SPECS[wc.RETAIL_BO]
+        wc.save_file(spec.files[0], book, file_name, who, year=year)
+        wc.save_file(spec.files[1], actuals, file_name, who, year=year)
+        report["stored"] = wc.rebuild(book, actuals, who)
+        return Response({"applied": True, "cards": report,
+                         "detail": head + f"\nSaved. {report['stored']:,} card-month(s) "
+                                          f"computed."})
 
     def _probation(self, data, file_name, apply, who):
         """The mortgage business probation workbook (.xlsm): the desk's card
