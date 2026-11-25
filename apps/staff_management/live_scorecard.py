@@ -3258,10 +3258,26 @@ def role_target(mapping, bases):
         base = bases.get(base_name)
         if base is None:
             return None, ""
+        if base_name in GROW_THE_BASE:
+            # "2 month active (increase by 20%)": last year's count GROWN by
+            # the rate - the rule the allocation sheet applies to everybody on
+            # it (migration 0057; Charles Muchiri 60 -> 72, Alice Kamau 42 ->
+            # 50.4 on their signed cards). The rate alone was the target here:
+            # Valary Simiyu, 1 active customer in 2025, was set 0.2.
+            return float(base) * (1 + float(target)), (
+                f"your {base_name.replace('_', ' ')} of {base:,.0f} plus "
+                f"{float(target) * 100:.0f}%, as your card states it")
         return float(target) * base, (
             f"{float(target) * 100:.0f}% of your {base_name.replace('_', ' ')} "
             f"of {base:,.0f}, as your card states it")
     return None, ""
+
+
+#: Bases a rate GROWS (the target is the base plus the rate), rather than
+#: bases a rate is taken OF (Asset Growth: 43% of the December book is the
+#: growth asked for). Active Customers and Digital Adoption, whose measure of
+#: success says "increase by 20%" / "increase portfolio by 50%".
+GROW_THE_BASE = {"last_year_active_customers", "last_year_digital_customers"}
 
 
 @dataclass(frozen=True)
@@ -4637,15 +4653,6 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
         # property target of 0 - and scoring against it would divide by zero.
         if fy_target == 0:
             fy_target, target_how = None, ""
-
-        # Less than one of something counted is not a target. A rate on a
-        # base can leave one - Valary Simiyu's Active Customers is 20% of last
-        # year's ONE customer, 0.2 of a customer for the year - so a counted
-        # line's year target under 1 is 1. Anything larger stays exactly as
-        # the desk's sheet computes it (120.7 active customers is the desk's
-        # own figure on a calibrated card).
-        if source.counted and fy_target is not None and 0 < fy_target < 1:
-            fy_target = 1.0
 
         # Absent from the table is a different problem from NULL in the row,
         # and the two need different people to fix them. Neither matters once

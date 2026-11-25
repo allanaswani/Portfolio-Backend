@@ -277,8 +277,35 @@ class TheyAreNoLongerPendingTests(TestCase):
                 self.assertIn("last_year", row.target_base)
 
     def test_alices_card_reproduces(self):
-        """42 active customers in 2025, +20%, is the 50.4 on her card."""
-        self.assertAlmostEqual(42 * 1.20, 50.4)
+        """42 active customers in 2025, +20%, is the 50.4 on her card - run
+        through the card's own target ladder (role_target) on the mappings the
+        database holds. This used to assert only 42 x 1.2 == 50.4 while the
+        card computed 0.2 x 42 = 8.4 for everybody off the allocation sheet
+        (Valary Simiyu: 1 customer -> 0.2)."""
+        from .live_scorecard import role_target
+        from .scorecard_automation.models import ScRoleKpiMapping
+
+        rows = list(ScRoleKpiMapping.objects.filter(
+            kpi_code__in=("active_customers", "digital_adoption"),
+            target_basis="rate_on_base"))
+        self.assertTrue(rows)
+        for row in rows:
+            with self.subTest(f"{row.role_code}/{row.kpi_code}"):
+                grown = 1.2 if row.kpi_code == "active_customers" else 1.5
+                value, how = role_target(row, {row.target_base: 42})
+                self.assertAlmostEqual(value, 42 * grown)
+                self.assertIn("plus", how)
+                self.assertAlmostEqual(role_target(row, {row.target_base: 1})[0], grown)
+
+    def test_a_rate_taken_of_a_book_is_unchanged(self):
+        """Asset Growth's "43% of the Dec book" is the growth itself."""
+        from types import SimpleNamespace
+
+        from .live_scorecard import role_target
+
+        mapping = SimpleNamespace(kpi_target=0.43, target_basis="rate_on_base",
+                                  target_base="december_loan_book")
+        self.assertAlmostEqual(role_target(mapping, {"december_loan_book": 100.0})[0], 43.0)
 
     def test_lydias_digital_card_reproduces(self):
         """197 digital customers in 2025, +50%, is 295.5 - her card says
