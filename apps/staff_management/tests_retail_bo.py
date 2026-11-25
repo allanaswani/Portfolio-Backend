@@ -284,3 +284,36 @@ class RetailBackOfficeFeedTests(TestCase):
             result = rlf.prove(2026, out=lambda *_: None)
         self.assertEqual(result["RTS"]["definition"], "year/own")
         self.assertTrue(result["RTS"]["live"])
+
+    def test_the_explain_command_runs_on_the_real_table(self):
+        import io
+
+        from django.core.management import call_command
+        from django.db import connection
+
+        from . import rbo_live_feeds as rlf
+
+        book = rbo_book()
+        book["cards"]["RO_COMMERCIAL"]["grid"][6][10] = "RTS"     # an iApply line
+        actuals = wc.rbo_desk_actuals(book)
+        spec = wc.SPECS[wc.RETAIL_BO]
+        wc.save_file(spec.files[0], book, year=datetime.date.today().year)
+        wc.save_file(spec.files[1], actuals, year=datetime.date.today().year)
+        with connection.cursor() as cur:
+            cur.execute('CREATE TABLE IF NOT EXISTS iapply_loan_tat ('
+                        '"ActionUserName" varchar(100), "ActionUser" varchar(40), '
+                        '"ActionDate" varchar(40))')
+            cur.execute("INSERT INTO iapply_loan_tat VALUES "
+                        "('TERRY SIMPSON', 'TSIMPSON', '2026-09-03 10:00:00')")
+        out = io.StringIO()
+        users = {"TERRY SIMPSON": {"own": {"tat": 2.0, "rts": 2, "actions": 1,
+                                           "by_category": {}},
+                                   "all": {"tat": 2.0, "rts": 3, "actions": 2,
+                                           "by_category": {}}}}
+        with mock.patch.object(rlf, "iapply_users", return_value=users):
+            call_command("rbo_tat_explain", "--month", "2026-09", stdout=out)
+        text = out.getvalue()
+        self.assertIn("ActionUserName='TERRY SIMPSON'  ActionUser='TSIMPSON'  actions=1", text)
+        self.assertIn("matched in the role view by name: yes", text)
+        self.assertIn("month/own=2.00", text)
+        self.assertIn("month/all=3.00", text)
