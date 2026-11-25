@@ -388,6 +388,17 @@ def build_card_workbook(card, signoff=None):
            f"Scorecards → Figures to load.", left, italic=True, size=9)
         ws.merge_cells(start_row=row, start_column=3, end_row=row,
                        end_column=last)
+    # Lines left off because their base is zero: not missing, no target.
+    na = float(card.get("not_applicable_weight") or 0)
+    if na:
+        row += 1
+        at(row, 3,
+           f"{fraction(na):.1%} of weight is not applicable: the base those "
+           f"lines grow is zero on the customers allocated to this person, so "
+           f"the bank's rule sets no target. The score is brought back to "
+           f"100% on the other lines.", left, italic=True, size=9)
+        ws.merge_cells(start_row=row, start_column=3, end_row=row,
+                       end_column=last)
 
     # ── the signature rows ────────────────────────────────────────────────
     # Same two rows, same wording and same column positions as the printed

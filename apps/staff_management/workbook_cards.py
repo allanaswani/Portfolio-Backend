@@ -4194,11 +4194,22 @@ def live_card(sales_code, engine_card, as_at):
                  f"latest figure (up to "
                  f"{datetime.date(as_at.year, desk_months[-1], 1):%B %Y})."
                  if desk_months else "")
+    # A line left off because its base is zero is NOT weight without a
+    # source: the bank's rule sets it no target, and the card is already
+    # brought back to 100% without it. Counting it as unscored made Naomi
+    # Kamau's (NK4492) card say "15.0% has no source" under a banner saying
+    # why those two lines are not applicable.
+    na_weight = sum(_num(w.get("weight")) and w["weight"] or 0.0
+                    for w in not_applicable)
     payload.update({
         "live": True,
         "live_lines": len(read_now),
         "pending_lines": waiting,
-        "scored_lines": len(card["lines"]) - waiting,
+        "scored_lines": len(card["lines"]) - waiting - len(not_applicable),
+        "not_applicable_lines": len(not_applicable),
+        "not_applicable_weight": round(na_weight, 4),
+        "unscored_weight": round(max(0.0, float(
+            payload.get("unscored_weight") or 0) - na_weight), 4),
         # Every month of the year to now: stored where the desk closed it,
         # live where it has not.
         "months_loaded": [f"{as_at.year}-{m:02d}"
