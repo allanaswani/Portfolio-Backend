@@ -90,7 +90,15 @@ IAPPLY_FEEDS = {"TOTAL_TAT", "RTS"} | set(CATEGORY_FEEDS)
 #: "<span>/<rows>": the month's own figure or the year to date; every row
 #: under the name or only the person's own actions.
 IAPPLY_DEFINITIONS = ("month/own", "month/all", "year/own", "year/all")
-DEFINITIONS = {feed: IAPPLY_DEFINITIONS for feed in ("TOTAL_TAT", "RTS", *CATEGORY_FEEDS)}
+#: What a TAT line's figure is: the report's turnaround in days ("tat", its
+#: _tat), or a count - the actions (its _vol) or the applications. The desk's
+#: September sheets hold 38 for Mwanzi Musyoka against 1.31 days of his own
+#: steps, and 10 Asset Finance / 0 elsewhere for Brenda Akumu: counts are
+#: tried beside days, and the proof keeps whichever gives the desk's figures.
+MEASURES = ("tat", "actions", "apps")
+DEFINITIONS = {"RTS": IAPPLY_DEFINITIONS}
+for _feed in ("TOTAL_TAT", *CATEGORY_FEEDS):
+    DEFINITIONS[_feed] = tuple(f"{d}/{m}" for d in IAPPLY_DEFINITIONS for m in MEASURES)
 
 
 def handles(feed):
@@ -138,12 +146,18 @@ def user_month(rows, year, month):
                                                    month_rows["ApprovedAmount"])],
         returned=month_rows["DecisionType"].str.lower().str.contains("return", na=False))
     def figures(group):
+        # tat: the report's _tat (mean of the non-zero step times); actions:
+        # its _vol (rows counted); apps: distinct applications.
         entry = {"tat": lts._mean_non_zero(group["TAT"]),
                  "rts": int(group["returned"].sum()),
-                 "actions": int(len(group)), "by_category": {}}
+                 "actions": int(len(group)),
+                 "apps": int(group["ApplicationId"].nunique()),
+                 "by_category": {}, "by_category_actions": {}, "by_category_apps": {}}
         for category, part in group.groupby("category", sort=True):
             if category:
                 entry["by_category"][category] = lts._mean_non_zero(part["TAT"])
+                entry["by_category_actions"][category] = int(len(part))
+                entry["by_category_apps"][category] = int(part["ApplicationId"].nunique())
         return entry
 
     out = {}
@@ -243,8 +257,9 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
     :data:`IAPPLY_DEFINITIONS`. A year-to-date turnaround is the mean of the
     months' figures. Somebody whose iApply sign-in cannot be told has no
     figure - not 0 returns, which the card's =IF(H<=G,1,0) scores in full."""
-    span_kind, _, which = (definition or "month/own").partition("/")
+    span_kind, which, measure = ((definition or "month/own") + "//").split("/")[:3]
     which = which or "own"
+    measure = measure if measure in MEASURES else "tat"
     months = [month] if span_kind == "month" else list(range(1, month + 1))
     by_month = {}
     for m in months:
@@ -271,16 +286,25 @@ def iapply_value(feed, name, year, month, definition="month/own", wait=False, co
         if feed == "RTS":
             values.append(entry["rts"])
         elif feed == "TOTAL_TAT":
-            if entry["tat"]:
-                values.append(entry["tat"])
+            if measure == "tat":
+                if entry["tat"]:
+                    values.append(entry["tat"])
+            else:
+                values.append(entry.get(measure, 0))
         else:
-            v = entry["by_category"].get(CATEGORY_FEEDS[feed])
-            if v:
-                values.append(v)
+            category = CATEGORY_FEEDS[feed]
+            if measure == "tat":
+                v = entry["by_category"].get(category)
+                if v:
+                    values.append(v)
+            else:
+                values.append(entry.get(f"by_category_{measure}", {}).get(category, 0))
     span = (f"{datetime.date(year, month, 1):%B %Y}" if span_kind == "month"
             else f"year to {datetime.date(year, month, 1):%b %Y}")
-    label = f"iApply loan TAT report, sign-in {login}, {span}"
-    if feed == "RTS":
+    what = {"tat": "", "actions": ", actions counted", "apps": ", applications counted"}[measure]
+    label = f"iApply loan TAT report, sign-in {login}{what}, {span}"
+    if feed == "RTS" or measure != "tat":
+        # A count: a quiet month is a real 0, and a year's is the sum.
         return float(sum(values)), label, ""
     if not values:
         # No action of theirs in the period: no turnaround to score - not 0

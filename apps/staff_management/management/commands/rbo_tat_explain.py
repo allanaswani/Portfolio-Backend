@@ -77,7 +77,7 @@ class Command(BaseCommand):
                 row = wc._template_row(actuals, feed, holder.sales_code, 0, holder.name)
                 desk = row[6 + month - 1] if row and len(row) > 6 + month - 1 else None
                 readings = []
-                for definition in rlf.IAPPLY_DEFINITIONS:
+                for definition in rlf.DEFINITIONS.get(feed, rlf.IAPPLY_DEFINITIONS):
                     v, _label, why = rlf.iapply_value(feed, holder.name, year, month,
                                                       definition, wait=True,
                                                       code=holder.sales_code)

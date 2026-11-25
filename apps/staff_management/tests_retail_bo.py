@@ -280,7 +280,8 @@ class RetailBackOfficeFeedTests(TestCase):
         crm = self._live(unproven)
         self.assertEqual(crm["TS3966"]["ytd_actual"], 5.0)
         self.assertEqual(crm["SN3521"]["ytd_actual"], 5.0)
-        self.assertIn("not proven", crm["SN3521"]["as_at"])
+        self.assertIn("not proven: gave the desk's figure for 0 of 1 people", crm["SN3521"]["as_at"])
+        self.assertNotIn("all 0", crm["SN3521"]["as_at"])
         self.assertNotIn("matched", crm["SN3521"]["as_at"])
         # Read 1: below Terry's desk 2 on a reading not yet proven - the
         # desk's stands and the card says what was read.
@@ -375,3 +376,34 @@ class RetailBackOfficeFeedTests(TestCase):
         self.assertIn("sign-in used: TSIMPSON - initial and name", text)
         self.assertIn("month/own=2.00", text)
         self.assertIn("month/all=3.00", text)
+
+    def test_a_tat_line_can_be_a_count_and_the_proof_tries_it(self):
+        """Mwanzi's desk TOTAL_TAT is 38 against 1.31 days of his steps, and
+        Brenda's Asset Finance 10: the counts are read and offered to the proof."""
+        from . import rbo_live_feeds as rlf
+
+        sep = datetime.datetime
+        rows = [
+            ("A1", sep(2026, 9, 3), sep(2026, 9, 1), sep(2026, 9, 3, 1), "BBM Review",
+             "CCA Processing", "CCA", "BAKUMU", "C1", "S", 200, "Approve", "AF", "1", "PB"),
+            ("A1", sep(2026, 9, 4), sep(2026, 9, 1), sep(2026, 9, 4, 1), "BBM Review 2",
+             "BBM Review", "CCA", "BAKUMU", "C1", "S", 200, "Approve", "AF", "1", "PB"),
+            ("A2", sep(2026, 9, 5), sep(2026, 9, 1), sep(2026, 9, 5, 1), "BBM Review",
+             "CCA Processing", "CCA", "BAKUMU", "C1", "S", 200, "Approve", "AP", "1", "PB"),
+        ]
+        users = rlf.user_month(rows, 2026, 9)
+        own = users["BAKUMU"]["own"]
+        self.assertEqual(own["by_category_actions"]["Asset Finance loans"], 3)
+        self.assertEqual(own["by_category_apps"]["Asset Finance loans"], 2)
+        self.assertEqual((own["actions"], own["apps"]), (3, 2))
+        with mock.patch.object(rlf, "iapply_users", side_effect=lambda y, m, **kw:
+                               users if m == 9 else {}):
+            v, label, _ = rlf.iapply_value("ASSET_FINANCE", "Brenda Akumu", 2026, 9,
+                                           "month/own/apps")
+            self.assertEqual(v, 2.0)
+            self.assertIn("applications counted", label)
+            # A count with no action is a real 0, not a missing figure.
+            v, _, _ = rlf.iapply_value("TRADE", "Brenda Akumu", 2026, 9, "month/own/actions")
+            self.assertEqual(v, 0.0)
+        self.assertIn("month/own/actions", rlf.DEFINITIONS["TOTAL_TAT"])
+        self.assertEqual(rlf.DEFINITIONS["RTS"], rlf.IAPPLY_DEFINITIONS)

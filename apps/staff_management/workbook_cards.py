@@ -3802,7 +3802,7 @@ def live_card(sales_code, engine_card, as_at):
                     else:
                         if not proof:
                             note = "not yet checked against the desk's figures"
-                        elif not proof.get("evidence"):
+                        elif not proof.get("evidence") and proof.get("matched"):
                             # Agreeing only where the desk had 0 proves nothing.
                             note = (f"not proven: the desk's {proof['month']} figures "
                                     f"it agreed with were all 0")
