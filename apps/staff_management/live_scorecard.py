@@ -4916,7 +4916,7 @@ def _engine_card(sales_code, profile=None, as_at=None, warehouse_only=False):
         elif problem:
             # Not a fault - the figure honestly is not there, and the reason
             # says which piece is missing.
-            pending = f"No figure for this line: {problem}."
+            pending = f"No figure for this line: {str(problem).rstrip('.')}."
             # Any line takes the figure the desk's actuals template carries
             # for it, so name that route where the line has a sheet in it.
             sheet = (named[mapping.kpi_code].actuals_sheet
