@@ -2250,6 +2250,51 @@ def _named_for(actuals, holder):
     return actuals if out is None else out
 
 
+def _whole_customer_targets(book, card, spec, ev, holder, month, header, end):
+    """A customer is a whole number: round a customer line's YTD target UP.
+
+    The sales card's count lines already do this on the desk's own sheet -
+    Number of Property (I11) and non-life policies (I14) are
+    =ROUNDUP(...,0) - but New Business Banking Customers (I6) is not, so
+    Naomi Kamau (NK4492) was set 0.17 of a customer for October. The same
+    rounding is put on every line whose KPI names customers.
+
+    A month the desk scored itself (its summary sheet has the score) keeps
+    the workbook exactly as the desk ran it: that is the card it sent.
+    """
+    ytd = spec.cols.get("ytd")
+    if ytd is None or (str(holder.sales_code or "").upper(), month) in \
+            _recorded_for(book):
+        return
+    for r in range(header + 1, end):
+        label = " ".join(_txt(ev.cell(r, spec.cols[k])) for k in
+                         ("measure", "initiative") if spec.cols.get(k) is not None)
+        tokens = card["f"].get(f"{r},{ytd}")
+        if "customer" not in label.lower() or not tokens or any(
+                t[0] == "f" and t[1] in ("ROUNDUP", "ROUND", "INT", "CEILING")
+                for t in tokens):
+            continue
+        value = ev.cell(r, ytd)
+        if _num(value) and not isinstance(value, bool) and value > 0 \
+                and abs(value - round(value)) > 1e-9:
+            ev.memo.clear()
+            ev.inputs[(r, ytd)] = float(math.ceil(value - 1e-9))
+
+
+_RECORDED = {}
+
+
+def _recorded_for(book):
+    """recorded_scores, once per loaded book."""
+    key = id(book)
+    hit = _RECORDED.get(key)
+    if hit is None or hit[0] is not book:
+        if len(_RECORDED) > 16:
+            _RECORDED.clear()
+        hit = _RECORDED[key] = (book, recorded_scores(book))
+    return hit[1]
+
+
 def compute(book, actuals, holder, month, overrides=None):
     """One person's card for one month → dict, as the workbook would show it.
 
@@ -2276,6 +2321,7 @@ def compute(book, actuals, holder, month, overrides=None):
     ev.inputs.update(overrides or {})
     col = spec.cols
     header, end = _layout(spec, card)
+    _whole_customer_targets(book, card, spec, ev, holder, month, header, end)
     kept_unprorated = _keep_lines_proration_empties(
         book, actuals, holder, month, ev, spec, header, end) if ev.list_override else set()
 

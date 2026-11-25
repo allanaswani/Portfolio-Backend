@@ -2316,6 +2316,29 @@ class LoanApprovalsTests(TestCase):
         # October is not on the template: the trail's figure.
         self.assertEqual(line(octo)["actual"], 25e6)
 
+    def test_a_customer_target_is_a_whole_number(self):
+        """A customer line's YTD target rounds UP, as the card's own count
+        lines do (Number of Property I11 =ROUNDUP) - Naomi Kamau was set
+        0.17 of a customer. A month the desk scored keeps its own figure."""
+        from unittest import mock
+
+        sales, probation = self._cards()
+        card = probation["cards"]["Mortgage_ARM"]
+        t = bo.formula_tokens
+        card["grid"][6][2] = "New Business Banking Customers"
+        card["f"]["6,7"] = t("=0.5")
+        card["f"]["6,8"] = t("=+H7/3")
+        merged = bo.with_probation(sales, probation=probation)
+        roy = next(h for h in bo.holders(merged) if h.sales_code == "RG4072")
+        line = lambda c: next(ln for ln in c["lines"]  # noqa: E731
+                              if ln["measure"].startswith("New Business"))
+        with mock.patch.object(bo, "_recorded_for", return_value={}):
+            self.assertEqual(line(bo.compute(merged, {}, roy, 10))["ytd_target"], 1)
+        with mock.patch.object(bo, "_recorded_for",
+                               return_value={("RG4072", 10): 0.5}):
+            self.assertAlmostEqual(
+                line(bo.compute(merged, {}, roy, 10))["ytd_target"], 0.5 / 3)
+
     def test_a_row_the_desk_completes_is_left_as_the_desk_wrote_it(self):
         sales, probation = self._cards()
         card = probation["cards"]["Mortgage_ARM"]
