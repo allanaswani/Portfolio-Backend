@@ -156,3 +156,124 @@ class RetailBackOfficeTests(TestCase):
         self.assertEqual((crm["ytd_target"], crm["ytd_actual"]), (90.0, 2.0))
         self.assertAlmostEqual(nov["performance_score"], sep["performance_score"])
         self.assertEqual(nov["staff"]["role_code"], "rbo_ro_commercial")
+
+
+class RetailBackOfficeFeedTests(TestCase):
+    """The individual lines' live figures (rbo_live_feeds)."""
+
+    def setUp(self):
+        for name, value in (("proration", {}), ("no_card", {})):
+            patcher = mock.patch.object(wc, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_the_role_view_by_the_user_who_acted(self):
+        """Per ActionUserName: mean of the non-zero step times, returns from
+        DecisionType, turnaround per the desk's product category (SME split at
+        20m)."""
+        from . import rbo_live_feeds as rlf
+
+        sep = datetime.datetime
+        # app, action, created, loaded, to, from, user, NAME, code, seller,
+        # branch, DecisionType, ProductCategory, ApprovedAmount, segment
+        rows = [
+            ("A1", sep(2026, 9, 3), sep(2026, 9, 1), sep(2026, 9, 3, 1), "BBM Review",
+             "CCA Processing", "CCA mm", "Mwanzi Musyoka", "C1", "S", 200,
+             "Approve", "BL", "25000000", "SME"),
+            ("A1", sep(2026, 9, 9), sep(2026, 9, 1), sep(2026, 9, 9, 1),
+             "STORED Archived - Disbursed", "BBM Review", "BBM x", "Someone Else",
+             "C1", "S", 200, "Approve", "BL", "25000000", "SME"),
+            ("A2", sep(2026, 9, 5), sep(2026, 9, 1), sep(2026, 9, 5, 1),
+             "RM Processing Application Returned by CCA", "CCA Processing", "CCA mm",
+             "Mwanzi Musyoka", "C2", "S", 200, "Return", "AF", "900000", "PB"),
+        ]
+        users = rlf.user_month(rows, 2026, 9)
+        mm = users["MWANZI MUSYOKA"]["own"]
+        # The report also files the generated current-status row under the name.
+        self.assertEqual(users["MWANZI MUSYOKA"]["all"]["rts"], 2)
+        self.assertEqual(mm["rts"], 1)
+        self.assertEqual(mm["by_category"]["sme>=20m"], 2.0)          # 1 to 3 Sep
+        self.assertEqual(mm["by_category"]["Asset Finance loans"], 4.0)
+        self.assertEqual(mm["tat"], 3.0)
+        with mock.patch.object(rlf, "iapply_users", return_value=users):
+            self.assertEqual(rlf.iapply_value("RTS", "Mwanzi Musyoka", 2026, 9)[0], 1.0)
+            self.assertEqual(rlf.iapply_value("SME_above_20M", "Mwanzi Musyoka", 2026, 9)[0], 2.0)
+            v, _label, why = rlf.iapply_value("TOTAL_TAT", "Henry Kilonzi", 2026, 9)
+            self.assertIsNone(v)                          # no action: not 0 days
+            self.assertIn("no iApply action", why)
+
+    def test_the_mapping_is_the_desks(self):
+        from . import rbo_live_feeds as rlf
+
+        self.assertEqual(rlf._category("CL", None), "Unsecured Business Loans")
+        self.assertEqual(rlf._category("SP", "19999999"), "sme<20m")
+        self.assertEqual(rlf._category("BL", "20000000"), "sme>=20m")
+        self.assertEqual(rlf._category("HL", None), "Secured Personal")
+        self.assertIsNone(rlf._category("ZZ", None))
+
+    def _live(self, proven, got=(5.0, "CX return", "")):
+        from . import rbo_live_feeds as rlf
+        from .live_scorecard import build_card
+
+        book = rbo_book()
+        actuals = wc.rbo_desk_actuals(book)
+        spec = wc.SPECS[wc.RETAIL_BO]
+        wc.save_file(spec.files[0], book, year=2026)
+        wc.save_file(spec.files[1], actuals, year=2026)
+        wc.rebuild(book, actuals)
+        with mock.patch.object(rlf, "proven", return_value=proven), \
+                mock.patch.object(rlf, "value", return_value=got):
+            cards = {c: build_card(c, as_at=datetime.date(2026, 11, 25))
+                     for c in ("TS3966", "SN3521")}
+        return {c: [ln for p in card["perspectives"] for ln in p["lines"]][1]
+                for c, card in cards.items()}
+
+    def test_a_proven_line_reads_live(self):
+        crm = self._live({"Commercial_CRM": {"live": True, "matched": 1, "people": 1,
+                                             "definition": None, "month": "2026-09"}})
+        self.assertEqual(crm["TS3966"]["ytd_actual"], 5.0)
+        self.assertIn("matched the desk's figure for 1 of 1", crm["TS3966"]["as_at"])
+
+    def test_an_unproven_line_keeps_the_desk_figure_and_fills_the_rest(self):
+        crm = self._live({"Commercial_CRM": {"live": False, "matched": 0, "people": 1,
+                                             "definition": None, "month": "2026-09"}})
+        # Terry has the desk's September 2: it stands.
+        self.assertEqual(crm["TS3966"]["ytd_actual"], 2.0)
+        # Sarah has no desk figure: the reader's, labelled as not matched.
+        self.assertEqual(crm["SN3521"]["ytd_actual"], 5.0)
+        self.assertIn("not yet matched", crm["SN3521"]["as_at"])
+
+    def test_no_figure_waits_with_the_reason(self):
+        crm = self._live({}, got=(None, "", "no row for this name on the CX return"))
+        self.assertIsNone(crm["SN3521"]["score"])
+        self.assertIn("no row for this name", crm["SN3521"]["pending"])
+
+    def test_the_proof_keeps_the_reading_that_gives_the_desks_figures(self):
+        from . import rbo_live_feeds as rlf
+
+        book = rbo_book()
+        actuals = wc.rbo_desk_actuals(book)
+        spec = wc.SPECS[wc.RETAIL_BO]
+        wc.save_file(spec.files[0], book, year=2026)
+        wc.save_file(spec.files[1], actuals, year=2026)
+        # Terry's desk CRM for September is 2: a reader giving 2 is live,
+        # one giving 3 is not.
+        with mock.patch.object(rlf, "value", return_value=(2.0, "x", "")):
+            result = rlf.prove(2026, out=lambda *_: None)
+        self.assertTrue(result["Commercial_CRM"]["live"])
+        self.assertEqual(rlf.proven()["Commercial_CRM"]["month"], "2026-09")
+        with mock.patch.object(rlf, "value", return_value=(3.0, "x", "")):
+            result = rlf.prove(2026, out=lambda *_: None)
+        self.assertFalse(result["Commercial_CRM"]["live"])
+
+        # An iApply line: the definition that matches is the one kept.
+        def by_definition(feed, holder, year, month, definition=None, wait=False):
+            return ({"year/own": 2.0}.get(definition, 9.0), "x", "")
+
+        actuals["RTS"] = [actuals["Commercial_CRM"][0],
+                          list(actuals["Commercial_CRM"][1])]
+        wc.save_file(spec.files[1], actuals, year=2026)
+        with mock.patch.object(rlf, "value", side_effect=by_definition):
+            result = rlf.prove(2026, out=lambda *_: None)
+        self.assertEqual(result["RTS"]["definition"], "year/own")
+        self.assertTrue(result["RTS"]["live"])

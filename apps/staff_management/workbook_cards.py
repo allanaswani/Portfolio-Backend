@@ -3773,6 +3773,42 @@ def live_card(sales_code, engine_card, as_at):
                 measured[wl["row"]] = how
                 approvals_rows.add(wl["row"])
             continue
+        if spec.book == RETAIL_BO:
+            # The individual lines (rbo_live_feeds). A line proven against
+            # the desk's own figures reads live. One not proven yet does not
+            # replace a desk figure the person has; it fills only somebody the
+            # desk has none for, and says how far it matched.
+            from . import rbo_live_feeds as rlf
+
+            if rlf.handles(wl["feed"]):
+                proof = rlf.proven().get(wl["feed"]) or {}
+                has_desk = _num(desk.get(wl["row"])) and wl["row"] in carried
+                if proof.get("live") or not has_desk:
+                    try:
+                        got, label, why = rlf.value(wl["feed"], holder, as_at.year, month)
+                    except Exception as exc:  # noqa: BLE001 - never lose the card
+                        import logging
+
+                        logging.getLogger(__name__).exception(
+                            "retail back office feed %s", wl["feed"])
+                        got, label, why = None, "", f"the feed could not be read ({type(exc).__name__})"
+                    if got is not None:
+                        overrides[(wl["row"] - 1, actual_col)] = got
+                        carried.pop(wl["row"], None)
+                        if proof.get("live"):
+                            note = (f"matched the desk's figure for {proof['matched']} "
+                                    f"of {proof['people']} people ({proof['month']})")
+                        elif proof:
+                            note = (f"not yet matched to the desk's figures - "
+                                    f"{proof['matched']} of {proof['people']} people "
+                                    f"({proof['month']})")
+                        else:
+                            note = "not yet checked against the desk's figures"
+                        measured[wl["row"]] = f"{label} - {note}"
+                    elif not has_desk:
+                        carried.pop(wl["row"], None)
+                        no_tat[wl["row"]] = why
+                continue
         if spec.book == SALES and _key(wl["feed"]) == "tatloans":
             # TAT (Loan) is the month's own figure off the iApply loan TAT
             # report's seller view (loan_tat_seller - the desk's report, step

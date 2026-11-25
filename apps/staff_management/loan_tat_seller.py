@@ -78,13 +78,16 @@ _DATE = ("CASE WHEN {c}::text ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' "
          "THEN {c}::text::timestamp END")
 
 
-def _rows(year, month, timeout_ms):
+def _rows(year, month, timeout_ms, columns=None):
+    """The applications with an action or a creation in the month - every
+    action of each, as the report reads them. ``columns`` (default
+    :data:`COLUMNS`) are the iapply_loan_tat columns returned."""
     from django.db import connection, transaction
 
     first = datetime.date(year, month, 1)
     after = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
     action, created = _DATE.format(c='"ActionDate"'), _DATE.format(c='"createdAt"')
-    select = ", ".join(f'ilt."{c}"' for c in COLUMNS)
+    select = ", ".join(f'ilt."{c}"' for c in (columns or COLUMNS))
     sql = f"""
         SELECT {select}, {SEGMENT_SQL} AS banking_segment
         FROM {TABLE} ilt
@@ -100,14 +103,15 @@ def _rows(year, month, timeout_ms):
         return cur.fetchall()
 
 
-def _month_steps(rows, year, month):
-    """The report's steps 2-5 → the month's action rows with their TAT, or None."""
+def _month_steps(rows, year, month, columns=None):
+    """The report's steps 2-5 → the month's action rows with their TAT, or None.
+    ``columns``: what :func:`_rows` was asked for (default :data:`COLUMNS`)."""
     import numpy as np
     import pandas as pd
 
     from .loan_tat_stages import map_stage
 
-    df = pd.DataFrame(rows, columns=COLUMNS + ["banking_segment"])
+    df = pd.DataFrame(rows, columns=list(columns or COLUMNS) + ["banking_segment"])
     if df.empty:
         return None
     for col in ("CreationDate", "ActionDate", "createdAt"):
@@ -122,7 +126,10 @@ def _month_steps(rows, year, month):
     current = current[current["ActionUser"].str.split().str.get(0) != "STORED"]
     for word in ("Cancel", "Reject", "Decline"):
         current = current[current["ActionUserName"].str.split().str.get(0) != word]
-    df = pd.concat([df, current], ignore_index=True)
+    # The report's merge_column: which rows it generated for the current
+    # status, as opposed to actions somebody took.
+    current = current.assign(generated=True)
+    df = pd.concat([df.assign(generated=False), current], ignore_index=True)
 
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].astype(str).str.strip()
