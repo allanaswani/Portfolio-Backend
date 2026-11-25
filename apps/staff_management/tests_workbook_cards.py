@@ -706,6 +706,39 @@ class SalesWorkbookTests(TestCase):
         self.assertEqual(trade["ytd_actual"], 99.0)
         self.assertIn("differs from the desk's", trade["as_at"])
 
+    def test_tat_loan_reads_the_month_and_no_actions_is_not_marks(self):
+        """TAT (Loan) carried the desk's September 0 into later months and
+        scored it 100% (the card's =IF(J<=I,1,...)). An open month reads the
+        iApply seller view; no loan actions that month waits, unscored."""
+        from unittest.mock import patch
+
+        from . import loan_tat_seller
+
+        book = sales_book()
+        book["cards"]["Business_Banking"]["grid"][6][12] = "TAT_Loans"
+        actuals = template({
+            "New_Customers": {"Charles Muchiri": [2, 4, 6]},
+            "TAT_Loans": {"Charles Muchiri": [0, 0, 0]},
+            "Asset_Drawdown": {}})
+        bo.rebuild(book, actuals, loaded_by="test")
+        bo.save_file("sales_scorecards", book)
+        bo.save_file("sales_actuals", actuals)
+        april = datetime.date(2026, 4, 30)
+
+        def tat_line(found):
+            with patch.object(loan_tat_seller, "seller_month_tat",
+                              return_value=found) as read:
+                card = bo.live_card("CM1", None, april)
+            read.assert_called_with(2026, 4)
+            return [ln for p in card["perspectives"] for ln in p["lines"]][1], card
+
+        line, card = tat_line({"OTHER": 3.0})
+        self.assertIsNone(line["score"])
+        self.assertIn("No loan actions under CM1 in April 2026", line["pending"])
+        line, card = tat_line({"CM1": 5.0})
+        self.assertEqual(line["ytd_actual"], 5.0)
+        self.assertIn("iApply loan TAT report, seller view", line["as_at"])
+
     def test_a_loss_goes_into_the_card_in_the_templates_sign(self):
         """PL_Charge stores a loan loss as a negative; the engine reads the
         charge as a positive. The card's formula reads the template's sign,

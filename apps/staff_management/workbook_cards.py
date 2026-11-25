@@ -3508,6 +3508,7 @@ def live_card(sales_code, engine_card, as_at):
     finance = {}    # row -> the month of Finance's Branch Accounts it read
     tat_report = {}  # row -> (iApply user, month) read off the accounts TAT report
     approvals_rows = set()  # Loan Approvals: the desk's YTD plus iApply since
+    no_tat = {}     # row -> why TAT (Loan) has no figure this month
     for wl in base["lines"]:
         if wl["typed"]:
             continue
@@ -3542,6 +3543,33 @@ def live_card(sales_code, engine_card, as_at):
                 overrides[(wl["row"] - 1, actual_col)] = float(value)
                 measured[wl["row"]] = how
                 approvals_rows.add(wl["row"])
+            continue
+        if spec.book == SALES and _key(wl["feed"]) == "tatloans":
+            # TAT (Loan) is the month's own figure off the iApply loan TAT
+            # report's seller view (loan_tat_seller - the desk's report, step
+            # by step). It used to carry the desk's September figure into
+            # every later month, and a September 0 - no loan actions that
+            # month - scored 100% under the card's =IF(J<=I,1,...): marks for
+            # nothing measured. No actions this month is no figure: the line
+            # waits and is not scored, as on the RM live card.
+            from . import loan_tat_seller
+
+            found_tat = loan_tat_seller.seller_month_tat(as_at.year, month)
+            key = code.strip().replace(" ", "").upper()
+            carried.pop(wl["row"], None)
+            if found_tat is None:
+                no_tat[wl["row"]] = ("The iApply loan TAT report for "
+                                     f"{datetime.date(as_at.year, month, 1):%B %Y} "
+                                     "is being read; the line fills in when it is.")
+            elif key not in found_tat:
+                no_tat[wl["row"]] = (
+                    f"No loan actions under {key} in "
+                    f"{datetime.date(as_at.year, month, 1):%B %Y} on the iApply "
+                    f"loan TAT report, so there is no turnaround to score.")
+            else:
+                overrides[(wl["row"] - 1, actual_col)] = float(found_tat[key])
+                measured[wl["row"]] = ("iApply loan TAT report, seller view, "
+                                       "the month's own figure")
             continue
         if _key(wl["feed"]) == "weightedtat":
             # Weighted TAT is the desk's monthly dashboard (see weighted_tat):
@@ -4047,7 +4075,7 @@ def live_card(sales_code, engine_card, as_at):
                              if entry.get("until") else
                              f"Waiting for the CX team's {entry['feed']} score.")
             continue
-        wl["waiting"] = (engine.get("pending") or
+        wl["waiting"] = (no_tat.get(wl["row"]) or engine.get("pending") or
                          "The warehouse has no figure for this line yet.")
     card["total"] = total
     # A line the workbook itself shows as an error (#DIV/0!, #N/A ...) makes
