@@ -400,7 +400,7 @@ def prove(year=None, out=print):
         out(f"{feed}: {matched} of {len(got)} people give the desk's figure, "
             f"{evidence} of them a figure other than 0"
             f"{f' ({definition})' if definition else ''} - "
-            f"{'LIVE' if live else 'not live'}")
+            f"{'PROVEN' if live else 'read live, not proven'}")
         for holder, d, v, why in got:
             out(f"    {holder.sales_code:<9} desk {d:>14,.2f}  read "
                 f"{('-' if v is None else f'{v:,.2f}'):>14}  "
