@@ -30,7 +30,7 @@ class AmortizationMathTests(TestCase):
 class MortgageEndpointTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("mort_user", password="x")
-        for _g in ("mortgage_officer", "mortgage_manager"):  # the role whose screen makes these changes
+        for _g in ("mortgage_officer",):  # the role whose screen makes these changes
             self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
@@ -94,6 +94,7 @@ class MortgageEndpointTests(TestCase):
         self.assertEqual(r.data["total_leads"], 0)
 
     def test_approve_then_disburse_generates_schedule(self):
+        self.user.groups.add(Group.objects.get_or_create(name="mortgage_manager")[0])  # Approvals is the manager's screen
         b = Borrower.objects.create(full_name="Paul O")
         app = MortgageApplication.objects.create(
             borrower=b, product=self.product, amount_requested="1000000", tenure_months=12)
@@ -111,6 +112,7 @@ class MortgageEndpointTests(TestCase):
         self.assertEqual(app.status, "disbursed")
 
     def test_disburse_twice_blocked(self):
+        self.user.groups.add(Group.objects.get_or_create(name="mortgage_manager")[0])  # Approvals is the manager's screen
         b = Borrower.objects.create(full_name="Twice")
         app = MortgageApplication.objects.create(
             borrower=b, product=self.product, amount_requested="500000", tenure_months=6)
@@ -173,7 +175,7 @@ class MortgageEndpointTests(TestCase):
 class DeferredFeatureTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("feat_user", password="x")
-        for _g in ("mortgage_admin"):  # the role whose screen makes these changes
+        for _g in ("mortgage_admin",):  # the role whose screen makes these changes
             self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)

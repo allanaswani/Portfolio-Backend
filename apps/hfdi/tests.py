@@ -307,7 +307,7 @@ class HfdiTargetsWriteTests(TestCase):
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="hfdi_t", password="pw12345")
-        for _g in ("hfdi_admin"):  # the role whose screen makes these changes
+        for _g in ("hfdi_admin",):  # the role whose screen makes these changes
             self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)

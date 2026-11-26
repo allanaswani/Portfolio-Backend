@@ -180,7 +180,7 @@ class CommissionEditViaApiTests(APITestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(username="deskedit", password="x")
-        for _g in ("registry_officer"):  # the role whose screen makes these changes
+        for _g in ("registry_officer",):  # the role whose screen makes these changes
             self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client.force_authenticate(self.user)
         self.product = TradeProduct.objects.get(code="14116")

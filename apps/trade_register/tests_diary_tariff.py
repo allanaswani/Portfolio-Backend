@@ -206,7 +206,7 @@ class ExciseDutyTests(APITestCase):
 
     def test_a_client_cannot_post_a_duty_that_does_not_match_the_fee(self):
         user = User.objects.create_user(username="excise2", password="x")
-        for _g in ("registry_officer"):  # the role whose screen makes these changes
+        for _g in ("registry_officer",):  # the role whose screen makes these changes
             user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client.force_authenticate(user)
         row = entry()
