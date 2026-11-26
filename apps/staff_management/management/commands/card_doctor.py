@@ -130,6 +130,21 @@ def _by_name(text):
                 out[key] = (notes or "").split("|")[0].strip()
     except Exception:  # noqa: BLE001
         pass
+    # The workbook Lists (back office, branch business, retail BO, sales):
+    # a teller or CSO may be on none of the tables above under any name.
+    try:
+        from apps.staff_management.models import BoScorecard
+        bo_match = Q()
+        for word in words:
+            bo_match &= Q(staff_name__icontains=word)
+        for sales_code, staff_name in (BoScorecard.objects.filter(bo_match)
+                                       .values_list("sales_code", "staff_name")
+                                       .distinct()[:40]):
+            key = (sales_code or "").strip().upper()
+            if key and key not in out:
+                out[key] = (staff_name or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
     return sorted(out.items())
 
 

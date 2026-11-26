@@ -38,18 +38,17 @@ class Command(BaseCommand):
                             help="YYYY-MM ... (default: last month and this month)")
 
     def _code(self, who):
-        from apps.staff_management.models import StaffEmployeeData
+        from apps.staff_management.live_scorecard import resolve_person
+        from apps.staff_management.management.commands.card_doctor import _by_name
 
-        rows = list(StaffEmployeeData.objects.filter(sales_code__iexact=who.strip())
-                    .values_list("sales_code", "staff_name")[:1])
+        # Every roster the card itself uses (workbook Lists, DMC, role
+        # history, staff_employee_data): back-office staff are on no sales table.
+        person = resolve_person(who.strip())
+        if person is not None:
+            return who.strip().upper(), person.name or ""
+        rows = _by_name(who)
         if not rows:
-            q = StaffEmployeeData.objects.all()
-            for part in who.split():
-                q = q.filter(staff_name__icontains=part)
-            rows = list(q.exclude(sales_code__isnull=True).exclude(sales_code="")
-                        .values_list("sales_code", "staff_name").distinct()[:10])
-        if not rows:
-            raise CommandError(f"No staff_employee_data row for {who!r}")
+            raise CommandError(f"{who!r} is on no roster, as a code or as a name")
         if len({r[0].strip().upper() for r in rows}) > 1:
             listing = "\n".join(f"  {c}  {n}" for c, n in rows)
             raise CommandError(f"More than one match - run again with the sales code:\n{listing}")

@@ -59,21 +59,41 @@ class Command(BaseCommand):
             as_at = first.replace(
                 day=calendar.monthrange(first.year, first.month)[1])
 
+        from apps.staff_management.live_scorecard import resolve_person
+        from apps.staff_management.management.commands.card_doctor import _by_name
+
         code = sales_code.strip()
         write = self.stdout.write
 
+        person = resolve_person(code)
+        if person is None:
+            # A name, as somebody holding a ticket has it.
+            found = _by_name(code)
+            if len(found) == 1:
+                code = found[0][0]
+                person = resolve_person(code)
+            elif found:
+                listing = "\n".join(f"  {c:<12} {n}" for c, n in found[:12])
+                raise CommandError(f"{code!r} matches {len(found)} people - "
+                                   f"run again with the code:\n{listing}")
         row = roster_row(code)
-        if row is None:
-            raise CommandError(
-                f"{code} is on neither DMC table, so there is no role and no "
-                f"plan to build a card from.")
+        if row is None and person is None:
+            raise CommandError(f"{code} is on no roster, as a code or as a name.")
 
-        targets, table, columns = roster_target_row(code)
+        targets, table, columns = roster_target_row(code) if row is not None else ({}, None, [])
         write("")
-        write(f"{row.staff_name or '(no name)'}  ·  {code}")
-        write(f"  role    {row.staff_role or '(none)'}")
-        write(f"  branch  {row.staff_branch or row.staff_unit or '(none)'}")
-        write(f"  plan    {table or '(no row on either table)'}")
+        if row is None:
+            # Back office / workbook List holder: no DMC plan row, the card's
+            # targets come from the workbook.
+            write(f"{person.name or '(no name)'}  ·  {code}")
+            write(f"  role    {person.role_code or '(none)'}")
+            write(f"  branch  {person.branch or '(none)'}")
+            write(f"  roster  {person.roster}")
+        else:
+            write(f"{row.staff_name or '(no name)'}  ·  {code}")
+            write(f"  role    {row.staff_role or '(none)'}")
+            write(f"  branch  {row.staff_branch or row.staff_unit or '(none)'}")
+            write(f"  plan    {table or '(no row on either table)'}")
         if table and table != STAFF_TABLE:
             write(self.style.WARNING(
                 "          ^ the BRANCH table. Correct for a BBM, whose own "
