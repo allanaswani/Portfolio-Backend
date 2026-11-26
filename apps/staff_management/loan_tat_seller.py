@@ -219,6 +219,46 @@ def seller_month_tat(year, month, timeout_ms=180_000):
                   lambda: seller_tat(_rows(year, month, timeout_ms), year, month))
 
 
+def seller_parts(rows, year, month):
+    """{SELLER CODE: (sum of non-zero step days, how many)} for the month -
+    so several codes of one person can be averaged over their steps."""
+    month_rows = _month_steps(rows, year, month)
+    if month_rows is None:
+        return {}
+    out = {}
+    for code, group in month_rows.groupby("SellerCode", sort=True):
+        values = group["TAT"][group["TAT"] != 0]
+        key = str(code).replace(" ", "").upper()
+        s, n = out.get(key, (0.0, 0))
+        out[key] = (s + float(values.sum()), n + int(len(values)))
+    return out
+
+
+def tat_for_codes(codes, year, month):
+    """The month's TAT (Loan) for a person filing under one or more codes →
+    (days, codes used), (None, []) when none has an action that month, or
+    None while the month is being read. One code: the report's own figure.
+    Several with actions: the mean over all their non-zero steps, which is
+    the report's mean_non_zero had they been one code."""
+    from .feed_cache import cached
+
+    found = seller_month_tat(year, month)
+    if found is None:
+        return None
+    hits = [c for c in codes if c in found]
+    if not hits:
+        return None, []
+    if len(hits) == 1:
+        return found[hits[0]], hits
+    parts = cached(f"loan_tat_seller_parts:{year}-{month:02d}",
+                   lambda: seller_parts(_rows(year, month, 180_000), year, month))
+    if parts is None:
+        return None
+    total = sum(parts.get(c, (0.0, 0))[0] for c in hits)
+    count = sum(parts.get(c, (0.0, 0))[1] for c in hits)
+    return (total / count if count else 0.0), hits
+
+
 def _limit(ms):
     from .feed_cache import timeout
 

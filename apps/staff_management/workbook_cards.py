@@ -3898,23 +3898,29 @@ def live_card(sales_code, engine_card, as_at):
             # nothing measured. No actions this month is no figure: the line
             # waits and is not scored, as on the RM live card.
             from . import loan_tat_seller
+            from .loan_applications import seller_codes
 
-            found_tat = loan_tat_seller.seller_month_tat(as_at.year, month)
-            key = code.strip().replace(" ", "").upper()
+            # Every code iApply files this person under (a former DSR code
+            # too - see loan_applications.seller_codes).
+            codes = seller_codes(code)
+            found_tat = loan_tat_seller.tat_for_codes(codes, as_at.year, month)
             carried.pop(wl["row"], None)
             if found_tat is None:
                 no_tat[wl["row"]] = ("The iApply loan TAT report for "
                                      f"{datetime.date(as_at.year, month, 1):%B %Y} "
                                      "is being read; the line fills in when it is.")
-            elif key not in found_tat:
+            elif not found_tat[1]:
                 no_tat[wl["row"]] = (
-                    f"No loan actions under {key} in "
+                    f"No loan actions under {', '.join(codes)} in "
                     f"{datetime.date(as_at.year, month, 1):%B %Y} on the iApply "
                     f"loan TAT report, so there is no turnaround to score.")
             else:
-                overrides[(wl["row"] - 1, actual_col)] = float(found_tat[key])
+                overrides[(wl["row"] - 1, actual_col)] = float(found_tat[0])
+                former = [c for c in found_tat[1] if c != codes[0]]
                 measured[wl["row"]] = ("iApply loan TAT report, seller view, "
-                                       "the month's own figure")
+                                       "the month's own figure"
+                                       + (f" - includes {', '.join(former)}, the same "
+                                          f"person's former seller code" if former else ""))
             continue
         if _key(wl["feed"]) == "weightedtat":
             # Weighted TAT is the desk's monthly dashboard (see weighted_tat):

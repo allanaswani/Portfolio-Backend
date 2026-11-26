@@ -31,6 +31,50 @@ class LoanTrailUnavailable(Exception):
     """The trail could not be read, with a reason fit to print on a card."""
 
 
+def _pf_key(value):
+    """A PF as one spelling: '0421', 421, '421.0' -> '421'."""
+    text = str(value or "").strip()
+    try:
+        return str(int(float(text)))
+    except ValueError:
+        return text.upper()
+
+
+def seller_codes(sales_code):
+    """Every seller code iApply may file this person's applications under →
+    [their code, then former codes]. A DSR moved to a card under a new code
+    keeps selling under the old one: Claudine Odhiambo, Mortgage ARM CO4115,
+    files on iApply as DSR421 (October 2026: 5 applications, none as CO4115).
+    The link is the PF number: the person's PF (DMC roster, else HR), and the
+    DSR seller-code allocation / HR rows carrying the same PF. No PF, no
+    former codes - never a match on a name."""
+    from django.db import transaction
+
+    from .live_scorecard import pf_for, roster_row
+    from .models import DSRSalesCode, StaffEmployeeData
+
+    code = str(sales_code or "").strip().replace(" ", "").upper()
+    out = [code] if code else []
+    if not code:
+        return out
+    try:
+        with transaction.atomic():
+            pf = _pf_key(pf_for(code, roster_row(code)))
+            if not pf:
+                return out
+            found = [c for p, c in DSRSalesCode.objects.values_list("pf_number", "sales_code")
+                     if _pf_key(p) == pf]
+            found += list(StaffEmployeeData.objects.filter(staff_pf_number=int(pf))
+                          .values_list("sales_code", flat=True)) if pf.isdigit() else []
+    except Exception:  # noqa: BLE001 - former codes are extra, never the card
+        return out
+    for other in found:
+        other = str(other or "").strip().replace(" ", "").upper()
+        if other and other not in out:
+            out.append(other)
+    return out
+
+
 def seller_applications(sales_code, year, up_to=None):
     """This seller's applications started in ``year`` →
     ``{"applications", "returned", "error_rate", "tat_days", "latest"}``,
@@ -52,8 +96,8 @@ def seller_applications(sales_code, year, up_to=None):
                    BOOL_OR(COALESCE("StatusTo", '') ILIKE '%%returned%%')
                        AS returned
             FROM {TABLE}
-            WHERE UPPER(TRIM(COALESCE("SellerCode"::text, '')))
-                  = UPPER(TRIM(%s))
+            WHERE UPPER(REPLACE(TRIM(COALESCE("SellerCode"::text, '')), ' ', ''))
+                  = ANY(%s)
             GROUP BY "ApplicationId"
         )
         SELECT COUNT(*),
@@ -69,7 +113,7 @@ def seller_applications(sales_code, year, up_to=None):
     try:
         with transaction.atomic(), connection.cursor() as cur:
             cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
-            cur.execute(sql, [sales_code.strip(), year, up_to, up_to])
+            cur.execute(sql, [seller_codes(sales_code), year, up_to, up_to])
             total, returned, days, latest = cur.fetchone()
     except Exception as exc:  # noqa: BLE001 - reported on the line
         raise LoanTrailUnavailable(
@@ -119,8 +163,8 @@ def accepted_offers(sales_code, year, up_to):
                              ~ '^-?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$'
                         THEN TRIM("ApprovedAmount"::text)::numeric END AS approved
             FROM {TABLE}
-            WHERE UPPER(TRIM(COALESCE("SellerCode"::text, '')))
-                  = UPPER(TRIM(%s))
+            WHERE UPPER(REPLACE(TRIM(COALESCE("SellerCode"::text, '')), ' ', ''))
+                  = ANY(%s)
         ),
         accepted AS (
             SELECT application, MIN(at) AS accepted_at
@@ -146,7 +190,7 @@ def accepted_offers(sales_code, year, up_to):
     try:
         with transaction.atomic(), connection.cursor() as cur:
             cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
-            cur.execute(sql, [sales_code.strip(), up_to, year, up_to])
+            cur.execute(sql, [seller_codes(sales_code), up_to, year, up_to])
             count, amount, latest = cur.fetchone()
     except Exception as exc:  # noqa: BLE001 - reported on the line
         raise LoanTrailUnavailable(

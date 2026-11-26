@@ -2616,19 +2616,23 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
     def seller_tat():
         from . import loan_tat_seller
 
-        found = loan_tat_seller.seller_month_tat(monthly.year, monthly.month)
+        from .loan_applications import seller_codes
+
+        codes = seller_codes(sales_code)
+        found = loan_tat_seller.tat_for_codes(codes, monthly.year, monthly.month)
         if found is None:
             from .feed_cache import PREPARING
 
             return {"tat_seller_month": _figure(None, problem=PREPARING)}
-        code = sales_code.strip().replace(" ", "").upper()
-        if code not in found:
+        if not found[1]:
             return {"tat_seller_month": _figure(None, problem=(
                 f"no loan actions under this sales code in {monthly:%B %Y} on "
                 f"the iApply loan TAT report"))}
+        former = [c for c in found[1] if c != codes[0]]
         return {"tat_seller_month": _figure(
-            found[code], monthly,
-            f"iApply loan TAT report, seller view, {monthly:%B %Y}")}
+            found[0], monthly,
+            f"iApply loan TAT report, seller view, {monthly:%B %Y}"
+            + (f" (includes former code {', '.join(former)})" if former else ""))}
 
     attempt(("tat_seller_month",), seller_tat)
 
