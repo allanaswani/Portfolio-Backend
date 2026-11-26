@@ -25,9 +25,11 @@ import json
 import os
 import re
 
-#: The archive's folder for each workbook (scorecard_reach.BOOK_NAMES).
+#: Each workbook's group name on the screen. Its archive folder is
+#: scorecard_reach.BOOK_NAMES (the retail back office's is its book key).
 FOLDERS = {"back_office": "Back office", "sales": "Sales",
-           "branch_business": "Branch managers"}
+           "branch_business": "Branch managers",
+           "retail_back_office": "Retail back office"}
 #: Sheets that end with a rank on the latest month (the desk's own column).
 RANKED = {"Branch_Monthly_Summary"}
 
@@ -84,7 +86,16 @@ def _desk_rows(book, spec):
     """{SALES CODE: (identity cells, headers, {month: score})} off the desk's
     summary sheets - the desk's own columns and its scores, for whoever is on
     them. Only used to fill in people who hold a card (see group_summaries)."""
+    from .workbook_cards import _at, _num
+
     out = {}
+    last = 12
+    if getattr(spec, "summary_upto_run_month", False):
+        # The retail back office's summary carries a copy of June in its
+        # October column: only months up to the desk's run are its scores
+        # (as workbook_cards.recorded_scores reads it).
+        run = _at((book.get("tables") or {}).get("Constants") or [], *spec.month_count)
+        last = int(run) if _num(run) and 1 <= run <= 12 else 12
     for sheet, header, code_col, first in spec.summaries:
         grid = (book.get("tables") or {}).get(sheet) or []
         if len(grid) <= header:
@@ -95,7 +106,7 @@ def _desk_rows(book, spec):
             if not code or code in out:
                 continue
             scores = {}
-            for month in range(1, 13):
+            for month in range(1, last + 1):
                 column = first + month - 1
                 value = _number(row[column]) if column < len(row) else None
                 if value is not None:
@@ -142,6 +153,7 @@ def group_summaries(year, upto):
     score in any month are named in ``no_score`` instead of a blank row.
     """
     from . import workbook_cards as wc
+    from .management.commands.scorecard_reach import BOOK_NAMES
 
     out = []
     for book_kind, folder in FOLDERS.items():
@@ -149,7 +161,7 @@ def group_summaries(year, upto):
         book = wc.saved(spec.files[0], year)
         if book is None:
             continue
-        archived = archived_scores(year, upto, folder)
+        archived = archived_scores(year, upto, BOOK_NAMES.get(book_kind, book_kind))
         desk = _desk_rows(book, spec)
         default_head = (next(iter(desk.values()))[1] if desk
                         else ["PF", "Sales code", "Name", "Role", "Branch"])
@@ -204,6 +216,80 @@ def group_summaries(year, upto):
                 "from_desk": sorted(g["desk"]), "from_archive": sorted(g["archive"]),
                 "no_score": g["no_score"],
             })
+    out += _stored_groups(year, upto)
+    return out
+
+
+#: The cards stored per month on load rather than read off a workbook List:
+#: (model, group name, archive folder, sheet named in the note, role of a row).
+def _stored_books():
+    from .models import BancaScorecard, SchemeScorecard
+
+    return (
+        (SchemeScorecard, "Scheme", "Scheme", "stored Scheme workbook cards",
+         lambda r: r.sheet or "Scheme"),
+        (BancaScorecard, "Banca DSR", "Banca DSR", "stored Banca DSR workbook cards",
+         lambda r: "Banca DSR"),
+    )
+
+
+def _stored_groups(year, upto):
+    """Scheme and Banca DSR: everybody with a stored card this year. A month's
+    score is the stored card's total - the desk workbook's own formulas, the
+    figure its monthly summary records - else that month's archived card."""
+    from django.db import transaction
+
+    out = []
+    for model, label, folder, sheet, role_of in _stored_books():
+        try:
+            with transaction.atomic():      # a table not migrated yet
+                rows = list(model.objects.filter(month__year=year).order_by("month", "id"))
+        except Exception:  # noqa: BLE001
+            continue
+        if not rows:
+            continue
+        archived = archived_scores(year, upto, folder)
+        latest, stored = {}, {}
+        for r in rows:
+            code = (r.sales_code or "").strip().upper()
+            if not code:
+                continue
+            latest[code] = r
+            if r.total is not None and r.month.month <= upto:
+                stored[(code, r.month.month)] = float(r.total)
+        head = ["Sales code", "Name", "Role"]
+        groups = {}
+        for code, r in sorted(latest.items(), key=lambda kv: kv[1].staff_name or kv[0]):
+            role = role_of(r)
+            g = groups.setdefault(role, {"rows": [], "desk": set(), "archive": set(),
+                                         "no_score": []})
+            scores = []
+            for month in range(1, upto + 1):
+                if (code, month) in stored:
+                    g["desk"].add(month)
+                    scores.append(stored[(code, month)])
+                    continue
+                kept = archived.get((code, month))
+                if kept is not None:
+                    g["archive"].add(month)
+                scores.append(kept)
+            if all(v is None for v in scores):
+                g["no_score"].append(f"{r.staff_name} ({code})")
+                continue
+            change = (scores[-1] - scores[-2]
+                      if len(scores) >= 2 and scores[-1] is not None
+                      and scores[-2] is not None else None)
+            g["rows"].append({"identity": [code, r.staff_name, role], "code": code,
+                              "scores": scores, "change": change})
+        for role, g in sorted(groups.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
+            out.append({
+                "group": f"{label} - {role}", "workbook": label, "role": role,
+                "sheet": sheet, "headers": head,
+                "months": [_month_label(year, m) for m in range(1, upto + 1)],
+                "ranked": False, "rows": g["rows"],
+                "from_desk": sorted(g["desk"]), "from_archive": sorted(g["archive"]),
+                "no_score": g["no_score"],
+            })
     return out
 
 
@@ -236,7 +322,7 @@ def summaries_workbook(year, upto):
             if g["ranked"]:
                 values.append(r.get("rank"))
             rows.append(values)
-        short = {"Back office": "BO", "Branch managers": "BM"}.get(g["workbook"], g["workbook"])
+        short = {"Back office": "BO", "Branch managers": "BM", "Retail back office": "RBO"}.get(g["workbook"], g["workbook"])
         title = re.sub(r"[\\/?*\[\]:]", " ", f"{short} - {g['role']}")[:31]
         sheets.append({"title": title, "note": _source_note(g, year),
                        "headers": headers, "rows": rows})

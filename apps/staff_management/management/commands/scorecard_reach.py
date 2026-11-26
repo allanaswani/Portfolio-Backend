@@ -60,6 +60,26 @@ def workbook_people():
         people += list(scheme.values())
     else:
         missing.append("Scheme")
+    # The Banca DSR cards, stored per month like the Scheme ones: without them
+    # here they were never archived, e-mailed or on the group summaries.
+    from apps.staff_management.models import BancaScorecard
+
+    from django.db import transaction
+
+    banca = {}
+    try:
+        with transaction.atomic():
+            found = list(BancaScorecard.objects.order_by("month")
+                         .values_list("sales_code", "staff_name"))
+        for code, name in found:
+            banca[code.upper()] = {"book": "Banca DSR", "code": code.upper(),
+                                   "name": name, "role": "BANCA_DSR", "pf": ""}
+    except Exception:  # noqa: BLE001 - before migration 0068
+        pass
+    if banca:
+        people += list(banca.values())
+    else:
+        missing.append("Banca DSR")
     return people, missing
 
 
