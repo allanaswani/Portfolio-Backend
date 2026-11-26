@@ -26,6 +26,7 @@ from .serializers import (
     TradeRegisterEntrySerializer,
     TradeTariffSerializer,
 )
+from core.permissions import WritesBy
 
 TAG = ["Trade Register"]
 
@@ -213,7 +214,7 @@ class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
     """The register. Filterable by date range, category, product and branch,
     so an export covers exactly the period the screen was showing."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("registry_officer", "registry_supervisor")]
     serializer_class = TradeRegisterEntrySerializer
     pagination_class = StandardPagination
     filter_backends = [SearchFilter, OrderingFilter]
@@ -238,7 +239,7 @@ class TradeRegisterEntryListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class TradeRegisterEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("registry_officer", "registry_supervisor")]
     serializer_class = TradeRegisterEntrySerializer
     queryset = (TradeRegisterEntry.objects
                 .select_related("product", "product__category", "product__tariff")

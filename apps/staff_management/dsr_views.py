@@ -27,6 +27,7 @@ from core.pagination import StandardPagination
 from .branches import normalize_branch
 from .dsr import autofill_from_roster, is_valid_sales_code, next_sales_code
 from .models import DSRSalesCode, DSRRoleTeamLeader
+from core.permissions import AdministrationWrites
 
 
 class DSRSalesCodeSerializer(serializers.ModelSerializer):
@@ -165,7 +166,7 @@ class DSRSalesCodeDetailView(generics.RetrieveUpdateDestroyAPIView):
     takes ``max + 1``, so a withdrawn code is never handed to somebody else.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
     serializer_class = DSRSalesCodeEditSerializer
     queryset = DSRSalesCode.objects.all()
 
@@ -238,7 +239,7 @@ class DSRRoleTeamLeaderManageView(APIView):
     thanks to the model's unique constraint, so it can never create a duplicate.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
 
     def get(self, request):
         rows = list(
@@ -268,7 +269,7 @@ class DSRRoleTeamLeaderManageView(APIView):
 class DSRRoleTeamLeaderDetailView(APIView):
     """Delete one role→team-leader mapping by id (admin only)."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
 
     def delete(self, request, pk):
         if not _is_admin(request.user):
@@ -387,7 +388,7 @@ class DSRSalesCodeLookupView(APIView):
 class DSRSalesCodeAllocateView(APIView):
     """Allocate the next DSR code to a PF. Returns the existing one if already set."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
 
     def post(self, request):
         if not _is_admin(request.user):
@@ -486,7 +487,7 @@ class DSRSalesCodeCSVUploadView(APIView):
     Team Leader, DATE OF EMPLOYMENT, ALLOCATION DATE.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
 
     HEADER_MAP = {
         "pf_no": "pf_number", "pf no": "pf_number", "pf_number": "pf_number", "pf": "pf_number",

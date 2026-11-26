@@ -6,6 +6,7 @@ states them, so a later edit that changes what a customer is charged has to
 change a test that spells out the old charge.
 """
 
+from django.contrib.auth.models import Group
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -38,6 +39,8 @@ class ActionListTests(APITestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(username="acts", password="x")
+        for _g in ("registry_officer"):  # the role whose screen makes these changes
+            self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client.force_authenticate(self.user)
 
     def test_the_six_actions_are_exactly_what_the_desk_asked_for(self):

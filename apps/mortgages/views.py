@@ -32,6 +32,7 @@ from .serializers import (
     FieldVisitSerializer, FollowUpSerializer, CustomerFeedbackSerializer,
     InterestRateSerializer, CollectionCaseSerializer, NotificationSerializer,
 )
+from core.permissions import InGroup, WritesBy
 
 DjangoFilterBackend = django_filters.rest_framework.DjangoFilterBackend
 TAG = ["Mortgages"]
@@ -165,18 +166,28 @@ FeedbackListCreateView, FeedbackDetailView = crud(
 
 # ── CSV bulk upload ─────────────────────────────────────────────────────────────
 
+
+#: The mortgage CSV uploads belong to the mortgage screens (borrowers, leads and
+#: field visits on the officer's pages, agents on admin's, products, payments).
+#: The shared base class requires Administration since 18 Nov 2026 (f88d68f),
+#: which refused every mortgage user; this gives them back to the mortgage roles.
+MortgageUploads = WritesBy("mortgage_officer", "mortgage_manager", "mortgage_finance", "mortgage_admin")
+
 @extend_schema(tags=TAG)
 class ProductCsvUploadView(BaseCsvUploadView):
+    permission_classes = [MortgageUploads]
     serializer_class = MortgageProductSerializer
 
 
 @extend_schema(tags=TAG)
 class BorrowerCsvUploadView(BaseCsvUploadView):
+    permission_classes = [MortgageUploads]
     serializer_class = BorrowerSerializer
 
 
 @extend_schema(tags=TAG)
 class PaymentCsvUploadView(BaseCsvUploadView):
+    permission_classes = [MortgageUploads]
     serializer_class = PaymentSerializer
 
 
@@ -236,6 +247,7 @@ class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=TAG_LEADS)
 class LeadCsvUploadView(BaseCsvUploadView):
+    permission_classes = [MortgageUploads]
     serializer_class = LeadSerializer
 
 
@@ -292,11 +304,13 @@ class DiasporaLeadUploadView(APIView):
 
 @extend_schema(tags=TAG_LEADS)
 class FieldVisitCsvUploadView(BaseCsvUploadView):
+    permission_classes = [MortgageUploads]
     serializer_class = FieldVisitSerializer
 
 
 @extend_schema(tags=TAG_LEADS)
 class FieldAgentCsvUploadView(BaseCsvUploadView):
+    permission_classes = [MortgageUploads]
     serializer_class = FieldAgentSerializer
 
 
@@ -344,7 +358,7 @@ class LeadConvertView(APIView):
 
 @extend_schema(tags=TAG)
 class ApplicationApproveView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [InGroup("mortgage_manager", "mortgage_admin")]
 
     def post(self, request, pk):
         try:
@@ -371,7 +385,7 @@ class ApplicationApproveView(APIView):
 
 @extend_schema(tags=TAG)
 class ApplicationRejectView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [InGroup("mortgage_manager", "mortgage_admin")]
 
     def post(self, request, pk):
         try:
@@ -394,7 +408,7 @@ class ApplicationRejectView(APIView):
 @extend_schema(tags=TAG)
 class ApplicationDisburseView(APIView):
     """Create the loan from an approved application and generate its schedule."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [InGroup("mortgage_manager", "mortgage_admin")]
 
     def post(self, request, pk):
         try:
@@ -567,7 +581,7 @@ def _bucket(days):
 
 @extend_schema(tags=TAG)
 class InterestRateListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("mortgage_admin")]
     serializer_class = InterestRateSerializer
     pagination_class = StandardPagination
     filter_backends = [DjangoFilterBackend]
@@ -581,7 +595,7 @@ class InterestRateListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class InterestRateDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("mortgage_admin")]
     serializer_class = InterestRateSerializer
     queryset = InterestRate.objects.all()
 

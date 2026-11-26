@@ -309,3 +309,42 @@ class IsAdministrationUser(BasePermission):
             return True
         self.message = refusal_for(user)
         return False
+
+
+def WritesBy(*group_names):
+    """Reads stay open to anyone signed in; a change needs one of these groups
+    (or a superuser). For screens whose data other pages also read, so only
+    the changes are locked. The groups are the ones whose pages make the
+    change in the frontend (26 Nov 2026 role map)."""
+    names = set(group_names)
+
+    class _WritesBy(BasePermission):
+        message = "Your role cannot make this change."
+
+        def has_permission(self, request, view):
+            user = request.user
+            if not _active(user):
+                return False
+            if request.method in SAFE_METHODS or user.is_superuser:
+                return True
+            return user.groups.filter(name__in=names).exists()
+
+    _WritesBy.__name__ = "WritesBy_" + "_".join(sorted(names))
+    return _WritesBy
+
+
+class OwnRecordOrAdministration(BasePermission):
+    """Anyone signed in reads; only the record's owner (``owner_field`` on the
+    view, default ``rm``) or Administration may change or delete it."""
+
+    message = "Only the person who wrote this, or Administration, can change it."
+
+    def has_permission(self, request, view):
+        return _active(request.user)
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        user = request.user
+        owner_id = getattr(obj, getattr(view, "owner_field", "rm") + "_id", None)
+        return (owner_id is not None and owner_id == user.id) or may_change_administration(user)

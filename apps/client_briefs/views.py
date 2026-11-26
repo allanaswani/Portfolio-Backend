@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from core.pagination import StandardPagination
 from .models import ClientBrief
 from .serializers import ClientBriefSerializer
+from core.permissions import OwnRecordOrAdministration
 
 DjangoFilterBackend = django_filters.rest_framework.DjangoFilterBackend
 TAG = ["Client Briefs"]
@@ -164,7 +165,8 @@ class ClientBriefListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=TAG)
 class ClientBriefDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [OwnRecordOrAdministration]
+    owner_field = "rm"
     serializer_class = ClientBriefSerializer
     queryset = ClientBrief.objects.select_related("rm").all()
 

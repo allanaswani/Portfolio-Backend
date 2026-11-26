@@ -1,5 +1,6 @@
 """Tests for the mortgages module — CRUD, pipeline, amortization, aggregations."""
 
+from django.contrib.auth.models import Group
 from decimal import Decimal
 
 from django.contrib.auth.models import User
@@ -29,6 +30,8 @@ class AmortizationMathTests(TestCase):
 class MortgageEndpointTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("mort_user", password="x")
+        for _g in ("mortgage_officer", "mortgage_manager"):  # the role whose screen makes these changes
+            self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         self.product = MortgageProduct.objects.create(
@@ -170,6 +173,8 @@ class MortgageEndpointTests(TestCase):
 class DeferredFeatureTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("feat_user", password="x")
+        for _g in ("mortgage_admin"):  # the role whose screen makes these changes
+            self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 

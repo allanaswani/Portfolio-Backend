@@ -16,11 +16,12 @@ from .serializers import (
     StrategicMilestoneSerializer,
 )
 from core.permissions import AdministrationWrites
+from core.permissions import WritesBy
 
 
 @extend_schema(tags=["ExCo Initiatives"])
 class ExcoInitiativeListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("exco_initiatives_admin")]
     serializer_class = ExcoInitiativeSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -39,7 +40,7 @@ class ExcoInitiativeDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Owners"])
 class StrategicExcoOwnerListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("exco_initiatives_admin")]
     serializer_class = StrategicExcoOwnerSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -56,7 +57,7 @@ class StrategicExcoOwnerDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Thrusts"])
 class StrategicThrustListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("exco_initiatives_admin")]
     serializer_class = StrategicThrustSerializer
     pagination_class = StandardPagination
     queryset = StrategicThrust.objects.all()
@@ -71,7 +72,7 @@ class StrategicThrustDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Initiatives"])
 class StrategicInitiativeListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("exco_initiatives_admin")]
     serializer_class = StrategicInitiativeSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -101,7 +102,7 @@ class StrategicInitiativeMilestonesView(generics.ListAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Milestones"])
 class StrategicMilestoneListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("exco_initiatives_admin")]
     serializer_class = StrategicMilestoneSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -111,7 +112,7 @@ class StrategicMilestoneListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Milestones"])
 class StrategicMilestoneDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("exco_initiatives_admin")]
     serializer_class = StrategicMilestoneSerializer
     queryset = StrategicMilestone.objects.all()
 

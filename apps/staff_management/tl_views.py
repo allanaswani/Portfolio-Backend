@@ -23,6 +23,7 @@ from core.pagination import StandardPagination
 from .branches import normalize_branch
 from .dsr_views import _is_admin, _read_upload_rows
 from .models import TeamLeaderBranch
+from core.permissions import AdministrationWrites
 
 
 class TeamLeaderBranchSerializer(serializers.ModelSerializer):
@@ -46,7 +47,7 @@ class TeamLeaderBranchListView(generics.ListAPIView):
 class TeamLeaderBranchUpsertView(APIView):
     """Set (or change) the team leader for a branch."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
 
     def post(self, request):
         if not _is_admin(request.user):
@@ -70,7 +71,7 @@ class TeamLeaderBranchUpsertView(APIView):
 
 
 class TeamLeaderBranchDeleteView(generics.DestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
     queryset = TeamLeaderBranch.objects.all()
     serializer_class = TeamLeaderBranchSerializer
 
@@ -83,7 +84,7 @@ class TeamLeaderBranchDeleteView(generics.DestroyAPIView):
 class TeamLeaderReassignView(APIView):
     """Move every branch owned by one team leader to another — used when a TL exits."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
 
     def post(self, request):
         if not _is_admin(request.user):
@@ -107,7 +108,7 @@ class TeamLeaderBranchUploadView(APIView):
     Labels, Grand Total) and blanks are ignored.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]
     _SKIP = {"row labels", "grand total", "staff role", "active", "team leader", ""}
 
     def post(self, request):

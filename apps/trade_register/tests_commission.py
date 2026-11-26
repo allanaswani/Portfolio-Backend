@@ -6,6 +6,7 @@ product code told the form nothing. These pin the replacements — and, above al
 that a figure the desk typed deliberately is never quietly overwritten.
 """
 
+from django.contrib.auth.models import Group
 from datetime import date
 
 from django.contrib.auth.models import User
@@ -179,6 +180,8 @@ class CommissionEditViaApiTests(APITestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(username="deskedit", password="x")
+        for _g in ("registry_officer"):  # the role whose screen makes these changes
+            self.user.groups.add(Group.objects.get_or_create(name=_g)[0])
         self.client.force_authenticate(self.user)
         self.product = TradeProduct.objects.get(code="14116")
         self.product.commission_basis = TradeProduct.BASIS_FLAT

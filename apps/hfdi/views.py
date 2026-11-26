@@ -43,11 +43,12 @@ from .serializers import (
     ProjectInventoryLegalDocumentsStatusSerializer,
 )
 from core.permissions import AdministrationWrites
+from core.permissions import WritesBy
 
 
 @extend_schema(tags=["HFDI — Projects"])
 class ProjectListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectSerializer
     queryset = Project.objects.all()
 
@@ -61,7 +62,7 @@ class ProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — Targets"])
 class TargetsListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = TargetsSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -71,14 +72,14 @@ class TargetsListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Targets"])
 class TargetsDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = TargetsSerializer
     queryset = Targets.objects.all()
 
 
 @extend_schema(tags=["HFDI — Sales"])
 class SalesListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = SalesSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -95,7 +96,7 @@ class SalesDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — Obligations"])
 class ObligationSummaryListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ObligationSummarySerializer
     pagination_class = StandardPagination
     queryset = ObligationSummary.objects.all()
@@ -103,14 +104,14 @@ class ObligationSummaryListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Obligations"])
 class ObligationSummaryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ObligationSummarySerializer
     queryset = ObligationSummary.objects.all()
 
 
 @extend_schema(tags=["HFDI — CRM Projects"])
 class CrmProjectListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = CrmProjectSerializer
     queryset = CrmProject.objects.all()
 
@@ -124,7 +125,7 @@ class CrmProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — CRM Sales"])
 class CrmSalesRecordListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = CrmSalesRecordSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -141,7 +142,7 @@ class CrmSalesRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — Legacy Projects"])
 class LegacyProjectListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = LegacyProjectSerializer
     queryset = LegacyProject.objects.all()
 
@@ -155,7 +156,7 @@ class LegacyProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — Legacy Sales"])
 class LegacySalesRecordListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = LegacySalesRecordSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -172,7 +173,7 @@ class LegacySalesRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — Manual Finance"])
 class HfdiManualFinanceEntryListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiManualFinanceEntrySerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -189,7 +190,7 @@ class HfdiManualFinanceEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 @extend_schema(tags=["HFDI — Performance Targets"])
 class HfdiTargetsListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiTargetsSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -200,14 +201,14 @@ class HfdiTargetsListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Performance Targets"])
 class HfdiTargetsDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiTargetsSerializer
     queryset = HfdiTargets.objects.all()
 
 
 @extend_schema(tags=["HFDI — Employees"])
 class HfdiEmployeeDataListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiEmployeeDataSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -217,14 +218,14 @@ class HfdiEmployeeDataListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Employees"])
 class HfdiEmployeeDataDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiEmployeeDataSerializer
     queryset = HfdiEmployeeData.objects.all()
 
 
 @extend_schema(tags=["HFDI — Employee Sales"])
 class HfdiEmployeeDataSalesRecordListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiEmployeeDataSalesRecordSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -234,14 +235,14 @@ class HfdiEmployeeDataSalesRecordListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Employee Sales"])
 class HfdiEmployeeDataSalesRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiEmployeeDataSalesRecordSerializer
     queryset = HfdiEmployeeDataSalesRecord.objects.all()
 
 
 @extend_schema(tags=["HFDI — Scorecard"])
 class HfdiScorecardListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiScorecardPerformanceRecordSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -251,7 +252,7 @@ class HfdiScorecardListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Scorecard"])
 class HfdiScorecardDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiScorecardPerformanceRecordSerializer
     queryset = HfdiScorecardPerformanceRecord.objects.all()
 
@@ -340,7 +341,7 @@ class HfdiScorecardCSVUploadView(_ManualMonthlyUploadView):
 
 @extend_schema(tags=["HFDI — Weighted Dashboard"])
 class WeightedDashboardManualSalesListView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = WeightedDashboardManualSalesSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -350,7 +351,7 @@ class WeightedDashboardManualSalesListView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Weighted Dashboard"])
 class WeightedDashboardManualSalesDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = WeightedDashboardManualSalesSerializer
     queryset = WeightedDashboardManualSales.objects.all()
 
@@ -382,7 +383,7 @@ class WeightedDashboardManualSalesCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — Mortgages"])
 class HfdiCustomersHfcMortgagesListView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = HfdiCustomersHfcMortgagesSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -423,7 +424,7 @@ class HfdiCustomersHfcMortgagesCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — Project Titan Daily Collections"])
 class ProjectTitanDailyCollectionsListView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectTitanDailyCollectionsSerializer
     pagination_class = StandardPagination
     queryset = ProjectTitanDailyCollections.objects.all()
@@ -431,7 +432,7 @@ class ProjectTitanDailyCollectionsListView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Project Titan Daily Collections"])
 class ProjectTitanDailyCollectionsDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectTitanDailyCollectionsSerializer
     queryset = ProjectTitanDailyCollections.objects.all()
 
@@ -465,7 +466,7 @@ class ProjectTitanDailyCollectionsCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
 class ProjectTitanPlotsAllocationListView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectTitanPlotsAllocationSerializer
     pagination_class = StandardPagination
     queryset = ProjectTitanPlotsAllocation.objects.all()
@@ -535,7 +536,7 @@ class ProjectTitanPlotsAgentAllocationSummaryView(APIView):
 
 @extend_schema(tags=["HFDI — Project Titan Plots Allocation"])
 class ProjectTitanPlotsAllocationDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectTitanPlotsAllocationSerializer
     queryset = ProjectTitanPlotsAllocation.objects.all()
 
@@ -608,7 +609,7 @@ class ProjectTitanPlotsAllocationFieldChangeListView(generics.ListAPIView):
 
 @extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
 class ProjectTitanPlotsAgentAllocationListView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectTitanPlotsAgentAllocationSerializer
     pagination_class = StandardPagination
     queryset = ProjectTitanPlotsAgentAllocation.objects.all()
@@ -616,7 +617,7 @@ class ProjectTitanPlotsAgentAllocationListView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Project Titan Plots Agent Allocation"])
 class ProjectTitanPlotsAgentAllocationDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectTitanPlotsAgentAllocationSerializer
     queryset = ProjectTitanPlotsAgentAllocation.objects.all()
 
@@ -685,7 +686,7 @@ class HfdiProjectsInventorySalesDataSearchAPIView(DynamicColumnSearchListView):
 
 @extend_schema(tags=["HFDI — Affordable Housing"])
 class AffordableHousingApplicationListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AffordableHousingApplicationSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -745,7 +746,7 @@ class AffordableHousingApplicationCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — Affordable Housing Registrations"])
 class AffordableHousingRegistrationsListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AffordableHousingRegistrationsSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -755,7 +756,7 @@ class AffordableHousingRegistrationsListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Affordable Housing Registrations"])
 class AffordableHousingRegistrationsDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AffordableHousingRegistrationsSerializer
     queryset = AffordableHousingRegistrations.objects.all()
 
@@ -801,7 +802,7 @@ class AffordableHousingRegistrationsCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — Affordable Housing Pipeline"])
 class AffordableHousingProjectsPipelineListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AffordableHousingProjectsPipelineSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -811,7 +812,7 @@ class AffordableHousingProjectsPipelineListCreateView(generics.ListCreateAPIView
 
 @extend_schema(tags=["HFDI — Affordable Housing Pipeline"])
 class AffordableHousingProjectsPipelineDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AffordableHousingProjectsPipelineSerializer
     queryset = AffordableHousingProjectsPipeline.objects.all()
 
@@ -849,7 +850,7 @@ class AffordableHousingProjectsPipelineCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — AFH Seller Mapping"])
 class AFHSellerMappingListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AFHSellerMappingSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -859,7 +860,7 @@ class AFHSellerMappingListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — AFH Seller Mapping"])
 class AFHSellerMappingDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = AFHSellerMappingSerializer
     queryset = AFHSellerMapping.objects.all()
 
@@ -891,7 +892,7 @@ class AFHSellerMappingCSVUploadView(AmendingCsvUploadView):
 
 @extend_schema(tags=["HFDI — Legal Documents Status"])
 class ProjectInventoryLegalDocumentsStatusListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectInventoryLegalDocumentsStatusSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -901,7 +902,7 @@ class ProjectInventoryLegalDocumentsStatusListCreateView(generics.ListCreateAPIV
 
 @extend_schema(tags=["HFDI — Legal Documents Status"])
 class ProjectInventoryLegalDocumentsStatusDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [WritesBy("hfdi_admin")]
     serializer_class = ProjectInventoryLegalDocumentsStatusSerializer
     queryset = ProjectInventoryLegalDocumentsStatus.objects.all()
 
