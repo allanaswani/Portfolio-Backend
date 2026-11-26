@@ -42,6 +42,7 @@ from .serializers import (
     AFHSellerMappingSerializer,
     ProjectInventoryLegalDocumentsStatusSerializer,
 )
+from core.permissions import AdministrationWrites
 
 
 @extend_schema(tags=["HFDI — Projects"])
@@ -53,7 +54,7 @@ class ProjectListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Projects"])
 class ProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = ProjectSerializer
     queryset = Project.objects.all()
 
@@ -87,7 +88,7 @@ class SalesListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Sales"])
 class SalesDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = SalesSerializer
     queryset = Sales.objects.all()
 
@@ -116,7 +117,7 @@ class CrmProjectListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — CRM Projects"])
 class CrmProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CrmProjectSerializer
     queryset = CrmProject.objects.all()
 
@@ -133,7 +134,7 @@ class CrmSalesRecordListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — CRM Sales"])
 class CrmSalesRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CrmSalesRecordSerializer
     queryset = CrmSalesRecord.objects.all()
 
@@ -147,7 +148,7 @@ class LegacyProjectListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Legacy Projects"])
 class LegacyProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = LegacyProjectSerializer
     queryset = LegacyProject.objects.all()
 
@@ -164,7 +165,7 @@ class LegacySalesRecordListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Legacy Sales"])
 class LegacySalesRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = LegacySalesRecordSerializer
     queryset = LegacySalesRecord.objects.all()
 
@@ -181,7 +182,7 @@ class HfdiManualFinanceEntryListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Manual Finance"])
 class HfdiManualFinanceEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = HfdiManualFinanceEntrySerializer
     queryset = HfdiManualFinanceEntry.objects.all()
 
@@ -391,7 +392,7 @@ class HfdiCustomersHfcMortgagesListView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Mortgages"])
 class HfdiCustomersHfcMortgagesDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = HfdiCustomersHfcMortgagesSerializer
     queryset = HfdiCustomersHfcMortgages.objects.all()
 
@@ -694,7 +695,7 @@ class AffordableHousingApplicationListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HFDI — Affordable Housing"])
 class AffordableHousingApplicationDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = AffordableHousingApplicationSerializer
     queryset = AffordableHousingApplication.objects.all()
 

@@ -64,6 +64,12 @@ class ScriptTriggerAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if str(script_name) not in set(getattr(settings, "ETL_TRIGGER_SCRIPTS", [])):
+            return Response(
+                {"error": f"'{script_name}' is not a report this button may run."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         queue_dir = _queue_dir()
         try:
             queue_dir.mkdir(parents=True, exist_ok=True)

@@ -42,6 +42,7 @@ from .serializers import (
     CustomerAllocationBaseSerializer, RmAllocationListSerializer,
     CustomerTransferHistorySerializer,
 )
+from core.permissions import AdministrationWrites
 
 _TAG = "Reallocation — Workflow"
 
@@ -341,7 +342,7 @@ class CustomerAllocationByCustIdView(APIView):
 
 @extend_schema(tags=[_TAG])
 class TransferFeedbackDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CustomerTransferHistorySerializer
     queryset = CustomerTransferHistory.objects.all()
 

@@ -46,7 +46,7 @@ of `:9000`, and THAT layer is dropping the JSON body.
    ```bash
    curl -s -X POST http://127.0.0.1:9000/auth/api/token/ \
      -H "Content-Type: application/json" \
-     -d '{"username":"admin","password":"Admin@2024"}'
+     -d '{"username":"admin","password":"<PASSWORD>"}'
    ```
    - Returns tokens → confirms proxy is dropping the body (fix the proxy config).
    - Returns 400 → the issue is deeper in Django; paste the body.

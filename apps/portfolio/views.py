@@ -35,6 +35,7 @@ from services.arrears_managers import (
 )
 
 import django_filters.rest_framework
+from core.permissions import AdministrationWrites
 
 
 def _get_profile(user):
@@ -173,7 +174,7 @@ class RmCustomerListView(APIView):
 
 @extend_schema(tags=["Portfolio — Customers"])
 class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = HfCustomerSerializer
     queryset = HfCustomer.objects.all()
 
@@ -386,7 +387,7 @@ class FeedbackCustomersNotContactedView(APIView):
 
 @extend_schema(tags=["Portfolio — Feedback"])
 class FeedbackDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = FeedbackSerializer
     queryset = Feedback.objects.all()
 

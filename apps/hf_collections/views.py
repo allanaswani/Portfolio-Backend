@@ -15,6 +15,7 @@ from .models import Collection, PromiseToPay
 from .serializers import CollectionSerializer, PromiseToPaySerializer
 from . import collections_core as cc
 import django_filters.rest_framework
+from core.permissions import AdministrationWrites
 
 
 def _get_profile(user):
@@ -143,7 +144,7 @@ class CollectionsFeedbackSummaryView(APIView):
 
 @extend_schema(tags=["Collections"])
 class CollectionDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CollectionSerializer
     queryset = Collection.objects.all()
 
@@ -328,7 +329,7 @@ class PromiseToPayListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Collections"])
 class PromiseToPayDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = PromiseToPaySerializer
     queryset = PromiseToPay.objects.all()
 

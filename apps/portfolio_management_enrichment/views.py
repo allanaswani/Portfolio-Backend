@@ -15,6 +15,7 @@ from .serializers import (
     CustomerAllocationBaseSerializer, RmAllocationListSerializer,
     TeamLeaderMovementApproversSerializer, CustomerTransferHistorySerializer,
 )
+from core.permissions import AdministrationWrites
 
 
 @extend_schema(tags=["Portfolio Enrichment — Customers"])
@@ -29,7 +30,7 @@ class CustomerEnrichmentListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Portfolio Enrichment — Customers"])
 class CustomerEnrichmentDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CustomerEnrichmentSerializer
     queryset = CustomerEnrichment.objects.all()
 
@@ -46,7 +47,7 @@ class RmTargetListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Portfolio Enrichment — RM Targets"])
 class RmTargetDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = RmTargetSerializer
     queryset = RmTarget.objects.all()
 
@@ -65,7 +66,7 @@ class CustomerAllocationBaseListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Reallocation — Customer Allocation Base"])
 class CustomerAllocationBaseDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CustomerAllocationBaseSerializer
     queryset = CustomerAllocationBase.objects.all()
 
@@ -93,7 +94,7 @@ class RmAllocationListListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Reallocation — RM Allocation List"])
 class RmAllocationListDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = RmAllocationListSerializer
     queryset = RmAllocationList.objects.all()
 
@@ -121,7 +122,7 @@ class TeamLeaderMovementApproversListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Reallocation — Movement Approvers"])
 class TeamLeaderMovementApproversDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = TeamLeaderMovementApproversSerializer
     queryset = TeamLeaderMovementApprovers.objects.all()
 
@@ -149,7 +150,7 @@ class CustomerTransferHistoryListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["Reallocation — Transfer History"])
 class CustomerTransferHistoryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = CustomerTransferHistorySerializer
     queryset = CustomerTransferHistory.objects.all()
 

@@ -25,7 +25,7 @@ class RightsIssueApplicationListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["HF Rights Issue"])
 class RightsIssueApplicationDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = RightsIssueApplicationSerializer
     queryset = RightsIssueApplication.objects.all()
 

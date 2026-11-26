@@ -15,6 +15,7 @@ from .serializers import (
     StrategicThrustSerializer, StrategicInitiativeSerializer,
     StrategicMilestoneSerializer,
 )
+from core.permissions import AdministrationWrites
 
 
 @extend_schema(tags=["ExCo Initiatives"])
@@ -29,7 +30,7 @@ class ExcoInitiativeListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["ExCo Initiatives"])
 class ExcoInitiativeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = ExcoInitiativeSerializer
     queryset = ExcoInitiative.objects.all()
 
@@ -48,7 +49,7 @@ class StrategicExcoOwnerListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Owners"])
 class StrategicExcoOwnerDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = StrategicExcoOwnerSerializer
     queryset = StrategicExcoOwner.objects.all()
 
@@ -63,7 +64,7 @@ class StrategicThrustListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Thrusts"])
 class StrategicThrustDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = StrategicThrustSerializer
     queryset = StrategicThrust.objects.all()
 
@@ -80,7 +81,7 @@ class StrategicInitiativeListCreateView(generics.ListCreateAPIView):
 
 @extend_schema(tags=["ExCo — Strategic Initiatives"])
 class StrategicInitiativeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AdministrationWrites]  # reads open; the app never writes these
     serializer_class = StrategicInitiativeSerializer
     queryset = StrategicInitiative.objects.all()
 

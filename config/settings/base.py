@@ -67,6 +67,9 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Refuses the two unauthenticated DRF 3.17 denial-of-service requests
+    # (huge Accept header, compression-codec charset). See core/request_guard.py.
+    "core.request_guard.RequestGuardMiddleware",
     # WhiteNoise serves collected static (admin / DRF / Swagger CSS) straight from
     # the app process so the container needs no separate static server. Must sit
     # immediately after SecurityMiddleware (WhiteNoise docs).
@@ -403,6 +406,23 @@ FRONTEND_LAN_URL = env("FRONTEND_LAN_URL", default="http://128.2.1.25:5400")
 # python3.6. In the container, bind-mount the host's
 # /data/apps/datascience/etl_requests onto this path (see docs/DEPLOY.md).
 ETL_REQUEST_DIR = env("ETL_REQUEST_DIR", default=str(BASE_DIR / "etl_requests"))
+
+# The ONLY scripts a button may queue. The host watcher runs whatever .py it is
+# named, as root, so without this list any signed-in user could run any ETL in
+# the folder. These are the nine the frontend's Send Report / Refresh buttons
+# send (hooks/useAnalytics.ts). A new button: add its script here, or set
+# ETL_TRIGGER_SCRIPTS (comma-separated) in the env file.
+ETL_TRIGGER_SCRIPTS = env.list("ETL_TRIGGER_SCRIPTS", default=[
+    "bancassurance_report",
+    "drawdown_report_correct",
+    "trade_finance_report",
+    "weighted_sales_daily_report",
+    "daily_balance_movement",
+    "billable_transaction",
+    "hfcb_properties_reports/crm_projects_inventory_table_update",
+    "hfcb_properties_reports/afh_applications",
+    "hfcb_properties_reports/project_titan_daily_collections_report",
+])
 
 # OpenAI
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
