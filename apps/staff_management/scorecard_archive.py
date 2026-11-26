@@ -368,9 +368,25 @@ def _month_dir(period):
     return path
 
 
+_VERSION_RE = re.compile(r" \(v(\d+) \d{4}-\d{2}-\d{2}\)$")
+#: Folder names that are a book key rather than a title.
+FOLDER_TITLES = {"retail_back_office": "Retail back office"}
+
+
+def card_stem(name):
+    """'CODE - Name (v3 2026-11-14).xlsx' -> ('CODE - Name', 3); the first
+    version has no suffix and is 1."""
+    stem = re.sub(r"\.(xlsx|json)$", "", name)
+    found = _VERSION_RE.search(stem)
+    return (stem[:found.start()], int(found.group(1))) if found else (stem, 1)
+
+
 def months():
     """Every archived month, newest first →
-    [{"period", "label", "cards", "workbooks": [{"name", "cards"}], "files"}]."""
+    [{"period", "label", "cards", "versions", "workbooks": [{"name", "cards",
+    "versions"}], "files"}]. ``cards`` counts PEOPLE: a card re-archived
+    after its figures changed is another version of the same card (kept as
+    evidence), counted in ``versions``, not as another card."""
     root = archive_dir()
     if not os.path.isdir(root):
         return []
@@ -385,14 +401,17 @@ def months():
             if os.path.isdir(sub):
                 inside = os.listdir(sub)
                 files += len(inside)
-                books.append({"name": name,
-                              "cards": sum(1 for f in inside if f.endswith(".xlsx"))})
+                xlsx = [f for f in inside if f.endswith(".xlsx")]
+                books.append({"name": FOLDER_TITLES.get(name, name),
+                              "cards": len({card_stem(f)[0] for f in xlsx}),
+                              "versions": len(xlsx)})
             else:
                 files += 1
         year, month = (int(x) for x in period.split("-"))
         out.append({"period": period,
                     "label": datetime.date(year, month, 1).strftime("%B %Y"),
                     "cards": sum(b["cards"] for b in books),
+                    "versions": sum(b["versions"] for b in books),
                     "workbooks": books, "files": files})
     return out
 
@@ -406,12 +425,18 @@ def month_cards(period):
         sub = os.path.join(path, book)
         if not os.path.isdir(sub):
             continue
-        for name in sorted(os.listdir(sub)):
-            if not name.endswith(".xlsx"):
-                continue
+        names = [n for n in os.listdir(sub) if n.endswith(".xlsx")]
+        latest = {}
+        for name in names:
+            stem, version = card_stem(name)
+            latest[stem] = max(latest.get(stem, 0), version)
+        for name in sorted(names):
             full = os.path.join(sub, name)
-            out.append({"file": f"{book}/{name}", "workbook": book,
+            stem, version = card_stem(name)
+            out.append({"file": f"{book}/{name}",
+                        "workbook": FOLDER_TITLES.get(book, book),
                         "name": name[:-5], "size": os.path.getsize(full),
+                        "version": version, "latest": version == latest[stem],
                         "saved": datetime.datetime.fromtimestamp(
                             os.path.getmtime(full)).isoformat(timespec="minutes")})
     return out
