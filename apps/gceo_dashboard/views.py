@@ -43,6 +43,20 @@ from .serializers import (
 )
 import django_filters.rest_framework
 
+from core.permissions import AdministrationWrites, InGroup
+
+#: Who may read the bank-wide CEO figures (26 Nov 2026). These are exactly the
+#: groups whose pages call them: /gceo and /cfo (ceo), /exco-view (exco) and
+#: /business-performance. Superusers always pass (InGroup). Before this every
+#: signed-in user could read them, customer-level inflows/outflows included.
+CeoAccess = InGroup("ceo", "exco", "business_performance")
+#: branch_deposit_trends is also drawn on the branch manager's Customers page.
+CeoOrBranchAccess = InGroup("ceo", "exco", "business_performance", "branch_portfolio")
+#: The HR roster and its overlay: the Management screens (All Employees and the
+#: headcount tile). Changes need Administration, as on the other admin screens.
+RosterAccess = InGroup("staff_mgt", "admin_viewer")
+
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -174,7 +188,7 @@ _NOT_INTERNAL = "COALESCE({a}customer_segment, '') <> 'INTERNAL ACCOUNTS'"
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class MonthlyMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         qs = DailyBalanceMovement.objects.raw(_monthly_movement_sql("daily_balance_movement"))
@@ -192,7 +206,7 @@ class MonthlyMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Loans"])
 class LoanMonthlyMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         qs = LoanDailyBalanceMovement.objects.raw(
@@ -212,7 +226,7 @@ class LoanMonthlyMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class LatestMonthlyView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         rec = warehouse.rows(CeoDepositMovementMonthly).order_by("-dates_eom").first()
@@ -223,7 +237,7 @@ class LatestMonthlyView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class LatestDailyView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # .values() rather than the model: the table has no id column, and any
@@ -240,7 +254,7 @@ class LatestDailyView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class CustomerTotalView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: {total, percentage_change}. Frontend reads `total`.
@@ -249,7 +263,7 @@ class CustomerTotalView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class ActiveCustomersView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # bank_customers_active → {number_of_active, percentage_change} (30-day active).
@@ -258,7 +272,7 @@ class ActiveCustomersView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class NewCustomerBaseView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: per-segment month-over-month DELTAS keyed by date strings
@@ -268,7 +282,7 @@ class NewCustomerBaseView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class YtdCustomerBaseView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: per-segment monthly customer counts (Customer Base table).
@@ -277,7 +291,7 @@ class YtdCustomerBaseView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class NewCustomerTrendsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{yesterday/ytd/mtd + jan_volume..december_volume}] (Target vs Actual table).
@@ -286,7 +300,7 @@ class NewCustomerTrendsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Channels"])
 class TransactingActivityView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CeoChannelReportSerializer
     queryset = warehouse.rows(CeoChannelReport).order_by("-trx_date")
     pagination_class = StandardPagination
@@ -294,7 +308,7 @@ class TransactingActivityView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Channels"])
 class DigitalCustomersView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: {number_of_digital, percentage_change}. Frontend reads number_of_digital.
@@ -303,7 +317,7 @@ class DigitalCustomersView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Channels"])
 class DigitalActive30View(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: {number_of_active, percentage_change}.
@@ -312,14 +326,14 @@ class DigitalActive30View(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class DepositMovementView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CeoDepositMovementSerializer
     queryset = warehouse.rows(CeoDepositMovement).order_by("banking_segment", "segment")
 
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class DepositMovementDailyView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CeoDepositMovementDailySerializer
     # Same reason as LatestDailyView, plus an explicit order: paginating an
     # unordered queryset hands out rows that can repeat or vanish between pages.
@@ -330,7 +344,7 @@ class DepositMovementDailyView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class SegmentDailyMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         yester2 = _yester_case("", "yester_2_bal", cy, py)
@@ -354,7 +368,7 @@ class SegmentDailyMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class DailyMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         yester2 = _yester_case("", "yester_2_bal", cy, py)
@@ -377,7 +391,7 @@ class CeoDailyAsOfView(APIView):
     """The reference date of the daily balances — the 'as of' behind the day-over-day
     Top Inflows/Outflows (which compare yester_1_bal vs yester_2_bal)."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         agg = DailyBalanceMovement.objects.aggregate(
@@ -388,7 +402,7 @@ class CeoDailyAsOfView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Deposits"])
 class DepositGrowthPctView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         yester2 = _yester_case("", "yester_2_bal", cy, py)
@@ -419,7 +433,7 @@ class DepositGrowthPctView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class NFIIncomeMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{dates_months, rev_sum, cumulative_revenue}]. The ILIKE
@@ -429,7 +443,7 @@ class NFIIncomeMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class InterestIncomeMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{date_months, rev_sum, cumulative_revenue}]; category is
@@ -439,7 +453,7 @@ class InterestIncomeMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class InterestExpenseMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{date_months, intrest_expense, cumulative_intrest_expense}].
@@ -448,7 +462,7 @@ class InterestExpenseMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class NFITrendsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{date_months, sum_rev_nfi}] — 12 months, current month excluded.
@@ -457,7 +471,7 @@ class NFITrendsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class InterestExpenseTrendsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{date_months, sum_intrest_expense}].
@@ -466,7 +480,7 @@ class InterestExpenseTrendsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class InterestIncomeTrendsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{date_months, sum_intrest_income}].
@@ -475,7 +489,7 @@ class InterestIncomeTrendsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class TargetTrackerNFIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: scalar {interest_income_actual, nfi_actual, interest_expenses_actual,
@@ -487,7 +501,7 @@ class TargetTrackerNFIView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class ProductPerCustomerView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old shape: [{banking_segment, number_of_customers, number_of_products,
@@ -497,7 +511,7 @@ class ProductPerCustomerView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class ProductINFFocusView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         with connection.cursor() as cur:
@@ -522,7 +536,7 @@ class ProductINFFocusView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class ActiveCustomersMoMView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Preferred source: the maintained `customers` master. On prod this table
@@ -573,7 +587,7 @@ class DigitalChannelsMoMView(APIView):
     # transaction_diary. The chart reads date_trunc_months + number_active_customers;
     # the previous ceo_channel_report shape ({month, trx_channel, count}) left the
     # "Active Digital Customers — Month on Month" chart (and Latest Month Active) empty.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         with connection.cursor() as cur:
@@ -665,7 +679,7 @@ class DigitalChannelsMoMView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Loans"])
 class LoansBySegmentTrendView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CeoLoanMovementMonthlyBySegmentSerializer
     queryset = warehouse.rows(CeoLoanMovementMonthlyBySegment).order_by("dates_eom")
 
@@ -674,7 +688,7 @@ class LoansBySegmentTrendView(generics.ListAPIView):
 class MobileLoansView(APIView):
     # Old shape: 9-month aggregate [{date_months, number_of_loans, total_disbused}]
     # — NOT the raw disbursement rows (which the frontend can't chart).
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(gl.mobile_loans())
@@ -688,7 +702,7 @@ class StaffInformationView(APIView):
     # (old gceo staff_information). The frontend reads staffInformation[0].total_staff
     # etc.; the previous version returned a paginated EmployeeTable list, so those
     # keys were absent and the card showed 0/0/0/0.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         with connection.cursor() as cur:
@@ -707,7 +721,7 @@ class StaffInformationView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
 class StaffGenderView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         data = (
@@ -740,7 +754,7 @@ class EmployeeRosterListView(generics.GenericAPIView):
     robust and lighter.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [RosterAccess, AdministrationWrites]
     pagination_class = EmployeeRosterPagination
 
     # Columns the admin directory renders — all safe scalar fields on the ETL base.
@@ -859,7 +873,7 @@ class EmployeeOverlayUpsertView(APIView):
     never touched. Idempotent on staff_id, so it can never create a duplicate.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [RosterAccess, AdministrationWrites]
 
     def post(self, request):
         return self._upsert(request)
@@ -909,7 +923,7 @@ class EmployeeOverlayUploadView(APIView):
     staff_id key means updates land in place with zero duplicates.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [RosterAccess, AdministrationWrites]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -975,7 +989,7 @@ class StaffDepartmentView(APIView):
     twice. Without the parameter the full list comes back, so other callers of
     this endpoint are unaffected.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         pairs = [
@@ -992,7 +1006,7 @@ class StaffDepartmentView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
 class StaffGradeView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         data = (
@@ -1027,7 +1041,7 @@ class StaffYearsServiceView(APIView):
     # The seven real bands are emitted whether or not anyone falls in them. The
     # old GROUP BY dropped empty ones, so a gap in the distribution vanished off
     # the axis instead of showing as the gap it is.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         with connection.cursor() as cur:
@@ -1078,7 +1092,7 @@ class StaffYearsServiceView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
 class StaffProjectionsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Monthly staff waterfall (old gceo staff_staff_projections):
@@ -1145,7 +1159,7 @@ class StaffProjectionsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Staff"])
 class StaffServiceTypeView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         data = (
@@ -1167,7 +1181,7 @@ from services import fixed_deposit_managers as fdm
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
 class CeoFixedDepositListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         rows = fdm.FixedDepositListManager().fixed_deposits_list_overall()
@@ -1178,7 +1192,7 @@ class CeoFixedDepositListView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
 class CeoFixedDepositRateBandsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(fdm.FixedDepositRateBandManager().rate_bands_by_overall())
@@ -1189,7 +1203,7 @@ class CeoFixedDepositProductSummaryView(APIView):
     """FD balances by product/type + currency (Products table). Mirrors the old
     backend's FixedDepositOverallSummary.product_summary() — FD is identified via
     the product_mapping table (product_map = 'FD'), not a name pattern."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Cached: this aggregates the whole of `accounts` on every dashboard
@@ -1213,7 +1227,7 @@ class CeoFixedDepositProductSummaryView(APIView):
 class CeoFixedDepositSegmentSummaryView(APIView):
     """FD balances by the customer's banking segment (Segment table). Mirrors the
     old backend's FixedDepositOverallSummary.segment_summary()."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # The heaviest of the four: `accounts` joined to hf_customer, which is
@@ -1234,7 +1248,7 @@ class CeoFixedDepositSegmentSummaryView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Fixed Deposits"])
 class CeoFixedDepositExpiryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(fdm.expiry_timeline_band_overall())
@@ -1250,9 +1264,10 @@ from services.arrears_managers import (
 )
 
 
+
 @extend_schema(tags=["CEO Dashboard — Arrears"])
 class CeoLoansArrearsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         rows = LoansArrearsAccountsListManager().accounts_in_arrears()
@@ -1263,7 +1278,7 @@ class CeoLoansArrearsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Arrears"])
 class CeoLoansArrearsSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(LoansArrearsSummaryManager().high_level_summary())
@@ -1271,7 +1286,7 @@ class CeoLoansArrearsSummaryView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Arrears"])
 class CeoLoansArrearsDPDView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(LoansArrearsDPDBucketSummaryManager().dpd_bucket_summary())
@@ -1279,7 +1294,7 @@ class CeoLoansArrearsDPDView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Arrears"])
 class CeoLoansArrearsProductsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(LoansProductArrearsSummaryManager().product_arrears_summary())
@@ -1289,14 +1304,14 @@ class CeoLoansArrearsProductsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Movement"])
 class LoanMovementBySegmentView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CeoLoanMovementMonthlyBySegmentSerializer
     queryset = warehouse.rows(CeoLoanMovementMonthlyBySegment).order_by("-dates_eom")
 
 
 @extend_schema(tags=["CEO Dashboard — Movement"])
 class DepositMovementBySegmentView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CeoDepositMovementMonthlyBySegmentSerializer
     queryset = warehouse.rows(CeoDepositMovementMonthlyBySegment).order_by("-dates_eom")
 
@@ -1305,7 +1320,7 @@ class DepositMovementBySegmentView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Balance"])
 class DailyBalanceMovementView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = DailyBalanceMovementSerializer
     pagination_class = LargePagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -1315,7 +1330,7 @@ class DailyBalanceMovementView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Balance"])
 class LoanDailyBalanceMovementView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = LoanDailyBalanceMovementSerializer
     pagination_class = LargePagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -1327,7 +1342,7 @@ class LoanDailyBalanceMovementView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Branches"])
 class BranchListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old backend `branch_list`: hf_customer grouped by branch_code CASE,
@@ -1359,7 +1374,7 @@ class RMListView(APIView):
     Shares ``apps.portfolio.rm_rollup`` with the branch/EXCO RM lists so a
     customer with duplicate allocation rows is counted once instead of once per
     duplicate."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         return Response(fetch_rm_rollup())
@@ -1367,7 +1382,7 @@ class RMListView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Branches"])
 class BranchDepositTrendsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoOrBranchAccess]
 
     def get(self, request):
         prev_month = _prev_month_case("", cy, py)
@@ -1406,7 +1421,7 @@ class BranchDepositTrendsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Branches"])
 class BranchLoanTrendsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         prev_month = _prev_month_case("", cy, py)
@@ -1445,7 +1460,7 @@ class BranchLoanTrendsView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Balance"])
 class TopCustomerInflowView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # ::bigint (not ::int) - day movements exceed the int4 range and
@@ -1495,7 +1510,7 @@ class TopCustomerInflowView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Balance"])
 class TopCustomerOutflowView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # ::bigint (not ::int) - day movements exceed the int4 range and
@@ -1544,7 +1559,7 @@ class TopCustomerOutflowView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — RM"])
 class RMYTDMovementView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
 
     def get(self, request):
         # Old backend `rm_ytd_movement`: rm_name comes from the rap join,
@@ -1593,7 +1608,7 @@ class RMYTDMovementView(APIView):
 
 @extend_schema(tags=["CEO Dashboard — Revenue"])
 class RevenueView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = RevenueSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -1603,7 +1618,7 @@ class RevenueView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Customers"])
 class CeoCustomersView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = CustomersSerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
@@ -1613,7 +1628,7 @@ class CeoCustomersView(generics.ListAPIView):
 
 @extend_schema(tags=["CEO Dashboard — Transactions"])
 class TransactionDiaryView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CeoAccess]
     serializer_class = TransactionDiarySerializer
     pagination_class = StandardPagination
     filter_backends = [django_filters.rest_framework.DjangoFilterBackend]
