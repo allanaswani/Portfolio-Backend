@@ -30,7 +30,7 @@ from django.core.management.base import BaseCommand
 
 BOOK_NAMES = {"back_office": "Back office", "sales": "Sales",
               "branch_business": "Branch managers",
-              "ib": "Institutional Banking"}
+              "ib": "Institutional Banking", "hfdi": "HFDI"}
 
 
 def workbook_people():

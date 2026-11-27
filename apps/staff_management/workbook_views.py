@@ -256,6 +256,9 @@ class BoActualsUploadView(APIView):
         upload.seek(0)
         if workbook_cards.is_ib_workbook(data):
             return self._ib_scorecards(data, upload.name, apply, who)
+        if workbook_cards.is_hfdi_workbook(data):
+            return self._ib_scorecards(data, upload.name, apply, who,
+                                       kind=workbook_cards.HFDI)
         if workbook_cards.is_retail_bo_workbook(data):
             return self._retail_bo(data, upload.name, apply, who)
         from . import rbo_live_feeds
@@ -297,10 +300,10 @@ class BoActualsUploadView(APIView):
                                    actuals_book, spec)
         cards["year"] = year
 
-        if kind == workbook_cards.IB:
+        if kind in (workbook_cards.IB, workbook_cards.HFDI):
             return self._ib_apply(workbook_cards.saved(spec.files[0], year),
                                   actuals_book, year, upload.name, apply, who,
-                                  save_actuals=True)
+                                  save_actuals=True, kind=kind)
 
         if kind == workbook_cards.SALES:
             # The sales template: the sales workbook's cards, every closed
@@ -449,26 +452,29 @@ class BoActualsUploadView(APIView):
             "detail": (f"Saved the {spec.label} scorecards workbook for "
                        f"{year}. " + self._stored_detail(cards, spec))})
 
-    def _ib_scorecards(self, data, file_name, apply, who):
-        """The Institutional Banking scorecards workbook (.xlsm)."""
+    def _ib_scorecards(self, data, file_name, apply, who, kind=None):
+        """The Institutional Banking (.xlsm) or HFDI Master (.xlsm)
+        scorecards workbook."""
         import io
 
         from . import workbook_cards as wc
 
+        kind = kind or wc.IB
+        reader = wc.read_hfdi if kind == wc.HFDI else wc.read_ib
         try:
-            book = wc.read_ib(io.BytesIO(data))
+            book = reader(io.BytesIO(data))
         except Exception as exc:  # noqa: BLE001 - the reason is the answer
             return Response({"file": f"That workbook could not be read: {exc}"},
                             status=400)
         year = wc.book_year(book)
-        spec = wc.SPECS[wc.IB]
+        spec = wc.SPECS[kind]
         actuals = (wc.saved(spec.files[1], year)
                    if year in wc.stored_years(spec.files[1]) else None)
         return self._ib_apply(book, actuals, year, file_name, apply, who,
-                              save_book=True)
+                              save_book=True, kind=kind)
 
     def _ib_apply(self, book, actuals, year, file_name, apply, who,
-                  save_book=False, save_actuals=False):
+                  save_book=False, save_actuals=False, kind=None):
         """Report (and with ``apply`` save) the IB workbook and/or template.
         With both, every card holder's card for the month the desk last ran
         is recomputed and set beside the score the desk's macro recorded on
@@ -477,8 +483,10 @@ class BoActualsUploadView(APIView):
         card carries the desk's recorded score beside its own."""
         from . import workbook_cards as wc
 
-        spec = wc.SPECS[wc.IB]
-        report = {"book": wc.IB, "year": year, "ready": bool(book and actuals)}
+        kind = kind or wc.IB
+        spec = wc.SPECS[kind]
+        short = "IB" if kind == wc.IB else "HFDI"
+        report = {"book": kind, "year": year, "ready": bool(book and actuals)}
         lines = []
         if book is not None:
             report["problems"] = book.get("problems", [])
@@ -502,12 +510,12 @@ class BoActualsUploadView(APIView):
                                  f"the template's figures differ from those the "
                                  f"desk ran this card on")
         elif book is None:
-            lines.append(f"Load the {year} IB scorecards workbook (.xlsm) too, and "
+            lines.append(f"Load the {year} {short} scorecards workbook (.xlsm) too, and "
                          f"every card is computed from its formulas.")
         else:
-            lines.append(f"Load the {year} IB actuals template (.xlsx) too, and "
+            lines.append(f"Load the {year} {short} actuals template (.xlsx) too, and "
                          f"every card is computed from its formulas.")
-        what = ("IB scorecards workbook" if save_book else "IB actuals template")
+        what = (f"{short} scorecards workbook" if save_book else f"{short} actuals template")
         head = f"Read the {what} for {year}."
         if not apply:
             return Response({"applied": False, "cards": report,

@@ -179,6 +179,33 @@ IB_TEMPLATE_SHEETS = {"Revenue", "Deposit_Growth", "Deposit_Mix",
 #: them, the cards never read them, and their columns are not months.
 IB_RAW_SHEETS = ("Portfolio", "PVTS")
 
+#: Master Scorecard - 2026.xlsm, HFDI (property). Its macro (explode_
+#: objectives) walks staff_list (active = 1 in column N) and puts each role on
+#: the sheet below, typing C2 name and C3 project; Do_Monthly_Summary writes
+#: J2 to Monthly_Summ by staff_id. People are keyed by staff_id (the PF):
+#: staff_list has no sales codes.
+HFDI = "hfdi"
+HFDI_ROLE_SHEETS = {
+    "Relationship Manager": "Relationship_Manager",
+    "Relationship Officer": "Relationship_Officer",
+    "Operations Officer": "Ops_Officer",
+    "Site Administrator": "Site_Admin",
+    "Sales Manager": "Sales_Manager",
+    "Team Leader": "Team_Leader",
+    "Property Advisor": "Property_Advisor",
+    "Property Activations Officer": "Property_Activations_Officer",
+    "Head of Agency": "Agency",
+    "Collections Officer - Tenant Purchase Scheme": "Collections_Officer",
+}
+HFDI_ROLE_CODES = {s: "hfdi_" + s.lower() for s in HFDI_ROLE_SHEETS.values()}
+HFDI_ROSTER = "the HFDI master scorecard workbook"
+#: Its tables: read as values. The List is staff_list; Constants is mapping.
+HFDI_TABLE_SHEETS = ("staff_list", "targets", "mapping", "Monthly_Summ")
+#: Scorecard_Actual_Template_2026.xlsx: A staff_id, B name, C role, D
+#: project, E..P January..December.
+HFDI_TEMPLATE_SHEETS = {"own_project_sales", "bank_accounts", "own_leads",
+                        "leads_followups"}
+
 
 class Spec:
     """Where one workbook keeps things. Everything else is its formulas."""
@@ -307,6 +334,35 @@ SPECS = {
         summaries=(("Monthly_Summary", 0, 1, 6),),
         files=("ib_scorecards", "ib_actuals"),
         source="the institutional banking scorecards workbook",
+        cap_to_run_month=True,
+    ),
+    # Master Scorecard - 2026.xlsm (HFDI). Columns: B perspective, C KPI, D
+    # measure, E weight, F FY target, G YTD, H actual, I % achievement, J
+    # weighted, M the template sheet; the score in J2 (=J23, the Total row).
+    # mapping!B4 is the month count, B3 the template column (B4+3), B1 the
+    # year. Template rows: A staff_id, B name, E..P January..December.
+    HFDI: Spec(
+        book=HFDI,
+        label="HFDI master",
+        marker="Property_Advisor",
+        role_sheets=HFDI_ROLE_SHEETS,
+        role_codes=HFDI_ROLE_CODES,
+        list_cols={"pf": 0, "code": 0, "name": 1, "role": 2, "branch": 3,
+                   "bbm": 9},
+        active_col=13,
+        inputs={(1, 2): "name", (2, 2): "branch"},
+        score=(1, 9),                                 # J2
+        constants_sheet="mapping",
+        month_column=(2, 1), month_count=(3, 1), year=(0, 1),
+        header="KPI", ends=("Total", "Staff Signature"),
+        cols={"perspective": 1, "measure": 2, "initiative": 3, "weight": 4,
+              "prior": None, "growth": None, "fy": 5, "ytd": 6, "actual": 7,
+              "score": 8, "weighted": 9, "feed": 12},
+        summaries=(("Monthly_Summ", 5, 0, 4),),
+        files=("hfdi_scorecards", "hfdi_actuals"),
+        source="the HFDI master scorecard workbook",
+        template_first_month=4,
+        cap_to_run_month=True,
     ),
 }
 
@@ -765,9 +821,11 @@ def _xl_value(v):
     return _store_value(v)
 
 
-def _read_xl_sheet(formulas_ws, values_ws, with_formulas=True):
+def _read_xl_sheet(formulas_ws, values_ws, with_formulas=True, rewrite=None):
     """One openpyxl sheet (opened with and without data_only) →
-    {"grid": [[value, ...]], "f": {"r,c": tokens}}, and the problems."""
+    {"grid": [[value, ...]], "f": {"r,c": tokens}}, and the problems.
+    ``rewrite``: a function applied to each formula's text first (the HFDI
+    workbook's table references become plain ranges)."""
     grid, f, problems = [], {}, []
     for r, row in enumerate(values_ws.iter_rows(values_only=True)):
         values = [_xl_value(v) for v in row]
@@ -786,6 +844,8 @@ def _read_xl_sheet(formulas_ws, values_ws, with_formulas=True):
                     text = v if isinstance(v, str) and v.startswith("=") else None
                 if not text:
                     continue
+                if rewrite is not None:
+                    text = rewrite(text)
                 try:
                     tokens = formula_tokens(text)
                     key = f"{c.row - 1},{c.column - 1}"
@@ -1159,9 +1219,95 @@ def read_ib(stream):
 
 
 def ib_run_month(book):
-    """The month the desk last ran the IB workbook for (Constants B2)."""
-    v = _at(book["tables"].get("Constants") or [], *SPECS[IB].month_count)
+    """The month the desk last ran the workbook for (its month-count cell:
+    IB Constants B2, HFDI mapping B4)."""
+    spec = spec_of(book)
+    grid = (book["tables"].get(getattr(spec, "constants_sheet", "Constants"))
+            or book["tables"].get("Constants") or [])
+    v = _at(grid, *spec.month_count)
     return int(v) if _num(v) and 1 <= v <= 12 else None
+
+
+def is_hfdi_workbook(data):
+    """Has this .xlsm the HFDI Master Scorecard's sheets?"""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        names = set(wb.sheetnames)
+        return ({"staff_list", "mapping", "Monthly_Summ", "Property_Advisor"} <= names)
+    finally:
+        wb.close()
+
+
+def _table_ranges(wb):
+    """{table name (lower): "'sheet'!A2:R44"} - each Excel table's data rows,
+    which ``name[]`` means in a formula."""
+    from openpyxl.utils import range_boundaries, get_column_letter
+
+    out = {}
+    for ws in wb.worksheets:
+        for name, table in ws.tables.items():
+            ref = table if isinstance(table, str) else table.ref
+            c1, r1, c2, r2 = range_boundaries(ref)
+            head = 1 if (getattr(table, "headerRowCount", 1) in (None, 1)) else 0
+            tail = int(getattr(table, "totalsRowCount", 0) or 0)
+            out[name.lower()] = (f"'{ws.title}'!{get_column_letter(c1)}{r1 + head}:"
+                                 f"{get_column_letter(c2)}{r2 - tail}")
+    return out
+
+
+def read_hfdi(stream):
+    """The HFDI Master Scorecard → book, shaped as the other books: the
+    macro's ten role cards keep their formulas (table references such as
+    sales_roles_targets[] turned into the table's own range), staff_list,
+    targets, mapping and Monthly_Summ their values. staff_list is also the
+    List and mapping also Constants, as the engine names them."""
+    import io
+
+    from openpyxl import load_workbook
+
+    data = stream.read() if hasattr(stream, "read") else stream
+    try:
+        wf = load_workbook(io.BytesIO(data), keep_vba=False)
+        wv = load_workbook(io.BytesIO(data), data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise WorkbookError(f"that is not an .xlsm/.xlsx workbook ({exc})")
+    tables = _table_ranges(wf)
+    unknown = set()
+
+    def rewrite(text):
+        def one(m):
+            name = m.group(1).lower()
+            if name in tables:
+                return tables[name]
+            unknown.add(m.group(0))
+            return m.group(0)
+        return re.sub(r"\b([A-Za-z_][A-Za-z0-9_.]*)\[\]", one, text)
+
+    book = {"book": HFDI, "cards": {}, "tables": {}, "problems": []}
+    names = list(wf.sheetnames)
+    missing = sorted(set(HFDI_TABLE_SHEETS) - set(names))
+    if missing:
+        book["problems"].append("not in the workbook: " + ", ".join(missing))
+    for sheet in names:
+        if sheet in HFDI_TABLE_SHEETS:
+            book["tables"][sheet] = _read_xl_sheet(wf[sheet], wv[sheet], False)[0]["grid"]
+        elif sheet in HFDI_ROLE_SHEETS.values():
+            card, problems = _read_xl_sheet(wf[sheet], wv[sheet], rewrite=rewrite)
+            book["cards"][sheet] = card
+            book["tables"][sheet] = card["grid"]
+            book["problems"] += problems
+    if unknown:
+        book["problems"].append("table references not found: " + ", ".join(sorted(unknown)))
+    book["tables"]["List"] = book["tables"].get("staff_list", [])
+    book["tables"]["Constants"] = book["tables"].get("mapping", [])
+    return book
 
 
 def ib_proof(book, actuals):
@@ -1402,26 +1548,38 @@ def read_actuals(stream):
     from openpyxl import load_workbook
 
     try:
-        book = load_workbook(stream, data_only=True)
+        book = load_workbook(stream, data_only=True, read_only=True)
     except Exception as exc:  # noqa: BLE001
         raise WorkbookError(f"that is not an .xlsx workbook ({exc})")
     out = {}
-    for sheet in book.worksheets:
-        grid = []
-        for row in sheet.iter_rows(values_only=True):
-            values = [_store_value(v) for v in row]
-            while values and values[-1] in (None, ""):
-                values.pop()
-            grid.append(values)
-        while grid and not grid[-1]:
-            grid.pop()
-        out[sheet.title] = grid
+    try:
+        for sheet in book.worksheets:
+            grid, empty = [], 0
+            for row in sheet.iter_rows(values_only=True):
+                values = [_store_value(v) for v in row]
+                while values and values[-1] in (None, ""):
+                    values.pop()
+                grid.append(values)
+                # A sheet formatted to the last row of Excel (the HFDI
+                # template's project_titan: 1,048,479 rows, 115 used) took
+                # minutes to walk. A template is a row per person: a thousand
+                # empty rows in a row is the end of it.
+                empty = 0 if values else empty + 1
+                if empty >= 1000:
+                    break
+            while grid and not grid[-1]:
+                grid.pop()
+            out[sheet.title] = grid
+    finally:
+        book.close()
     if IB_TEMPLATE_SHEETS <= set(out):
         # The IB template's account-level working sheets are not read by any
         # card, and their columns are not months (template_months counts
         # columns G.. as January..).
         for sheet in IB_RAW_SHEETS:
             out.pop(sheet, None)
+        return out
+    if HFDI_TEMPLATE_SHEETS <= set(out):
         return out
     if not out.get("KYC") and not out.get("CASA") and not (
             SALES_TEMPLATE_SHEETS & set(out)):
@@ -1434,6 +1592,8 @@ def actuals_book(actuals):
     """Which workbook's template this is → IB, SALES or BACK_OFFICE."""
     if IB_TEMPLATE_SHEETS <= set(actuals):
         return IB
+    if HFDI_TEMPLATE_SHEETS <= set(actuals):
+        return HFDI
     return SALES if SALES_TEMPLATE_SHEETS & set(actuals) else BACK_OFFICE
 
 
@@ -1443,17 +1603,18 @@ def actuals_book(actuals):
 MONTH_SHARE = 0.25
 
 
-def template_months(actuals):
+def template_months(actuals, first=6):
     """The months the template has figures for → [1, 2, … 9].
 
     Counted in non-zero numbers, because several sheets are pre-filled with
-    zeros to December.
+    zeros to December. ``first``: January's column (G on the back-office,
+    sales and IB templates; E on the HFDI one).
     """
     counts = [0] * 12
     for grid in actuals.values():
         for row in grid[1:]:
             for index in range(12):
-                column = 6 + index
+                column = first + index
                 value = row[column] if column < len(row) else None
                 if isinstance(value, (int, float)) and not isinstance(
                         value, bool) and value != 0:
@@ -1507,9 +1668,13 @@ class Evaluator:
         if (sheet in (self.book.get("evaluate_sheets") or getattr(self.spec, "evaluate_sheets", ()))
                 and sheet in self.book.get("cards", {})):
             return self._other(sheet).cell(r, c)
-        if sheet == "Constants" and (r, c) == self.spec.month_column:
-            return float(self.month + FIRST_MONTH_INDEX - 1)
-        if sheet == "Constants" and (r, c) == self.spec.month_count:
+        constants = sheet in ("Constants", getattr(self.spec, "constants_sheet", "Constants"))
+        if constants and (r, c) == self.spec.month_column:
+            # The template column the card reads: January's, then one a month.
+            first = getattr(self.spec, "template_first_month", None)
+            return float(self.month + (first - 1 if first is not None
+                                       else FIRST_MONTH_INDEX - 1))
+        if constants and (r, c) == self.spec.month_count:
             return float(self.month)
         grid = self.book["tables"].get(sheet)
         if grid is None:
@@ -2347,6 +2512,12 @@ def holders(book, keep_off=False):
             holder.sheet = by_role.get(holder.role.strip().upper())
         if not (holder.name and (holder.sales_code or holder.pf)):
             continue
+        active_col = getattr(spec, "active_col", None)
+        if active_col is not None:
+            # The HFDI macro runs only rows whose "active" is 1.
+            flag = row[active_col] if active_col < len(row) else None
+            if str(flag).strip() not in ("1", "1.0"):
+                continue
         if on_probation.get(holder.sales_code) in book.get("cards", {}):
             holder.sheet = on_probation[holder.sales_code]
         if not keep_off and off_card(holder.sales_code):
@@ -2978,12 +3149,15 @@ def rescore(sales_code):
 def compute_all(book, actuals, months=None, only=None):
     """Every holder × every month with figures → [(holder, month, card)].
     ``only``: a set of sales codes, to recompute just those people."""
-    months = months or template_months(actuals)
-    if spec_of(book).book == IB:
+    spec = spec_of(book)
+    months = months or template_months(
+        actuals, first=getattr(spec, "template_first_month", None) or 6)
+    if getattr(spec, "cap_to_run_month", False):
         # The IB template's later columns hold leftovers its account sheet
         # computes from blank balances (November's deposit growth = 0 less
         # December's), which a count of figures takes for a month. The desk
-        # says which month it ran (Constants B2): nothing after it is its.
+        # says which month it ran (IB Constants B2, HFDI mapping B4): nothing
+        # after it is its.
         run = ib_run_month(book)
         months = [m for m in months if run and m <= run]
     by_month = {month: running_totals_filled(actuals, month) for month in months}
@@ -3053,7 +3227,8 @@ def store(results, year, recorded=None, loaded_by=""):
 YEARLY_KINDS = frozenset({"scorecards", "actuals", "sales_scorecards",
                           "sales_actuals", "bb_scorecards", PROBATION_KIND,
                           "rbo_scorecards", "rbo_actuals",
-                          "ib_scorecards", "ib_actuals"})
+                          "ib_scorecards", "ib_actuals",
+                          "hfdi_scorecards", "hfdi_actuals"})
 
 
 def year_kind(kind, year):
@@ -3124,7 +3299,11 @@ def check(book, actuals):
     Monthly_Summ is recomputed and compared, by sales code.
     """
     spec = spec_of(book)
-    months = template_months(actuals)
+    months = template_months(actuals,
+                             first=getattr(spec, "template_first_month", None) or 6)
+    if getattr(spec, "cap_to_run_month", False):
+        run = ib_run_month(book)
+        months = [m for m in months if run and m <= run]
     people = [h for h in holders(book) if h.sheet in book["cards"]]
     recorded = recorded_scores(book)
     by_month, differ = {}, []
@@ -3342,6 +3521,7 @@ def card_payload(record, asked=None):
                           getattr(spec, "role_code", "")
                           or (rbo_role_code(sheet) if spec.book == RETAIL_BO else None)
                           or (IB_ROLE_CODES.get(sheet) if spec.book == IB else None)
+                          or (HFDI_ROLE_CODES.get(sheet) if spec.book == HFDI else None)
                           or SALES_ROLE_CODES.get(data.get("role", ""),
                                                   sheet)),
             "branch": record.branch,
@@ -3846,20 +4026,28 @@ def live_card(sales_code, engine_card, as_at):
         return None
     month = as_at.month
 
-    if spec.book == IB:
-        # Institutional Banking: a month its actuals template has is the
-        # stored card - the workbook's formulas over the desk's figures,
+    if spec.book in (IB, HFDI):
+        # Institutional Banking and HFDI: a month its actuals template has is
+        # the stored card - the workbook's formulas over the desk's figures,
         # exactly. A month it does not have gets no card rather than a made-up
-        # one: the template's later columns hold leftovers (a blank balance
-        # less December's), which scored the head -23.6% for November.
-        record = stored_month(code, datetime.date(as_at.year, month, 1), IB)
+        # one: the IB template's later columns hold leftovers (a blank balance
+        # less December's), which scored the head -23.6% for November. The IB
+        # month still open reads the warehouse (ib_live) when its feed is on.
+        record = stored_month(code, datetime.date(as_at.year, month, 1), spec.book)
         if record is not None:
             return card_payload(record, asked=as_at)
-        return {"has_card": False, "reason": "ib_month_not_loaded",
+        if spec.book == IB:
+            from . import ib_live
+
+            live = ib_live.live_ib_card(book, actuals, holder, as_at)
+            if live is not None:
+                return live
+        title = "Institutional Banking" if spec.book == IB else "HFDI"
+        return {"has_card": False, "reason": f"{spec.book}_month_not_loaded",
                 "sales_code": code.upper(),
-                "detail": (f"Your {as_at:%B %Y} Institutional Banking card fills in "
-                           f"when the IB scorecards workbook and actuals template "
-                           f"run for {as_at:%B %Y} are loaded under Scorecards.")}
+                "detail": (f"Your {as_at:%B %Y} {title} card fills in when the "
+                           f"{title} scorecards workbook and actuals template run "
+                           f"for {as_at:%B %Y} are loaded under Scorecards.")}
 
     # The live engine's figure for each of its lines, labelled with the
     # template sheet that line reads - which is what the workbook names too.

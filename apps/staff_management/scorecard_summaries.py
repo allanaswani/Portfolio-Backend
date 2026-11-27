@@ -30,7 +30,8 @@ import re
 FOLDERS = {"back_office": "Back office", "sales": "Sales",
            "branch_business": "Branch managers",
            "retail_back_office": "Retail back office",
-           "ib": "Institutional Banking"}
+           "ib": "Institutional Banking",
+           "hfdi": "HFDI"}
 #: Sheets that end with a rank on the latest month (the desk's own column).
 RANKED = {"Branch_Monthly_Summary"}
 
