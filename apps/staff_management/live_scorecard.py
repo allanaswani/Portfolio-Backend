@@ -2406,9 +2406,16 @@ def live_actuals(sales_code, staff_name="", staff_pf="", branch="",
             sellers = bb_live_feeds.banca_by_seller(
                 upto.year, upto.month, 120_000, as_at=upto)
             cache.set(key, sellers, 3600)
-        row = sellers.get(sales_code.strip().replace(" ", "").upper(),
-                          {"vic_life": 0.0, "vic_non_life": 0.0, "non_vic": 0.0,
-                           "all": 0.0, "vic_life_n": 0, "vic_non_life_n": 0})
+        # Every code the person sells under, a former DSR code too (linked
+        # by PF - loan_applications.seller_codes): Sarah Nzeli's non-life
+        # policies are under DSR224, her card under SN3521.
+        from .loan_applications import seller_codes
+
+        row = {"vic_life": 0.0, "vic_non_life": 0.0, "non_vic": 0.0,
+               "all": 0.0, "vic_life_n": 0, "vic_non_life_n": 0}
+        for c in seller_codes(sales_code):
+            for k, v in (sellers.get(c) or {}).items():
+                row[k] = row.get(k, 0) + v
         count_label = (f"VIC (Britam) policies with paid premiums, as at "
                        f"{upto.day} {upto:%b %Y}")
         label = f"VIC (Britam) paid premiums, as at {upto.day} {upto:%b %Y}"

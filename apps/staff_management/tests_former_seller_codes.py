@@ -34,6 +34,42 @@ class FormerSellerCodeTests(TestCase):
         self.assertEqual(la.seller_codes("ZZ1"), ["ZZ1"])
         self.assertEqual(la.seller_codes("NOPF1"), ["NOPF1"])
 
+    def test_pf_from_the_workbook_list_when_hr_has_none(self):
+        # Sarah Nzeli: no staff_employee_data row; the retail back office
+        # List carries her PF; DSR224 carries the same PF.
+        import datetime
+
+        from .models import BoScorecard
+
+        BoScorecard.objects.create(book="retail_back_office", sales_code="SN3521",
+                                   staff_pf="3521", staff_name="Sarah Nzeli",
+                                   sheet="RO_COMMERCIAL", month=datetime.date(2026, 9, 1))
+        DSRSalesCode.objects.create(pf_number="3521", sales_code="DSR224",
+                                    salesperson="Sarah Nzeli")
+        self.assertEqual(la.seller_codes("SN3521"), ["SN3521", "DSR224"])
+
+    def test_vic_lines_add_the_former_codes_policies(self):
+        import datetime
+
+        from . import bb_live_feeds
+        from .live_scorecard import live_actuals
+        from .models import BoScorecard
+
+        BoScorecard.objects.create(book="retail_back_office", sales_code="SN3521",
+                                   staff_pf="3521", staff_name="Sarah Nzeli",
+                                   sheet="RO_COMMERCIAL", month=datetime.date(2026, 9, 1))
+        DSRSalesCode.objects.create(pf_number="3521", sales_code="DSR224",
+                                    salesperson="Sarah Nzeli")
+        sellers = {"SN3521": {"vic_life": 2642088.0, "vic_non_life": 0.0, "non_vic": 0.0,
+                              "all": 2642088.0, "vic_life_n": 1, "vic_non_life_n": 0},
+                   "DSR224": {"vic_life": 0.0, "vic_non_life": 225603.0, "non_vic": 0.0,
+                              "all": 225603.0, "vic_life_n": 0, "vic_non_life_n": 4}}
+        with mock.patch.object(bb_live_feeds, "banca_by_seller", return_value=sellers):
+            got = live_actuals("SN3521", wanted={"vic_life_count", "vic_non_life_count"},
+                               as_at=datetime.date(2026, 10, 31))
+        self.assertEqual(got["vic_life_count"]["value"], 1)
+        self.assertEqual(got["vic_non_life_count"]["value"], 4)
+
     def test_loan_approvals_count_the_former_code(self):
         twc.LoanApprovalsTests._trail(self, [
             ("B1", "DSR421", "2026-10-03", "RM Processing Accepted Letter Of Offer", "12000000"),

@@ -61,6 +61,15 @@ def seller_codes(sales_code):
         with transaction.atomic():
             pf = _pf_key(pf_for(code, roster_row(code)))
             if not pf:
+                # Not on the DMC roster or HR's table: the PF the desk's own
+                # workbook List carries (Sarah Nzeli SN3521, retail back
+                # office - her non-life policies are under DSR224).
+                from .models import BoScorecard
+
+                pf = _pf_key(BoScorecard.objects.filter(sales_code__iexact=code)
+                             .exclude(staff_pf="").order_by("-month")
+                             .values_list("staff_pf", flat=True).first())
+            if not pf:
                 return out
             found = [c for p, c in DSRSalesCode.objects.values_list("pf_number", "sales_code")
                      if _pf_key(p) == pf]
