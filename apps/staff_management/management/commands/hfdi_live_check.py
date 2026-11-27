@@ -16,6 +16,8 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--year", type=int, default=datetime.date.today().year)
+        parser.add_argument("--detail", action="store_true",
+                            help="Every person compared: the desk's change and the source's.")
 
     def handle(self, *args, **opts):
         from django.core.cache import cache
@@ -41,6 +43,14 @@ class Command(BaseCommand):
         for sheet in hfdi_live.CANDIDATES:
             state = "LIVE" if found.get(sheet) else "desk's figure"
             self.stdout.write(f"  {sheet:22} {state:14} {found['_detail'].get(sheet, '')}")
+        if opts["detail"]:
+            for rule, moved in (found["_detail"].get("_rows") or {}).items():
+                self.stdout.write(f"\n  {rule}: code | desk's Sep->Oct change | source's | "
+                                  f"desk's Oct figure")
+                for code, desk, src, now in sorted(moved, key=lambda m: -abs(m[1] - m[2])):
+                    flag = "" if abs(desk - src) <= max(0.5, abs(now) * hfdi_live.TOLERANCE) else "  DIFF"
+                    self.stdout.write(f"    {code:10} {desk:>16,.2f} {src:>16,.2f} "
+                                      f"{now:>16,.2f}{flag}")
         unmatched = [h.name for h in people if frozenset(name_tokens(h.name)) not in codes]
         if unmatched:
             self.stdout.write(f"\n  {len(unmatched)} people have no sales code by name on "

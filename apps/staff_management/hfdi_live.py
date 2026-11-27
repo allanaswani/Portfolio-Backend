@@ -217,6 +217,9 @@ def proof(book, actuals, year):
             moved = [(c, now - before, (src.get(c) or [0] * 12)[run - 1]
                       - (src.get(c) or [0] * 12)[run - 2], now) for c, now, before in pairs]
             bad = [m for m in moved if abs(m[1] - m[2]) > max(0.5, abs(m[3]) * TOLERANCE)]
+            # Every person compared, for hfdi_live_check --detail: (code, the
+            # desk's change, the source's change, the desk's figure).
+            detail.setdefault("_rows", {})[f"{sheet} / {label}"] = moved
             moving = sum(1 for m in moved if m[1] != 0)
             if not bad and moving:
                 chosen[sheet] = (label, src)
