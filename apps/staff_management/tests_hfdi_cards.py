@@ -140,6 +140,16 @@ class HfdiTests(TestCase):
         self.assertEqual(line["ytd_actual"], 8.0)          # 5 + (8 - 5)
         self.assertIn("own_project_sales (rule B)", card["coverage_note"])
 
+    def test_partial_insurance_codes_as_the_report_resolves_them(self):
+        from . import hfdi_live
+
+        employees = {"EWK3561", "MM4251", "AB1111", "CD1111"}
+        got = hfdi_live.resolve_partial_codes(
+            {"3561", "3561.0", "MM4251", "1111", "9999", "XY3561"}, employees)
+        # Four digits one employee code ends in: theirs. Shared digits, unknown
+        # digits, a full code already an employee's, a lettered code: left.
+        self.assertEqual(got, {"3561": "EWK3561", "3561.0": "EWK3561"})
+
     def test_load_and_card(self):
         from django.contrib.auth.models import User
         from rest_framework.test import APIClient

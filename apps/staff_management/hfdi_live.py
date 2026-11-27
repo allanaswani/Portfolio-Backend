@@ -55,6 +55,35 @@ def _monthly(rows):
 
 # ── the report's sources, as candidate rules ───────────────────────────────
 
+def employee_codes():
+    """The active hfdi_employee_data sales codes, upper case - the report's
+    employee map (load_employee_map keeps active rows only)."""
+    return {str(c).strip().upper() for c, active in _rows(
+        "SELECT sales_code, active FROM hfdi_employee_data", [])
+        if c and str(active).strip().lower() in ("1", "true", "yes", "y")}
+
+
+def resolve_partial_codes(codes, employees, digits=4):
+    """group_synergies_report.resolve_partial_codes: a code that is not an
+    employee's (e.g. "3561") becomes the one employee sales code ending in the
+    same four digits (EWK3561); digits shared by several codes are left alone.
+    → {raw code: resolved code} for the codes it changes."""
+    import re
+
+    ends = {}
+    for e in employees:
+        m = re.search(r"(\d{%d})$" % digits, e)
+        if m:
+            ends.setdefault(m.group(1), []).append(e)
+    partial = {k: v[0] for k, v in ends.items() if len(v) == 1}
+    out = {}
+    for raw in codes:
+        code = re.sub(r"\.0+$", "", str(raw or "").strip().upper())
+        if code and code not in employees and code in partial:
+            out[raw] = partial[code]
+    return out
+
+
 def insurance_paid(year):
     code = ("CASE WHEN LOWER(c.sales_person) LIKE '%%mary mungai%%' THEN 'MM4251' "
             "WHEN LOWER(c.insured) LIKE '%%lucy ngima maina%%' THEN 'AMM3550' ELSE c.code END")
@@ -63,10 +92,12 @@ def insurance_paid(year):
             SELECT *, ROW_NUMBER() OVER (PARTITION BY CONCAT(r_number, starting_date)
                                          ORDER BY r_number, starting_date DESC) AS rn
             FROM insurance_policies)
-        SELECT UPPER(REPLACE(TRIM(({code})), ' ', '')), {_DATE.format(c='c.starting_date')},
+        SELECT UPPER(TRIM(({code}))), {_DATE.format(c='c.starting_date')},
                COALESCE(NULLIF(TRIM(c.paid::text), ''), '0')::numeric
         FROM cte c WHERE c.rn = 1 AND c.year::text = %s"""
-    return _monthly(_rows(sql, [str(year)]))
+    rows = _rows(sql, [str(year)])
+    fixed = resolve_partial_codes({r[0] for r in rows}, employee_codes())
+    return _monthly([(fixed.get(c, c), when, v) for c, when, v in rows])
 
 
 def _accounts(year, funded, value):
@@ -211,7 +242,7 @@ def live_hfdi_card(book, actuals, holder, as_at):
     run = wc.ib_run_month(book)
     if not run or month <= run:
         return None
-    key = f"hfdi_live_proof:v1:{year}:{run}"
+    key = f"hfdi_live_proof:v2:{year}:{run}"
     found = cache.get(key)
     if found is None:
         found = proof(book, actuals, year)
