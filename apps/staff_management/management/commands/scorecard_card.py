@@ -135,8 +135,14 @@ class Command(BaseCommand):
                 else:
                     write(f"      actual  {line['as_at'] or '':<34}"
                           f"{_money(line['ytd_actual'])}")
-                    write(f"      score   {line['score'] * 100:>6.1f}%"
-                          f"   weighted {line['weighted_score'] * 100:>6.2f}%")
+                    score, weighted = line.get("score"), line.get("weighted_score")
+                    if score is None:
+                        # A zero-weight line the workbook leaves blank (IB
+                        # Trade Sales / FX Sales): nothing to score.
+                        write("      score   -      (no score on this line)")
+                    else:
+                        write(f"      score   {score * 100:>6.1f}%"
+                              f"   weighted {(weighted or 0) * 100:>6.2f}%")
 
         write("")
         write(self.style.SUCCESS(

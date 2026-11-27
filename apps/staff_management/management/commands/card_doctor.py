@@ -307,6 +307,14 @@ class Command(BaseCommand):
               f"{person.branch or '(none)'}  |  branch code {brn or '(none)'}"
               f"  |  PF {pf or '(none)'}")
         write(f"  found on {person.roster}")
+        try:
+            from apps.staff_management.loan_applications import seller_codes
+
+            # Every code the iApply and insurance lines read for this person,
+            # linked by PF (a former DSR code shows here once it is linked).
+            write(f"  seller codes read: {', '.join(seller_codes(code))}")
+        except Exception as exc:  # noqa: BLE001 - diagnostic only
+            write(f"  seller codes read: could not be worked out ({type(exc).__name__})")
         write("")
         write("  Each line: rows FOR THIS PERSON of rows IN THE TABLE.")
         write("")
