@@ -4132,6 +4132,18 @@ def live_card(sales_code, engine_card, as_at):
             live = ib_live.live_ib_card(book, actuals, holder, as_at)
             if live is not None:
                 return live
+        if spec.book == HFDI:
+            from . import hfdi_live
+
+            try:
+                live = hfdi_live.live_hfdi_card(book, actuals, holder, as_at)
+            except Exception:  # noqa: BLE001 - a source that cannot be read: the
+                import logging  # month waits rather than show a broken card
+
+                logging.getLogger(__name__).exception("HFDI live card %s", code)
+                live = None
+            if live is not None:
+                return live
         title = "Institutional Banking" if spec.book == IB else "HFDI"
         return {"has_card": False, "reason": f"{spec.book}_month_not_loaded",
                 "sales_code": code.upper(),

@@ -107,6 +107,39 @@ class HfdiTests(TestCase):
         self.assertIn("1 active people, the desk's month 10", text)
         self.assertRegex(text, r"own_project_sales\s+property units .*\s+1\s+1\s+1 ")
 
+    def test_live_takes_the_rule_whose_change_gives_the_desks(self):
+        import datetime
+        from unittest import mock
+
+        from django.core.cache import cache
+
+        from . import hfdi_live
+        from .live_scorecard import name_tokens
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        book = wc.read_hfdi(master())
+        actuals = wc.read_actuals(io.BytesIO(template()))
+        # own_project_sales: the desk has Sep 4.5, Oct 5 for Pat. Rule A's
+        # change Sep->Oct is +2 (wrong); rule B's is +0.5 (the desk's), and
+        # it reads 8 by November.
+        wrong = {"PA1": [0] * 8 + [1, 3, 3, 3]}
+        right = {"PA1": [0] * 8 + [4.5, 5, 8, 8]}
+        candidates = {"own_project_sales": [("rule A", lambda y: wrong),
+                                            ("rule B", lambda y: right)]}
+        holder = next(h for h in wc.holders(book) if h.sales_code == "101")
+        with mock.patch.object(hfdi_live, "CANDIDATES", candidates), \
+                mock.patch.object(hfdi_live, "code_map",
+                                  return_value={frozenset(name_tokens("Pat Advisor")): "PA1"}):
+            found = hfdi_live.proof(book, actuals, 2026)
+            self.assertEqual(found["own_project_sales"][0], "rule B")
+            self.assertIn("rule B: its change to Oct gives the desk's for all 1 people",
+                          found["_detail"]["own_project_sales"])
+            card = hfdi_live.live_hfdi_card(book, actuals, holder, datetime.date(2026, 11, 30))
+        line = card["perspectives"][0]["lines"][0]
+        self.assertEqual(line["ytd_actual"], 8.0)          # 5 + (8 - 5)
+        self.assertIn("own_project_sales (rule B)", card["coverage_note"])
+
     def test_load_and_card(self):
         from django.contrib.auth.models import User
         from rest_framework.test import APIClient
