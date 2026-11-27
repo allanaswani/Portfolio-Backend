@@ -296,10 +296,9 @@ class BoActualsUploadView(APIView):
         year = self._year(request, spec)
         if isinstance(year, Response):
             return year
-        cards = self._cards_report(workbook_cards.saved(spec.files[0], year),
-                                   actuals_book, spec)
-        cards["year"] = year
 
+        # IB and HFDI report their own proof (_ib_apply); the back-office check
+        # below would compute every card a second time (HFDI: 18 s -> 29 s).
         if kind in (workbook_cards.IB, workbook_cards.HFDI):
             if kind == workbook_cards.IB and apply:
                 # Its account sheet, for ib_feed_probe (the cards never read it).
@@ -310,6 +309,10 @@ class BoActualsUploadView(APIView):
             return self._ib_apply(workbook_cards.saved(spec.files[0], year),
                                   actuals_book, year, upload.name, apply, who,
                                   save_actuals=True, kind=kind)
+
+        cards = self._cards_report(workbook_cards.saved(spec.files[0], year),
+                                   actuals_book, spec)
+        cards["year"] = year
 
         if kind == workbook_cards.SALES:
             # The sales template: the sales workbook's cards, every closed
