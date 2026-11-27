@@ -254,6 +254,8 @@ class BoActualsUploadView(APIView):
 
         data = upload.read()
         upload.seek(0)
+        if workbook_cards.is_ib_workbook(data):
+            return self._ib_scorecards(data, upload.name, apply, who)
         if workbook_cards.is_retail_bo_workbook(data):
             return self._retail_bo(data, upload.name, apply, who)
         from . import rbo_live_feeds
@@ -294,6 +296,11 @@ class BoActualsUploadView(APIView):
         cards = self._cards_report(workbook_cards.saved(spec.files[0], year),
                                    actuals_book, spec)
         cards["year"] = year
+
+        if kind == workbook_cards.IB:
+            return self._ib_apply(workbook_cards.saved(spec.files[0], year),
+                                  actuals_book, year, upload.name, apply, who,
+                                  save_actuals=True)
 
         if kind == workbook_cards.SALES:
             # The sales template: the sales workbook's cards, every closed
@@ -441,6 +448,82 @@ class BoActualsUploadView(APIView):
             "applied": True, "cards": cards,
             "detail": (f"Saved the {spec.label} scorecards workbook for "
                        f"{year}. " + self._stored_detail(cards, spec))})
+
+    def _ib_scorecards(self, data, file_name, apply, who):
+        """The Institutional Banking scorecards workbook (.xlsm)."""
+        import io
+
+        from . import workbook_cards as wc
+
+        try:
+            book = wc.read_ib(io.BytesIO(data))
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            return Response({"file": f"That workbook could not be read: {exc}"},
+                            status=400)
+        year = wc.book_year(book)
+        spec = wc.SPECS[wc.IB]
+        actuals = (wc.saved(spec.files[1], year)
+                   if year in wc.stored_years(spec.files[1]) else None)
+        return self._ib_apply(book, actuals, year, file_name, apply, who,
+                              save_book=True)
+
+    def _ib_apply(self, book, actuals, year, file_name, apply, who,
+                  save_book=False, save_actuals=False):
+        """Report (and with ``apply`` save) the IB workbook and/or template.
+        With both, every card holder's card for the month the desk last ran
+        is recomputed and set beside the score the desk's macro recorded on
+        Monthly_Summary - each difference named. Like the back-office and
+        sales templates, a difference does not refuse the load: the stored
+        card carries the desk's recorded score beside its own."""
+        from . import workbook_cards as wc
+
+        spec = wc.SPECS[wc.IB]
+        report = {"book": wc.IB, "year": year, "ready": bool(book and actuals)}
+        lines = []
+        if book is not None:
+            report["problems"] = book.get("problems", [])
+            people = [h for h in wc.holders(book) if h.sheet in book["cards"]]
+            report["people"] = len(people)
+            report["month"] = wc.ib_run_month(book)
+        if book is not None and actuals is not None:
+            proof = wc.ib_proof(book, actuals)
+            compared = [p for p in proof if p["desk"] is not None]
+            same = sum(1 for p in compared if p["same"])
+            report.update({"proof": proof, "same": same, "compared": len(compared)})
+            lines.append(f"{same} of {len(compared)} cards the desk scored for month "
+                         f"{report['month']} recompute to its recorded score.")
+            for p in proof:
+                if p["desk"] is None:
+                    lines.append(f"  {p['sales_code']} {p['name']}: {p['why']} - "
+                                 f"computed {p['computed']!s:.6}")
+                elif not p["same"]:
+                    lines.append(f"  {p['sales_code']} {p['name']}: desk "
+                                 f"{p['desk']:.4%}, computed {p['computed']!s:.6} - "
+                                 f"the template's figures differ from those the "
+                                 f"desk ran this card on")
+        elif book is None:
+            lines.append(f"Load the {year} IB scorecards workbook (.xlsm) too, and "
+                         f"every card is computed from its formulas.")
+        else:
+            lines.append(f"Load the {year} IB actuals template (.xlsx) too, and "
+                         f"every card is computed from its formulas.")
+        what = ("IB scorecards workbook" if save_book else "IB actuals template")
+        head = f"Read the {what} for {year}."
+        if not apply:
+            return Response({"applied": False, "cards": report,
+                             "detail": "\n".join([head] + lines
+                                                 + ["Nothing has been saved yet."])})
+        if save_book:
+            wc.save_file(spec.files[0], book, file_name, who, year=year)
+        if save_actuals:
+            wc.save_file(spec.files[1], actuals, file_name, who, year=year)
+        if book is not None and actuals is not None:
+            report["stored"] = wc.rebuild(book, actuals, who)
+            lines.append(f"Saved. {report['stored']:,} card-month(s) computed.")
+        else:
+            lines.append("Saved.")
+        return Response({"applied": True, "cards": report,
+                         "detail": "\n".join([head] + lines)})
 
     def _retail_bo(self, data, file_name, apply, who):
         """The Retail Back Office scorecards workbook (.xlsm): credit

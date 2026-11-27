@@ -159,6 +159,26 @@ RBO_INITIATIVE_SHEETS = ("INITIATIVES_APM", "INITIATIVES_SPM", "INITIATIVES_HEAL
 RBO_ROLE_CODES = {sheet: "rbo_" + sheet.lower() for sheet in RBO_ROLE_SHEETS.values()}
 RBO_ROSTER = "the retail back office scorecards workbook"
 
+#: IB_Scorecards_Template (.xlsm), Institutional Banking. Its macro
+#: (generate_ib_scorecards) puts "IB RM" on IB_RM and "HEAD OF INSTITUTIONAL
+#: BANKING" on HOD_IB, typing C2 name, E2 role, C3 branch, E3 reports to; the
+#: score is K2 (=L23). Every actual is VLOOKUP($C$2, INDIRECT("[2026_IB_
+#: Actual_Template_v2.xlsx]"&M&"!$c:$R"), Constants!B2+4, 0) on the template.
+IB = "ib"
+IB_ROLE_SHEETS = {"IB RM": "IB_RM", "HEAD OF INSTITUTIONAL BANKING": "HOD_IB"}
+IB_ROLE_CODES = {"IB_RM": "ib_rm", "HOD_IB": "ib_head"}
+IB_ROSTER = "the institutional banking scorecards workbook"
+#: The workbook's own tables - read as values, never evaluated.
+IB_TABLE_SHEETS = ("List", "Constants", "Monthly_Summary", "mapping")
+#: What the cards' formulas name: the IB actuals template.
+IB_TEMPLATE_MARK = "ib_actual_template"
+#: The IB actuals template's per-person sheets (any one of them is not enough).
+IB_TEMPLATE_SHEETS = {"Revenue", "Deposit_Growth", "Deposit_Mix",
+                      "Interest_Expense_Rate", "Client_Retention"}
+#: Its account-level working sheets: the per-person sheets are computed from
+#: them, the cards never read them, and their columns are not months.
+IB_RAW_SHEETS = ("Portfolio", "PVTS")
+
 
 class Spec:
     """Where one workbook keeps things. Everything else is its formulas."""
@@ -264,6 +284,29 @@ SPECS = {
         evaluate_sheets=RBO_INITIATIVE_SHEETS,
         files=("rbo_scorecards", "rbo_actuals"),
         source="the retail back office scorecards workbook",
+    ),
+    # IB_Scorecards_Template (.xlsm): IB RMs and the Head of IB. Columns: E
+    # weight as typed, F the weight the score uses (=E, except where the desk
+    # typed another), G/H FY target, I YTD (=H*(Constants!B2/12)), J actual,
+    # K score, L weighted, M the template sheet; the score in K2.
+    IB: Spec(
+        book=IB,
+        label="institutional banking",
+        marker="HOD_IB",
+        role_sheets=IB_ROLE_SHEETS,
+        role_codes=IB_ROLE_CODES,
+        list_cols={"pf": 0, "code": 1, "name": 2, "role": 3, "branch": 4,
+                   "bbm": 6},
+        inputs={(1, 2): "name", (1, 4): "role", (2, 2): "branch", (2, 4): "bbm"},
+        score=(1, 10),                                # K2
+        month_column=(0, 1), month_count=(1, 1), year=(4, 1),
+        header="KPI", ends=("Reviewee",),
+        cols={"perspective": 1, "measure": 2, "initiative": 3, "weight": 5,
+              "prior": None, "growth": None, "fy": 7, "ytd": 8, "actual": 9,
+              "score": 10, "weighted": 11, "feed": 12},
+        summaries=(("Monthly_Summary", 0, 1, 6),),
+        files=("ib_scorecards", "ib_actuals"),
+        source="the institutional banking scorecards workbook",
     ),
 }
 
@@ -1040,6 +1083,110 @@ def rbo_proof(book, actuals):
     return out
 
 
+def is_ib_workbook(data):
+    """Has this .xlsm the Institutional Banking scorecards workbook's
+    sheets, its cards naming the IB actuals template?"""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        names = set(wb.sheetnames)
+        if not {"List", "Constants", "Monthly_Summary"} <= names:
+            return False
+        for sheet in IB_ROLE_SHEETS.values():
+            if sheet not in names:
+                continue
+            for row in wb[sheet].iter_rows(max_row=40, max_col=14, values_only=True):
+                if any(isinstance(v, str) and IB_TEMPLATE_MARK in v.lower() for v in row):
+                    return True
+        return False
+    finally:
+        wb.close()
+
+
+def read_ib(stream):
+    """The Institutional Banking scorecards workbook → book, shaped as
+    :func:`read_scorecards` shapes an .xlsb: the role cards keep their
+    formulas (and any sheet a card's formulas reach), the List, Constants,
+    Monthly_Summary and mapping their values."""
+    import io
+
+    from openpyxl import load_workbook
+
+    data = stream.read() if hasattr(stream, "read") else stream
+    try:
+        wf = load_workbook(io.BytesIO(data), read_only=True, keep_vba=False)
+        wv = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise WorkbookError(f"that is not an .xlsm/.xlsx workbook ({exc})")
+    try:
+        names = list(wf.sheetnames)
+        book = {"book": IB, "cards": {}, "tables": {}, "problems": []}
+        missing = sorted((set(IB_TABLE_SHEETS) - {"mapping"}
+                          | set(IB_ROLE_SHEETS.values())) - set(names))
+        if missing:
+            book["problems"].append("not in the workbook: " + ", ".join(missing))
+        for sheet in names:
+            if sheet in IB_TABLE_SHEETS:
+                book["tables"][sheet] = _read_xl_sheet(wf[sheet], wv[sheet],
+                                                       False)[0]["grid"]
+                continue
+            card, problems = _read_xl_sheet(wf[sheet], wv[sheet])
+            book["cards"][sheet] = card
+            book["tables"][sheet] = card["grid"]
+            book["problems"] += problems
+    finally:
+        wf.close()
+        wv.close()
+    cards = {s for s in IB_ROLE_SHEETS.values() if s in book["cards"]}
+    reached = set()
+    for sheet in cards:
+        for tokens in book["cards"][sheet]["f"].values():
+            for t in tokens:
+                if t[0] in ("r", "a") and t[1] and not str(t[1]).startswith("@"):
+                    reached.add(t[1])
+    book["evaluate_sheets"] = sorted((reached & set(book["cards"])) - cards
+                                     - set(IB_TABLE_SHEETS))
+    for sheet in list(book["cards"]):
+        if sheet not in cards and sheet not in book["evaluate_sheets"]:
+            book["cards"].pop(sheet)
+    return book
+
+
+def ib_run_month(book):
+    """The month the desk last ran the IB workbook for (Constants B2)."""
+    v = _at(book["tables"].get("Constants") or [], *SPECS[IB].month_count)
+    return int(v) if _num(v) and 1 <= v <= 12 else None
+
+
+def ib_proof(book, actuals):
+    """Every IB card holder's card for the month the desk last ran, from the
+    workbook's formulas over the template → [{sales_code, name, sheet, desk,
+    computed, same}]. ``desk`` is the score its macro wrote on
+    Monthly_Summary for that month - so the cards are proven against what
+    the desk itself recorded, person by person."""
+    month = ib_run_month(book)
+    recorded = recorded_scores(book)
+    out = []
+    for holder in holders(book, keep_off=True):
+        if holder.sheet not in book.get("cards", {}) or month is None:
+            continue
+        desk = recorded.get((holder.sales_code, month))
+        total = compute(book, actuals, holder, month)["total"]
+        same = _num(total) and _num(desk) and abs(total - desk) < 1e-9
+        out.append({"sales_code": holder.sales_code, "name": holder.name,
+                    "sheet": holder.sheet, "desk": desk, "computed": total,
+                    "same": bool(same),
+                    "why": "" if desk is not None else
+                    f"no score on Monthly_Summary for month {month}"})
+    return out
+
+
 def _allocation_columns(card):
     """The Summary Allocation columns a card's formulas read."""
     cols = set()
@@ -1269,6 +1416,13 @@ def read_actuals(stream):
         while grid and not grid[-1]:
             grid.pop()
         out[sheet.title] = grid
+    if IB_TEMPLATE_SHEETS <= set(out):
+        # The IB template's account-level working sheets are not read by any
+        # card, and their columns are not months (template_months counts
+        # columns G.. as January..).
+        for sheet in IB_RAW_SHEETS:
+            out.pop(sheet, None)
+        return out
     if not out.get("KYC") and not out.get("CASA") and not (
             SALES_TEMPLATE_SHEETS & set(out)):
         raise WorkbookError("this is not an actuals template - it has none "
@@ -1277,7 +1431,9 @@ def read_actuals(stream):
 
 
 def actuals_book(actuals):
-    """Which workbook's template this is → SALES or BACK_OFFICE."""
+    """Which workbook's template this is → IB, SALES or BACK_OFFICE."""
+    if IB_TEMPLATE_SHEETS <= set(actuals):
+        return IB
     return SALES if SALES_TEMPLATE_SHEETS & set(actuals) else BACK_OFFICE
 
 
@@ -2806,6 +2962,13 @@ def compute_all(book, actuals, months=None, only=None):
     """Every holder × every month with figures → [(holder, month, card)].
     ``only``: a set of sales codes, to recompute just those people."""
     months = months or template_months(actuals)
+    if spec_of(book).book == IB:
+        # The IB template's later columns hold leftovers its account sheet
+        # computes from blank balances (November's deposit growth = 0 less
+        # December's), which a count of figures takes for a month. The desk
+        # says which month it ran (Constants B2): nothing after it is its.
+        run = ib_run_month(book)
+        months = [m for m in months if run and m <= run]
     by_month = {month: running_totals_filled(actuals, month) for month in months}
     changed = {month: any(by_month[month][k] is not actuals[k]
                           and by_month[month][k] != actuals[k] for k in actuals)
@@ -2872,7 +3035,8 @@ def store(results, year, recorded=None, loaded_by=""):
 #: card. Every other kind is one row, as before.
 YEARLY_KINDS = frozenset({"scorecards", "actuals", "sales_scorecards",
                           "sales_actuals", "bb_scorecards", PROBATION_KIND,
-                          "rbo_scorecards", "rbo_actuals"})
+                          "rbo_scorecards", "rbo_actuals",
+                          "ib_scorecards", "ib_actuals"})
 
 
 def year_kind(kind, year):
@@ -3160,6 +3324,7 @@ def card_payload(record, asked=None):
                           if spec.book == BACK_OFFICE else
                           getattr(spec, "role_code", "")
                           or (rbo_role_code(sheet) if spec.book == RETAIL_BO else None)
+                          or (IB_ROLE_CODES.get(sheet) if spec.book == IB else None)
                           or SALES_ROLE_CODES.get(data.get("role", ""),
                                                   sheet)),
             "branch": record.branch,
@@ -3663,6 +3828,21 @@ def live_card(sales_code, engine_card, as_at):
     if as_at.year != book_year(book):
         return None
     month = as_at.month
+
+    if spec.book == IB:
+        # Institutional Banking: a month its actuals template has is the
+        # stored card - the workbook's formulas over the desk's figures,
+        # exactly. A month it does not have gets no card rather than a made-up
+        # one: the template's later columns hold leftovers (a blank balance
+        # less December's), which scored the head -23.6% for November.
+        record = stored_month(code, datetime.date(as_at.year, month, 1), IB)
+        if record is not None:
+            return card_payload(record, asked=as_at)
+        return {"has_card": False, "reason": "ib_month_not_loaded",
+                "sales_code": code.upper(),
+                "detail": (f"Your {as_at:%B %Y} Institutional Banking card fills in "
+                           f"when the IB scorecards workbook and actuals template "
+                           f"run for {as_at:%B %Y} are loaded under Scorecards.")}
 
     # The live engine's figure for each of its lines, labelled with the
     # template sheet that line reads - which is what the workbook names too.

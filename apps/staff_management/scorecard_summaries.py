@@ -29,7 +29,8 @@ import re
 #: scorecard_reach.BOOK_NAMES (the retail back office's is its book key).
 FOLDERS = {"back_office": "Back office", "sales": "Sales",
            "branch_business": "Branch managers",
-           "retail_back_office": "Retail back office"}
+           "retail_back_office": "Retail back office",
+           "ib": "Institutional Banking"}
 #: Sheets that end with a rank on the latest month (the desk's own column).
 RANKED = {"Branch_Monthly_Summary"}
 
@@ -322,7 +323,8 @@ def summaries_workbook(year, upto):
             if g["ranked"]:
                 values.append(r.get("rank"))
             rows.append(values)
-        short = {"Back office": "BO", "Branch managers": "BM", "Retail back office": "RBO"}.get(g["workbook"], g["workbook"])
+        short = {"Back office": "BO", "Branch managers": "BM", "Retail back office": "RBO",
+                     "Institutional Banking": "IB"}.get(g["workbook"], g["workbook"])
         title = re.sub(r"[\\/?*\[\]:]", " ", f"{short} - {g['role']}")[:31]
         sheets.append({"title": title, "note": _source_note(g, year),
                        "headers": headers, "rows": rows})

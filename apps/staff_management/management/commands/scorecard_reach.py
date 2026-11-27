@@ -29,7 +29,8 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
 BOOK_NAMES = {"back_office": "Back office", "sales": "Sales",
-              "branch_business": "Branch managers"}
+              "branch_business": "Branch managers",
+              "ib": "Institutional Banking"}
 
 
 def workbook_people():
