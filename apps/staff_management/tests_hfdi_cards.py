@@ -224,5 +224,11 @@ class HfdiTests(TestCase):
         self.assertIn("1 of 1 cards the desk scored for month 10 recompute", r.data["detail"])
         card = build_card("101", as_at=datetime.date(2026, 10, 31))
         self.assertAlmostEqual(card["performance_score"], 0.5)
-        self.assertEqual(build_card("101", as_at=datetime.date(2026, 11, 30))["reason"],
-                         "hfdi_month_not_loaded")
+        # November: the card shows - no source proven here, so every line is
+        # the desk's October figure, labelled so (5 against 11 months' target).
+        november = build_card("101", as_at=datetime.date(2026, 11, 30))
+        self.assertTrue(november["has_card"])
+        self.assertAlmostEqual(november["performance_score"], 5 / 11, places=4)
+        self.assertIn("Every line is the desk's October figure", november["coverage_note"])
+        self.assertEqual(november["perspectives"][0]["lines"][0]["as_at"],
+                         "the desk's October figure")

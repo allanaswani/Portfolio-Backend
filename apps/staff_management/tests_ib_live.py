@@ -84,17 +84,16 @@ class IbLiveTests(TestCase):
         self.assertEqual(ib_live.movement_by_person(ACCOUNTS, OCT, {"1": 100.0, "2": 30.0}),
                          {("AA1", "Legacy"): 50.0, ("AA1", "Non-Legacy"): 0.0})
 
-    def test_no_card_when_the_proof_fails(self):
+    def test_labels_say_where_each_figure_is_from(self):
         import datetime
 
-        from django.core.cache import cache
-
-        cache.clear()
-        self.addCleanup(cache.clear)    # the mocked verdict must not outlive the test
-        holder = mock.Mock(sales_code="AA1")
-        with mock.patch.object(ib_live, "proof",
-                               return_value=(False, "Non-Legacy AA1: the warehouse gives 1", 10)):
-            card = ib_live.live_ib_card(self.book, {}, holder, datetime.date(2026, 11, 30))
-        self.assertFalse(card["has_card"])
-        self.assertEqual(card["reason"], "ib_live_not_proven")
-        self.assertIn("Non-Legacy AA1: the warehouse gives 1", card["detail"])
+        payload = {"perspectives": [{"lines": [
+            {"kpi_code": "deposit_growth", "weight": 0.3, "ytd_actual": 5, "as_at": "x"},
+            {"kpi_code": "revenue", "weight": 0.1, "ytd_actual": 7, "as_at": "x"},
+            {"kpi_code": "trade_fx_sales", "weight": 0.0, "ytd_actual": None, "as_at": "typed"},
+        ]}]}
+        ib_live.relabel(payload, ["Deposit_Growth"], "October", datetime.date(2026, 11, 27))
+        lines = payload["perspectives"][0]["lines"]
+        self.assertEqual(lines[0]["as_at"], "live, as at 27 Nov 2026")   # not the 30th
+        self.assertEqual(lines[1]["as_at"], "the desk's October figure")
+        self.assertEqual(lines[2]["as_at"], "weight 0 on the desk's card - not scored")

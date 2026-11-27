@@ -213,21 +213,17 @@ def live_ib_card(book, actuals, holder, as_at):
     ok, detail, run = found
     if not run or month <= run:
         return None
-    if not ok:
-        # Say why, rather than "not loaded": the method did not give the
-        # desk's own closed month, so no line is shown live.
-        return {"has_card": False, "reason": "ib_live_not_proven",
-                "sales_code": holder.sales_code,
-                "detail": (f"Your {as_at:%B %Y} Institutional Banking card fills in when "
-                           f"the next IB workbook and template are loaded. Live deposit "
-                           f"growth is off: checked on the desk's "
-                           f"{datetime.date(year, run, 1):%B} figures, {detail}.")}
-    accounts = _accounts(year)
-    balances, col = _balances(accounts, year, month)
-    at_run, _col = _balances(accounts, year, run)
-    if not balances or not at_run:
-        return None
-    moved = movement_by_person(accounts, balances, at_run)
+    # The card is always shown: deposit growth live where the method is
+    # proven, every line otherwise the desk's latest figure, each labelled.
+    moved, col = {}, ""
+    if ok:
+        accounts = _accounts(year)
+        balances, col = _balances(accounts, year, month)
+        at_run, _col = _balances(accounts, year, run)
+        if balances and at_run:
+            moved = movement_by_person(accounts, balances, at_run)
+        else:
+            ok, detail = False, f"daily_balance_movement.{col} could not be read"
 
     # The template with this month's column: the desk's latest figure on
     # every sheet, the live growth on Deposit_Growth.
@@ -244,14 +240,15 @@ def live_ib_card(book, actuals, holder, as_at):
     # movement since, row by row (the head's row: the blocks' sum, as its
     # =SUM(P11:P16,P3:P8)).
     grid = filled.get(GROWTH_SHEET) or []
-    for (tag, code), r in _block_rows(grid).items():
-        desk = _value(grid, r, run)
-        if desk is None:
-            continue
-        grid[r][6 + month - 1] = desk + moved.get((code, tag), 0.0)
-    h = head_row(grid)
-    if h is not None and _value(grid, h, run) is not None:
-        grid[h][6 + month - 1] = _value(grid, h, run) + head_growth(moved)
+    if ok:
+        for (tag, code), r in _block_rows(grid).items():
+            desk = _value(grid, r, run)
+            if desk is None:
+                continue
+            grid[r][6 + month - 1] = desk + moved.get((code, tag), 0.0)
+        h = head_row(grid)
+        if h is not None and _value(grid, h, run) is not None:
+            grid[h][6 + month - 1] = _value(grid, h, run) + head_growth(moved)
 
     card = wc.compute(book, filled, holder, month)
     record = BoScorecard(book=wc.IB, sales_code=holder.sales_code, staff_pf=holder.pf,
@@ -260,10 +257,36 @@ def live_ib_card(book, actuals, holder, as_at):
                          month=datetime.date(year, month, 1), card=card,
                          total=card.get("total") if wc._num(card.get("total")) else None)
     payload = wc.card_payload(record, asked=as_at)
-    note = (f"Deposit growth is live: the desk's {datetime.date(year, run, 1):%B} figure "
-            f"plus the change in your accounts' balances since (daily_balance_movement."
-            f"{col}), by your legacy tags - proven: {detail}. Every other line is the "
-            f"desk's {datetime.date(year, run, 1):%B} figure until the desk's next template.")
+    when = datetime.date(year, run, 1).strftime("%B")
+    if ok:
+        note = (f"Deposit growth is live: the desk's {when} figure plus the change in your "
+                f"accounts' balances since (daily_balance_movement.{col}), by your legacy "
+                f"tags - proven: {detail}. Every other line is the desk's {when} figure "
+                f"until the desk's next template.")
+    else:
+        note = (f"Every line is the desk's {when} figure until the desk's next template. "
+                f"Live deposit growth is off: checked on the desk's {when} figures, {detail}.")
     payload["coverage_note"] = " ".join(x for x in (payload.get("coverage_note"), note) if x)
     payload["live"] = True
+    relabel(payload, [GROWTH_SHEET] if ok else [], when)
     return payload
+
+
+def relabel(payload, live_sheets, desk_month, today=None):
+    """Each line says where its figure is from: "live, as at <today>" for a
+    sheet read live, "the desk's <month> figure" for one carried - not the
+    month's end, which has not come yet. A 0-weight line with no figure on the
+    desk's card (IB Trade Sales, FX Sales) says it is not scored."""
+    today = today or datetime.date.today()
+    live = {s.lower() for s in live_sheets}
+    for group in payload.get("perspectives") or []:
+        for ln in group.get("lines") or []:
+            if not ln.get("weight") and ln.get("ytd_actual") is None:
+                ln["as_at"] = "weight 0 on the desk's card - not scored"
+            elif str(ln.get("as_at", "")).startswith("typed"):
+                continue
+            elif ln.get("kpi_code") in live:
+                ln["as_at"] = f"live, as at {today.day} {today:%b %Y}"
+                ln["as_at_date"] = today.isoformat()
+            else:
+                ln["as_at"] = f"the desk's {desk_month} figure"

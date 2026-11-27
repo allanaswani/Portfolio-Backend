@@ -144,8 +144,12 @@ class IbLoadAndCardTests(TestCase):
         self.assertAlmostEqual(october["performance_score"], 0.5)
         # The template's November column holds leftovers (-999): never a card.
         november = build_card("AA1", as_at=datetime.date(2026, 11, 30))
-        self.assertFalse(november["has_card"])
-        # This template's account sheet has no balances to check live
-        # deposit growth on, so the card says live is off and why.
-        self.assertEqual(november["reason"], "ib_live_not_proven")
-        self.assertIn("no IB template account sheet loaded", november["detail"])
+        # This template's account sheet has no balances to check live deposit
+        # growth on: the card shows, every line the desk's October figure
+        # (never the -999 leftovers), and says live is off and why.
+        self.assertTrue(november["has_card"])
+        self.assertAlmostEqual(november["performance_score"], 5 / 11, places=4)
+        self.assertIn("Live deposit growth is off", november["coverage_note"])
+        self.assertIn("no IB template account sheet loaded", november["coverage_note"])
+        line = november["perspectives"][0]["lines"][0]
+        self.assertEqual(line["as_at"], "the desk's October figure")

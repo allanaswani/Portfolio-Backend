@@ -348,7 +348,10 @@ def live_hfdi_card(book, actuals, holder, as_at):
         found = proof(book, actuals, year)
         cache.set(key, found, 3600)
     first = wc.SPECS[wc.HFDI].template_first_month
-    code = code_map().get(frozenset(name_tokens(holder.name)))
+    try:
+        code = code_map().get(frozenset(name_tokens(holder.name)))
+    except Exception:  # noqa: BLE001 - PF-keyed sheets still read; the card shows
+        code = None
     filled = {}
     for sheet, grid in actuals.items():
         rows = []
@@ -357,7 +360,7 @@ def live_hfdi_card(book, actuals, holder, as_at):
             row[first + month - 1] = row[first + run - 1]
             rows.append(row)
         filled[sheet] = rows
-    live = []
+    live, live_sheets = [], []
     for sheet, rule in found.items():
         if sheet.startswith("_") or not rule:
             continue
@@ -372,10 +375,7 @@ def live_hfdi_card(book, actuals, holder, as_at):
         months = src.get(key) or [0.0] * 12
         grid[r][first + month - 1] = grid[r][first + run - 1] + months[month - 1] - months[run - 1]
         live.append(f"{sheet} ({label})")
-    if not live:
-        # Nothing on this person's card reads a proven source: the month
-        # waits, rather than show October's figures as November's.
-        return None
+        live_sheets.append(sheet)
     card = wc.compute(book, filled, holder, month)
     record = BoScorecard(book=wc.HFDI, sales_code=holder.sales_code, staff_pf=holder.pf,
                          staff_name=holder.name, sheet=holder.sheet,
@@ -383,10 +383,17 @@ def live_hfdi_card(book, actuals, holder, as_at):
                          card=card, total=card.get("total") if wc._num(card.get("total")) else None)
     payload = wc.card_payload(record, asked=as_at)
     when = datetime.date(year, run, 1).strftime("%B")
-    note = (f"Live: {', '.join(live)} - the desk's {when} figure plus the change in "
-            f"the properties report's own source since, each proven on the desk's "
-            f"change to {when}. Every other line is the desk's {when} figure until the "
-            f"desk's next template.")
+    if live:
+        note = (f"Live: {', '.join(live)} - the desk's {when} figure plus the change in "
+                f"the properties report's own source since, each proven on the desk's "
+                f"change to {when}. Every other line is the desk's {when} figure until the "
+                f"desk's next template.")
+    else:
+        note = (f"Every line is the desk's {when} figure until the desk's next template: "
+                f"no line on this card has a source proven on the desk's own figures yet.")
     payload["coverage_note"] = " ".join(x for x in (payload.get("coverage_note"), note) if x)
     payload["live"] = True
+    from .ib_live import relabel
+
+    relabel(payload, live_sheets, when)
     return payload
