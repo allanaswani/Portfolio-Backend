@@ -1078,10 +1078,12 @@ class ProrationView(APIView):
                      getattr(request.user, "username", ""))
         cache.delete(wc.PRORATION)
         stored = wc.rescore(code)
-        warnings = [
-            f"{c['name']}'s {c['card']} card does not read {spec[0]}, so this "
-            f"entry changes nothing on it."
-            for c in cards if spec[0] not in c["columns_the_card_reads"]]
+        warnings = []
+        for c in cards:
+            used = wc.proration_column(entry, set(c["columns_on_list"]))
+            if used is None or used not in c["columns_the_card_reads"]:
+                warnings.append(f"{c['name']}'s {c['card']} card does not read "
+                                f"{used or spec[0]}, so this entry changes nothing on it.")
         return Response({"entry": entry, "cards": cards,
                          "months_recomputed": stored, "warnings": warnings},
                         status=201)

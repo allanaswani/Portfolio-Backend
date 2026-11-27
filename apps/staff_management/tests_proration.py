@@ -80,6 +80,18 @@ class ProratedCardTests(TestCase):
         self.assertEqual(card["total"], plain["total"])
         self.assertIn("keep", card.get("prorated", "") or "keep")
 
+    def test_acting_on_a_list_with_prorate_new_only_takes_the_months_out(self):
+        # Elijah Kilonzi (EK3843, sales Business_Banking): acting BBM Jan-Apr.
+        # The sales List has no prorate_acting_other; the four months go into
+        # prorate_new, which the card's targets count.
+        b = prorated_book(column="prorate_new")
+        save_entries({"BCK3783": [{"id": "a", "reason": "acting",
+                                   "from": "2026-01", "to": "2026-04"}]})
+        opening = bo.compute(b, ACTUALS, self.holder(b), 9)["lines"][0]
+        self.assertEqual(opening["ytd_target"], 20.0)      # 4 a month x (9 - 4)
+        self.assertEqual(bo.proration_column(
+            {"reason": "acting"}, bo.proration_columns(b)), "prorate_new")
+
     def test_nobody_else_is_touched(self):
         b = prorated_book()
         save_entries({"BCK3783": [{"id": "a", "reason": "joined", "from": "2026-03"}]})
@@ -154,11 +166,23 @@ class ProrationScreenTests(TestCase):
         self.assertEqual(gone.status_code, 200)
         self.assertEqual(self.client.get(self.URL).data["people"], [])
 
-    def test_a_column_the_card_does_not_read_is_warned(self):
+    def test_a_list_without_the_reasons_column_counts_it_in_prorate_new(self):
+        # This List has prorate_new only (the sales List's case): sick leave
+        # goes there, which the card reads - no warning.
         r = self.client.post(self.URL, {"sales_code": "BCK3783", "reason": "sick_leave",
                                         "from": "2026-05", "to": "2026-06"}, format="json")
         self.assertEqual(r.status_code, 201)
-        self.assertIn("does not read prorate_acting_other", r.data["warnings"][0])
+        self.assertEqual(r.data["warnings"], [])
+
+    def test_a_column_the_card_does_not_read_is_warned(self):
+        bo.save_file("scorecards", prorated_book(column="prorate_acting_other"))
+        cache.clear()
+        # This List has prorate_acting_other and neither prorate_promotion
+        # nor prorate_new: a promotion has no column to go into.
+        r = self.client.post(self.URL, {"sales_code": "BCK3783", "reason": "promotion",
+                                        "from": "2026-05"}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertIn("does not read prorate_promotion", r.data["warnings"][0])
 
     def test_bad_input_is_refused(self):
         for body, field in (

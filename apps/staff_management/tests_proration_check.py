@@ -46,14 +46,15 @@ class ProrationCheckTests(TestCase):
         self.assertIn("1 line(s) changed by the proration", text)
         self.assertIn("SIGNED FOR 2026-09: no", text)
 
-    def test_an_acting_entry_on_a_card_that_does_not_read_it_is_called_out(self):
+    def test_an_acting_entry_on_a_list_without_its_column_goes_to_prorate_new(self):
         save_entries({"BCK3783": [{"id": "a", "reason": "acting",
                                    "from": "2026-01", "to": "2026-04"}]})
         bo.rescore("BCK3783")
         text = self.run_check()
         self.assertIn("(months out by 2026-09: 4)", text)
-        self.assertIn("the acting entry fills prorate_acting_other, which this card "
-                      "does not read: it changes nothing on this card", text)
+        self.assertIn("the acting entry fills prorate_new: this List has no "
+                      "prorate_acting_other", text)
+        self.assertNotIn("changes nothing", text)
 
     def test_a_signed_month_is_the_frozen_copy(self):
         from .scorecard_automation.models import ScorecardSignoff

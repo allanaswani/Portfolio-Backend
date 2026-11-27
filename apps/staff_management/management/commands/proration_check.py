@@ -13,7 +13,8 @@ Prints, so the answer is a fact and not a guess:
   * whether the month is signed (a signed card is the frozen copy: proration
     entered later cannot change it);
   * the month's archived files and the e-mails sent for it.
-It writes nothing.
+It writes nothing, unless --rescore is given: then it first recomputes the
+person's stored months with their entries, as saving an entry does.
 """
 import calendar
 import datetime
@@ -38,6 +39,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("who", help="sales code, or the person's name")
         parser.add_argument("--month", required=True, help="YYYY-MM")
+        parser.add_argument("--rescore", action="store_true",
+                            help="First recompute the person's stored months with "
+                                 "their entries (what saving an entry does).")
 
     def handle(self, *args, **opts):
         from django.core.cache import cache
@@ -62,6 +66,8 @@ class Command(BaseCommand):
         w(f"{name}  ({code})   card for {period}")
 
         cache.delete(wc.PRORATION)
+        if opts["rescore"]:
+            w(f"RESCORED: {wc.rescore(code)} stored card-month(s) recomputed")
         entries = wc.proration().get(code) or []
         w(f"\nPRORATION ENTRIES: {len(entries)}")
         for e in entries:
@@ -78,11 +84,14 @@ class Command(BaseCommand):
             w(f"    List has: {', '.join(c['columns_on_list']) or 'none'}")
             w(f"    card reads: {', '.join(c['columns_the_card_reads']) or 'none'}")
             for e in entries:
-                col = wc.PRORATION_REASONS.get(e.get("reason"), (None,))[0]
-                if col and col not in c["columns_the_card_reads"]:
+                own = wc.PRORATION_REASONS.get(e.get("reason"), (None,))[0]
+                col = wc.proration_column(e, set(c["columns_on_list"]))
+                if col and col != own:
+                    w(f"    the {e.get('reason')} entry fills {col}: this List has no {own}")
+                if not col or col not in c["columns_the_card_reads"]:
                     w(self.style.WARNING(
-                        f"    ! the {e.get('reason')} entry fills {col}, which this card "
-                        f"does not read: it changes nothing on this card"))
+                        f"    ! the {e.get('reason')} entry fills {col or own}, which this "
+                        f"card does not read: it changes nothing on this card"))
 
         signoff = ScorecardSignoff.objects.filter(sales_code__iexact=code, period=period).first()
         signed = bool(signoff and signoff.signed_at and signoff.card)

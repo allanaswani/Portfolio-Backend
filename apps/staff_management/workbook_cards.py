@@ -2555,6 +2555,23 @@ def proration_columns(book):
             if str(v or "").strip().lower() in wanted}
 
 
+def proration_column(entry, columns):
+    """The List column an entry fills on this workbook → name, or None.
+
+    Its reason's own column where the List has it. Where it does not, the
+    months go into prorate_new - the one column every card's targets count
+    (months - prorate_new). The sales List has prorate_new alone: Elijah
+    Kilonzi (EK3843, Business_Banking), acting BBM January to April 2026,
+    was entered as "acting" and his card did not move (72.25% either way),
+    because the column that reason names is not on that List."""
+    column = PRORATION_REASONS.get(entry.get("reason"), (None,))[0]
+    if column is None:
+        return None
+    if column in columns:
+        return column
+    return "prorate_new" if "prorate_new" in columns else None
+
+
 def proration_cells(book, holder, month):
     """{List column index: months} for this person and month, from the admin's
     entries; {} when there are none."""
@@ -2565,8 +2582,8 @@ def proration_cells(book, holder, month):
     year = book_year(book)
     out = {}
     for entry in entries:
-        column = PRORATION_REASONS.get(entry.get("reason"), (None,))[0]
-        if column not in columns:
+        column = proration_column(entry, columns)
+        if column is None:
             continue
         index = columns[column]
         out[index] = out.get(index, 0.0) + float(excluded_months(entry, year, month))
@@ -2581,7 +2598,7 @@ def proration_note(book, holder, month):
     parts = []
     for entry in entries:
         reason = PRORATION_REASONS.get(entry.get("reason"))
-        if reason is None or reason[0] not in columns:
+        if reason is None or proration_column(entry, columns) is None:
             continue
         months = excluded_months(entry, year, month)
         end = _ym(entry.get("to") if reason[1] else entry.get("from"))
