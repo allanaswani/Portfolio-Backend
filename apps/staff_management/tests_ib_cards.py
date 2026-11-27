@@ -142,4 +142,7 @@ class IbLoadAndCardTests(TestCase):
         # The template's November column holds leftovers (-999): never a card.
         november = build_card("AA1", as_at=datetime.date(2026, 11, 30))
         self.assertFalse(november["has_card"])
-        self.assertEqual(november["reason"], "ib_month_not_loaded")
+        # This template's account sheet has no balances to check live
+        # deposit growth on, so the card says live is off and why.
+        self.assertEqual(november["reason"], "ib_live_not_proven")
+        self.assertIn("no IB template account sheet loaded", november["detail"])
