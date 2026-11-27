@@ -41,6 +41,14 @@ def _rows(sql, params):
         return cur.fetchall()
 
 
+def _merge(a, b):
+    """Two {key: [12 months]} added."""
+    out = {k: list(v) for k, v in a.items()}
+    for k, v in b.items():
+        out[k] = [x + y for x, y in zip(out.get(k, [0.0] * 12), v)]
+    return out
+
+
 def _monthly(rows):
     """[(code, date, value)] → {CODE: [ytd Jan..Dec]}."""
     out = {}
@@ -127,7 +135,56 @@ def _loans(year, value):
     return _monthly(_rows(sql, [datetime.date(year, 1, 1)]))
 
 
+def project_sales(year, own, value=False):
+    """seller_summary_report.py, Seller Summary - Sales: units in the year's
+    pipeline (a sale month this year; or no sale month, booked this year and
+    Booked/Sold), in the month of the sale (else the booking), for Property
+    Advisors by staff_name - their PF through employee_table (exit = 0)
+    joined to hfdi_employee_data on PF; own project = the unit's project is
+    their primary_project, cross = any other. Keyed by PF (the Master's
+    staff_id). ``value``: unit_value summed instead of units counted."""
+    sql = f"""
+        WITH staff AS (
+            SELECT FLOOR(e.staff_id::numeric)::bigint AS pf, e.name AS staff_name,
+                   h.primary_project, h.staff_role
+            FROM employee_table e
+            LEFT JOIN hfdi_employee_data h
+                   ON FLOOR(h.staff_pf_number::numeric) = FLOOR(e.staff_id::numeric)
+            WHERE e.exit = 0),
+        units AS (
+            SELECT s.project_name, s.staff_name, s.unit_status, s.unit_value,
+                   {_DATE.format(c='s.sale_month')} AS sold, {_DATE.format(c='s.booking_date')} AS booked
+            FROM hfdi_projects_inventory_sales_data s)
+        SELECT st.pf::text, COALESCE(u.sold, u.booked),
+               {'COALESCE(u.unit_value, 0)' if value else '1'}
+        FROM units u JOIN staff st ON st.staff_name = u.staff_name
+        WHERE st.staff_role = 'Property Advisor'
+          AND (u.project_name = st.primary_project) = %s
+          AND (EXTRACT(YEAR FROM u.sold) = %s
+               OR (u.sold IS NULL AND EXTRACT(YEAR FROM u.booked) = %s
+                   AND u.unit_status IN ('Booked', 'Sold')))"""
+    return _monthly(_rows(sql, [own, year, year]))
+
+
+project_sales.by_pf = True
+
+
+def _by_pf(fn):
+    fn.by_pf = True
+    return fn
+
+
 CANDIDATES = {
+    "own_project_sales": [("own project units in the year's pipeline (seller summary report)",
+                           _by_pf(lambda y: project_sales(y, True)))],
+    "project_cross_sales": [("other projects' units in the year's pipeline (seller summary report)",
+                             _by_pf(lambda y: project_sales(y, False)))],
+    "sales_value": [
+        ("own project units' value in the year's pipeline (seller summary report)",
+         _by_pf(lambda y: project_sales(y, True, value=True))),
+        ("every project's units' value in the year's pipeline (seller summary report)",
+         _by_pf(lambda y: _merge(project_sales(y, True, value=True),
+                                 project_sales(y, False, value=True))))],
     "bancassurance_sale": [("paid premiums (group synergies report)", insurance_paid)],
     "bank_accounts": [
         ("funded accounts opened (group synergies report)", lambda y: _accounts(y, True, "n")),
@@ -229,32 +286,40 @@ def proof(book, actuals, year):
         for h in people:
             r = _person_rows(grid, h, first)
             code = codes.get(frozenset(name_tokens(h.name)))
-            if r is None or not code or not run or run < 2:
+            if r is None or not run or run < 2:
                 continue
             row = grid[r]
             now = row[first + run - 1] if len(row) > first + run - 1 else None
             before = row[first + run - 2] if len(row) > first + run - 2 else None
             if _num(now):
-                pairs.append((code, float(now), float(before) if _num(before) else 0.0))
+                # (sales code, PF = the Master's staff_id, Oct, Sep)
+                pairs.append((code, h.sales_code, float(now),
+                              float(before) if _num(before) else 0.0))
         if not pairs:
-            chosen[sheet], detail[sheet] = None, "no person on it with a sales code"
+            chosen[sheet], detail[sheet] = None, "nobody on it with a figure"
             continue
         chosen[sheet] = None
         for label, fn in candidates:
+            by_pf = getattr(fn, "by_pf", False)
             try:
                 src = fn(year)
             except Exception as exc:  # noqa: BLE001 - the next rule
                 detail[sheet] = f"{label}: not read ({type(exc).__name__})"
                 continue
-            moved = [(c, now - before, (src.get(c) or [0] * 12)[run - 1]
-                      - (src.get(c) or [0] * 12)[run - 2], now) for c, now, before in pairs]
+            moved = [((pf if by_pf else c), now - before,
+                      (src.get(pf if by_pf else c) or [0] * 12)[run - 1]
+                      - (src.get(pf if by_pf else c) or [0] * 12)[run - 2], now)
+                     for c, pf, now, before in pairs if (pf if by_pf else c)]
+            if not moved:
+                detail[sheet] = f"{label}: nobody on it has a sales code"
+                continue
             bad = [m for m in moved if abs(m[1] - m[2]) > max(0.5, abs(m[3]) * TOLERANCE)]
             # Every person compared, for hfdi_live_check --detail: (code, the
             # desk's change, the source's change, the desk's figure).
             detail.setdefault("_rows", {})[f"{sheet} / {label}"] = moved
             moving = sum(1 for m in moved if m[1] != 0)
             if not bad and moving:
-                chosen[sheet] = (label, src)
+                chosen[sheet] = (label, src, by_pf)
                 detail[sheet] = (f"{label}: its change to {datetime.date(year, run, 1):%b} gives "
                                  f"the desk's for all {len(moved)} people ({moving} moved)")
                 break
@@ -277,7 +342,7 @@ def live_hfdi_card(book, actuals, holder, as_at):
     run = wc.ib_run_month(book)
     if not run or month <= run:
         return None
-    key = f"hfdi_live_proof:v2:{year}:{run}"
+    key = f"hfdi_live_proof:v3:{year}:{run}"
     found = cache.get(key)
     if found is None:
         found = proof(book, actuals, year)
@@ -294,14 +359,17 @@ def live_hfdi_card(book, actuals, holder, as_at):
         filled[sheet] = rows
     live = []
     for sheet, rule in found.items():
-        if sheet.startswith("_") or not rule or not code:
+        if sheet.startswith("_") or not rule:
             continue
-        label, src = rule
+        label, src, by_pf = rule
+        key = holder.sales_code if by_pf else code      # the PF is the staff_id
+        if not key:
+            continue
         grid = filled.get(sheet) or []
         r = _person_rows(grid, holder, first)
         if r is None or not _num(grid[r][first + run - 1]):
             continue
-        months = src.get(code) or [0.0] * 12
+        months = src.get(key) or [0.0] * 12
         grid[r][first + month - 1] = grid[r][first + run - 1] + months[month - 1] - months[run - 1]
         live.append(f"{sheet} ({label})")
     if not live:

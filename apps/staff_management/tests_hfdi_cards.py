@@ -140,6 +140,28 @@ class HfdiTests(TestCase):
         self.assertEqual(line["ytd_actual"], 8.0)          # 5 + (8 - 5)
         self.assertIn("own_project_sales (rule B)", card["coverage_note"])
 
+    def test_a_source_keyed_by_pf_needs_no_sales_code(self):
+        import datetime
+        from unittest import mock
+
+        from django.core.cache import cache
+
+        from . import hfdi_live
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        book = wc.read_hfdi(master())
+        actuals = wc.read_actuals(io.BytesIO(template()))
+        by_pf = hfdi_live._by_pf(lambda y: {"101": [0] * 8 + [4.5, 5, 6, 6]})
+        holder = next(h for h in wc.holders(book) if h.sales_code == "101")
+        with mock.patch.object(hfdi_live, "CANDIDATES",
+                               {"own_project_sales": [("seller summary", by_pf)]}), \
+                mock.patch.object(hfdi_live, "code_map", return_value={}):   # no sales code
+            found = hfdi_live.proof(book, actuals, 2026)
+            self.assertTrue(found["own_project_sales"][2])       # by PF
+            card = hfdi_live.live_hfdi_card(book, actuals, holder, datetime.date(2026, 11, 30))
+        self.assertEqual(card["perspectives"][0]["lines"][0]["ytd_actual"], 6.0)   # 5 + (6 - 5)
+
     def test_partial_insurance_codes_as_the_report_resolves_them(self):
         from . import hfdi_live
 

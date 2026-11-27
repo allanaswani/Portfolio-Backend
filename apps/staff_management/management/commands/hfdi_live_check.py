@@ -32,7 +32,7 @@ class Command(BaseCommand):
             raise CommandError("Load the HFDI Master Scorecard and its template first.")
         run = wc.ib_run_month(book)
         found = hfdi_live.proof(book, actuals, year)
-        cache.set(f"hfdi_live_proof:v2:{year}:{run}", found, 3600)
+        cache.set(f"hfdi_live_proof:v3:{year}:{run}", found, 3600)
         codes = hfdi_live.code_map()
         people = [h for h in wc.holders(book) if h.sheet in book["cards"]]
         from apps.staff_management.live_scorecard import name_tokens
