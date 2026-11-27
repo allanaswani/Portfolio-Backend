@@ -4359,6 +4359,18 @@ def live_card(sales_code, engine_card, as_at):
                             beside[wl["row"]] = True     # the "worse" guard applies
                         else:
                             carried.pop(wl["row"], None)
+                            # The same guard against the person's own loaded
+                            # card, where the workbook holds no desk figure
+                            # for them: an unproven feed cannot score them
+                            # below what the desk gave (Sarah Nzeli, Funded
+                            # Accounts 0 read, 9 on her H1 June card). Not on
+                            # turnaround lines, where lower is better.
+                            own, then = rbo_card_figure(code, wl["feed"])
+                            if (own is not None and got < own
+                                    and not str(rlf.reader_of(wl["feed"]) or "").startswith("iapply:")):
+                                overrides[(wl["row"] - 1, actual_col)] = own
+                                note = (f"your own {then} scorecard, as the desk scored it - "
+                                        f"the feed reads {got:,.0f}, {note}")
                     measured[wl["row"]] = f"{label} - {note}"
                 elif not has_desk:
                     carried.pop(wl["row"], None)
