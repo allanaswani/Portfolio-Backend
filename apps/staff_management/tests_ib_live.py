@@ -90,6 +90,7 @@ class IbLiveTests(TestCase):
         from django.core.cache import cache
 
         cache.clear()
+        self.addCleanup(cache.clear)    # the mocked verdict must not outlive the test
         holder = mock.Mock(sales_code="AA1")
         with mock.patch.object(ib_live, "proof",
                                return_value=(False, "Non-Legacy AA1: the warehouse gives 1", 10)):

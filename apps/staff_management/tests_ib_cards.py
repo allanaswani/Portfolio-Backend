@@ -114,6 +114,9 @@ class IbLoadAndCardTests(TestCase):
         from django.contrib.auth.models import User
         from rest_framework.test import APIClient
 
+        from django.core.cache import cache
+
+        cache.clear()       # no live-proof verdict left by another test
         self.client = APIClient()
         self.client.force_authenticate(User.objects.create_superuser("root.admin", password="x"))
 
