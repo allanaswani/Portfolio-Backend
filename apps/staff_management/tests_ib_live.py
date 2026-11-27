@@ -68,6 +68,13 @@ class IbLiveTests(TestCase):
     def test_no_card_when_the_proof_fails(self):
         import datetime
 
-        with mock.patch.object(ib_live, "proof", return_value=(False, "x", 10)):
-            self.assertIsNone(ib_live.live_ib_card(self.book, {}, None,
-                                                   datetime.date(2026, 11, 30)))
+        from django.core.cache import cache
+
+        cache.clear()
+        holder = mock.Mock(sales_code="AA1")
+        with mock.patch.object(ib_live, "proof",
+                               return_value=(False, "Non-Legacy AA1: the warehouse gives 1", 10)):
+            card = ib_live.live_ib_card(self.book, {}, holder, datetime.date(2026, 11, 30))
+        self.assertFalse(card["has_card"])
+        self.assertEqual(card["reason"], "ib_live_not_proven")
+        self.assertIn("Non-Legacy AA1: the warehouse gives 1", card["detail"])

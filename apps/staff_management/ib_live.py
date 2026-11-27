@@ -183,8 +183,17 @@ def live_ib_card(book, actuals, holder, as_at):
         found = proof(book, actuals, year)
         cache.set(key, found, 3600)
     ok, detail, run = found
-    if not ok or not run or month <= run:
+    if not run or month <= run:
         return None
+    if not ok:
+        # Say why, rather than "not loaded": the method did not give the
+        # desk's own closed month, so no line is shown live.
+        return {"has_card": False, "reason": "ib_live_not_proven",
+                "sales_code": holder.sales_code,
+                "detail": (f"Your {as_at:%B %Y} Institutional Banking card fills in when "
+                           f"the next IB workbook and template are loaded. Live deposit "
+                           f"growth is off: checked on the desk's "
+                           f"{datetime.date(year, run, 1):%B} figures, {detail}.")}
     accounts = _accounts(year)
     balances, col = _balances(accounts, year, month)
     if not balances:
