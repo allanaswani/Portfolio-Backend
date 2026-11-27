@@ -89,6 +89,24 @@ class HfdiTests(TestCase):
         self.assertEqual(len(proof), 1)
         self.assertTrue(proof[0]["same"], proof)          # 5 / 10 = 0.5, desk 0.5
 
+    def test_probe_sets_each_sheet_beside_its_reader(self):
+        from io import StringIO
+        from unittest import mock
+
+        from django.core.management import call_command
+
+        wc.save_file(wc.SPECS[wc.HFDI].files[0], wc.read_hfdi(master()), "m.xlsm", "t", year=2026)
+        wc.save_file(wc.SPECS[wc.HFDI].files[1], wc.read_actuals(io.BytesIO(template())),
+                     "t.xlsx", "t", year=2026)
+        # own_project_sales for Pat at October is 5; the reader gives 5.
+        got = {"property_units": {"value": 5}, "property_value": {"value": 0}}
+        out = StringIO()
+        with mock.patch("apps.staff_management.live_scorecard.live_actuals", return_value=got):
+            call_command("hfdi_feed_probe", "--year", "2026", stdout=out)
+        text = out.getvalue()
+        self.assertIn("1 active people, the desk's month 10", text)
+        self.assertRegex(text, r"own_project_sales\s+property units .*\s+1\s+1\s+1 ")
+
     def test_load_and_card(self):
         from django.contrib.auth.models import User
         from rest_framework.test import APIClient
