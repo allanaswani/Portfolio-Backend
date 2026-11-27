@@ -6,8 +6,11 @@ desk's LEGACY CAT (typed by the desk - no warehouse source), and month-end
 balances DEC_25_BAL .. DEC_26_BAL.
 
 What is live: the two deposit growth lines (Deposit_Growth, Legacy and
-Non-Legacy blocks) - for each account, this month's balance less December
-2025's, summed by RM and legacy tag as the template's SUMIFS do:
+Non-Legacy blocks) - the desk's own figure for its closed month plus each
+account's balance change since, summed by RM and legacy tag as the
+template's SUMIFS do (27 Nov 2026: the warehouse's October level for Mary
+Murage's Non-Legacy accounts was 153.7m against the desk's 120.4m, so the
+level is the desk's and only the change is the warehouse's). Background:
 
 * this month's balance: daily_balance_movement's month-end column
   (``nov_26_bal``), or ``yester_1_bal`` for the month still running. The
@@ -133,39 +136,61 @@ def _value(grid, row, month):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def movement_by_person(accounts, now, then):
+    """{(rm_code, legacy): sum of (now - then)} over the template's accounts -
+    the change since the desk's month, which is added to the desk's figure."""
+    out = {}
+    for acc, rm, legacy, _dec in accounts:
+        if acc in now and acc in then:
+            out[(rm, legacy)] = out.get((rm, legacy), 0.0) + now[acc] - then[acc]
+    return out
+
+
 def proof(book, actuals, year):
-    """The method on the desk's own closed month → (ok, detail, month)."""
+    """The method on the desk's own months → (ok, detail, month).
+
+    The live figure is the desk's closed-month figure plus the warehouse's
+    movement since. So what must hold is the movement: for every row, the
+    warehouse's change from the month before the desk's to the desk's month
+    has to equal the desk's own change, within PROOF_TOLERANCE of the desk's
+    figure. (A balance the two sources disagree on in BOTH months - Mary
+    Murage's Non-Legacy accounts, 153.7m against the desk's 120.4m for October
+    - does not move the change.)"""
     from . import workbook_cards as wc
 
     month = wc.ib_run_month(book)
     accounts = _accounts(year)
-    if not month or not accounts:
+    if not month or month < 2 or not accounts:
         return False, "no IB template account sheet loaded", month
-    balances, col = _balances(accounts, year, month)
-    if balances is None:
-        return False, f"daily_balance_movement.{col} could not be read", month
-    live = growth_by_person(accounts, balances)
+    now, col = _balances(accounts, year, month)
+    then, col0 = _balances(accounts, year, month - 1)
+    if now is None or then is None:
+        return False, f"daily_balance_movement.{col}/{col0} could not be read", month
+    moved = movement_by_person(accounts, now, then)
     grid = actuals.get(GROWTH_SHEET) or []
-    rows = _block_rows(grid)
-    worst, compared = 0.0, 0
-    checks = [((tag, code), r, live.get((code, tag), 0.0)) for (tag, code), r in rows.items()]
+    checks = [((tag, code), r, moved.get((code, tag), 0.0))
+              for (tag, code), r in _block_rows(grid).items()]
     h = head_row(grid)
     if h is not None:
-        checks.append((("Total", str(grid[h][1]).upper()), h, head_growth(live)))
+        checks.append((("Total", str(grid[h][1]).upper()), h, head_growth(moved)))
+    worst, compared = 0.0, 0
     for (tag, code), r, got in checks:
-        desk = _value(grid, r, month)
-        if desk is None:
+        desk, before = _value(grid, r, month), _value(grid, r, month - 1)
+        if desk is None or before is None:
             continue
         compared += 1
-        off = abs(got - desk)
+        off = abs(got - (desk - before))
         if off > max(1.0, abs(desk) * PROOF_TOLERANCE):
-            return False, (f"{tag} {code}: the warehouse gives {got:,.0f} for "
-                           f"{datetime.date(year, month, 1):%b %Y}, the desk {desk:,.0f}"), month
+            return False, (f"{tag} {code}: the warehouse's change from "
+                           f"{datetime.date(year, month - 1, 1):%b} to "
+                           f"{datetime.date(year, month, 1):%b %Y} is {got:,.0f}, the "
+                           f"desk's {desk - before:,.0f}"), month
         worst = max(worst, off / abs(desk) if desk else 0.0)
     if not compared:
         return False, "the template's Deposit_Growth sheet has no figures", month
-    return True, (f"gives the desk's {datetime.date(year, month, 1):%b %Y} figure for "
-                  f"all {compared} rows (largest difference {worst:.3%})"), month
+    return True, (f"its change from {datetime.date(year, month - 1, 1):%b} to "
+                  f"{datetime.date(year, month, 1):%b %Y} gives the desk's for all "
+                  f"{compared} rows (largest difference {worst:.3%} of the figure)"), month
 
 
 def live_ib_card(book, actuals, holder, as_at):
@@ -196,9 +221,10 @@ def live_ib_card(book, actuals, holder, as_at):
                            f"{datetime.date(year, run, 1):%B} figures, {detail}.")}
     accounts = _accounts(year)
     balances, col = _balances(accounts, year, month)
-    if not balances:
+    at_run, _col = _balances(accounts, year, run)
+    if not balances or not at_run:
         return None
-    live = growth_by_person(accounts, balances)
+    moved = movement_by_person(accounts, balances, at_run)
 
     # The template with this month's column: the desk's latest figure on
     # every sheet, the live growth on Deposit_Growth.
@@ -211,16 +237,18 @@ def live_ib_card(book, actuals, holder, as_at):
             row[6 + month - 1] = last
             rows.append(row)
         filled[sheet] = rows
+    # Deposit growth: the desk's figure for its month plus the warehouse's
+    # movement since, row by row (the head's row: the blocks' sum, as its
+    # =SUM(P11:P16,P3:P8)).
     grid = filled.get(GROWTH_SHEET) or []
     for (tag, code), r in _block_rows(grid).items():
-        if _value(grid, r, run) is None:
+        desk = _value(grid, r, run)
+        if desk is None:
             continue
-        grid[r][6 + month - 1] = live.get((code, tag), 0.0)
-    # The head's row is the sum of the blocks (=SUM(P11:P16,P3:P8)) - a
-    # formula on the desk's template, stored as its value: set it the same way.
+        grid[r][6 + month - 1] = desk + moved.get((code, tag), 0.0)
     h = head_row(grid)
-    if h is not None:
-        grid[h][6 + month - 1] = head_growth(live)
+    if h is not None and _value(grid, h, run) is not None:
+        grid[h][6 + month - 1] = _value(grid, h, run) + head_growth(moved)
 
     card = wc.compute(book, filled, holder, month)
     record = BoScorecard(book=wc.IB, sales_code=holder.sales_code, staff_pf=holder.pf,
@@ -229,10 +257,10 @@ def live_ib_card(book, actuals, holder, as_at):
                          month=datetime.date(year, month, 1), card=card,
                          total=card.get("total") if wc._num(card.get("total")) else None)
     payload = wc.card_payload(record, asked=as_at)
-    note = (f"Deposit growth is live: daily_balance_movement.{col} less the desk's "
-            f"December 2025 balance, account by account, by your legacy tags - proven: "
-            f"{detail}. Every other line is the desk's {datetime.date(year, run, 1):%B} "
-            f"figure until the desk's next template.")
+    note = (f"Deposit growth is live: the desk's {datetime.date(year, run, 1):%B} figure "
+            f"plus the change in your accounts' balances since (daily_balance_movement."
+            f"{col}), by your legacy tags - proven: {detail}. Every other line is the "
+            f"desk's {datetime.date(year, run, 1):%B} figure until the desk's next template.")
     payload["coverage_note"] = " ".join(x for x in (payload.get("coverage_note"), note) if x)
     payload["live"] = True
     return payload
