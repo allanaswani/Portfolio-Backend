@@ -1054,6 +1054,62 @@ def _rbo_layout(book):
             book["cards"].pop(sheet)
 
 
+#: Retail back office people's own card files (Sarah Nzeli_H1_Jun_2026_
+#: Scorecard.xlsx): {CODE: {"month": "YYYY-MM", "name", "file", "figures":
+#: {feed: actual}}}. A line whose return has no row for the person (the CX
+#: CRM logs, the CX survey's contactability) shows the figure the desk put on
+#: their own card instead of nothing.
+RBO_CARD_FIGURES = "rbo_card_figures"
+_PERIOD_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def read_rbo_person_card(data):
+    """One person's own RBO card file → {"name", "role", "month", "figures"},
+    or None when the file is not one. The card's K column names each line's
+    template sheet (its feed), H is the actual, C2 the name, E2 the role, C4
+    the review period ("H1_Jun_2026")."""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if len(wb.sheetnames) != 1:
+            return None
+        rows = [list(r) for r in wb.worksheets[0].iter_rows(max_row=60, max_col=12,
+                                                             values_only=True)]
+    finally:
+        wb.close()
+    if len(rows) < 6:
+        return None
+    at = lambda r, c: rows[r][c] if r < len(rows) and c < len(rows[r]) else None  # noqa: E731
+    role = _txt(at(1, 4)).strip()
+    if role.upper() not in {k.upper() for k in RBO_ROLE_SHEETS}:
+        return None
+    m = re.search(r"([A-Za-z]{3})[A-Za-z]*_(\d{4})", _txt(at(3, 2)))
+    if not m or m.group(1).lower() not in _PERIOD_MONTHS:
+        return None
+    figures = {}
+    for r in range(5, len(rows)):
+        feed, actual = _txt(at(r, 10)).strip(), at(r, 7)
+        if feed and _num(actual) and not isinstance(actual, bool):
+            figures[feed] = float(actual)
+    return {"name": _txt(at(1, 2)).strip(), "role": role, "figures": figures,
+            "month": f"{m.group(2)}-{_PERIOD_MONTHS[m.group(1).lower()]:02d}"}
+
+
+def rbo_card_figure(code, feed):
+    """(value, "YYYY-MM") off the person's own loaded card for this feed, or
+    (None, None)."""
+    entry = (saved(RBO_CARD_FIGURES) or {}).get((code or "").strip().upper()) or {}
+    value = (entry.get("figures") or {}).get(feed)
+    return (value, entry.get("month")) if _num(value) else (None, None)
+
+
 def rbo_role_sheets(book):
     """{List role: card sheet} - the workbook's own, else the macro's."""
     return book.get("role_sheets") or RBO_ROLE_SHEETS
@@ -4306,7 +4362,16 @@ def live_card(sales_code, engine_card, as_at):
                     measured[wl["row"]] = f"{label} - {note}"
                 elif not has_desk:
                     carried.pop(wl["row"], None)
-                    no_tat[wl["row"]] = why
+                    own, then = rbo_card_figure(code, wl["feed"])
+                    if own is not None:
+                        # The return has no row for them; the desk put a
+                        # figure on their own card (Sarah Nzeli, CRM 95 and
+                        # engagement 0.57 on her H1 June card).
+                        overrides[(wl["row"] - 1, actual_col)] = own
+                        measured[wl["row"]] = (
+                            f"your own {then} scorecard, as the desk scored it - {why}")
+                    else:
+                        no_tat[wl["row"]] = why
                 continue
         if spec.book == SALES and _key(wl["feed"]) == "tatloans":
             # TAT (Loan) is the month's own figure off the iApply loan TAT

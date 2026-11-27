@@ -137,4 +137,39 @@ class Command(BaseCommand):
                     if agree:
                         w(f"    {d} = 31 Oct, {v}: {agree} of {len(oct_bal)} accounts agree "
                           f"({len(got)} found)")
+        # daily_balance_movement keeps month-end balances as columns
+        # (dec_25_bal .. oct_26_bal), not dated rows - the template's own
+        # DEC_25_BAL .. columns. Account by account, month by month.
+        w("\nDAILY_BALANCE_MOVEMENT MONTH COLUMNS vs THE TEMPLATE (to the shilling):")
+        heads = [str(v or "").strip().upper() for v in (grid[1] if len(grid) > 1 else [])]
+        months = [(m, y) for y, ms in ((25, ("DEC",)), (26, ("JAN", "FEB", "MAR", "APR", "MAY",
+                                                          "JUN", "JUL", "AUG", "SEP", "OCT")))
+                  for m in ms]
+        acc_i = heads.index("ACC_NUM") if "ACC_NUM" in heads else None
+        for m, y in months:
+            col = f"{m}_{y}_BAL"
+            if col not in heads or acc_i is None:
+                continue
+            ci = heads.index(col)
+            tmpl = {}
+            for r in grid[2:]:
+                r = list(r) + [None] * (len(heads) - len(r))
+                acc = str(r[acc_i] or "").strip().replace(".0", "")
+                if acc and isinstance(r[ci], (int, float)):
+                    tmpl[acc] = r[ci]
+            try:
+                with transaction.atomic(), connection.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout = 120000")
+                    cur.execute(f"SELECT trim(acc_num::text), SUM({col.lower()}) "
+                                f"FROM daily_balance_movement WHERE trim(acc_num::text) = ANY(%s) "
+                                f"GROUP BY 1", [sorted(tmpl)])
+                    got = dict(cur.fetchall())
+            except Exception as exc:  # noqa: BLE001
+                w(f"  {col.lower()}: not read ({type(exc).__name__})")
+                continue
+            agree = sum(1 for a, b in tmpl.items()
+                        if got.get(a) is not None
+                        and abs(Decimal(str(got[a])) - Decimal(str(b))) < 1)
+            w(f"  {col.lower()}: {agree} of {len(tmpl)} accounts agree "
+              f"({len(got)} found in the table)")
         w("\nPaste this output: an IB line goes live only on a column that agrees.")

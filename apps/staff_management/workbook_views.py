@@ -259,6 +259,9 @@ class BoActualsUploadView(APIView):
         if workbook_cards.is_hfdi_workbook(data):
             return self._ib_scorecards(data, upload.name, apply, who,
                                        kind=workbook_cards.HFDI)
+        own_card = workbook_cards.read_rbo_person_card(data)
+        if own_card is not None:
+            return self._rbo_person_card(own_card, upload.name, apply, who)
         if workbook_cards.is_retail_bo_workbook(data):
             return self._retail_bo(data, upload.name, apply, who)
         from . import rbo_live_feeds
@@ -460,6 +463,35 @@ class BoActualsUploadView(APIView):
             "applied": True, "cards": cards,
             "detail": (f"Saved the {spec.label} scorecards workbook for "
                        f"{year}. " + self._stored_detail(cards, spec))})
+
+    def _rbo_person_card(self, card, file_name, apply, who):
+        """One retail back office person's own card file: its per-line
+        figures fill the lines whose return has no row for them."""
+        from . import workbook_cards as wc
+
+        book = wc.saved(wc.SPECS[wc.RETAIL_BO].files[0])
+        people = [h for h in (wc.holders(book, keep_off=True) if book else [])
+                  if h.name.strip().lower() == card["name"].lower()]
+        if len(people) != 1:
+            return Response({"file": (
+                f"{card['name']!r} is on the retail back office List "
+                f"{len(people)} times - a card is loaded only onto exactly one "
+                f"person. Load the retail back office workbook first if it is "
+                f"not loaded.")}, status=400)
+        person = people[0]
+        lines = "\n".join(f"  {feed}: {value:,.4g}" for feed, value in
+                          sorted(card["figures"].items()))
+        head = (f"{card['name']} ({person.sales_code}), {card['role']}, "
+                f"{card['month']}: {len(card['figures'])} line figure(s) - each "
+                f"used only where that line's return has no row for them.\n{lines}")
+        if not apply:
+            return Response({"applied": False, "cards": {"book": "rbo_card"},
+                             "detail": head + "\nNothing has been saved yet."})
+        entries = dict(wc.saved(wc.RBO_CARD_FIGURES) or {})
+        entries[person.sales_code] = dict(card, file=file_name)
+        wc.save_file(wc.RBO_CARD_FIGURES, entries, file_name, who)
+        return Response({"applied": True, "cards": {"book": "rbo_card"},
+                         "detail": head + "\nSaved."})
 
     def _ib_scorecards(self, data, file_name, apply, who, kind=None):
         """The Institutional Banking (.xlsm) or HFDI Master (.xlsm)
