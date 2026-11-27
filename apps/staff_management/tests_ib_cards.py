@@ -133,6 +133,8 @@ class IbLoadAndCardTests(TestCase):
         self.assertIn("BB2 Ben Bold: desk 99.0000%", r.data["detail"])
         self.assertIn("CC3 Cy Clear: no score on Monthly_Summary", r.data["detail"])
 
+        # The account sheet is kept for ib_feed_probe - nothing to copy by hand.
+        self.assertEqual(len(wc.saved(wc.IB_PORTFOLIO_KIND, 2026)), 31)
         self.assertEqual(resolve_person("AA1").roster, wc.IB_ROSTER)
         october = build_card("AA1", as_at=datetime.date(2026, 10, 31))
         self.assertTrue(october["has_card"])

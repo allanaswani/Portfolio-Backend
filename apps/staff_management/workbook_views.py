@@ -301,6 +301,12 @@ class BoActualsUploadView(APIView):
         cards["year"] = year
 
         if kind in (workbook_cards.IB, workbook_cards.HFDI):
+            if kind == workbook_cards.IB and apply:
+                # Its account sheet, for ib_feed_probe (the cards never read it).
+                accounts = workbook_cards.ib_portfolio(data)
+                if accounts:
+                    workbook_cards.save_file(workbook_cards.IB_PORTFOLIO_KIND, accounts,
+                                             upload.name, who, year=year)
             return self._ib_apply(workbook_cards.saved(spec.files[0], year),
                                   actuals_book, year, upload.name, apply, who,
                                   save_actuals=True, kind=kind)

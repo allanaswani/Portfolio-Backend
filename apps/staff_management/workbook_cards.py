@@ -1218,6 +1218,40 @@ def read_ib(stream):
     return book
 
 
+#: The IB template's account sheet, kept when the template is loaded on the
+#: screen: what ib_feed_probe measures the warehouse against.
+IB_PORTFOLIO_KIND = "ib_portfolio"
+
+
+def ib_portfolio(data):
+    """The IB actuals template's Portfolio sheet → grid (values), or None."""
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if "Portfolio" not in wb.sheetnames:
+            return None
+        grid, empty = [], 0
+        for row in wb["Portfolio"].iter_rows(values_only=True):
+            values = [_store_value(v) for v in row]
+            while values and values[-1] in (None, ""):
+                values.pop()
+            grid.append(values)
+            empty = 0 if values else empty + 1
+            if empty >= 1000:
+                break
+        while grid and not grid[-1]:
+            grid.pop()
+        return grid
+    finally:
+        wb.close()
+
+
 def ib_run_month(book):
     """The month the desk last ran the workbook for (its month-count cell:
     IB Constants B2, HFDI mapping B4)."""
@@ -3228,7 +3262,7 @@ YEARLY_KINDS = frozenset({"scorecards", "actuals", "sales_scorecards",
                           "sales_actuals", "bb_scorecards", PROBATION_KIND,
                           "rbo_scorecards", "rbo_actuals",
                           "ib_scorecards", "ib_actuals",
-                          "hfdi_scorecards", "hfdi_actuals"})
+                          "hfdi_scorecards", "hfdi_actuals", "ib_portfolio"})
 
 
 def year_kind(kind, year):

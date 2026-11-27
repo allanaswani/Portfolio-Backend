@@ -1,6 +1,6 @@
 """Where in the warehouse the IB actuals template's account figures come from.
 
-    python manage.py ib_feed_probe /app/etl_requests/2026_IB_Actual_Template_v2.xlsx
+    python manage.py ib_feed_probe            # the IB template loaded on the screen
 
 Every IB card line is a SUMIFS over the template's Portfolio sheet: one row
 per IB account (ACC_NUM, RM_CODE, the desk's LEGACY CAT) with its month-end
@@ -29,16 +29,12 @@ ACCOUNT_COLUMNS = ("acc_num", "account_number", "acc_no", "accnum", "account_no"
 DATE_HINTS = ("date", "dt", "as_at", "asat", "eod", "month", "period")
 
 
-def _portfolio(path):
-    from openpyxl import load_workbook
-
-    wb = load_workbook(path, read_only=True, data_only=True)
-    try:
-        if "Portfolio" not in wb.sheetnames:
-            raise CommandError("no Portfolio sheet - is this the IB actuals template?")
-        rows = list(wb["Portfolio"].iter_rows(min_row=2, values_only=True))
-    finally:
-        wb.close()
+def _portfolio(grid):
+    """The template's Portfolio grid (row 1 group labels, row 2 headers) →
+    one dict per account."""
+    rows = [list(r) for r in grid[1:]]
+    if not rows:
+        raise CommandError("the saved Portfolio sheet is empty")
     head = [str(v or "").strip().upper() for v in rows[0]]
     want = {"ACC_NUM": None, "RM_CODE": None, "LEGACY CAT": None, "OCT_26_BAL": None,
             "SEP_26_BAL": None, "OCT_26_EXP": None, "OCT_26_RATE": None}
@@ -50,6 +46,7 @@ def _portfolio(path):
         raise CommandError(f"Portfolio has no column {', '.join(missing)}")
     out = []
     for r in rows[1:]:
+        r = r + [None] * (len(head) - len(r))
         acc = str(r[want["ACC_NUM"]] or "").strip()
         if acc and acc.replace(".0", "").isdigit():
             out.append({k: r[i] for k, i in want.items()} | {"ACC_NUM": acc.replace(".0", "")})
@@ -60,13 +57,21 @@ class Command(BaseCommand):
     help = "Find and measure the warehouse source of the IB template's account figures."
 
     def add_arguments(self, parser):
-        parser.add_argument("template", help="path to the IB actuals template (.xlsx)")
+        parser.add_argument("--year", type=int, default=datetime.date.today().year,
+                            help="which year's IB template (default this year)")
         parser.add_argument("--tables", type=int, default=5,
                             help="how many best-covering tables to measure (default 5)")
 
     def handle(self, *args, **opts):
+        from apps.staff_management import workbook_cards as wc
+
         w = self.stdout.write
-        accounts = _portfolio(opts["template"])
+        grid = wc.saved(wc.IB_PORTFOLIO_KIND, opts["year"])
+        if not grid:
+            raise CommandError(
+                f"No IB template account sheet is saved for {opts['year']}. Load the IB "
+                f"actuals template on Scorecards -> Load the scorecard workbooks first.")
+        accounts = _portfolio(grid)
         accs = sorted({a["ACC_NUM"] for a in accounts})
         oct_bal = {a["ACC_NUM"]: a["OCT_26_BAL"] for a in accounts
                    if isinstance(a["OCT_26_BAL"], (int, float))}
