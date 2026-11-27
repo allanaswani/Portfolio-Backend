@@ -202,7 +202,10 @@ def live_ib_card(book, actuals, holder, as_at):
     from .models import BoScorecard
 
     year, month = as_at.year, as_at.month
-    key = f"ib_live_proof:{year}:{wc.ib_run_month(book)}"
+    # v2: the proof checks the change since the desk's month (27 Nov 2026).
+    # The cache is the database's, so it outlives a deploy: a new method
+    # needs a new key, or the old method's verdict is served for an hour.
+    key = f"ib_live_proof:v2:{year}:{wc.ib_run_month(book)}"
     found = cache.get(key)
     if found is None:
         found = proof(book, actuals, year)
