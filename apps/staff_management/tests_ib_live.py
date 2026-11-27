@@ -96,4 +96,50 @@ class IbLiveTests(TestCase):
         lines = payload["perspectives"][0]["lines"]
         self.assertEqual(lines[0]["as_at"], "live, as at 27 Nov 2026")   # not the 30th
         self.assertEqual(lines[1]["as_at"], "the desk's October figure")
-        self.assertEqual(lines[2]["as_at"], "weight 0 on the desk's card - not scored")
+        self.assertEqual(len(lines), 3)       # the 0-weight line stays, as on the desk's card
+
+    def test_trade_and_fx_sales_are_kept_and_filled(self):
+        import datetime
+
+        payload = {"perspectives": [{"lines": [
+            {"kpi_name": "Trade Sales", "weight": 0.0, "ytd_actual": None, "as_at": "x"},
+            {"kpi_name": "FX Sales", "weight": 0.0, "ytd_actual": None, "as_at": "x"}]}]}
+        with mock.patch("apps.staff_management.live_scorecard.live_actuals",
+                        return_value={"trade_volume": {"value": 1250000.0}}):
+            ib_live.fill_zero_weight(payload, "MC4131", datetime.date(2026, 11, 30),
+                                     today=datetime.date(2026, 11, 27))
+        trade, fx = payload["perspectives"][0]["lines"]
+        self.assertEqual(trade["ytd_actual"], 1250000.0)
+        self.assertIn("trade finance volume, year to date, as at 27 Nov 2026", trade["as_at"])
+        self.assertIsNone(fx["ytd_actual"])
+        self.assertIn("treasury dealer code, not by RM", fx["as_at"])
+
+    def test_accounts_opened_after_the_template_count_as_new_portfolio(self):
+        import datetime
+
+        from django.db import connection
+
+        # November as a closed month: its own month-end column.
+        with connection.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS daily_balance_movement "
+                        "(acc_num varchar(20), rm_code varchar(20))")
+            for col in ("oct_26_bal", "nov_26_bal"):
+                cur.execute(f"ALTER TABLE daily_balance_movement "
+                            f"ADD COLUMN IF NOT EXISTS {col} numeric")
+            cur.execute("SELECT column_name, is_nullable, column_default, data_type "
+                        "FROM information_schema.columns "
+                        "WHERE table_name = 'daily_balance_movement'")
+            required = [c for c, n, d, _t in cur.fetchall()
+                        if n == "NO" and d is None
+                        and c not in ("acc_num", "rm_code", "oct_26_bal", "nov_26_bal")]
+            cur.execute("DELETE FROM daily_balance_movement")
+            # 9 is not on the desk's list (opened since); 1 is.
+            for acc, oct_, nov in (("9", 0, 35), ("1", 150, 999)):
+                cols = ["acc_num", "rm_code", "oct_26_bal", "nov_26_bal"] + required
+                cur.execute(f"INSERT INTO daily_balance_movement ({', '.join(cols)}) "
+                            f"VALUES ({', '.join(['%s'] * len(cols))})",
+                            [acc, "AA1", oct_, nov] + [0] * len(required))
+        with mock.patch.object(ib_live.datetime, "date", wraps=datetime.date) as d:
+            d.today.return_value = datetime.date(2026, 12, 5)
+            got = ib_live.new_accounts_movement(ACCOUNTS, 2026, 10, 11)
+        self.assertEqual(got, {("AA1", "Non-Legacy"): 35.0})

@@ -136,6 +136,41 @@ def _value(grid, row, month):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def new_accounts_movement(accounts, year, run, month):
+    """{(rm_code, "Non-Legacy"): change} for accounts under an IB RM's code
+    that are not on the desk's account list - opened after its template, so
+    new portfolio by definition. Each counts its balance now less its balance
+    at the desk's month (0 for one opened since): Mary Murage's 9783958952,
+    0 at October and 35m on 27 Nov 2026, was missing from her card."""
+    from django.db import connection, transaction
+
+    known = {a for a, *_ in accounts}
+    codes = sorted({rm for _a, rm, *_ in accounts if rm and rm != "UNMANAGED"})
+    if not codes:
+        return {}
+    today = datetime.date.today()
+    now_col = ("yester_1_bal" if (year, month) == (today.year, today.month)
+               else f"{_MONTHS[month - 1]}_{year % 100:02d}_bal")
+    run_col = f"{_MONTHS[run - 1]}_{year % 100:02d}_bal"
+    try:
+        with transaction.atomic(), connection.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = 120000")
+            cur.execute(f"SELECT trim(acc_num::text), UPPER(TRIM(rm_code::text)), "
+                        f"COALESCE({run_col}, 0), COALESCE({now_col}, 0) "
+                        f"FROM daily_balance_movement "
+                        f"WHERE UPPER(TRIM(rm_code::text)) = ANY(%s)", [codes])
+            rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - the listed accounts still count
+        return {}
+    out = {}
+    for acc, rm, then, now in rows:
+        if acc in known:
+            continue
+        key = (rm, "Non-Legacy")
+        out[key] = out.get(key, 0.0) + float(now) - float(then)
+    return out
+
+
 def movement_by_person(accounts, now, then):
     """{(rm_code, legacy): sum of (now - then)} over the template's accounts -
     the change since the desk's month, which is added to the desk's figure."""
@@ -222,6 +257,9 @@ def live_ib_card(book, actuals, holder, as_at):
         at_run, _col = _balances(accounts, year, run)
         if balances and at_run:
             moved = movement_by_person(accounts, balances, at_run)
+            # Accounts opened since the desk's template: new portfolio.
+            for k, v in new_accounts_movement(accounts, year, run, month).items():
+                moved[k] = moved.get(k, 0.0) + v
         else:
             ok, detail = False, f"daily_balance_movement.{col} could not be read"
 
@@ -269,21 +307,64 @@ def live_ib_card(book, actuals, holder, as_at):
     payload["coverage_note"] = " ".join(x for x in (payload.get("coverage_note"), note) if x)
     payload["live"] = True
     relabel(payload, [GROWTH_SHEET] if ok else [], when)
+    fill_zero_weight(payload, holder.sales_code, as_at)
     return payload
+
+
+def fill_zero_weight(payload, sales_code, as_at, today=None):
+    """The IB card's 0-weight Trade Sales and FX Sales lines, kept as the
+    desk's card has them, with the figure the warehouse holds:
+
+    * Trade Sales - the RM's trade finance volume, year to date, off the
+      reader the RM cards use (live_actuals trade_volume, by RM code);
+    * FX Sales - FX deals are recorded by treasury dealer code
+      (fx_trx_current_year.py: DEALER_SPECIAL_RAT / FX_FT_RECORDING
+      DEALER_CODE), not by RM, so there is no per-RM figure to show.
+
+    Weight 0 on the desk's card: shown, not scored."""
+    today = today or datetime.date.today()
+    for group in payload.get("perspectives") or []:
+        for ln in group.get("lines") or []:
+            if ln.get("weight"):
+                continue
+            name = str(ln.get("kpi_name") or "").strip().lower()
+            if name.startswith("trade"):
+                try:
+                    from .live_scorecard import live_actuals
+
+                    got = live_actuals(sales_code, wanted={"trade_volume"},
+                                       as_at=as_at).get("trade_volume") or {}
+                except Exception:  # noqa: BLE001 - the line stays unfilled
+                    got = {}
+                if got.get("value") is not None:
+                    ln["ytd_actual"] = float(got["value"])
+                    ln["as_at"] = (f"trade finance volume, year to date, as at "
+                                   f"{today.day} {today:%b %Y} - weight 0 on the desk's "
+                                   f"card: shown, not scored")
+                else:
+                    ln["as_at"] = (f"no trade finance volume under this RM code "
+                                   f"({got.get('problem') or 'none read'}) - weight 0 on "
+                                   f"the desk's card: shown, not scored")
+            elif name.startswith("fx"):
+                ln["as_at"] = ("FX deals are recorded by treasury dealer code, not by "
+                               "RM, so there is no per-RM FX figure - weight 0 on the "
+                               "desk's card: shown, not scored")
+            else:
+                ln["as_at"] = "weight 0 on the desk's card: shown, not scored"
 
 
 def relabel(payload, live_sheets, desk_month, today=None):
     """Each line says where its figure is from: "live, as at <today>" for a
     sheet read live, "the desk's <month> figure" for one carried - not the
-    month's end, which has not come yet. A 0-weight line with no figure on the
-    desk's card (IB Trade Sales, FX Sales) says it is not scored."""
+    month's end, which has not come yet. 0-weight lines (IB Trade Sales, FX
+    Sales) are kept, as the desk's card has them - see fill_zero_weight."""
     today = today or datetime.date.today()
     live = {s.lower() for s in live_sheets}
     for group in payload.get("perspectives") or []:
         for ln in group.get("lines") or []:
-            if not ln.get("weight") and ln.get("ytd_actual") is None:
-                ln["as_at"] = "weight 0 on the desk's card - not scored"
-            elif str(ln.get("as_at", "")).startswith("typed"):
+            if not ln.get("weight"):
+                continue        # 0-weight lines are labelled by fill_zero_weight
+            if str(ln.get("as_at", "")).startswith("typed"):
                 continue
             elif ln.get("kpi_code") in live:
                 ln["as_at"] = f"live, as at {today.day} {today:%b %Y}"
