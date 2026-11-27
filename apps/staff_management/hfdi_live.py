@@ -161,6 +161,38 @@ def code_map():
     return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
 
 
+def hfdi_card_code(code):
+    """The staff_id an HFDI card is stored under, for the sales code
+    hfdi_employee_data gives the person (by their name's words, one stored
+    HFDI card only) → str, or None when the code is not an HFDI one."""
+    from django.db import transaction
+
+    from .live_scorecard import name_tokens
+    from .models import BoScorecard
+
+    code = str(code or "").strip().upper()
+    if not code or code.isdigit():
+        return None
+    try:
+        with transaction.atomic():
+            rows = _rows("SELECT staff_pf_number, staff_name FROM hfdi_employee_data "
+                         "WHERE UPPER(TRIM(sales_code::text)) = %s", [code])
+            if not rows:
+                return None
+            cards = {(c, n) for c, n in BoScorecard.objects.filter(book="hfdi")
+                     .values_list("sales_code", "staff_name")}
+    except Exception:  # noqa: BLE001 - no HFDI table here: not an HFDI code
+        return None
+    # The PF first: hfdi_employee_data carries it and the card is kept under
+    # the same staff_id. The name only where the PF finds no card.
+    pf = str(rows[0][0] or "").strip().replace(".0", "")
+    if pf and any(c == pf for c, _n in cards):
+        return pf
+    want = frozenset(name_tokens(rows[0][1]))
+    hits = {c for c, n in cards if frozenset(name_tokens(n)) == want}
+    return next(iter(hits)) if len(hits) == 1 else None
+
+
 def _person_rows(grid, holder, first):
     """The template row for this person: staff_id in A, else the name in B."""
     for i, row in enumerate(grid[1:], start=1):

@@ -150,6 +150,41 @@ class HfdiTests(TestCase):
         # digits, a full code already an employee's, a lettered code: left.
         self.assertEqual(got, {"3561": "EWK3561", "3561.0": "EWK3561"})
 
+    def test_the_sales_code_opens_the_staff_id_card(self):
+        import datetime
+
+        from django.db import connection
+
+        from . import hfdi_live
+        from .models import BoScorecard
+
+        with connection.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS hfdi_employee_data "
+                        "(sales_code varchar(20), staff_name varchar(100), active varchar(5))")
+            cur.execute("SELECT column_name, data_type, is_nullable, column_default "
+                        "FROM information_schema.columns WHERE table_name = 'hfdi_employee_data'")
+            meta = cur.fetchall()
+            cols = {r[0] for r in meta}
+            values = {"sales_code": "LM4122", "staff_name": "LINDA MAKENA", "active": "1",
+                      "staff_pf_number": 4122}
+            # Every other required column the table has, a neutral value.
+            for name, kind, nullable, default in meta:
+                if name in values or nullable == "YES" or default is not None:
+                    continue
+                values[name] = (0 if kind in ("integer", "bigint", "smallint", "numeric",
+                                              "double precision", "real")
+                                else False if kind == "boolean"
+                                else datetime.date(2026, 1, 1) if kind.startswith(("date", "timestamp"))
+                                else "x")
+            names = [c for c in values if c in cols]
+            cur.execute(f"INSERT INTO hfdi_employee_data ({', '.join(names)}) "
+                        f"VALUES ({', '.join(['%s'] * len(names))})", [values[c] for c in names])
+        BoScorecard.objects.create(book="hfdi", sales_code="4122", staff_name="Linda Makena",
+                                   sheet="Property_Advisor", month=datetime.date(2026, 10, 1))
+        self.assertEqual(hfdi_live.hfdi_card_code("lm4122"), "4122")
+        self.assertIsNone(hfdi_live.hfdi_card_code("ZZ9999"))   # not an HFDI code
+        self.assertIsNone(hfdi_live.hfdi_card_code("4122"))     # already a staff_id
+
     def test_load_and_card(self):
         from django.contrib.auth.models import User
         from rest_framework.test import APIClient

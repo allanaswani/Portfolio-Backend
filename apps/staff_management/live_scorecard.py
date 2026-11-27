@@ -4233,6 +4233,12 @@ def build_card(sales_code, profile=None, as_at=None):
 
     from . import workbook_cards
 
+    # An HFDI person's card is kept under their staff_id (the Master
+    # Scorecard has no sales codes); they and the screens use their sales
+    # code (Linda Makena: LM4122, card under 4122).
+    from .hfdi_live import hfdi_card_code
+
+    sales_code = hfdi_card_code(sales_code) or sales_code
     off = workbook_cards.off_card(sales_code, as_at)
     if off is not None:
         return {"has_card": False, "reason": "no_card", "sales_code": sales_code,
